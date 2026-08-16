@@ -7,6 +7,8 @@ reference/
 # Secrets and local config
 .env
 .env.*
+# ...but the committed template carries no secrets and documents the env contract.
+!reachy_companion/.env.example
 *.local.json
 
 # Python

@@ -1,13 +1,15 @@
-"""Session-config unit tests — no network, no robot."""
+"""Session-config and audio-boundary unit tests — no network, no robot."""
 
 import os
 import base64
 import asyncio
+import logging
 from time import monotonic
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from scipy.signal import resample_poly
 
 
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-not-real")
@@ -18,7 +20,15 @@ from reachy_companion.config import (  # noqa: E402
     _normalize_transcription_language,
 )
 from reachy_companion.streaming import AdditionalOutputs  # noqa: E402
-from reachy_companion.openai_realtime import MODEL, ROBOT_RATE, OpenAIRealtimeHandler  # noqa: E402
+from reachy_companion.openai_realtime import (  # noqa: E402
+    MODEL,
+    ROBOT_RATE,
+    OpenAIRealtimeHandler,
+    _StreamingResampler,
+)
+
+
+MODEL_RATE = 24000
 
 
 @pytest.fixture()
@@ -28,6 +38,32 @@ def handler() -> OpenAIRealtimeHandler:
     h.get_current_voice = MagicMock(return_value="cedar")  # type: ignore[method-assign]
     h.instance_path = None  # _get_session_config reads it (huggingface_realtime.py:226)
     return h
+
+
+def _sine(rate: int, n: int, freq: float = 440.0, amp: float = 0.5) -> np.ndarray:
+    """Return an `amp`-amplitude float32 sine of `n` samples at `rate`."""
+    t = np.arange(n) / rate
+    return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+
+
+def _to_int16(signal: np.ndarray) -> np.ndarray:
+    """Convert a float32 signal in [-1, 1) to int16."""
+    return (signal * 32767).astype(np.int16)
+
+
+def _to_float(pcm: np.ndarray) -> np.ndarray:
+    """Convert int16 PCM back to float32 in [-1, 1)."""
+    return pcm.astype(np.float32) / 32767.0
+
+
+def _lsb_diff(a: np.ndarray, b: np.ndarray) -> int:
+    """Return the largest absolute difference between two int16 buffers, in LSB."""
+    return int(np.abs(a.astype(np.int32) - b.astype(np.int32)).max())
+
+
+# --------------------------------------------------------------------------
+# Session config
+# --------------------------------------------------------------------------
 
 
 def test_sample_rate_is_24k() -> None:
@@ -41,42 +77,123 @@ def test_session_config_targets_gpt_realtime_21(handler: OpenAIRealtimeHandler) 
     assert cfg["model"] == "gpt-realtime-2.1"
     assert cfg["audio"]["output"]["format"]["rate"] == 24000
     assert cfg["audio"]["input"]["format"]["rate"] == 24000
+    # Applied by the base from config.REALTIME_TRANSCRIPTION_LANGUAGE
+    # (huggingface_realtime.py:234); asserted here as an integration check.
     assert cfg["audio"]["input"]["transcription"]["language"] == "zh"
-
-
-def test_vad_tuning_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
-    """Server VAD silence duration is tunable for Chinese mid-sentence pauses (D-003)."""
-    monkeypatch.setenv("REALTIME_VAD_SILENCE_DURATION_MS", "800")
-    cfg = handler._get_session_config(tool_specs=[])
-    td = cfg["audio"]["input"]["turn_detection"]
-    assert td["type"] == "server_vad"
-    assert td["silence_duration_ms"] == 800
-    assert td["interrupt_response"] is True
-
-
-def test_semantic_vad_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
-    """REALTIME_VAD_TYPE=semantic_vad switches turn detection to the semantic detector."""
-    monkeypatch.setenv("REALTIME_VAD_TYPE", "semantic_vad")
-    monkeypatch.setenv("REALTIME_VAD_EAGERNESS", "low")
-    cfg = handler._get_session_config(tool_specs=[])
-    td = cfg["audio"]["input"]["turn_detection"]
-    assert td["type"] == "semantic_vad"
-    assert td["eagerness"] == "low"
-    assert td["interrupt_response"] is True
-
-
-def test_invalid_eagerness_falls_back_to_auto(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
-    """An unsupported eagerness value must not be forwarded to the API."""
-    monkeypatch.setenv("REALTIME_VAD_TYPE", "semantic_vad")
-    monkeypatch.setenv("REALTIME_VAD_EAGERNESS", "nonsense")
-    cfg = handler._get_session_config(tool_specs=[])
-    assert cfg["audio"]["input"]["turn_detection"]["eagerness"] == "auto"
 
 
 def test_session_config_keeps_selected_voice(handler: OpenAIRealtimeHandler) -> None:
     """The inherited voice selection must survive the override."""
     cfg = handler._get_session_config(tool_specs=[])
     assert cfg["audio"]["output"]["voice"] == "cedar"
+
+
+# --------------------------------------------------------------------------
+# VAD knobs — every knob at a NON-default value, plus malformed input
+# --------------------------------------------------------------------------
+
+
+def test_vad_tuning_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
+    """All three server-VAD numeric knobs come from the environment (D-003)."""
+    monkeypatch.setenv("REALTIME_VAD_SILENCE_DURATION_MS", "1200")
+    monkeypatch.setenv("REALTIME_VAD_THRESHOLD", "0.72")
+    monkeypatch.setenv("REALTIME_VAD_PREFIX_PADDING_MS", "450")
+
+    td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td["type"] == "server_vad"
+    assert td["interrupt_response"] is True
+    # All three differ from the built-in defaults (800 / 0.5 / 300).
+    assert td["silence_duration_ms"] == 1200
+    assert td["threshold"] == pytest.approx(0.72)
+    assert td["prefix_padding_ms"] == 450
+
+
+def test_vad_defaults_when_env_is_unset(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
+    """With nothing configured, the Chinese-tuned defaults apply."""
+    for name in (
+        "REALTIME_VAD_SILENCE_DURATION_MS",
+        "REALTIME_VAD_THRESHOLD",
+        "REALTIME_VAD_PREFIX_PADDING_MS",
+        "REALTIME_VAD_TYPE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td["silence_duration_ms"] == 800  # raised from the API's 500 for mid-sentence pauses
+    assert td["threshold"] == pytest.approx(0.5)
+    assert td["prefix_padding_ms"] == 300
+
+
+@pytest.mark.parametrize(
+    ("env_name", "key", "expected"),
+    [
+        ("REALTIME_VAD_SILENCE_DURATION_MS", "silence_duration_ms", 800),
+        ("REALTIME_VAD_PREFIX_PADDING_MS", "prefix_padding_ms", 300),
+        ("REALTIME_VAD_THRESHOLD", "threshold", 0.5),
+    ],
+)
+def test_malformed_vad_number_warns_and_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handler: OpenAIRealtimeHandler,
+    env_name: str,
+    key: str,
+    expected: float,
+) -> None:
+    """A bad .env value must warn and degrade, never abort the session."""
+    monkeypatch.setenv(env_name, "not-a-number")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td[key] == pytest.approx(expected)
+    assert env_name in caplog.text
+
+
+def test_unknown_vad_type_warns_and_falls_back_to_server_vad(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, handler: OpenAIRealtimeHandler
+) -> None:
+    """An unrecognized REALTIME_VAD_TYPE must warn rather than silently degrade."""
+    monkeypatch.setenv("REALTIME_VAD_TYPE", "magic_vad")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td["type"] == "server_vad"
+    assert "REALTIME_VAD_TYPE" in caplog.text
+
+
+def test_semantic_vad_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
+    """REALTIME_VAD_TYPE=semantic_vad switches turn detection to the semantic detector."""
+    monkeypatch.setenv("REALTIME_VAD_TYPE", "semantic_vad")
+    monkeypatch.setenv("REALTIME_VAD_EAGERNESS", "low")
+
+    td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td["type"] == "semantic_vad"
+    assert td["eagerness"] == "low"
+    assert td["interrupt_response"] is True
+
+
+def test_invalid_eagerness_warns_and_falls_back_to_auto(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, handler: OpenAIRealtimeHandler
+) -> None:
+    """An unsupported eagerness value must not be forwarded to the API."""
+    monkeypatch.setenv("REALTIME_VAD_TYPE", "semantic_vad")
+    monkeypatch.setenv("REALTIME_VAD_EAGERNESS", "nonsense")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
+
+    assert td["eagerness"] == "auto"
+    assert "REALTIME_VAD_EAGERNESS" in caplog.text
+
+
+# --------------------------------------------------------------------------
+# Client build
+# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -91,10 +208,128 @@ async def test_build_client_puts_model_in_the_connect_query(handler: OpenAIRealt
 async def test_build_client_requires_an_api_key(
     monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
 ) -> None:
-    """A missing OPENAI_API_KEY must fail fast rather than connect anonymously."""
+    """A missing OPENAI_API_KEY must fail fast with a clear message."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(KeyError):
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         await handler._build_realtime_client()
+
+
+@pytest.mark.asyncio
+async def test_build_client_is_the_session_restart_reset_point(handler: OpenAIRealtimeHandler) -> None:
+    """Starting or restarting a session must not inherit the old filter tails."""
+    primed = _to_int16(_sine(MODEL_RATE, 4800))
+    fresh = _StreamingResampler(MODEL_RATE, ROBOT_RATE).process(primed)
+
+    handler._input_resampler = _StreamingResampler(ROBOT_RATE, MODEL_RATE)
+    handler._output_resampler = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+    handler._output_resampler.process(primed)
+
+    await handler._build_realtime_client()
+
+    # After the reset the stream behaves like a brand-new one (bar int16 dither).
+    assert _lsb_diff(handler._output_resampler.process(primed), fresh) <= 4
+
+
+# --------------------------------------------------------------------------
+# Streaming resampler
+# --------------------------------------------------------------------------
+
+
+def test_streaming_resampler_is_seamless_across_odd_chunks() -> None:
+    """Chunked input must reconstruct the signal as well as a whole-signal resample.
+
+    The stateless per-chunk alternative zero-pads each chunk and discards the
+    filter tail; this pins the streaming path far below that error.
+    """
+    n = 24000
+    source = _to_int16(_sine(MODEL_RATE, n))
+    stream = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+
+    out, i, k, sizes = [], 0, 0, (479, 501)
+    while i < n:
+        chunk = sizes[k % len(sizes)]
+        k += 1
+        out.append(stream.process(source[i : i + chunk]))
+        i += chunk
+    got = np.concatenate(out)
+
+    exact = n * ROBOT_RATE / MODEL_RATE
+    # The only shortfall is the constant filter delay still held in the stream,
+    # not per-chunk drift.
+    assert abs(len(got) + stream.delay - exact) <= 2
+
+    ideal = _sine(ROBOT_RATE, len(got))
+    error = np.abs(_to_float(got) - ideal)[400:-400].max()
+    assert error < 0.01
+
+
+def test_streaming_resampler_output_does_not_depend_on_chunking() -> None:
+    """Different chunk sizes over the same signal must give the same total length."""
+    n = 24000
+    source = _to_int16(_sine(MODEL_RATE, n))
+
+    def run(sizes: tuple[int, ...]) -> int:
+        stream = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+        total, i, k = 0, 0, 0
+        while i < n:
+            chunk = sizes[k % len(sizes)]
+            k += 1
+            total += len(stream.process(source[i : i + chunk]))
+            i += chunk
+        return total
+
+    assert run((479, 501)) == run((480,)) == run((1024, 137))
+
+
+def test_stateless_chunked_resampling_is_the_bug_being_fixed() -> None:
+    """Guard the regression: the one-shot-per-chunk approach fails the same bound."""
+    n = 24000
+    signal = _sine(MODEL_RATE, n)
+    stateless = np.concatenate([resample_poly(signal[i : i + 480], 2, 3) for i in range(0, n, 480)]).astype(np.float32)
+
+    ideal = _sine(ROBOT_RATE, len(stateless))
+    error = np.abs(stateless - ideal)[400:-400].max()
+    assert error > 0.01  # measured ~0.08 on this 0.5-amplitude signal
+
+
+def test_streaming_resampler_preserves_the_channel_first_shape() -> None:
+    """The model's (1, N) PCM must survive; soxr itself rejects it as 2-D input."""
+    stream = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+    out = stream.process(_to_int16(_sine(MODEL_RATE, 4800)).reshape(1, -1))
+
+    assert out.ndim == 2
+    assert out.shape[0] == 1
+    assert out.dtype == np.int16
+
+    mono = _StreamingResampler(MODEL_RATE, ROBOT_RATE).process(_to_int16(_sine(MODEL_RATE, 4800)))
+    assert np.array_equal(out.reshape(-1), mono)
+
+
+def test_streaming_resampler_reset_restores_a_fresh_stream() -> None:
+    """reset() must drop the filter tail completely.
+
+    The residual is soxr's int16 output dither, whose RNG `clear()` does not
+    reset (the float32 path is bit-exact); it measures 2 LSB, about -84 dBFS.
+    Leaving the tail in place instead measures ~23886 LSB, which the companion
+    assertion pins.
+    """
+    block = _to_int16(_sine(MODEL_RATE, 4800))
+    fresh = _StreamingResampler(MODEL_RATE, ROBOT_RATE).process(block)
+
+    stream = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+    stream.process(block)
+    stream.process(block)
+    stream.reset()
+    assert _lsb_diff(stream.process(block), fresh) <= 4
+
+    bleeding = _StreamingResampler(MODEL_RATE, ROBOT_RATE)
+    bleeding.process(block)
+    assert _lsb_diff(bleeding.process(block), fresh) > 1000
+
+
+# --------------------------------------------------------------------------
+# Microphone path
+# --------------------------------------------------------------------------
 
 
 class _FakeInputAudioBuffer:
@@ -108,6 +343,12 @@ class _FakeInputAudioBuffer:
         """Record one appended frame."""
         self.appended.append(audio)
 
+    def decoded(self) -> np.ndarray:
+        """Return every appended frame concatenated as int16 PCM."""
+        if not self.appended:
+            return np.zeros(0, dtype=np.int16)
+        return np.concatenate([np.frombuffer(base64.b64decode(a), dtype=np.int16) for a in self.appended])
+
 
 class _FakeConnection:
     """Minimal stand-in for AsyncRealtimeConnection."""
@@ -117,43 +358,84 @@ class _FakeConnection:
         self.input_audio_buffer = _FakeInputAudioBuffer()
 
 
+def _connected(handler: OpenAIRealtimeHandler) -> _FakeInputAudioBuffer:
+    """Attach a fake connection and return its capture buffer."""
+    connection = _FakeConnection()
+    handler.connection = connection  # type: ignore[assignment]
+    return connection.input_audio_buffer
+
+
 @pytest.mark.asyncio
 async def test_receive_resamples_microphone_audio_to_24k(handler: OpenAIRealtimeHandler) -> None:
     """Mic frames arrive at the robot rate and must be upsampled to the model rate."""
-    connection = _FakeConnection()
-    handler.connection = connection  # type: ignore[assignment]
+    buffer = _connected(handler)
+    n = 16000
+    pcm = _to_int16(_sine(ROBOT_RATE, n))
 
-    frame = (np.arange(320, dtype=np.float32) / 320.0).astype(np.float32)
-    await handler.receive((ROBOT_RATE, (frame * 32767).astype(np.int16)))
+    for i in range(0, n, 320):  # 20 ms frames, as the recorder delivers them
+        await handler.receive((ROBOT_RATE, pcm[i : i + 320]))
 
-    assert len(connection.input_audio_buffer.appended) == 1
-    decoded = np.frombuffer(base64.b64decode(connection.input_audio_buffer.appended[0]), dtype=np.int16)
-    assert decoded.size == 320 * 24000 // ROBOT_RATE
+    got = buffer.decoded()
+    exact = n * MODEL_RATE / ROBOT_RATE
+    assert abs(len(got) + handler._input_resampler.delay - exact) <= 2
+
+    ideal = _sine(MODEL_RATE, len(got))
+    assert np.abs(_to_float(got) - ideal)[400:-400].max() < 0.01
 
 
 @pytest.mark.asyncio
 async def test_receive_downmixes_stereo_before_resampling(handler: OpenAIRealtimeHandler) -> None:
     """Stereo mic frames must be reduced to mono, then resampled."""
-    connection = _FakeConnection()
-    handler.connection = connection  # type: ignore[assignment]
+    buffer = _connected(handler)
+    mono = _to_int16(_sine(ROBOT_RATE, 8000))
+    stereo = np.stack([mono, np.zeros_like(mono)])  # (2, N) channel-first
 
-    stereo = np.zeros((2, 320), dtype=np.int16)
-    await handler.receive((ROBOT_RATE, stereo))
+    for i in range(0, 8000, 320):
+        await handler.receive((ROBOT_RATE, stereo[:, i : i + 320]))
 
-    decoded = np.frombuffer(base64.b64decode(connection.input_audio_buffer.appended[0]), dtype=np.int16)
-    assert decoded.size == 480
+    got = buffer.decoded()
+    ideal = _sine(MODEL_RATE, len(got))
+    assert np.abs(_to_float(got) - ideal)[400:-400].max() < 0.01
 
 
 @pytest.mark.asyncio
-async def test_receive_skips_resampling_when_already_at_model_rate(handler: OpenAIRealtimeHandler) -> None:
-    """A mic already at 24 kHz must be passed through untouched."""
-    connection = _FakeConnection()
-    handler.connection = connection  # type: ignore[assignment]
+async def test_receive_skips_resampling_when_already_at_model_rate(
+    handler: OpenAIRealtimeHandler,
+) -> None:
+    """A mic already at 24 kHz must be passed through untouched, with no stream built."""
+    buffer = _connected(handler)
 
-    await handler.receive((24000, np.zeros(480, dtype=np.int16)))
+    await handler.receive((MODEL_RATE, np.zeros(480, dtype=np.int16)))
 
-    decoded = np.frombuffer(base64.b64decode(connection.input_audio_buffer.appended[0]), dtype=np.int16)
-    assert decoded.size == 480
+    assert buffer.decoded().size == 480
+    assert handler._input_resampler is None
+
+
+@pytest.mark.asyncio
+async def test_receive_ignores_empty_frames(handler: OpenAIRealtimeHandler) -> None:
+    """Empty mic frames must not reach the realtime buffer."""
+    buffer = _connected(handler)
+
+    await handler.receive((ROBOT_RATE, np.zeros(0, dtype=np.int16)))
+
+    assert buffer.appended == []
+
+
+@pytest.mark.asyncio
+async def test_receive_does_not_send_while_the_resampler_primes(
+    handler: OpenAIRealtimeHandler,
+) -> None:
+    """The first frames produce no output yet; nothing empty may be sent upstream."""
+    buffer = _connected(handler)
+
+    await handler.receive((ROBOT_RATE, _to_int16(_sine(ROBOT_RATE, 320))))
+
+    assert all(a != "" for a in buffer.appended)
+
+
+# --------------------------------------------------------------------------
+# Speaker path
+# --------------------------------------------------------------------------
 
 
 def _emit_ready_handler() -> OpenAIRealtimeHandler:
@@ -170,15 +452,26 @@ def _emit_ready_handler() -> OpenAIRealtimeHandler:
 async def test_emit_downsamples_model_audio_to_the_robot_rate() -> None:
     """console.py drops the rate label, so the handler must emit 16 kHz itself."""
     h = _emit_ready_handler()
-    await h.output_queue.put((24000, np.zeros((1, 480), dtype=np.int16)))
+    n = 24000
+    pcm = _to_int16(_sine(MODEL_RATE, n))
 
-    output = await h.emit()
+    collected = []
+    for i in range(0, n, 480):  # 20 ms of model PCM, shaped (1, N) as the base enqueues it
+        await h.output_queue.put((MODEL_RATE, pcm[i : i + 480].reshape(1, -1)))
+        output = await h.emit()
+        assert isinstance(output, tuple)
+        rate, frame = output
+        assert rate == ROBOT_RATE
+        assert frame.ndim == 2 and frame.shape[0] == 1  # (1, N) preserved for console.py
+        assert frame.dtype == np.int16
+        collected.append(frame.reshape(-1))
 
-    assert isinstance(output, tuple)
-    rate, pcm = output
-    assert rate == ROBOT_RATE
-    assert pcm.shape == (1, 320)
-    assert pcm.dtype == np.int16
+    got = np.concatenate(collected)
+    exact = n * ROBOT_RATE / MODEL_RATE
+    assert abs(len(got) + h._output_resampler.delay - exact) <= 2
+
+    ideal = _sine(ROBOT_RATE, len(got))
+    assert np.abs(_to_float(got) - ideal)[400:-400].max() < 0.01
 
 
 @pytest.mark.asyncio
@@ -202,6 +495,7 @@ async def test_emit_leaves_robot_rate_audio_alone() -> None:
 
     assert isinstance(output, tuple)
     assert output[1] is pcm
+    assert h._output_resampler is None
 
 
 @pytest.mark.asyncio
@@ -209,6 +503,71 @@ async def test_emit_returns_none_when_the_queue_is_empty() -> None:
     """The base emit() timeout behavior must be preserved."""
     h = _emit_ready_handler()
     assert await h.emit() is None
+
+
+# --------------------------------------------------------------------------
+# Barge-in
+# --------------------------------------------------------------------------
+
+
+class _SpyResampler:
+    """Record reset() calls."""
+
+    def __init__(self) -> None:
+        """Start with no resets recorded."""
+        self.resets = 0
+
+    def reset(self) -> None:
+        """Record one reset."""
+        self.resets += 1
+
+
+def test_clear_queue_is_none_until_the_console_installs_one() -> None:
+    """The base guard `if self._clear_queue:` must still see None when unwired."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    assert h._clear_queue is None
+
+
+def test_barge_in_resets_the_output_resampler_and_calls_the_console() -> None:
+    """The interrupted utterance's filter tail must not bleed into the next reply."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    spy = _SpyResampler()
+    h._output_resampler = spy  # type: ignore[assignment]
+    calls: list[str] = []
+    h._clear_queue = lambda: calls.append("flushed")  # as console.py:146 assigns
+
+    clear = h._clear_queue
+    assert clear is not None
+    clear()
+
+    assert spy.resets == 1
+    assert calls == ["flushed"]
+
+
+def test_barge_in_without_an_output_stream_is_harmless() -> None:
+    """A barge-in before any assistant audio must not blow up."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    calls: list[str] = []
+    h._clear_queue = lambda: calls.append("flushed")
+
+    clear = h._clear_queue
+    assert clear is not None
+    clear()
+
+    assert calls == ["flushed"]
+
+
+def test_stream_handler_init_still_clears_the_callback() -> None:
+    """AsyncStreamHandler.__init__ assigns None through the property setter."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    h._clear_queue = lambda: None
+    h._clear_queue = None
+    assert h._clear_queue is None
+
+
+# --------------------------------------------------------------------------
+# config.py flips owned by this task
+# --------------------------------------------------------------------------
 
 
 def test_openai_voices_are_configured() -> None:
@@ -233,3 +592,13 @@ def test_transcription_language_defaults_to_zh() -> None:
     assert _normalize_transcription_language(None) == "zh"
     assert _normalize_transcription_language("  ") == "zh"
     assert _normalize_transcription_language("en") == "en"
+
+
+def test_env_example_documents_the_new_knobs() -> None:
+    """.env.example must not still advertise the old English default."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parent.parent / ".env.example").read_text(encoding="utf-8")
+    assert 'REALTIME_TRANSCRIPTION_LANGUAGE="zh"' in text
+    assert "OPENAI_API_KEY" in text
+    assert "REALTIME_VAD_SILENCE_DURATION_MS" in text
