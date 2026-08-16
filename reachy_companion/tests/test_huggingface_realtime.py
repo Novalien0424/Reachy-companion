@@ -220,15 +220,15 @@ def test_handler_uses_hf_startup_voice_at_startup(monkeypatch: Any) -> None:
     """Hugging Face startup should restore persisted HF voices."""
     handler = HuggingFaceRealtimeHandler(
         ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()),
-        startup_voice="Aiden",
+        startup_voice="marin",
     )
 
-    assert handler.get_current_voice() == "Aiden"
+    assert handler.get_current_voice() == "marin"
 
 
 def test_handler_ignores_unsupported_hf_profile_voice(monkeypatch: Any) -> None:
     """Unsupported profile voices should not be sent to the Hugging Face backend."""
-    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "cedar")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
 
@@ -238,12 +238,12 @@ def test_handler_ignores_unsupported_hf_profile_voice(monkeypatch: Any) -> None:
 
 
 def test_handler_normalizes_hf_voice_case(monkeypatch: Any) -> None:
-    """Lowercase Hugging Face speaker names should resolve to the curated UI value."""
-    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "serena")
+    """Differently-cased speaker names should resolve to the curated UI value."""
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "MARIN")
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
 
-    assert handler.get_current_voice() == "Serena"
+    assert handler.get_current_voice() == "marin"
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_run_realtime_session_uses_default_voice_for_lb_allocated_sessions
     # HF at 16 kHz passes None so the backend uses its optimal default (16 kHz).
     assert session["audio"]["input"]["format"]["rate"] is None
     assert session["audio"]["output"]["format"]["rate"] is None
-    assert session["audio"]["input"]["transcription"]["language"] == "en"
+    assert session["audio"]["input"]["transcription"]["language"] == "zh"
     assert session["audio"]["output"]["voice"] == HF_DEFAULT_VOICE
 
 
@@ -425,9 +425,9 @@ async def test_build_realtime_client_deployed_resolves_hf_token(
 
 @pytest.mark.asyncio
 async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(monkeypatch: Any) -> None:
-    """Live personality updates should honor the selected Qwen CustomVoice speaker."""
+    """Live personality updates should honor the selected backend voice."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "new instructions")
-    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Serena")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "marin")
     monkeypatch.setattr(config, "HF_REALTIME_SESSION_URL", "https://lb.example.test/session")
 
     captured_update: dict[str, Any] = {}
@@ -448,7 +448,7 @@ async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(m
     assert "restarted realtime session" in result.lower()
     session = captured_update["session"]
     assert session["instructions"] == "new instructions"
-    assert session["audio"]["output"]["voice"] == "Serena"
+    assert session["audio"]["output"]["voice"] == "marin"
 
 
 @pytest.mark.asyncio
@@ -493,10 +493,10 @@ async def test_change_voice_updates_live_hf_session_without_restart(monkeypatch:
     restart = AsyncMock(return_value=None)
     monkeypatch.setattr(handler, "_restart_session", restart)
 
-    result = await handler.change_voice("Serena")
+    result = await handler.change_voice("marin")
 
-    assert result == "Voice changed to Serena."
-    assert handler.get_current_voice() == "Serena"
+    assert result == "Voice changed to marin."
+    assert handler.get_current_voice() == "marin"
     restart.assert_not_awaited()
     session = captured_update["session"]
-    assert session["audio"]["output"]["voice"] == "Serena"
+    assert session["audio"]["output"]["voice"] == "marin"

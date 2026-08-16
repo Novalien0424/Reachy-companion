@@ -47,17 +47,20 @@ DEFAULT_PROFILES_DIRECTORY = _resolve_default_profiles_directory()
 USER_PERSONALITIES_DIRNAME = "user_personalities"
 TERMINAL_USER_PERSONALITIES_DIRECTORY = Path("external_content") / USER_PERSONALITIES_DIRNAME
 
-# Qwen3-TTS CustomVoice speaker catalog from the deployed Hugging Face backend.
+# OpenAI Realtime voice catalog (D-002); replaces the Qwen3-TTS CustomVoice
+# speakers of the deployed Hugging Face backend now that gpt-realtime-2.1 is
+# the conversation model.
 HF_AVAILABLE_VOICES: list[str] = [
-    "Aiden",
-    "Ryan",
-    "Dylan",
-    "Eric",
-    "Ono_Anna",
-    "Serena",
-    "Sohee",
-    "Uncle_Fu",
-    "Vivian",
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "marin",
+    "sage",
+    "shimmer",
+    "verse",
 ]
 
 HF_BACKEND = "huggingface"
@@ -79,7 +82,7 @@ class HFBackendDefaults:
     # Users who need a custom target should use HF_REALTIME_CONNECTION_MODE=local
     # with HF_REALTIME_WS_URL.
     session_url: str = HF_REALTIME_SESSION_PROXY_URL
-    voice: str = "Aiden"
+    voice: str = "cedar"
     direct_port: int = 8765
 
 
@@ -155,9 +158,9 @@ def _normalize_hf_connection_mode(value: str | None) -> str | None:
 
 
 def _normalize_transcription_language(value: str | None) -> str:
-    """Return the configured realtime transcription language."""
+    """Return the configured realtime transcription language, Chinese by default (D-003)."""
     candidate = (value or "").strip()
-    return candidate or "en"
+    return candidate or "zh"
 
 
 @dataclass(frozen=True)
