@@ -1,0 +1,12 @@
+{
+  "items": [
+    {"id": "DEMO-1", "behavior": "Multi-turn natural Chinese conversation on gpt-realtime-2.1; user can interrupt Reachy mid-speech; a natural ~1s mid-sentence pause does not trigger a premature response", "verification": "Live run on robot: 5-turn Chinese conversation incl. one barge-in and one ~1s mid-sentence pause", "state": "planned", "evidence": null, "next": "Task 4-8"},
+    {"id": "DEMO-2", "behavior": "Reachy reacts with an appropriate emotion move during conversation while continuing to track the speaker", "verification": "Live run: 'I got the job!' triggers excited-class move layered on tracking anchor", "state": "planned", "evidence": null, "next": "Task 9"},
+    {"id": "DEMO-3", "behavior": "User shows an object; Reachy captures a frame and describes it correctly", "verification": "Live run: 'What am I holding?' with 3 different objects, 3/3 correct", "state": "planned", "evidence": null, "next": "Task 10"},
+    {"id": "DEMO-4", "behavior": "Question about today's news triggers automatic web search without being asked to search", "verification": "Live run: 'What happened with NVIDIA today?' → search tool call visible in logs → current answer", "state": "planned", "evidence": null, "next": "Task 11"},
+    {"id": "DEMO-5", "behavior": "Natural-language command controls one real home device via Home Assistant", "verification": "Live run: 'Turn on the living room lights' → HA service call succeeds → light state changes", "state": "planned", "evidence": null, "next": "Task 13"},
+    {"id": "US-02", "behavior": "Face tracking is active continuously from app startup, with no model tool call required", "verification": "Dev + robot run: tracking active immediately after launch; log shows no head_tracking tool call", "state": "planned", "evidence": null, "next": "Task 9"},
+    {"id": "US-07", "behavior": "Reachy reads project status from Notion via MCP", "verification": "Live run: 'What is the latest status of my Magic Mirror project in Notion?' → notion__* tool call → correct summary", "state": "planned", "evidence": null, "next": "Task 12"},
+    {"id": "US-09", "behavior": "A new Skill can be added without touching the conversational core", "verification": "home_control added as one file + one profile line; documented in docs/adding-a-skill.md", "state": "planned", "evidence": null, "next": "Task 14"}
+  ]
+}

@@ -63,8 +63,9 @@ repository. Do not pass `--sandbox` flags that would override the profile.
 - `docs/research-reachy-sdk.md` / `docs/research-conversation-app.md`:
   research-phase findings. **Must exist before robot-facing code.**
 - `reference/`: official repo clones (read-only reference, never committed).
-- `src/`, `tests/`: application code and tests (layout decided after the
-  research spike).
+- `reachy_companion/`: our app (scaffolded from the official conversation app,
+  D-001). Package source in `reachy_companion/src/reachy_companion/`, tests in
+  `reachy_companion/tests/`, profiles in `reachy_companion/profiles/`.
 - `feature_list.json`: work queue — each item carries behavior description,
   verification method, state, evidence, next action.
 - `progress.md`: current verified state, risks, next action.
