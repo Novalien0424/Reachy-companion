@@ -121,6 +121,10 @@ observability, enterprise security. Revisit only after the five demos work.
 - `.claude/skills/reachy-research` — invoke when official-repo knowledge is
   missing, i.e. before first implementation in any subsystem or when
   `docs/research-*.md` do not exist.
+- `.claude/skills/reachy-deploy` — invoke for any deployment to the physical
+  robot. Operator authorization on file (2026-08-17): deploy as APP only;
+  never modify the robot's daemon. Robot access is in the repo-root `.env`
+  (gitignored).
 
 User-level skills continue to apply unchanged; project skills complement them
 and must never shadow a user-level skill's name.

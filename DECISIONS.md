@@ -69,6 +69,18 @@ breathing vs tracking arbitration = the conversation app's `moves.py`,
 retained as-is from the scaffold. Emotion clips = HF dataset
 `pollen-robotics/reachy-mini-emotions-library`, preloaded before demos.
 
+## D-009 — Robot deployment: app-only, daemon untouchable (2026-08-17)
+
+Operator authorization: deploy `reachy_companion` to the physical Reachy Mini
+(host in repo-root `.env`, SSH as the pollen user) **as a managed app only**.
+Hard limits: never modify/upgrade/restart the robot's daemon or its config,
+no system packages; install only into `/venvs/apps_venv`; start/stop only via
+the official apps API or dashboard. Procedure lives in the `reachy-deploy`
+project skill; the concrete route actually used gets appended here at the
+first live deployment (plan Task 15). Version gate: if the robot daemon is
+older than the app's SDK floor (`>=1.10.0rc2`), deployment STOPS and reports
+— upgrading the daemon is not authorized.
+
 ## D-008 — Dev environment: Windows host + mockup-sim daemon (2026-08-16)
 
 Development on this Windows machine against `reachy-mini-daemon --mockup-sim`
