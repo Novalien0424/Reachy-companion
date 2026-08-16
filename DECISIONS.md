@@ -75,3 +75,11 @@ Development on this Windows machine against `reachy-mini-daemon --mockup-sim`
 (no physics, real FK/IK, local webcam/mic). Final verification on the robot
 (on-Pi LOCAL media backend — lower latency; WebRTC host-PC mode only for
 convenience testing). SDK and daemon versions pinned to match.
+
+Amendment (2026-08-17, Task 1): the scaffolded app requires
+`reachy-mini>=1.10.0rc2`; dev venv upgraded to **1.10.0rc5**. The dev daemon
+launches from the same `.venv`, so the version-match holds automatically on
+this machine; the robot's daemon must be brought to the matching 1.10.0rc
+line at Task 15. Related: `mcp` is bounded `<2` (mcp 2.0 renamed attributes
+and silently broke the 1.x-style reads in `mcp_client.py`); other deps still
+float — lockfile decision deferred to demo prep.

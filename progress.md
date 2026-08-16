@@ -29,21 +29,28 @@ review. No application code yet.
   resampling (and a wrong-axis hazard), MCP registry rebuild wiping ad-hoc
   tools, hosted Notion MCP OAuth requirement, HA entity allowlist.
 
+## Execution status (SDD, ledger at .superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md)
+
+- Task 1 COMPLETE (commits 84a5afc..f823a81): repo on `main`;
+  `reachy_companion/` scaffolded from the official conversation app
+  (141 files, copy integrity verified, byte-faithful fork with exactly the
+  intended deltas); locked profile `_reachy_companion_locked_profile`
+  converted to `profile.md` at app root and shipping in the wheel;
+  `feature_list.json` work queue in place; `mcp` bounded `<2` (2.0 silently
+  broke upstream client reads); bundled suite green with a documented
+  30-test skip list (locked-profile-by-design); subtree agent contract
+  replaced with a correct local one. SDK now 1.10.0rc5 (see D-008
+  amendment).
+
 ## Risks / blockers
 
-- Repository still not `git init`-ed (plan Task 1 does it at execution).
-- Known upstream skew: SDK scaffolder emits legacy profile format
-  (`instructions.txt`) while the app requires `profile.md` — handled by plan
-  Task 1 Step 5.
 - Physical robot availability unconfirmed (needed for Task 15 only).
 - `OPENAI_API_KEY`, Notion MCP credentials, and Home Assistant URL/token
   needed from the operator at Tasks 8/12/13.
+- Dependencies other than `mcp` still float (no lockfile yet — demo-prep
+  decision).
 
 ## Next action
 
-Execute the plan task-by-task with Opus subagents
-(superpowers:subagent-driven-development), main session reviewing between
-tasks. Task 1 starts with `git init` and the scaffolder. Operator inputs
-needed along the way: `OPENAI_API_KEY` (Task 8), Notion MCP credentials
-(Task 12), `HA_URL`/`HA_TOKEN`/`HA_ENTITIES` (Task 13), robot access
-(Task 15).
+Continue SDD execution at Task 2 (mockup-sim dev loop smoke test); then
+Tasks 3–15 per the plan.
