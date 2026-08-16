@@ -1,0 +1,20 @@
+# Cloned official repos for reference/research — never committed
+reference/
+
+# SDD orchestration scratch (ledger, briefs, review packages)
+.superpowers/
+
+# Secrets and local config
+.env
+.env.*
+*.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
