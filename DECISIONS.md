@@ -81,6 +81,54 @@ first live deployment (plan Task 15). Version gate: if the robot daemon is
 older than the app's SDK floor (`>=1.10.0rc2`), deployment STOPS and reports
 — upgrading the daemon is not authorized.
 
+Attempt 1 (2026-08-17, Task 15 deploy prep): **BLOCKED at Step 1, robot
+offline.** `10.0.0.96` gave ICMP "destination host unreachable" from our own
+10.0.0.34 interface, no ARP entry, no Raspberry-Pi-OUI MAC on the LAN, TCP
+22/80/8000 all timed out, and `plink` returned "Network error: Connection
+timed out". No mDNS name (`reachy-mini.local`) resolved. Nothing was
+transferred, installed, started, or written to the robot. Local prep that
+does not touch the robot was completed instead: wheel built
+(`reachy_companion-1.0.0-py3-none-any.whl`, pure `py3-none-any`, carrying the
+`reachy_mini_apps` → `reachy_companion.main:ReachyCompanion` entry point) and
+the aarch64 dependency tree pre-checked with `uv pip compile
+--python-platform aarch64-manylinux_2_28 --only-binary :all:` — all 43
+packages resolve as wheels for cp311/cp312/cp313 (soxr 1.1.0, scipy 1.17.1,
+mcp 1.29.0), so no source build is needed on the Pi.
+
+Three corrections to the procedure, found by reading the SDK source, that
+apply whenever the robot is next reachable:
+
+1. **The version-gate route in the skill is wrong.** There is no
+   `/api/daemon/version`; `daemon.router` only exposes
+   `start|stop|restart|status|robot-name|hardware-id|robot-app-lock-status`.
+   The daemon SDK version comes from `GET /update/install-source` (and
+   `GET /update/available`). Note the `update`/`cache`/`logs`/`wifi_config`
+   routers are mounted on `app` directly, **without** the `/api` prefix
+   (`daemon/app/main.py:317-338`), unlike `apps` — so it is
+   `/update/install-source` but `/api/apps/list-available/installed`.
+2. **`pip install --force-reinstall <wheel>` must not be used as written.**
+   `--force-reinstall` reinstalls dependencies too, including `reachy-mini`,
+   which requires `PyGObject>=3.42.2,<=3.46.0` on linux — a version range with
+   no wheels, so pip would attempt a source build that needs system GObject
+   headers we are not authorized to install. Use
+   `pip install --force-reinstall --no-deps <wheel>` and then a plain
+   `pip install <wheel>` to pull only genuinely missing dependencies.
+3. **`/venvs/apps_venv`'s `reachy_mini` is daemon-managed.**
+   `check_and_sync_apps_venv_sdk()` (`utils/wireless_version/startup_check.py:388`)
+   runs on every daemon start and force-syncs the apps venv's `reachy_mini` to
+   exactly the daemon's version/git-ref. So the version gate is decisive: if
+   the daemon is below `1.10.0rc2`, the apps venv gets pinned below our floor
+   on every boot and no app-level install can fix it. PyPI currently shows
+   `reachy-mini` stable at 1.9.0 with the 1.10.0rc line as prereleases.
+
+Also recorded: the app instance path is the **installed package directory**
+(`app.py:169` `_get_instance_path()` returns the module file;
+`main.py:448` takes `.parent`), i.e.
+`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/`. It therefore
+exists immediately after install — the `.env` step does not have to wait for a
+first app start — but it lives inside site-packages, so any reinstall wipes it
+and `.env` must be re-placed after every install.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
