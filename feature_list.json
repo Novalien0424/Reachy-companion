@@ -7,6 +7,6 @@
     {"id": "DEMO-5", "behavior": "Natural-language command controls one real home device via Home Assistant", "verification": "Live run: 'Turn on the living room lights' → HA service call succeeds → light state changes", "state": "planned", "evidence": null, "next": "Task 13"},
     {"id": "US-02", "behavior": "Face tracking is active continuously from app startup, with no model tool call required", "verification": "Dev + robot run: tracking active immediately after launch; log shows no head_tracking tool call", "state": "planned", "evidence": null, "next": "Task 9"},
     {"id": "US-07", "behavior": "Reachy reads project status from Notion via MCP", "verification": "Live run: 'What is the latest status of my Magic Mirror project in Notion?' → notion__* tool call → correct summary", "state": "planned", "evidence": null, "next": "Task 12"},
-    {"id": "US-09", "behavior": "A new Skill can be added without touching the conversational core", "verification": "home_control added as one file + one profile line; documented in docs/adding-a-skill.md", "state": "planned", "evidence": null, "next": "Task 14"}
+    {"id": "US-09", "behavior": "A new Skill can be added without touching the conversational core", "verification": "home_control added as one file + one profile line; documented in docs/adding-a-skill.md", "state": "dev-verified", "evidence": "docs/adding-a-skill.md; home_control added as one file + one profile line (commit 6150e95)", "next": "final: confirm during Task 15 demos"}
   ]
 }
