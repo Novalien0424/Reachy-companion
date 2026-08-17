@@ -30,23 +30,37 @@ first).
    `reachy_companion/dist/`. Verify the entry point locally first:
    `entry_points(group='reachy_mini_apps')` must list `reachy_companion`
    (daemon discovers apps by this group — research-reachy-sdk §1).
-2. **Version gate:** the app requires the SDK line pinned in
-   `reachy_companion/pyproject.toml` (currently `reachy-mini>=1.10.0rc2`;
-   dev venv runs 1.10.0rc5). Check the robot daemon's version
-   (`GET http://$REACHY_HOST:8000/api/daemon/version` or the dashboard)
-   BEFORE installing. If the robot daemon is older than the app's floor, STOP
-   and report to the operator — upgrading the daemon is NOT authorized.
+2. **Version gate (DECISIVE, not advisory):** the app requires the SDK line
+   pinned in `reachy_companion/pyproject.toml` (currently
+   `reachy-mini>=1.10.0rc2`; dev venv runs 1.10.0rc5). The robot's daemon
+   version comes from `GET http://$REACHY_HOST:8000/update/install-source`
+   (NO `/api` prefix — the update/cache/logs/wifi routers mount bare, unlike
+   `apps`; there is no `/api/daemon/version` route). The gate is decisive
+   because `check_and_sync_apps_venv_sdk()` force-syncs the apps venv's
+   `reachy_mini` to the daemon's version on EVERY daemon boot
+   (`utils/wireless_version/startup_check.py:388`) — a daemon below the floor
+   makes the app undeployable by any app-level means. If below floor, STOP
+   and report — upgrading the daemon is NOT authorized.
 3. **Transfer:** `scp reachy_companion/dist/reachy_companion-*.whl
-   ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/`
-4. **Install into the shared apps venv** (an app-level action, allowed):
-   `ssh ${REACHY_SSH_USER}@${REACHY_HOST}
-   "/venvs/apps_venv/bin/python -m pip install --force-reinstall
-   /tmp/reachy_companion-*.whl"`
+   ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/` (PuTTY `pscp -pw` works on the
+   dev box; PuTTY is installed).
+4. **Install into the shared apps venv** (an app-level action, allowed) —
+   NEVER bare `--force-reinstall` (it reinstalls `reachy-mini` too, whose
+   linux `PyGObject>=3.42.2,<=3.46.0` pin has NO wheels → forbidden source
+   build). Two-step instead:
+   `/venvs/apps_venv/bin/python -m pip install --force-reinstall --no-deps /tmp/reachy_companion-*.whl`
+   then `/venvs/apps_venv/bin/python -m pip install /tmp/reachy_companion-*.whl`
+   (pulls only genuinely missing deps; all 43 resolve as aarch64 wheels —
+   verified 2026-08-17 via `uv pip compile --python-platform
+   aarch64-manylinux_2_28 --only-binary :all:`).
 5. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
-6. **App config:** put runtime secrets in the app instance's `.env`
-   (`<instance_path>/.env` — the dashboard shows the instance path;
-   `main.py:106-114` loads it). Never bake secrets into the wheel.
+6. **App config:** put runtime secrets in the app instance's `.env`. The
+   instance path IS the installed package directory
+   (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
+   `app.py:169` + `main.py:448`), so it exists immediately after install —
+   but it lives inside site-packages, so **every reinstall wipes `.env`;
+   re-place it after each install.** Never bake secrets into the wheel.
 7. **Preload assets before demos:** scp `scripts/preload_assets.py` to the
    robot and run with `/venvs/apps_venv/bin/python` as the same user the app
    runs as (emotion clips + YuNet model; cold HF cache = visible stall).
@@ -74,6 +88,9 @@ so rollback is always app-only.
 
 ## Status
 
-Procedure validated on: (not yet — first live deployment happens at plan
-Task 15; update this line with date + actual outputs when it succeeds, and
-record the route in DECISIONS.md D-009.)
+Attempt 1 (2026-08-17): BLOCKED at reachability — robot offline (no ARP, no
+mDNS, all ports timeout). Local prep complete: wheel built (pure
+py3-none-any, entry point verified), aarch64 dep tree fully wheel-resolvable.
+Procedure corrected from SDK source (version route, --no-deps install,
+instance-path/.env lifecycle) — see DECISIONS.md D-009 Attempt 1. Next
+attempt: power the robot, then resume at Step 1.
