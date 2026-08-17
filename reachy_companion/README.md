@@ -14,10 +14,10 @@ tags:
 
 Forked from the Reachy Mini conversation app.
 
-Use the `src/reachy_companion/profiles/_reachy_companion_locked_profile` folder to customize your own app from this template:
-- Edit instructions `_reachy_companion_locked_profile/instructions.txt`
-- Edit available tools in `_reachy_companion_locked_profile/tools.txt`
-- You can create your own tools in `_reachy_companion_locked_profile` by subclassing the `Tool` class.
+Use the `profiles/_reachy_companion_locked_profile` folder to customize your own app from this template:
+- Edit instructions in the Markdown body of `profiles/_reachy_companion_locked_profile/profile.md`
+- Edit available tools in the `default_tools` list of that file's TOML front matter
+- You can create your own tools in `src/reachy_companion/tools` by subclassing the `Tool` class.
 
 Do not forget to customize:
 - this `README.md` file
