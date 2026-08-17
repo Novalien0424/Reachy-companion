@@ -167,6 +167,69 @@ attempting the deployment again unchanged is not one of them:
     the floor was chosen for a reason, so this is a real compatibility review,
     not a one-line edit.
 
+Attempt 3 (2026-08-17, Task 15): **UPDATED + DEPLOYED + VERIFIED.** The
+operator took exit (a) and authorized a one-time daemon update, scoped to the
+robot's own official updater. Daemon **1.9.0 (pypi) → 1.10.0rc5 (git, ref
+`v1.10.0rc5`, commit `221b3c3c`)**; version gate now passes and the app is
+installed, discovered, started, verified live, and stopped.
+
+Ref choice, from source rather than guesswork: `/update/start-from-ref` takes
+a **GitHub tag/branch** on `pollen-robotics/reachy_mini` as a query param, not
+a pip ref or version string. Tags carry a `v` prefix, and `pyproject.toml` at
+tag `v1.10.0rc5` hardcodes `version = "1.10.0rc5"` (main carries
+`1.10.0.dev0`), so the ref installs the exact version the dev venv runs —
+D-008 version-match holds. The PyPI route (`/update/start?pre_release=true`)
+could NOT reach it: `get_pypi_version()` picks pre-releases via
+`releases[-1]`, and the robot reported `is_available: false, available: 1.9.0`.
+
+**Rollback path (verified before updating, unused):** `POST
+/update/start-from-ref?git_ref=v1.9.0` — the same endpoint. It works as a
+downgrade because the ref route has **no `is_update_available()` guard**
+(unlike `/update/start`) and step 1 is `--force-reinstall --no-deps` at
+whatever the tag declares. The robot's own `/update/validate-ref` returned
+`valid: true` for both `v1.10.0rc5` and `v1.9.0` before anything was changed.
+apps_venv follows automatically: `check_and_sync_apps_venv_sdk()` syncs it to
+the daemon's **git ref** when the daemon source is git.
+
+One risk was retired before the single attempt: the updater's step 3
+(`install 'reachy-mini[wireless-version]' --upgrade`, no `--pre`) resolves
+against stable-only PyPI (latest 1.9.0) and could have undone the update. It
+fires only if step 2's `pip check` fails. Diffing dependency tables between
+tags showed exactly one change — `huggingface-hub` floor `1.17.0 → 1.20.1`,
+already satisfied at 1.27.0 — so `pip check` was predicted to pass, and the
+live log confirmed step 3 never ran. (Also found: `uv` is absent from the
+`pollen` login PATH but `launcher.sh` exports `/opt/uv`, so the daemon used
+`uv`, not `pip`.)
+
+Deployment then followed the skill unchanged: two-step install (never bare
+`--force-reinstall`), **zero sdist builds**, discovery lists
+`reachy_companion`, `.env` placed at the site-packages instance path (mode
+600, no `REACHY_DAEMON_PORT` line) and assets preloaded into
+`/home/pollen/.cache/huggingface` — the same user the daemon spawns apps as
+(`User=pollen`). Start cycle reached a real conversation: session initialized
+on **gpt-realtime-2.1** (voice `cedar`), all **12 tools** registered, **VoiceFX
+active** (pitch +4.0 st, ring-mod 55 Hz @ 0.25 mix), first-audio-delta 55 ms,
+**zero tracebacks**, then a clean stop.
+
+**Autostart (operator request, mid-task):** `PUT /api/apps/startup-app` with
+`{"startup_app": "reachy_companion"}` — body shape read from the `StartupApp`
+model in `routers/apps.py`, not guessed — read back and confirmed persisted to
+`~/.config/reachy_mini/daemon_config.json`. This is the one config write D-009
+permits, via the official API, and only because the operator asked. Boot
+semantics: the Wireless boots **asleep**; `watch_antennas_for_startup_app()`
+wakes it into the startup app on an **antenna touch**, so the demo needs no
+laptop or dashboard.
+
+Carry-overs for the next session: the shared apps_venv `mcp` was downgraded
+2.0.0 → 1.29.0 by our `<2` pin (harmless now — the conversation app pins
+`mcp>=1.27.1` unbounded — but the venv is shared); the app `.env` lives inside
+site-packages and is **wiped by every reinstall**; remote MCP (Notion) tools
+did not register and `HA_ENTITIES` resolved to no devices, despite both being
+present in the robot `.env`; and the daemon is now a **git**-source install, so
+future official update/sync behavior differs from a stock PyPI robot. Full
+evidence:
+`.superpowers/sdd/2026-08-16-reachy-mini-poc/task-15-deploy-attempt3-report.md`.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
