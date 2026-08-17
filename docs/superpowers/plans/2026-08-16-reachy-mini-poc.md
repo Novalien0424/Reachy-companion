@@ -1082,6 +1082,54 @@ ssh pollen@reachy-mini.local "/venvs/apps_venv/bin/python -m pip install /tmp/re
 
 ---
 
+### Task 16: VoiceFX — cute-robot voice filter (D-010; amendment Rev 2, post Codex round 1)
+
+Operator decision: "very cute robotic voice" via a local DSP chain (D-010), not
+a TTS pivot. Rev 2 redesign after Codex round 1 killed both external pitch
+engines (python-stretch: binding resets state per call; pedalboard: 1 s
+priming delay; neither has aarch64 wheels): **no external engine.** Pitch-up
+uses the resample-rate trick through the already-shipped stateful `soxr`
+(output duration shrinks by the pitch ratio — the classic chipmunk effect,
+which IS the cute-robot aesthetic; the tempo side-effect is offset by a
+"语速放慢" style line in the locked profile). Ring-mod is pure numpy. Unit
+scope is keyless; live tuning at Task 8.
+
+**Files:**
+- Create: `reachy_companion/src/reachy_companion/audio/envparse.py` (shared env parsers — breaks the circular import), `reachy_companion/src/reachy_companion/audio/voicefx.py`
+- Modify: `reachy_companion/src/reachy_companion/openai_realtime.py` (use shared parsers; construct FX; emit-chain insert; dedicated output-pipeline reset), locked profile `profile.md` (one style line), `reachy_companion/.env.example`
+- Test: `reachy_companion/tests/test_envparse.py`, `reachy_companion/tests/test_voicefx.py`, additions to `reachy_companion/tests/test_openai_realtime_config.py` (handler wiring)
+
+**Interfaces:**
+- Produces: `envparse.py` with `env_bool(name, default)`, `env_float(name, default, lo=None, hi=None)` (finite-only, range-clamped with warning), `env_int(...)` — `openai_realtime.py`'s existing `_env_float`/`_env_int` move here and are re-exported or call through (existing tests keep passing). `VoiceFX.from_env(rate)` → `.process(chunk: int16 (1,N)) -> int16 (1,N')`, `.reset()`, `.enabled`, plus documented `duration_ratio = 1 / 2**(semitones/12)`.
+- Chain in `emit()`: model 24 kHz PCM → VoiceFX (pitch stage: soxr `ResampleStream(in_rate=24000*2**(st/12), out_rate=24000)` fed as-if-higher-rate, i.e. plays N input samples in N/ratio output samples; st=0 → **hard bypass, stage not constructed**; then ring-mod: `y = x*(1-mix) + x*sin(phase)*mix`, phase carried across chunks, zero latency) → existing 24k→16k resample → queue.
+- Reset: new `_reset_output_pipeline()` = reset `_output_resampler` AND `_voicefx`; called from `_clear_queue` (barge-in) and from session build. The mic resampler is NOT touched by barge-in (Codex R1-5). `_voicefx` gets a class-level `None` default so `__new__`-constructed test handlers don't `AttributeError` (Codex R1-10).
+
+**Env knobs** (all via `envparse`): `VOICEFX_ENABLED` (bool, default false → the exact pre-task code path, zero-cost identity), `VOICEFX_PITCH_SEMITONES` (float, default 4.0, clamp 0..12), `VOICEFX_RINGMOD_HZ` (float, default 55.0, clamp 0..2000; 0 = off), `VOICEFX_RINGMOD_MIX` (float, default 0.25, clamp 0..1).
+
+- [ ] **Step 1: `envparse.py` first** (move + extend the parsers; RED via a small `tests/test_envparse.py`: bool parsing incl. "true"/"1"/"yes"/invalid→default+warning; float range-clamp + NaN/Inf rejection→default+warning; existing openai_realtime tests stay green after the move).
+
+- [ ] **Step 2: `test_voicefx.py` (RED)** — behavioral contract, engine-free:
+  - disabled → `process` returns the SAME object (identity).
+  - pitch +4: ONE continuous sine (440 Hz, ≥1.5 s), fed in consecutive odd-sized slices (479/501/1024/137…); concatenated output: dominant FFT frequency within ±1 bin of 440·2^(4/12)=554.37 Hz (window ≥8192, bin-aware bound — excludes +3/+5); duration contract accounts for soxr's PENDING TAIL (Codex R2-1, empirically 535 samples at +4): `VoiceFX` exposes a `pending_delay` property (input-side samples retained by the stream) and the test asserts `len(output) + pending_delay*duration_ratio ≈ sum(inputs) * duration_ratio` within ±16.
+  - chunked-vs-whole equivalence: same continuous signal chunked vs single-shot through two fresh instances → outputs directly equal within ≤2 LSB (no trimming needed — both retain the same pending tail; Codex R2-1 probe measured exactly this).
+  - ring-mod alone (pitch=0 → stage bypassed, zero latency): chunked == whole bit-near-exact (≤2 LSB), phase-continuity proof (Codex R1-8).
+  - reset: process ≥3× engine delay of signal, reset, process again → output equal (stable region, tolerance) to a fresh instance; NEGATIVE control: without reset the outputs must differ (Codex R1-9).
+  - env: malformed value → default + warning; out-of-range mix (1.5) → clamped to 1.0 + warning.
+
+- [ ] **Step 3: implement `voicefx.py`** (int16 ↔ float32/32768 at the edges; clip before int16; `duration_ratio` property; `reset()` recreates the pitch stream + zeroes ring phase).
+
+- [ ] **Step 4: wire the handler** — construct in session build; apply in emit before the 24k→16k resample; add `_reset_output_pipeline()` and call from `_clear_queue` + session build (mic resampler untouched by barge-in). Handler-level tests (extend `test_openai_realtime_config.py`, following its existing `__new__` fixture pattern): FX-applied-before-resample order (spy on call sequence), disabled path is the exact pre-task path (identity, no float round-trip), barge-in resets FX + output resampler and NOT the mic resampler, session build resets all three.
+
+- [ ] **Step 5: profile style line** — append to the locked profile instructions: `- 语速放慢一点，吐字清楚（你的声音会被加速，说慢一点正好）。` and update `test_profile.py` if it pins instruction content (it pins only 中文 + tools — verify).
+
+- [ ] **Step 6: GREEN + full suite + gates.** No new dependency should appear in pyproject (soxr already declared).
+
+- [ ] **Step 7: `.env.example`** — the four knobs with one-line comments incl. the duration/tempo note.
+
+- [ ] **Step 8: Commit** — explicit `git add` (envparse.py, voicefx.py, openai_realtime.py, profile.md, .env.example, tests/test_envparse.py, tests/test_voicefx.py, tests/test_openai_realtime_config.py); message `feat: VoiceFX cute-robot voice filter, engine-free (D-010 Rev 2)`.
+
+- [ ] **Step 9 (deferred to Task 8 dev-run): live A/B tuning** — tune semitones/ringmod by ear; record values in D-010; capture recording evidence for feature_list VOICE-1. Escalation stays per D-010: if chipmunk aesthetics fail the "cute" bar, upgrade path is a true duration-preserving engine (requires solving the aarch64 wheel problem first) or cascaded TTS — both KEEP this chain.
+
 ## Self-Review (performed at plan time)
 
 - **Spec coverage:** US-01→Tasks 5,6,8; US-02→Task 6 (startup enable) + Task 9 (verify, no-tool); US-03→Task 9; US-04→Task 10; US-05→Task 11; US-06→Tasks 11–13; US-07→Task 12; US-08→Task 13; US-09→Task 14; PRD §8 gate→Task 15. §2 research done (docs/research-*.md). §9 non-goals: no task builds any.

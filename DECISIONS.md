@@ -81,6 +81,24 @@ first live deployment (plan Task 15). Version gate: if the robot daemon is
 older than the app's SDK floor (`>=1.10.0rc2`), deployment STOPS and reports
 — upgrading the daemon is not authorized.
 
+## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
+
+Operator requirement: a "very cute robotic voice." Research verdict
+(2026-08-17): gpt-realtime-2.1 has a fixed 10-voice catalog, no custom
+voices; "robotic" is a DSP texture no TTS produces natively either. Decision:
+keep the speech-to-speech backend and add an env-gated local DSP chain at the
+handler's emit chokepoint before the 24k→16k resample — plan Task 16 (Rev 2
+after Codex review): pitch-up via the soxr resample-rate trick (chipmunk
+effect — duration shrinks by the pitch ratio, offset by a "speak slower"
+profile line) + phase-continuous numpy ring-mod. ZERO new dependencies (both
+candidate pitch engines failed source review: python-stretch resets state per
+call, pedalboard primes 1 s of silence, neither ships aarch64 wheels).
+Preserves the model's emotional performance, no cloud dependency, latency ≈
+existing soxr delay only, reversible.
+Revisit trigger: if live tuning at Task 8 can't reach "cute enough," escalate
+to cascaded TTS (output_modalities=["text"] + zh TTS with cute base voice)
+KEEPING the same FX chain on top. Tuned parameter values get recorded here.
+
 ## D-008 — Dev environment: Windows host + mockup-sim daemon (2026-08-16)
 
 Development on this Windows machine against `reachy-mini-daemon --mockup-sim`
