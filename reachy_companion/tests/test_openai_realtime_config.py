@@ -31,6 +31,13 @@ from reachy_companion.openai_realtime import (  # noqa: E402
 MODEL_RATE = 24000
 
 
+@pytest.fixture(autouse=True)
+def _voicefx_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a developer's exported VOICEFX_* knobs decide what emit() produces."""
+    for name in ("VOICEFX_ENABLED", "VOICEFX_PITCH_SEMITONES", "VOICEFX_RINGMOD_HZ", "VOICEFX_RINGMOD_MIX"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture()
 def handler() -> OpenAIRealtimeHandler:
     """Return a handler with the heavy __init__ skipped."""
@@ -496,6 +503,7 @@ async def test_emit_leaves_robot_rate_audio_alone() -> None:
     assert isinstance(output, tuple)
     assert output[1] is pcm
     assert h._output_resampler is None
+    assert h._voicefx is None  # nothing on the output path is built either
 
 
 @pytest.mark.asyncio
@@ -503,6 +511,120 @@ async def test_emit_returns_none_when_the_queue_is_empty() -> None:
     """The base emit() timeout behavior must be preserved."""
     h = _emit_ready_handler()
     assert await h.emit() is None
+
+
+# --------------------------------------------------------------------------
+# VoiceFX in the emit chain (D-010)
+# --------------------------------------------------------------------------
+
+
+class _OrderSpy:
+    """Stand in for one stage of the output chain and record when it ran."""
+
+    def __init__(self, name: str, calls: list[str], rate: int = MODEL_RATE) -> None:
+        """Record into the shared `calls` log under `name`."""
+        self.name = name
+        self.calls = calls
+        # Both accessors rebuild their stage when the source rate changed; these
+        # make the spy look like the stage that is already correct for 24 kHz.
+        self.rate = rate
+        self.src_rate = rate
+        self.resets = 0
+
+    def process(self, pcm: np.ndarray) -> np.ndarray:
+        """Record one call and pass the buffer through untouched."""
+        self.calls.append(self.name)
+        return pcm
+
+    def reset(self) -> None:
+        """Record one reset."""
+        self.resets += 1
+
+
+@pytest.mark.asyncio
+async def test_emit_applies_the_voice_filter_before_the_output_resample() -> None:
+    """The filter works on the model's 24 kHz PCM, not on the 16 kHz robot audio.
+
+    Order matters twice over: the pitch stage is a rate trick that assumes the
+    model rate, and filtering after the downsample would waste the 24 kHz
+    headroom the ring modulator needs.
+    """
+    h = _emit_ready_handler()
+    calls: list[str] = []
+    h._voicefx = _OrderSpy("voicefx", calls)  # type: ignore[assignment]
+    h._output_resampler = _OrderSpy("resampler", calls)  # type: ignore[assignment]
+
+    await h.output_queue.put((MODEL_RATE, np.zeros((1, 480), dtype=np.int16)))
+    await h.emit()
+
+    assert calls == ["voicefx", "resampler"]
+
+
+@pytest.mark.asyncio
+async def test_emit_with_the_filter_disabled_is_byte_for_byte_the_pre_task_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VOICEFX_ENABLED defaults to off, and off must cost exactly nothing.
+
+    Not "sounds the same" — the same bytes as a bare resample, with no float
+    round-trip in between, because a disabled filter returns the caller's own
+    array object.
+    """
+    monkeypatch.delenv("VOICEFX_ENABLED", raising=False)
+    h = _emit_ready_handler()
+    n = 4800
+    pcm = _to_int16(_sine(MODEL_RATE, n)).reshape(1, -1)
+    expected = _StreamingResampler(MODEL_RATE, ROBOT_RATE).process(pcm)
+
+    await h.output_queue.put((MODEL_RATE, pcm))
+    output = await h.emit()
+
+    assert isinstance(output, tuple)
+    assert np.array_equal(output[1], expected)
+    assert h._voicefx is not None and h._voicefx.enabled is False
+    assert h._voicefx.process(pcm) is pcm  # identity, not a copy
+
+
+@pytest.mark.asyncio
+async def test_emit_applies_the_filter_when_it_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the knob on, the audio that reaches the speaker is pitched and shorter.
+
+    End-to-end through the real chain — filter, then downsample — so this also
+    pins that the pitch survives the 24k->16k stage rather than being an artefact
+    measured before it.
+    """
+    monkeypatch.setenv("VOICEFX_ENABLED", "1")
+    monkeypatch.setenv("VOICEFX_PITCH_SEMITONES", "4")
+    monkeypatch.setenv("VOICEFX_RINGMOD_HZ", "0")
+    h = _emit_ready_handler()
+    n = 48000  # 2 s of 440 Hz at the model rate
+    pcm = _to_int16(_sine(MODEL_RATE, n))
+
+    collected = []
+    for i in range(0, n, 480):
+        await h.output_queue.put((MODEL_RATE, pcm[i : i + 480].reshape(1, -1)))
+        output = await h.emit()
+        assert isinstance(output, tuple)
+        assert output[0] == ROBOT_RATE
+        collected.append(output[1].reshape(-1))
+
+    got = np.concatenate(collected)
+    fx = h._voicefx
+    assert fx is not None and fx.enabled is True
+
+    # Shorter by the pitch ratio: what the input holds, less what both stages
+    # still hold (the filter's tail is quoted on its own input side).
+    filtered = n - fx.pending_delay
+    expected = filtered * fx.duration_ratio * ROBOT_RATE / MODEL_RATE
+    assert abs(len(got) + h._output_resampler.delay - expected) <= 2
+    assert len(got) < n * ROBOT_RATE / MODEL_RATE * 0.81  # unfiltered would be 32000
+
+    # And pitched: the dominant frequency at the speaker is 440 * 2**(4/12).
+    window = 8192
+    slice_ = got[2048 : 2048 + window].astype(np.float64)
+    spectrum = np.abs(np.fft.rfft(slice_ * np.hanning(window)))
+    peak = np.fft.rfftfreq(window, 1.0 / ROBOT_RATE)[int(np.argmax(spectrum))]
+    assert abs(peak - 440.0 * 2.0 ** (4 / 12)) <= ROBOT_RATE / window
 
 
 # --------------------------------------------------------------------------
@@ -555,6 +677,57 @@ def test_barge_in_without_an_output_stream_is_harmless() -> None:
     clear()
 
     assert calls == ["flushed"]
+
+
+def test_barge_in_resets_the_whole_output_pipeline_but_never_the_microphone() -> None:
+    """Barge-in owns the *output* path only.
+
+    Resetting the mic resampler here would throw away the very audio the user is
+    interrupting with — the frames that triggered `speech_started` in the first
+    place. So the filter and the output resampler are dropped; the mic stream is
+    left running.
+    """
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    mic, speaker, fx = _SpyResampler(), _SpyResampler(), _SpyResampler()
+    h._input_resampler = mic  # type: ignore[assignment]
+    h._output_resampler = speaker  # type: ignore[assignment]
+    h._voicefx = fx  # type: ignore[assignment]
+    h._clear_queue = lambda: None
+
+    clear = h._clear_queue
+    assert clear is not None
+    clear()
+
+    assert (speaker.resets, fx.resets) == (1, 1)
+    assert mic.resets == 0
+
+
+def test_barge_in_without_a_voice_filter_is_harmless() -> None:
+    """A barge-in before the filter has ever been built must not blow up."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    calls: list[str] = []
+    h._output_resampler = _SpyResampler()  # type: ignore[assignment]
+    h._clear_queue = lambda: calls.append("flushed")
+
+    clear = h._clear_queue
+    assert clear is not None
+    clear()
+
+    assert calls == ["flushed"]
+
+
+@pytest.mark.asyncio
+async def test_session_build_resets_the_microphone_and_the_output_pipeline() -> None:
+    """A reconnect is a clean slate for all three stages, in both directions."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    mic, speaker, fx = _SpyResampler(), _SpyResampler(), _SpyResampler()
+    h._input_resampler = mic  # type: ignore[assignment]
+    h._output_resampler = speaker  # type: ignore[assignment]
+    h._voicefx = fx  # type: ignore[assignment]
+
+    await h._build_realtime_client()
+
+    assert (mic.resets, speaker.resets, fx.resets) == (1, 1, 1)
 
 
 def test_stream_handler_init_still_clears_the_callback() -> None:

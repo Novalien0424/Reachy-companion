@@ -32,6 +32,8 @@ from openai.types.realtime.realtime_audio_input_turn_detection_param import (
 )
 
 from reachy_companion.streaming import audio_to_int16
+from reachy_companion.audio.voicefx import VoiceFX
+from reachy_companion.audio.envparse import env_int, env_float
 from reachy_companion.tools.core_tools import ToolSpec
 from reachy_companion.conversation_handler import HandlerOutput
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
@@ -44,30 +46,6 @@ ROBOT_RATE = 16000
 
 _RESAMPLER_QUALITY = "HQ"
 _EAGERNESS_VALUES = ("low", "medium", "high", "auto")
-
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float from the environment, warning and falling back when malformed."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; using %s.", name, raw, default)
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    """Read an int from the environment, warning and falling back when malformed."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; using %s.", name, raw, default)
-        return default
 
 
 def _eagerness() -> Literal["low", "medium", "high", "auto"]:
@@ -97,9 +75,9 @@ def _turn_detection() -> RealtimeAudioInputTurnDetectionParam:
     return ServerVad(
         type="server_vad",
         interrupt_response=True,
-        threshold=_env_float("REALTIME_VAD_THRESHOLD", 0.5),
-        prefix_padding_ms=_env_int("REALTIME_VAD_PREFIX_PADDING_MS", 300),
-        silence_duration_ms=_env_int("REALTIME_VAD_SILENCE_DURATION_MS", 800),
+        threshold=env_float("REALTIME_VAD_THRESHOLD", 0.5, lo=0.0, hi=1.0),
+        prefix_padding_ms=env_int("REALTIME_VAD_PREFIX_PADDING_MS", 300, lo=0),
+        silence_duration_ms=env_int("REALTIME_VAD_SILENCE_DURATION_MS", 800, lo=0),
     )
 
 
@@ -163,28 +141,33 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
     # the streams are created lazily once the real rates are known.
     _input_resampler: _StreamingResampler | None = None
     _output_resampler: _StreamingResampler | None = None
+    _voicefx: VoiceFX | None = None
     _clear_queue_callback: Callable[[], None] | None = None
 
     @property
     def _clear_queue(self) -> Callable[[], None] | None:
-        """Return the console's queue flush, wrapped to also reset the output stream.
+        """Return the console's queue flush, wrapped to also reset the output pipeline.
 
         The base calls this on `input_audio_buffer.speech_started`
         (`huggingface_realtime.py:749-750`), i.e. on barge-in, right after
-        `console.py:146` has installed `clear_audio_queue`. The ~21 ms still held
-        in the output resampler belongs to the utterance being interrupted, so it
-        has to be dropped with the queue rather than bleeding into the next reply.
+        `console.py:146` has installed `clear_audio_queue`. Everything still held
+        in the voice filter and the output resampler belongs to the utterance
+        being interrupted, so it has to be dropped with the queue rather than
+        bleeding into the next reply.
+
+        The *microphone* stream is deliberately untouched: it is carrying the
+        very audio the user is interrupting with, the frames that triggered
+        `speech_started` in the first place.
         """
         callback = self._clear_queue_callback
         if callback is None:
             return None
 
-        def clear_queue_and_reset_resampler() -> None:
-            if self._output_resampler is not None:
-                self._output_resampler.reset()
+        def clear_queue_and_reset_output() -> None:
+            self._reset_output_pipeline()
             callback()
 
-        return clear_queue_and_reset_resampler
+        return clear_queue_and_reset_output
 
     @_clear_queue.setter
     def _clear_queue(self, callback: Callable[[], None] | None) -> None:
@@ -207,12 +190,40 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             self._output_resampler = stream
         return stream
 
-    def _reset_resamplers(self) -> None:
-        """Drop both filter tails, so a new session never replays the old one's."""
-        if self._input_resampler is not None:
-            self._input_resampler.reset()
+    def _voice_filter(self, src_rate: int) -> VoiceFX:
+        """Return the cute-robot filter for `src_rate`, building it on first audio.
+
+        Built lazily for the same reason the resamplers are: the real rate is
+        only known once the model has sent something. `VOICEFX_ENABLED` defaults
+        to false, and a disabled filter's `process` returns its argument
+        unchanged, so the shipped path stays byte-identical to the unfiltered one.
+        """
+        voicefx = self._voicefx
+        if voicefx is None or voicefx.rate != src_rate:
+            voicefx = VoiceFX.from_env(src_rate)
+            self._voicefx = voicefx
+        return voicefx
+
+    def _reset_output_pipeline(self) -> None:
+        """Drop everything the assistant's outgoing audio still holds.
+
+        Both stages in emit order: the voice filter's pitch tail and carrier
+        phase, then the output resampler's filter tail.
+        """
+        if self._voicefx is not None:
+            self._voicefx.reset()
         if self._output_resampler is not None:
             self._output_resampler.reset()
+
+    def _reset_resamplers(self) -> None:
+        """Drop every filter tail in both directions, at session start.
+
+        Unlike barge-in, a fresh session has no in-flight user turn to protect,
+        so the microphone stream is reset here too.
+        """
+        if self._input_resampler is not None:
+            self._input_resampler.reset()
+        self._reset_output_pipeline()
 
     async def _build_realtime_client(self) -> AsyncOpenAI:
         """Build the OpenAI realtime client and pin the model for the connect call.
@@ -289,12 +300,18 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             return
 
     async def emit(self) -> HandlerOutput:
-        """Emit the next output, downsampling model audio to the robot's rate.
+        """Emit the next output, filtered and downsampled to the robot's rate.
 
         `console.py:905-924` discards the rate label and pushes straight into the
         SDK's fixed 16 kHz sink, so 24 kHz assistant PCM has to be converted here
         — the last point we own before `play_loop` sees it — rather than in the
         console. Text outputs pass through untouched.
+
+        The voice filter (D-010) runs *before* the downsample, on the model's
+        24 kHz PCM: its pitch stage is a rate trick that assumes the model rate,
+        and the ring modulator wants the full 24 kHz band. Disabled — the shipped
+        default — it returns the same array object, leaving the chain exactly as
+        it was before the filter existed.
         """
         handler_output = await super().emit()
         if not isinstance(handler_output, tuple):
@@ -304,4 +321,5 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         if rate == ROBOT_RATE:
             return handler_output
 
-        return ROBOT_RATE, self._speaker_resampler(rate).process(audio_to_int16(pcm))
+        filtered = self._voice_filter(rate).process(audio_to_int16(pcm))
+        return ROBOT_RATE, self._speaker_resampler(rate).process(filtered)
