@@ -129,6 +129,44 @@ exists immediately after install — the `.env` step does not have to wait for a
 first app start — but it lives inside site-packages, so any reinstall wipes it
 and `.env` must be re-placed after every install.
 
+Attempt 2 (2026-08-17, Task 15 deploy): **BLOCKED at Step 2, version gate —
+robot daemon is 1.9.0, below the `>=1.10.0rc2` floor.** The robot was fully
+reachable this time: SSH as `pollen@10.0.0.96` returned `reachy-mini` /
+`aarch64` / Linux 6.18.33+rpt-rpi-v8, and the daemon answered on port 8000.
+The corrected route from attempt 1 worked exactly as documented —
+`GET /update/install-source` → `{"version":"1.9.0","source":"pypi"}` — and the
+SSH cross-check agreed: `/venvs/apps_venv/bin/python -m pip show reachy-mini`
+→ `reachy_mini 1.9.0` (apps venv on Python 3.12.13; `/venvs/` holds exactly
+`apps_venv` and `mini_daemon`). Per the decisive-gate rule, everything from
+Step 3 on was skipped: nothing was built, transferred, installed, configured,
+preloaded, started, or stopped. `GET /api/apps/list-available/installed`
+confirms the robot still carries only `hand_tracker_v2` and
+`reachy_mini_conversation_app` — no `reachy_companion` residue, and the
+daemon was never touched. The OpenAI key was **not** placed on the robot.
+
+New finding that makes this blocker structural rather than a pending chore:
+`GET /update/available` returns
+`{"reachy_mini":{"is_available":false,"current_version":"1.9.0","available_version":"1.9.0"}}`.
+The robot's install source is `pypi` (the stable channel), and on that channel
+1.9.0 *is* the latest — the 1.10.0rc line is a prerelease the stable updater
+will never offer. So no sanctioned in-place update can lift the daemon to our
+floor; the only routes to 1.10.0rc2+ are the prerelease refs
+(`/update/start-from-ref`, `/update/validate-ref`), which are daemon
+modifications and explicitly not authorized. Combined with
+`check_and_sync_apps_venv_sdk()` force-syncing the apps venv's `reachy_mini`
+to the daemon version on every boot, `reachy_companion` is undeployable to
+this robot by any app-level means while the pin stands.
+
+This is now an operator decision, not an engineering retry. Two exits, and
+attempting the deployment again unchanged is not one of them:
+(a) authorize a daemon move to a 1.10.0rc ref — out of current scope and
+    against D-009's hard limits, so it needs an explicit new authorization; or
+(b) lower the app's SDK pin in `reachy_companion/pyproject.toml` from
+    `reachy-mini>=1.10.0rc2` to a 1.9.0-compatible constraint, then re-verify
+    every SDK API the app calls against 1.9.0 source before redeploying —
+    the floor was chosen for a reason, so this is a real compatibility review,
+    not a one-line edit.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
