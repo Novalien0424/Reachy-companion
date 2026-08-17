@@ -1,4 +1,7 @@
 from __future__ import annotations
+import asyncio
+import logging
+import threading
 from types import ModuleType
 from typing import Any
 from importlib import import_module
@@ -6,6 +9,7 @@ from collections.abc import Iterator
 
 import pytest
 
+import reachy_companion.main as main_mod
 import reachy_companion.mcp_servers as mcp_servers
 from reachy_companion.mcp_client import RemoteMcpToolClient, RemoteMcpServerConfig
 from reachy_companion.mcp_servers import load_mcp_servers, register_mcp_tools
@@ -52,9 +56,10 @@ class FakeClient:
 
     instances: list[Any] = []
 
-    def __init__(self, server: Any) -> None:
-        """Record the config the caller built for this server."""
+    def __init__(self, server: Any, known_tools: Any = ()) -> None:
+        """Record the config and seeded tool cache the caller built for this server."""
         self.server = server
+        self.known_tools = list(known_tools)
         FakeClient.instances.append(self)
 
     async def list_tool_specs(self) -> list[FakeSpec]:
@@ -113,14 +118,25 @@ async def test_register_discovers_and_registers(monkeypatch: pytest.MonkeyPatch)
 
     names = await register_mcp_tools()
     assert names == ["notion__search_pages"]
-    assert [client.server.alias for client in FakeClient.instances] == ["notion"]
+
+    # Discovery and live calls get separate clients: _session sets the httpx
+    # timeout to max(request, tool) (mcp_client.py:357), so a shared config would
+    # let the 30s tool budget become the discovery budget.
+    discovery_client, live_client = FakeClient.instances
+    assert discovery_client.server.request_timeout_s == 8.0
+    assert discovery_client.server.tool_timeout_s == 8.0
+    assert live_client.server.request_timeout_s == 10.0
+    assert live_client.server.tool_timeout_s == 30.0
+    assert [client.server.alias for client in FakeClient.instances] == ["notion", "notion"]
+    # The live client is seeded, so the first real tool call needs no re-discovery.
+    assert [spec.namespaced_name for spec in live_client.known_tools] == ["notion__search_pages"]
 
     module = core_tools()
     registered = module.EXTRA_TOOLS["notion__search_pages"]
     assert isinstance(registered, module.RemoteMcpTool)
     assert registered.description == "search notion"
     assert registered.parameters_schema == {"type": "object", "properties": {}}
-    assert isinstance(registered._client, FakeClient)
+    assert registered._client is live_client
     # call_tool resolves by the namespaced name (mcp_client.py:332-341), exactly
     # like the installed-Space path passes client_tool_name=spec.namespaced_name
     # (tool_spaces.py:475).
@@ -158,18 +174,18 @@ async def test_discovery_failure_degrades_instead_of_raising(monkeypatch: pytest
     slept: list[float] = []
 
     class FailingClient:
-        def __init__(self, server: Any) -> None:
+        def __init__(self, server: Any, known_tools: Any = ()) -> None:
             pass
 
         async def list_tool_specs(self) -> list[FakeSpec]:
             attempts.append(1)
             raise RuntimeError("401 unauthorized")
 
-    async def no_sleep(seconds: float) -> None:
+    async def no_backoff(seconds: float) -> None:
         slept.append(seconds)
 
     monkeypatch.setattr(mcp_servers, "RemoteMcpToolClient", FailingClient)
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr(mcp_servers, "_backoff", no_backoff)
 
     assert await register_mcp_tools() == []  # skipped, not raised
     assert len(attempts) == 2  # bounded retry
@@ -184,7 +200,7 @@ async def test_transient_failure_recovers_on_retry(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("NOTION_MCP_TOKEN", "secret")
 
     class FlakyClient:
-        def __init__(self, server: Any) -> None:
+        def __init__(self, server: Any, known_tools: Any = ()) -> None:
             self.calls = 0
 
         async def list_tool_specs(self) -> list[FakeSpec]:
@@ -193,11 +209,11 @@ async def test_transient_failure_recovers_on_retry(monkeypatch: pytest.MonkeyPat
                 raise RuntimeError("transient transport error")
             return [FakeSpec()]
 
-    async def no_sleep(seconds: float) -> None:
+    async def no_backoff(seconds: float) -> None:
         return None
 
     monkeypatch.setattr(mcp_servers, "RemoteMcpToolClient", FlakyClient)
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
+    monkeypatch.setattr(mcp_servers, "_backoff", no_backoff)
 
     assert await register_mcp_tools() == ["notion__search_pages"]
 
@@ -208,6 +224,83 @@ async def test_bad_config_does_not_break_startup(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("NOTION_MCP_URL", "http://not-https.example.com/mcp")
     monkeypatch.setenv("NOTION_MCP_TOKEN", "x")
     assert await register_mcp_tools() == []
+
+
+def test_seam_tool_colliding_with_a_builtin_is_dropped_not_fatal(caplog: pytest.LogCaptureFixture) -> None:
+    """A colliding seam name must degrade to a warning, never brick startup.
+
+    initialize_tools() failing would exit the app at main.py's `sys.exit(1)`, so an
+    MCP alias that shadows a local tool must lose quietly instead.
+    """
+    module = core_tools()
+    module.initialize_tools(force=True)
+    builtin_type = type(module.get_tools()["camera"])
+
+    client = RemoteMcpToolClient(RemoteMcpServerConfig(alias="notion", url="https://mcp.notion.com/mcp"))
+    module.register_extra_tool(
+        module.RemoteMcpTool(
+            slug="notion",
+            name="camera",
+            description="impostor",
+            parameters_schema={"type": "object", "properties": {}},
+            client_tool_name="notion__camera",
+            client=client,
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        module.initialize_tools(force=True)
+
+    # initialize_tools succeeded (no RuntimeError, no exit) and the built-in won.
+    assert "collides with an already-registered tool" in caplog.text
+    surviving = module.get_tools()["camera"]
+    assert isinstance(surviving, builtin_type)
+    assert not isinstance(surviving, module.RemoteMcpTool)
+    assert surviving.description != "impostor"
+
+
+def test_wrapper_registers_and_logs_discovered_tools(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The startup wrapper reports what it registered, and the tool reaches the session specs."""
+    monkeypatch.setenv("NOTION_MCP_URL", "https://mcp.notion.com/mcp")
+    monkeypatch.setenv("NOTION_MCP_TOKEN", "secret")
+    monkeypatch.setattr(FakeClient, "instances", [])
+    monkeypatch.setattr(mcp_servers, "RemoteMcpToolClient", FakeClient)
+
+    with caplog.at_level(logging.INFO):
+        names = main_mod._discover_remote_mcp_tools(logging.getLogger("test_mcp_servers"))
+
+    assert names == ["notion__search_pages"]
+    assert "Registered 1 remote MCP tool(s)" in caplog.text
+    assert any(spec["name"] == "notion__search_pages" for spec in core_tools().get_tool_specs())
+
+
+def test_wrapper_abandons_discovery_that_overruns_its_budget(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A hung MCP server must not block startup nor keep the interpreter alive."""
+    release = threading.Event()
+
+    async def hanging_register() -> list[str]:
+        await asyncio.to_thread(release.wait, 30.0)
+        return ["notion__search_pages"]
+
+    monkeypatch.setattr(mcp_servers, "register_mcp_tools", hanging_register)
+
+    with caplog.at_level(logging.WARNING):
+        names = main_mod._discover_remote_mcp_tools(logging.getLogger("test_mcp_servers"), budget_s=0.2)
+
+    assert names == []  # startup proceeds without MCP tools
+    assert "exceeded its 0.2s startup budget" in caplog.text
+
+    worker = next(thread for thread in threading.enumerate() if thread.name == "mcp-discovery")
+    assert worker.is_alive()  # the join really did time out
+    assert worker.daemon is True  # ...and it cannot hold the interpreter open at exit
+
+    release.set()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
 
 
 def test_register_extra_tool_rejects_duplicates() -> None:

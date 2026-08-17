@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+from dataclasses import replace
 
 from reachy_companion.mcp_client import RemoteToolSpec, RemoteMcpToolClient, RemoteMcpServerConfig
 
@@ -22,6 +23,14 @@ logger = logging.getLogger(__name__)
 # bounded: two attempts with one backoff, then the server is skipped.
 _DISCOVERY_ATTEMPTS = 2
 _DISCOVERY_BACKOFF_S = 2.0
+
+# Discovery runs on its own config. RemoteMcpToolClient._session sets the httpx
+# timeout to max(request_timeout_s, tool_timeout_s) (mcp_client.py:357), so the
+# live 30 s tool budget would silently become the discovery budget too. Pinning
+# both to _DISCOVERY_TIMEOUT_S keeps a dead server to 2 x 8 s + 2 s backoff = 18 s,
+# inside the startup budget main.py allows, while live tool calls keep their own
+# config below.
+_DISCOVERY_TIMEOUT_S = 8.0
 _REQUEST_TIMEOUT_S = 10.0
 _TOOL_TIMEOUT_S = 30.0
 
@@ -64,6 +73,15 @@ def load_mcp_servers() -> list[RemoteMcpServerConfig]:
     return servers
 
 
+async def _backoff(seconds: float) -> None:
+    """Wait between discovery attempts.
+
+    A module-level seam so tests can shorten the backoff without patching the
+    global `asyncio.sleep`, which the event loop and every other coroutine share.
+    """
+    await asyncio.sleep(seconds)
+
+
 async def _discover_with_retry(client: RemoteMcpToolClient, alias: str) -> list[RemoteToolSpec] | None:
     """List the server's tools, retrying once; return None once the budget is spent."""
     for attempt in range(1, _DISCOVERY_ATTEMPTS + 1):
@@ -74,7 +92,7 @@ async def _discover_with_retry(client: RemoteMcpToolClient, alias: str) -> list[
                 "MCP server '%s' discovery attempt %d/%d failed: %s", alias, attempt, _DISCOVERY_ATTEMPTS, exc
             )
             if attempt < _DISCOVERY_ATTEMPTS:
-                await asyncio.sleep(_DISCOVERY_BACKOFF_S)
+                await _backoff(_DISCOVERY_BACKOFF_S)
     return None
 
 
@@ -98,12 +116,18 @@ async def register_mcp_tools() -> list[str]:
 
     registered_names: list[str] = []
     for server in servers:
-        client = RemoteMcpToolClient(server)
-        specs = await _discover_with_retry(client, server.alias)
+        # Discovery gets a short-timeout copy of the config; the tools then get a
+        # client on the real config, seeded with what we just discovered so the
+        # first live call does not have to re-discover (same pattern as
+        # tool_spaces.build_remote_client's cached_tools).
+        discovery_server = replace(server, request_timeout_s=_DISCOVERY_TIMEOUT_S, tool_timeout_s=_DISCOVERY_TIMEOUT_S)
+        specs = await _discover_with_retry(RemoteMcpToolClient(discovery_server), server.alias)
         if specs is None:
             logger.error("MCP server '%s' is disabled for this session; its tools are unavailable.", server.alias)
             continue
 
+        client = RemoteMcpToolClient(server, known_tools=specs)
+        registered_here = 0
         for spec in specs:
             # Same construction as _resolve_remote_tools (core_tools.py) and the
             # installed-Space path (tool_spaces.py): call_tool resolves by the
@@ -122,7 +146,10 @@ async def register_mcp_tools() -> list[str]:
                 logger.warning("Skipping remote MCP tool '%s': %s", spec.namespaced_name, exc)
                 continue
             registered_names.append(spec.namespaced_name)
+            registered_here += 1
 
-        logger.info("MCP server '%s' contributed %d tool(s).", server.alias, len(specs))
+        logger.info(
+            "MCP server '%s' contributed %d of %d discovered tool(s).", server.alias, registered_here, len(specs)
+        )
 
     return registered_names

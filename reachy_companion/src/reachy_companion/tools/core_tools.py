@@ -448,11 +448,24 @@ def initialize_tools(instance_path: str | Path | None = None, *, force: bool = F
         loaded_tool_classes = _load_enabled_tools(tool_names, remote_tool_names)
         tools = _build_tool_registry(
             loaded_tool_classes,
-            # reachy_companion: persistent extra tools (D-004) — merged into the
-            # rebuild itself so a force=True refresh can never wipe them, and so
-            # they go through the same duplicate-name guard as every other tool.
-            extra_tools=[*remote_tools, *EXTRA_TOOLS.values()],
+            extra_tools=remote_tools,
         )
+        # reachy_companion: persistent extra tools (D-004) — merged after the
+        # rebuild so initialize_tools(force=True) can never wipe them. A name that
+        # collides with a profile/Space tool is dropped with a warning instead of
+        # escalating to _build_tool_registry's RuntimeError: these tools come from
+        # an env var, and a bad MCP alias must not brick startup. The hard
+        # duplicate guard still covers every locally loaded tool.
+        for extra_name, extra_tool in EXTRA_TOOLS.items():
+            if extra_name in tools:
+                logger.warning(
+                    "Extra tool '%s' collides with an already-registered tool and is ignored. "
+                    "Rename the MCP server alias to expose it.",
+                    extra_name,
+                )
+                continue
+            tools[extra_name] = extra_tool
+
         ALL_TOOLS = tools
         _TOOLS_SIGNATURE = signature
 

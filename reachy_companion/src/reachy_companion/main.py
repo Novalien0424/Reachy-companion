@@ -26,6 +26,13 @@ if TYPE_CHECKING:
     from reachy_companion.console import LocalStream
 
 
+# Hard cap on how long startup waits for remote MCP discovery (D-004). Sized to
+# sit just above mcp_servers' own worst case (2 x 8 s attempts + one 2 s backoff
+# = 18 s), so an ordinary dead server still reports itself properly and this
+# budget only fires for a server that hangs past its socket timeouts.
+MCP_DISCOVERY_BUDGET_S = 20.0
+
+
 def _start_inactivity_timeout_thread(
     timeout_minutes: float,
     stream_manager: LocalStream,
@@ -61,14 +68,22 @@ def _start_inactivity_timeout_thread(
     return thread
 
 
-def _discover_remote_mcp_tools(logger: logging.Logger) -> list[str]:
+def _discover_remote_mcp_tools(logger: logging.Logger, budget_s: float = MCP_DISCOVERY_BUDGET_S) -> list[str]:
     """Run the async MCP discovery (D-004) from this synchronous startup path.
 
     `run()` is only ever called synchronously, so no event loop is running here,
     but `ReachyCompanion.run` installs a fresh loop on this thread that the
     console stack later uses. `asyncio.run()` would close its own loop and leave
-    the thread with no current loop, so the discovery gets a short-lived worker
-    thread instead. `register_mcp_tools()` never raises, so the worker cannot die.
+    the thread with no current loop, so the discovery gets its own worker thread.
+
+    `budget_s` is the hard cap on how long startup waits. `mcp_servers` bounds its
+    own retries, but httpx applies its timeouts per operation, so a server that
+    trickles bytes can outlast them; the worker is therefore a daemon and the join
+    has a timeout, so neither a hung server nor a stuck socket can block startup
+    or keep the interpreter alive at exit. A worker that finishes late still
+    registers its tools: `register_extra_tool` clears the registry signature, so
+    the next `get_tool_specs()` (one per realtime session) rebuilds and picks
+    them up.
     """
     from reachy_companion.mcp_servers import register_mcp_tools
 
@@ -78,9 +93,17 @@ def _discover_remote_mcp_tools(logger: logging.Logger) -> list[str]:
         nonlocal tool_names
         tool_names = asyncio.run(register_mcp_tools())
 
-    thread = threading.Thread(target=discover, name="mcp-discovery")
+    thread = threading.Thread(target=discover, name="mcp-discovery", daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=budget_s)
+
+    if thread.is_alive():
+        logger.warning(
+            "Remote MCP discovery exceeded its %.1fs startup budget; starting without MCP tools. "
+            "If it finishes later its tools join the next conversation session.",
+            budget_s,
+        )
+        return []
 
     if tool_names:
         logger.info("Registered %d remote MCP tool(s): %s", len(tool_names), tool_names)
