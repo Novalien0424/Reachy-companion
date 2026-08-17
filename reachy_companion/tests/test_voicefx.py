@@ -11,7 +11,7 @@ import logging
 import numpy as np
 import pytest
 
-from reachy_companion.audio.voicefx import VoiceFX
+from reachy_companion.audio.voicefx import MAX_GAIN_DB, MIN_GAIN_DB, DEFAULT_GAIN_DB, VoiceFX
 
 
 RATE = 24000
@@ -27,6 +27,7 @@ _ENV_KNOBS = (
     "VOICEFX_PITCH_SEMITONES",
     "VOICEFX_RINGMOD_HZ",
     "VOICEFX_RINGMOD_MIX",
+    "VOICEFX_GAIN_DB",
 )
 
 
@@ -58,6 +59,16 @@ def _feed(fx: VoiceFX, signal: np.ndarray, sizes: tuple[int, ...]) -> np.ndarray
         out.append(fx.process(signal[i : i + chunk]).reshape(-1))
         i += chunk
     return np.concatenate(out) if out else np.zeros(0, dtype=np.int16)
+
+
+def _rms(pcm: np.ndarray) -> float:
+    """Return the root-mean-square level of an int16 buffer."""
+    return float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2)))
+
+
+def _db(ratio: float) -> float:
+    """Return an amplitude ratio in decibels."""
+    return 20.0 * float(np.log10(ratio))
 
 
 def _dominant_hz(pcm: np.ndarray, start: int = 4096) -> float:
@@ -228,6 +239,80 @@ def test_ringmod_off_at_zero_hz() -> None:
 
 
 # --------------------------------------------------------------------------
+# Makeup gain — recovers the loudness the rest of the chain costs
+# --------------------------------------------------------------------------
+
+
+def test_default_gain_lifts_a_half_scale_sine_by_five_db() -> None:
+    """The default +5 dB makeup gain must actually be +5 dB of amplitude.
+
+    Measured against the identical chain at unity gain, because a chain with
+    *no* active stage is a hard identity bypass and never sees the gain at all.
+    The +5 dB reference is the operator fix for a quiet robot: the 0.25 ring-mod
+    mix alone costs ~2.3 dB of RMS.
+    """
+    signal = _sine(RATE // 2, amp=0.5)
+    unity = VoiceFX(RATE, semitones=0.0, gain_db=0.0).process(signal).reshape(-1)
+    louder = VoiceFX(RATE, semitones=0.0).process(signal).reshape(-1)
+
+    assert len(louder) == len(unity)
+    assert _db(_rms(louder) / _rms(unity)) == pytest.approx(DEFAULT_GAIN_DB, abs=0.5)
+    # Headroom sanity: half scale at +5 dB is 0.89 FS, so nothing should be railed.
+    assert int(np.abs(louder).max()) < 32767
+
+
+def test_gain_is_applied_after_the_ring_modulator() -> None:
+    """Gain must scale the finished chain, not a stage input.
+
+    Ring modulation is linear in its input, so an equivalent pre-stage gain would
+    also be +5 dB overall — the discriminator is that the gained output must be
+    an exact scalar multiple of the unity-gain output, sample for sample.
+    """
+    signal = _sine(4800, amp=0.4)
+    unity = VoiceFX(RATE, semitones=0.0, gain_db=0.0).process(signal).reshape(-1).astype(np.float64)
+    louder = VoiceFX(RATE, semitones=0.0, gain_db=6.0).process(signal).reshape(-1).astype(np.float64)
+
+    assert np.abs(louder - unity * (10.0 ** (6.0 / 20.0))).max() <= 2
+
+
+def test_full_scale_at_maximum_gain_clips_to_the_rails_without_wrapping() -> None:
+    """+12 dB on a full-scale input must saturate, never fold over to the far rail.
+
+    The float-domain `np.clip(-1, 1)` that precedes the int16 scaling is the
+    overload protection; this is the test that says so. A wrap would show up as
+    samples near -32768 where the unity-gain signal was strongly positive.
+    """
+    signal = _sine(4800, amp=1.0)
+    unity = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0, gain_db=0.0).process(signal).reshape(-1)
+    loud = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0, gain_db=MAX_GAIN_DB).process(signal).reshape(-1)
+
+    assert loud.dtype == np.int16
+    assert int(loud.max()) == 32767
+    assert int(loud.min()) == -32767  # the -32768 floor stays unreachable
+    # Saturation really happened; this is not a vacuous bound.
+    assert float(np.mean(np.abs(loud) == 32767)) > 0.5
+
+    expected = np.clip(unity.astype(np.float64) * (10.0 ** (MAX_GAIN_DB / 20.0)), -32767.0, 32767.0)
+    assert np.abs(loud.astype(np.float64) - expected).max() <= 8
+
+
+def test_disabled_chain_ignores_the_gain_entirely() -> None:
+    """A disabled filter stays byte-identical even with a gain configured."""
+    fx = VoiceFX(RATE, enabled=False, gain_db=MAX_GAIN_DB)
+    pcm = _sine(480).reshape(1, -1)
+
+    assert fx.process(pcm) is pcm
+
+
+def test_gain_alone_does_not_wake_a_bypassed_chain() -> None:
+    """With every stage bypassed the pre-filter path is kept, gain or not."""
+    signal = _sine(4800)
+    fx = VoiceFX(RATE, semitones=0.0, ringmod_hz=0.0, gain_db=MAX_GAIN_DB)
+
+    assert fx.process(signal) is signal
+
+
+# --------------------------------------------------------------------------
 # Reset
 # --------------------------------------------------------------------------
 
@@ -291,6 +376,9 @@ def test_from_env_logs_the_settled_configuration(
 
     assert "VoiceFX enabled" in caplog.text
     assert "+4.0 st" in caplog.text
+    # The makeup gain is the knob the operator tunes for loudness; it must be visible.
+    assert "gain" in caplog.text
+    assert "+5.0 dB" in caplog.text
 
 
 def test_from_env_logs_when_the_filter_is_off(caplog: pytest.LogCaptureFixture) -> None:
@@ -302,11 +390,12 @@ def test_from_env_logs_when_the_filter_is_off(caplog: pytest.LogCaptureFixture) 
 
 
 def test_from_env_reads_every_knob(monkeypatch: pytest.MonkeyPatch) -> None:
-    """All four knobs come from the environment, each at a non-default value."""
+    """All five knobs come from the environment, each at a non-default value."""
     monkeypatch.setenv("VOICEFX_ENABLED", "true")
     monkeypatch.setenv("VOICEFX_PITCH_SEMITONES", "7")
     monkeypatch.setenv("VOICEFX_RINGMOD_HZ", "80")
     monkeypatch.setenv("VOICEFX_RINGMOD_MIX", "0.4")
+    monkeypatch.setenv("VOICEFX_GAIN_DB", "8")
 
     fx = VoiceFX.from_env(RATE)
 
@@ -314,6 +403,7 @@ def test_from_env_reads_every_knob(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fx.semitones == pytest.approx(7.0)
     assert fx.ringmod_hz == pytest.approx(80.0)
     assert fx.ringmod_mix == pytest.approx(0.4)
+    assert fx.gain_db == pytest.approx(8.0)
 
 
 def test_from_env_defaults_are_the_tuned_starting_point(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,6 +416,7 @@ def test_from_env_defaults_are_the_tuned_starting_point(monkeypatch: pytest.Monk
     assert fx.semitones == pytest.approx(4.0)
     assert fx.ringmod_hz == pytest.approx(55.0)
     assert fx.ringmod_mix == pytest.approx(0.25)
+    assert fx.gain_db == pytest.approx(5.0)
 
 
 def test_from_env_malformed_value_warns_and_uses_the_default(
@@ -356,6 +447,20 @@ def test_from_env_clamps_an_out_of_range_mix(
     assert "VOICEFX_RINGMOD_MIX" in caplog.text
 
 
+def test_from_env_malformed_gain_warns_and_uses_the_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A bad gain line must degrade to +5 dB, not silence or deafen the robot."""
+    monkeypatch.setenv("VOICEFX_ENABLED", "1")
+    monkeypatch.setenv("VOICEFX_GAIN_DB", "louder-please")
+
+    with caplog.at_level(logging.WARNING, logger=ENVPARSE_LOGGER):
+        fx = VoiceFX.from_env(RATE)
+
+    assert fx.gain_db == pytest.approx(DEFAULT_GAIN_DB)
+    assert "VOICEFX_GAIN_DB" in caplog.text
+
+
 def test_env_example_documents_every_knob() -> None:
     """An undocumented knob is an unusable one; the tempo note is part of the contract."""
     from pathlib import Path
@@ -374,6 +479,8 @@ def test_env_example_documents_every_knob() -> None:
         ("VOICEFX_PITCH_SEMITONES", "-3", "semitones", 0.0),
         ("VOICEFX_RINGMOD_HZ", "99999", "ringmod_hz", 2000.0),
         ("VOICEFX_RINGMOD_MIX", "-1", "ringmod_mix", 0.0),
+        ("VOICEFX_GAIN_DB", "99", "gain_db", MAX_GAIN_DB),
+        ("VOICEFX_GAIN_DB", "-99", "gain_db", MIN_GAIN_DB),
     ],
 )
 def test_from_env_clamps_every_numeric_knob(

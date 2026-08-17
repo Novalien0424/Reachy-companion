@@ -9,7 +9,7 @@ soxr plays N input samples in N/ratio output samples. That shortens the speech
 as it raises it, which is exactly the chipmunk effect the "very cute robot"
 brief asked for; the locked profile compensates with a "语速放慢" style line.
 
-Two stages, in order:
+Three stages, in order:
 
 1. **Pitch** — the resample-rate trick above. `semitones == 0` is a *hard*
    bypass: the stream is never constructed, so there is no allocation, no
@@ -17,6 +17,13 @@ Two stages, in order:
 2. **Ring modulator** — `y = x*(1-mix) + x*sin(phase)*mix`, pure numpy, zero
    latency, carrier phase carried across chunks so consecutive frames do not
    click at the seams.
+3. **Makeup gain** — one float multiply, last, because the two stages above
+   both cost loudness: the 0.25 ring-mod mix alone drops RMS by ~2.3 dB, and
+   the +4 st shift thins the perceived weight of the voice further. Operators
+   heard the result as too quiet on the robot's speaker, so the chain ends with
+   a `VOICEFX_GAIN_DB` trim. It sits in the float domain *before* the existing
+   `np.clip(-1, 1)`, which is therefore the overload protection: the gain can
+   saturate the signal but can never wrap it past int16's rails.
 
 Latency accounting: soxr's stream keeps a *pending tail*, not a leading delay —
 it has read samples it has not emitted yet. `pending_delay` exposes that on the
@@ -40,9 +47,14 @@ DEFAULT_ENABLED = False
 DEFAULT_SEMITONES = 4.0
 DEFAULT_RINGMOD_HZ = 55.0
 DEFAULT_RINGMOD_MIX = 0.25
+DEFAULT_GAIN_DB = 5.0
 
 MAX_SEMITONES = 12.0
 MAX_RINGMOD_HZ = 2000.0
+# Enough cut to undo the default boost and then some, and enough boost to reach
+# 4x amplitude — past that a speech signal is mostly clipper, not voice.
+MIN_GAIN_DB = -6.0
+MAX_GAIN_DB = 12.0
 
 _QUALITY = "HQ"
 # Scale in by the full range and out by the last representable value, so that
@@ -70,6 +82,7 @@ class VoiceFX:
         semitones: float = DEFAULT_SEMITONES,
         ringmod_hz: float = DEFAULT_RINGMOD_HZ,
         ringmod_mix: float = DEFAULT_RINGMOD_MIX,
+        gain_db: float = DEFAULT_GAIN_DB,
     ) -> None:
         """Build the chain for `rate` Hz audio.
 
@@ -79,6 +92,11 @@ class VoiceFX:
             semitones: Upward pitch shift; 0 bypasses the stage entirely.
             ringmod_hz: Ring-modulator carrier; 0 bypasses the stage.
             ringmod_mix: Wet/dry blend of the ring modulator, 0..1.
+            gain_db: Makeup gain in dB applied after the other stages. It rides
+                along with them rather than switching the chain on: when every
+                stage is bypassed the identity path is kept and the gain is not
+                applied, so a "disabled" filter stays byte-for-byte the
+                pre-filter audio path.
 
         """
         self.rate = rate
@@ -86,9 +104,11 @@ class VoiceFX:
         self.semitones = semitones
         self.ringmod_hz = ringmod_hz
         self.ringmod_mix = ringmod_mix
+        self.gain_db = gain_db
 
         self._pitching = enabled and semitones > 0.0
         self._ringmodding = enabled and ringmod_hz > 0.0 and ringmod_mix > 0.0
+        self._gain: np.float32 = np.float32(10.0 ** (gain_db / 20.0)) if enabled else np.float32(1.0)
         # Radians per output sample; the ring modulator runs *after* the pitch
         # stage, so it is clocked at the unchanged output rate.
         self._phase_step = _TWO_PI * ringmod_hz / rate
@@ -110,15 +130,18 @@ class VoiceFX:
             semitones=env_float("VOICEFX_PITCH_SEMITONES", DEFAULT_SEMITONES, lo=0.0, hi=MAX_SEMITONES),
             ringmod_hz=env_float("VOICEFX_RINGMOD_HZ", DEFAULT_RINGMOD_HZ, lo=0.0, hi=MAX_RINGMOD_HZ),
             ringmod_mix=env_float("VOICEFX_RINGMOD_MIX", DEFAULT_RINGMOD_MIX, lo=0.0, hi=1.0),
+            gain_db=env_float("VOICEFX_GAIN_DB", DEFAULT_GAIN_DB, lo=MIN_GAIN_DB, hi=MAX_GAIN_DB),
         )
         if voicefx.enabled:
             logger.info(
-                "VoiceFX enabled at %d Hz: pitch +%.1f st (speech x%.2f duration), ring-mod %.0f Hz at %.2f mix",
+                "VoiceFX enabled at %d Hz: pitch +%.1f st (speech x%.2f duration), "
+                "ring-mod %.0f Hz at %.2f mix, makeup gain %+.1f dB",
                 voicefx.rate,
                 voicefx.semitones,
                 voicefx.duration_ratio,
                 voicefx.ringmod_hz,
                 voicefx.ringmod_mix,
+                voicefx.gain_db,
             )
         else:
             logger.info("VoiceFX disabled; assistant audio passes through unfiltered.")
@@ -175,7 +198,11 @@ class VoiceFX:
         signal = flat.astype(np.float32) / _INT16_SCALE
         signal = self._pitch_shift(signal)
         signal = self._ring_modulate(signal)
+        signal = self._apply_gain(signal)
 
+        # The clip is what makes the gain safe: it bounds the float signal to
+        # +/-1 BEFORE the int16 scaling, so an overdriven chain saturates
+        # instead of wrapping around to the opposite rail.
         out = np.round(np.clip(signal, -1.0, 1.0) * _INT16_MAX).astype(np.int16)
         if chunk.ndim == 2:
             return out.reshape(1, -1)
@@ -205,6 +232,16 @@ class VoiceFX:
         if self._pitch is None:
             return signal
         return np.asarray(self._pitch.resample_chunk(signal), dtype=np.float32)
+
+    def _apply_gain(self, signal: NDArray[np.float32]) -> NDArray[np.float32]:
+        """Scale the finished chain by the makeup gain, still in the float domain.
+
+        Deliberately unbounded here: the caller's `np.clip(-1, 1)` is the single
+        place overload is handled, so this stage never has to guess a ceiling.
+        """
+        if self._gain == np.float32(1.0):
+            return signal
+        return np.asarray(signal * self._gain, dtype=np.float32)
 
     def _ring_modulate(self, signal: NDArray[np.float32]) -> NDArray[np.float32]:
         """Blend in the modulated copy, carrying the carrier phase to the next chunk.

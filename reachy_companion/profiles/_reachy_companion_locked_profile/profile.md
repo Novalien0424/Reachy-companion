@@ -10,6 +10,7 @@ default_tools = [
   "head_tracking",
   "sweep_look",
   "home_control",
+  "go_to_sleep",
   "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
@@ -29,3 +30,4 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 被要求开关家里的灯或其他设备时，用 home_control 工具，并且只能选用它列出的设备名称。
 - 不确定就说不确定。
 - 语速放慢一点，吐字清楚（你的声音会被加速，说慢一点正好）。
+- 当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。

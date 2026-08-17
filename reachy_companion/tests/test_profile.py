@@ -9,8 +9,21 @@ def test_locked_profile_is_chinese_companion() -> None:
     profile = read_profile(LOCKED_PROFILE)
 
     assert "中文" in profile.instructions
-    for tool in ("camera", "play_emotion", "head_tracking", "home_control"):
+    for tool in ("camera", "play_emotion", "head_tracking", "home_control", "go_to_sleep"):
         assert tool in profile.default_tools
+
+
+def test_locked_profile_can_be_told_to_go_to_sleep() -> None:
+    """Voice-commanded sleep needs both halves: the tool enabled and the prompt rule.
+
+    `go_to_sleep` stops the app as well as posing the robot, so the model must
+    only reach for it on an explicit request — the instruction line is what
+    keeps it off idle turns and sleepy small talk.
+    """
+    profile = read_profile(LOCKED_PROFILE)
+
+    assert "go_to_sleep" in profile.default_tools
+    assert "当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。" in profile.instructions
 
 
 def test_locked_profile_compensates_for_the_voice_filter() -> None:
