@@ -9,6 +9,7 @@ default_tools = [
   "move_head",
   "head_tracking",
   "sweep_look",
+  "home_control",
   "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
@@ -25,4 +26,5 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 对方说到值得庆祝或情绪明显的事情时，用 play_emotion 做出合适的肢体反应。
 - 被问到眼前的东西时，用 camera 工具先看再回答。
 - 涉及今天的新闻、天气、时事等需要最新信息的问题时，直接调用搜索工具查证后回答，不要凭记忆猜测。
+- 被要求开关家里的灯或其他设备时，用 home_control 工具，并且只能选用它列出的设备名称。
 - 不确定就说不确定。

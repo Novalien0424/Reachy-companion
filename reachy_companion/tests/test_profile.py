@@ -9,5 +9,5 @@ def test_locked_profile_is_chinese_companion() -> None:
     profile = read_profile(LOCKED_PROFILE)
 
     assert "中文" in profile.instructions
-    for tool in ("camera", "play_emotion", "head_tracking"):
+    for tool in ("camera", "play_emotion", "head_tracking", "home_control"):
         assert tool in profile.default_tools
