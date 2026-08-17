@@ -97,14 +97,32 @@ class VoiceFX:
 
     @classmethod
     def from_env(cls, rate: int) -> "VoiceFX":
-        """Build the chain from `VOICEFX_*`, degrading every malformed knob."""
-        return cls(
+        """Build the chain from `VOICEFX_*`, degrading every malformed knob.
+
+        Logs the settled configuration once per chain. The filter is otherwise
+        completely silent — a disabled chain returns its argument unchanged —
+        so without this line there is no way to tell from a run's log whether
+        the robot is speaking in its cute voice or its plain one.
+        """
+        voicefx = cls(
             rate,
             enabled=env_bool("VOICEFX_ENABLED", DEFAULT_ENABLED),
             semitones=env_float("VOICEFX_PITCH_SEMITONES", DEFAULT_SEMITONES, lo=0.0, hi=MAX_SEMITONES),
             ringmod_hz=env_float("VOICEFX_RINGMOD_HZ", DEFAULT_RINGMOD_HZ, lo=0.0, hi=MAX_RINGMOD_HZ),
             ringmod_mix=env_float("VOICEFX_RINGMOD_MIX", DEFAULT_RINGMOD_MIX, lo=0.0, hi=1.0),
         )
+        if voicefx.enabled:
+            logger.info(
+                "VoiceFX enabled at %d Hz: pitch +%.1f st (speech x%.2f duration), ring-mod %.0f Hz at %.2f mix",
+                voicefx.rate,
+                voicefx.semitones,
+                voicefx.duration_ratio,
+                voicefx.ringmod_hz,
+                voicefx.ringmod_mix,
+            )
+        else:
+            logger.info("VoiceFX disabled; assistant audio passes through unfiltered.")
+        return voicefx
 
     @property
     def duration_ratio(self) -> float:

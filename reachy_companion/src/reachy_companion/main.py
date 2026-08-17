@@ -20,11 +20,17 @@ from reachy_companion.utils import (
     setup_logger,
     log_connection_troubleshooting,
 )
+from reachy_companion.audio.envparse import env_int
 
 
 if TYPE_CHECKING:
     from reachy_companion.console import LocalStream
 
+
+# Port of the daemon's FastAPI server, matching the SDK's own default
+# (`reachy_mini.ReachyMini.__init__`). Overridable per run via
+# `REACHY_DAEMON_PORT` — see `_daemon_port()`.
+DEFAULT_DAEMON_PORT = 8000
 
 # Hard cap on how long startup waits for remote MCP discovery (D-004). Sized to
 # sit just above mcp_servers' own worst case (2 x 8 s attempts + one 2 s backoff
@@ -66,6 +72,23 @@ def _start_inactivity_timeout_thread(
     thread = threading.Thread(target=poll_inactivity_timeout, daemon=True)
     thread.start()
     return thread
+
+
+def _daemon_port() -> int:
+    """Return the daemon's FastAPI port, overridable with ``REACHY_DAEMON_PORT``.
+
+    The SDK's default is 8000, which is the right answer on the robot and the
+    only answer the shipped app ever needs. On this Windows dev machine 8000
+    belongs to the Reachy Mini Control desktop app, so the mockup-sim dev daemon
+    runs on 8001 (`scripts/dev_daemon.ps1`, D-008) and the app has to be pointed
+    at it. Unset — every non-dev run — this returns the SDK default, so the
+    kwarg we pass is the value the SDK would have chosen anyway.
+
+    Malformed or out-of-range values degrade to the default with a warning
+    (`env_int`), the same contract the audio and VAD knobs use: one bad `.env`
+    line must not stop the app from starting.
+    """
+    return env_int("REACHY_DAEMON_PORT", DEFAULT_DAEMON_PORT, lo=1, hi=65535)
 
 
 def _discover_remote_mcp_tools(logger: logging.Logger, budget_s: float = MCP_DISCOVERY_BUDGET_S) -> list[str]:
@@ -181,11 +204,14 @@ def run(
 
     if robot is None:
         try:
-            robot_kwargs = {}
+            robot_kwargs: dict[str, Any] = {"port": _daemon_port()}
             if args.robot_name is not None:
                 robot_kwargs["robot_name"] = args.robot_name
 
-            logger.info("Initializing ReachyMini (SDK will auto-detect appropriate backend)")
+            logger.info(
+                "Initializing ReachyMini on daemon port %d (SDK will auto-detect appropriate backend)",
+                robot_kwargs["port"],
+            )
             robot = ReachyMini(**robot_kwargs)
 
         except TimeoutError as e:

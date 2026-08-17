@@ -279,6 +279,28 @@ def test_from_env_is_disabled_by_default() -> None:
     assert fx.process(pcm) is pcm
 
 
+def test_from_env_logs_the_settled_configuration(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The chain is otherwise silent, so this line is the only run-time proof it is on."""
+    monkeypatch.setenv("VOICEFX_ENABLED", "true")
+    monkeypatch.setenv("VOICEFX_PITCH_SEMITONES", "4")
+
+    with caplog.at_level(logging.INFO, logger=VOICEFX_LOGGER):
+        VoiceFX.from_env(RATE)
+
+    assert "VoiceFX enabled" in caplog.text
+    assert "+4.0 st" in caplog.text
+
+
+def test_from_env_logs_when_the_filter_is_off(caplog: pytest.LogCaptureFixture) -> None:
+    """A disabled chain says so, so a plain-voice run is not mistaken for a filtered one."""
+    with caplog.at_level(logging.INFO, logger=VOICEFX_LOGGER):
+        VoiceFX.from_env(RATE)
+
+    assert "VoiceFX disabled" in caplog.text
+
+
 def test_from_env_reads_every_knob(monkeypatch: pytest.MonkeyPatch) -> None:
     """All four knobs come from the environment, each at a non-default value."""
     monkeypatch.setenv("VOICEFX_ENABLED", "true")

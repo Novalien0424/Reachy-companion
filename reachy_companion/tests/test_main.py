@@ -46,6 +46,46 @@ def test_run_enables_head_tracking_at_startup(stubbed_run) -> None:
     assert method_names.index("start") < method_names.index("set_head_tracking")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, main_mod.DEFAULT_DAEMON_PORT),
+        ("", main_mod.DEFAULT_DAEMON_PORT),
+        ("8001", 8001),
+        (" 8001 ", 8001),
+        ("not-a-port", main_mod.DEFAULT_DAEMON_PORT),  # degrades, never raises
+        ("0", 1),  # clamped into the valid TCP range
+        ("70000", 65535),
+    ],
+)
+def test_daemon_port_reads_the_env_override(monkeypatch, raw, expected) -> None:
+    """REACHY_DAEMON_PORT selects the daemon, and a bad value cannot stop startup (D-008)."""
+    if raw is None:
+        monkeypatch.delenv("REACHY_DAEMON_PORT", raising=False)
+    else:
+        monkeypatch.setenv("REACHY_DAEMON_PORT", raw)
+
+    assert main_mod._daemon_port() == expected
+
+
+def test_run_connects_to_the_daemon_port_from_the_env(monkeypatch) -> None:
+    """The override reaches the ReachyMini construction site, the app's only one."""
+    reachy_mini_cls = MagicMock(name="ReachyMini")
+    monkeypatch.setattr(main_mod, "ReachyMini", reachy_mini_cls)
+    monkeypatch.setattr("reachy_companion.moves.MovementManager", MagicMock())
+    monkeypatch.setattr("reachy_companion.console.LocalStream", MagicMock())
+    monkeypatch.setattr("reachy_companion.openai_realtime.OpenAIRealtimeHandler", MagicMock())
+    monkeypatch.setattr("reachy_companion.tools.core_tools.initialize_tools", MagicMock())
+    monkeypatch.setenv(config_mod.APP_TIMEOUT_MINUTES_ENV, "0")
+    monkeypatch.setenv("REACHY_DAEMON_PORT", "8001")
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    args = SimpleNamespace(debug=False, robot_name=None, no_camera=True, ui=False, command=None)
+    main_mod.run(args)
+
+    assert reachy_mini_cls.call_args.kwargs["port"] == 8001
+
+
 def test_inactivity_timeout_thread_goes_to_sleep() -> None:
     """The watchdog should use the shared sleep shutdown path once activity is too old."""
     stream_manager = SimpleNamespace(seconds_since_activity=lambda: 10.0, close=MagicMock())
