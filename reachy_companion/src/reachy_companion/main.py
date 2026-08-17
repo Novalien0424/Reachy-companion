@@ -61,6 +61,34 @@ def _start_inactivity_timeout_thread(
     return thread
 
 
+def _discover_remote_mcp_tools(logger: logging.Logger) -> list[str]:
+    """Run the async MCP discovery (D-004) from this synchronous startup path.
+
+    `run()` is only ever called synchronously, so no event loop is running here,
+    but `ReachyCompanion.run` installs a fresh loop on this thread that the
+    console stack later uses. `asyncio.run()` would close its own loop and leave
+    the thread with no current loop, so the discovery gets a short-lived worker
+    thread instead. `register_mcp_tools()` never raises, so the worker cannot die.
+    """
+    from reachy_companion.mcp_servers import register_mcp_tools
+
+    tool_names: list[str] = []
+
+    def discover() -> None:
+        nonlocal tool_names
+        tool_names = asyncio.run(register_mcp_tools())
+
+    thread = threading.Thread(target=discover, name="mcp-discovery")
+    thread.start()
+    thread.join()
+
+    if tool_names:
+        logger.info("Registered %d remote MCP tool(s): %s", len(tool_names), tool_names)
+    else:
+        logger.info("No remote MCP tools registered.")
+    return tool_names
+
+
 def main() -> None:
     """Entrypoint for the Reachy Mini conversation app."""
     args, _ = parse_args()
@@ -274,6 +302,11 @@ def run(
         )
         threading.Thread(target=own_ui_server.run, daemon=True, name="ui-server").start()
         logger.info("Web UI available at http://localhost:7860")
+
+    # US-07 / D-004: discover remote MCP tools before the registry is built, so
+    # the first initialize_tools() already includes them. The persistent seam in
+    # core_tools keeps them registered even if the registry is rebuilt later.
+    _discover_remote_mcp_tools(logger)
 
     try:
         initialize_tools(instance_path=instance_path)

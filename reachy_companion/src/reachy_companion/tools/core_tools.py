@@ -96,6 +96,28 @@ _REMOTE_TOOL_RETRY_DELAY_S = 0.25
 _TOOLS_LOCK = threading.RLock()
 _EXTERNAL_TOOL_MODULE_NAMESPACE = "reachy_companion._external_tools"
 
+# reachy_companion: persistent extra tools (D-004)
+#
+# initialize_tools() rebuilds ALL_TOOLS from the active profile's toolset, so a
+# tool registered ad hoc at runtime (a remote MCP tool discovered at startup)
+# would be silently dropped by the next rebuild. Tools registered here are kept
+# out of band and re-applied on every rebuild, so they are active regardless of
+# the profile's tool list and survive initialize_tools(force=True).
+EXTRA_TOOLS: Dict[str, Tool] = {}
+
+
+def register_extra_tool(tool: Tool) -> None:
+    """Register a tool that survives every tool-registry rebuild (D-004)."""
+    global _TOOLS_SIGNATURE
+
+    with _TOOLS_LOCK:
+        if tool.name in EXTRA_TOOLS:
+            raise ValueError(f"Duplicate extra tool name '{tool.name}'. Tool.name must be unique.")
+        EXTRA_TOOLS[tool.name] = tool
+        # Invalidate an already-built registry so the next read rebuilds through
+        # _build_tool_registry() and its duplicate-name guard picks the tool up.
+        _TOOLS_SIGNATURE = None
+
 
 class RemoteMcpTool(Tool):
     """Adapter exposing one remote MCP tool through the local Tool interface."""
@@ -426,7 +448,10 @@ def initialize_tools(instance_path: str | Path | None = None, *, force: bool = F
         loaded_tool_classes = _load_enabled_tools(tool_names, remote_tool_names)
         tools = _build_tool_registry(
             loaded_tool_classes,
-            extra_tools=remote_tools,
+            # reachy_companion: persistent extra tools (D-004) — merged into the
+            # rebuild itself so a force=True refresh can never wipe them, and so
+            # they go through the same duplicate-name guard as every other tool.
+            extra_tools=[*remote_tools, *EXTRA_TOOLS.values()],
         )
         ALL_TOOLS = tools
         _TOOLS_SIGNATURE = signature
