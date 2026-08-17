@@ -31,26 +31,34 @@ review. No application code yet.
 
 ## Execution status (SDD, ledger at .superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md)
 
-- Task 1 COMPLETE (commits 84a5afc..f823a81): repo on `main`;
-  `reachy_companion/` scaffolded from the official conversation app
-  (141 files, copy integrity verified, byte-faithful fork with exactly the
-  intended deltas); locked profile `_reachy_companion_locked_profile`
-  converted to `profile.md` at app root and shipping in the wheel;
-  `feature_list.json` work queue in place; `mcp` bounded `<2` (2.0 silently
-  broke upstream client reads); bundled suite green with a documented
-  30-test skip list (locked-profile-by-design); subtree agent contract
-  replaced with a correct local one. SDK now 1.10.0rc5 (see D-008
-  amendment).
+Tasks COMPLETE with clean reviews (each through implementer → task review →
+fix rounds as needed → scoped re-review): 1 (scaffold, mcp<2 bound, green
+baseline w/ 30-skip list), 2 (dev daemon on port 8001 — coexists with the
+Reachy Mini Control desktop app), 3 (recovered-handler study), 4 (soxr-era
+resample helper + scipy declared), 5 (OpenAIRealtimeHandler on
+gpt-realtime-2.1: extra_query model delivery verified, soxr streaming
+resampling both legs, tunable VAD), 6 (main.py wiring + tracking-on-startup,
+zh default), 7 (Chinese locked profile incl. verified search-tool name),
+12-unit (MCP seam: EXTRA_TOOLS survives rebuilds, bounded 20s discovery,
+collision degrade), 13-unit (home_control with HA_ENTITIES allowlist +
+Chinese demo contract), 16 (VoiceFX cute-robot filter, engine-free soxr
+chipmunk + ring-mod, D-010 — Codex-reviewed amendment). Suite:
+412 passed / 30 skipped / 0 failed; ruff + mypy strict green.
 
-## Risks / blockers
+## Open / blocked
 
-- Physical robot availability unconfirmed (needed for Task 15 only).
-- `OPENAI_API_KEY`, Notion MCP credentials, and Home Assistant URL/token
-  needed from the operator at Tasks 8/12/13.
-- Dependencies other than `mcp` still float (no lockfile yet — demo-prep
-  decision).
+- Tasks 8, 9, 10, 11 (live dev-runs) + Task 12 Step 5 (Notion) + Task 13
+  Step 5 (real HA device): BLOCKED on operator credentials
+  (`OPENAI_API_KEY`, `NOTION_MCP_URL/TOKEN`, `HA_URL/TOKEN/HA_ENTITIES` in
+  `reachy_companion/.env`).
+- Task 14 (adding-a-skill doc): in progress (keyless).
+- Task 15 (on-robot deployment + five-demo gate): needs robot; use the
+  `reachy-deploy` skill (D-009: app-only, daemon untouchable, version gate);
+  robot at 10.0.0.96 per repo-root `.env`.
+- VoiceFX live tuning (Task 16 Step 9) happens during Task 8's dev-run.
+- No lockfile yet (deps beyond `mcp` float) — decide at demo prep.
 
 ## Next action
 
-Continue SDD execution at Task 2 (mockup-sim dev loop smoke test); then
-Tasks 3–15 per the plan.
+Finish Task 14; then hold for credentials → run Tasks 8-11, integration
+steps 12.5/13.5, final whole-branch review, Task 15 on-robot gate.
