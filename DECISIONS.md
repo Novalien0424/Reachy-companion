@@ -230,6 +230,14 @@ future official update/sync behavior differs from a stock PyPI robot. Full
 evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/task-15-deploy-attempt3-report.md`.
 
+Operator round 1 redeploy (2026-08-17): app-only redeploy of the voice-commanded
+sleep + VoiceFX makeup-gain build onto daemon 1.10.0rc5 — 13 tools loaded with
+`go_to_sleep` present, `makeup gain +5.0 dB` logged, startup-app still
+`reachy_companion`, robot left in the SDK sleep pose; corrects one carry-over
+above — `NOTION_MCP_*` and `HA_ENTITIES` are **blank** in the source `.env`, so
+their "not registered / none configured" lines are correct, not a defect.
+Evidence: `.superpowers/sdd/2026-08-16-reachy-mini-poc/operator-round-1-report.md`.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
