@@ -86,10 +86,9 @@ def run(
     """Run the Reachy Mini conversation app."""
     # Putting these dependencies here makes the dashboard faster to load when the conversation app is installed
     from reachy_companion.moves import MovementManager
+    from reachy_companion.config import config as runtime_config
     from reachy_companion.config import (
-        HF_LOCAL_CONNECTION_MODE,
         set_instance_path,
-        get_hf_connection_selection,
         resolve_app_timeout_minutes,
         refresh_runtime_config_from_env,
     )
@@ -121,8 +120,8 @@ def run(
             logger.warning("Failed to load startup settings: %s", e)
 
     logger.info(
-        "Configured Hugging Face realtime backend, connection mode: %s",
-        get_hf_connection_selection().mode,
+        "Configured OpenAI realtime backend, transcription language: %s",
+        runtime_config.REALTIME_TRANSCRIPTION_LANGUAGE,
     )
 
     from reachy_companion.console import LocalStream
@@ -165,17 +164,16 @@ def run(
     )
 
     def build_handler(startup_voice: Optional[str] = None) -> ConversationHandler:
-        """Build a Hugging Face realtime handler for the current runtime config."""
-        from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
+        """Build an OpenAI realtime handler for the current runtime config (D-002).
 
-        hf_connection_selection = get_hf_connection_selection()
-        transport_label = (
-            "Hugging Face direct websocket"
-            if hf_connection_selection.mode == HF_LOCAL_CONNECTION_MODE and hf_connection_selection.has_target
-            else "Hugging Face session proxy"
-        )
-        logger.info("Using Hugging Face realtime handler (%s)", transport_label)
-        return HuggingFaceRealtimeHandler(
+        The single construction site for the conversation backend: `LocalStream`
+        rebuilds handlers through this same factory, so the settings UI cannot
+        resurrect the Hugging Face backend behind our back.
+        """
+        from reachy_companion.openai_realtime import MODEL, OpenAIRealtimeHandler
+
+        logger.info("Using OpenAI realtime handler (model %s)", MODEL)
+        return OpenAIRealtimeHandler(
             deps,
             instance_path=instance_path,
             startup_voice=startup_voice,
@@ -285,6 +283,13 @@ def run(
 
     # Each async service → its own thread/loop
     movement_manager.start()
+    # US-02: follow the user's face from startup, without waiting for the model to
+    # call the head_tracking tool. Exactly the enable the tool issues
+    # (tools/head_tracking.py:34): queued on the movement manager, whose worker
+    # runs robot.start_head_tracking(weight=1.0) (moves.py:370-384). The queue put
+    # is non-blocking and the worker swallows tracking errors, so this is safe
+    # even when the robot cannot track (e.g. no face, camera disabled).
+    movement_manager.set_head_tracking(True)
     # Audio-reactive head motion is driven by the daemon's wobbler, which
     # taps the media pipeline at push_audio_sample. The console stream pushes
     # assistant audio through that pipeline directly.
