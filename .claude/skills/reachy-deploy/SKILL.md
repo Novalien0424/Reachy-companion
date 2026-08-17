@@ -72,6 +72,11 @@ first).
 
 - Never `pip install`/upgrade anything into the daemon's environment; only
   `/venvs/apps_venv` (shared apps venv) is writable by us.
+  **Scoped exception (operator-authorized 2026-08-17):** a one-time daemon
+  update to the 1.10.0rc line is authorized, ONLY via the robot's own
+  official updater (`/update/start-from-ref` family) — never via pip/ssh
+  surgery. Verify the rollback path (ref back to 1.9.0) BEFORE updating.
+  This exception does not extend to any other daemon change.
 - Never edit files under the daemon's installation or its config
   (`daemon_config.json` startup-app entry may be set via the official
   `PUT /api/apps/startup-app` API only, and only if the operator asks).
