@@ -238,6 +238,32 @@ above — `NOTION_MCP_*` and `HA_ENTITIES` are **blank** in the source `.env`, s
 their "not registered / none configured" lines are correct, not a defect.
 Evidence: `.superpowers/sdd/2026-08-16-reachy-mini-poc/operator-round-1-report.md`.
 
+Operator round 2 redeploy (2026-08-18): app-only redeploy of the D-011 WSOLA
+pitch + D-012 memory build onto daemon 1.10.0rc5, wheel sha256 verified end to
+end, two-step install with zero network fetches. **15 tools** loaded with
+`remember` and `forget` registered and handed to the model; VoiceFX logged
+`pitch +4.0 st via WSOLA time-stretch + resample (duration preserved, 35.0 ms
+lookahead)`; a real turn completed at 39 ms first-audio-delta with **zero**
+tracebacks; startup-app still `reachy_companion`; robot left ASLEEP (motors
+disabled, sleep pose matches round 1).
+
+This is the first redeploy to run the amended skill's **backup/restore of
+`memory.v1.json` and `.env`** (new steps 4 and 6). `.env` was backed up and
+re-placed; `memory.v1.json` was **absent** — expected, since this deploy is what
+enables the tools that write it — and that absence is recorded rather than
+treated as a backup failure. Instance path confirmed live:
+`/venvs/apps_venv/lib/python3.12/site-packages/reachy_companion/`.
+
+On-robot verification of the new pitch chain, run against the *installed*
+aarch64 module after the stop: `duration_ratio 1.000`, `out + pending_delay ==
+total_in` to **0.00 samples**, dominant output 553.71 Hz against a 554.37 Hz
+target, `latency_ms 35.00`, peak live latency 63.2 ms. New carry-over: the chain
+costs **14.8 % of one core on the robot** (1.3 % on the dev box) while the
+assistant speaks — an order of magnitude above the round-1 resample-only stage,
+with no observed degradation but worth watching under concurrent camera/dance
+load. Evidence:
+`.superpowers/sdd/2026-08-16-reachy-mini-poc/operator-round-2-report.md`.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
