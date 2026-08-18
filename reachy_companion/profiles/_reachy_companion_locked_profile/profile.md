@@ -11,6 +11,8 @@ default_tools = [
   "sweep_look",
   "home_control",
   "go_to_sleep",
+  "remember",
+  "forget",
   "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
@@ -29,5 +31,6 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 涉及今天的新闻、天气、时事等需要最新信息的问题时，直接调用搜索工具查证后回答，不要凭记忆猜测。
 - 被要求开关家里的灯或其他设备时，用 home_control 工具，并且只能选用它列出的设备名称。
 - 不确定就说不确定。
-- 语速放慢一点，吐字清楚（你的声音会被加速，说慢一点正好）。
+- 吐字清楚、语气轻快。
+- 用户告诉你关于他们自己的重要信息（名字、喜好、习惯）时，用 remember 记下来；说错了就用 forget 修正。
 - 当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。

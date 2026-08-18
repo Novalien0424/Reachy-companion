@@ -44,7 +44,30 @@ first).
 3. **Transfer:** `scp reachy_companion/dist/reachy_companion-*.whl
    ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/` (PuTTY `pscp -pw` works on the
    dev box; PuTTY is installed).
-4. **Install into the shared apps venv** (an app-level action, allowed) —
+4. **Back up instance state BEFORE installing (mandatory).** The instance path
+   IS the installed package directory
+   (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
+   `app.py:169` + `main.py:448`), so it sits *inside* site-packages and every
+   reinstall wipes it. Two files there are user state, not build output, and
+   losing either is a visible regression:
+   - `.env` — runtime secrets (API keys, home-control config).
+   - `memory.v1.json` — the long-term facts the `remember`/`forget` tools
+     wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
+     redeploy**; a user who told Reachy their name last week must not have to
+     say it again because we shipped a wheel.
+
+   ```sh
+   INST=$(/venvs/apps_venv/bin/python -c \
+     "import reachy_companion, pathlib; print(pathlib.Path(reachy_companion.__file__).parent)")
+   mkdir -p /tmp/reachy_companion_backup
+   cp -a "$INST/.env" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no .env yet"
+   cp -a "$INST/memory.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no memory yet"
+   ls -l /tmp/reachy_companion_backup
+   ```
+
+   On a first deploy both are absent — record that explicitly in the deploy
+   notes rather than treating a missing file as a failed backup.
+5. **Install into the shared apps venv** (an app-level action, allowed) —
    NEVER bare `--force-reinstall` (it reinstalls `reachy-mini` too, whose
    linux `PyGObject>=3.42.2,<=3.46.0` pin has NO wheels → forbidden source
    build). Two-step instead:
@@ -53,18 +76,27 @@ first).
    (pulls only genuinely missing deps; all 43 resolve as aarch64 wheels —
    verified 2026-08-17 via `uv pip compile --python-platform
    aarch64-manylinux_2_28 --only-binary :all:`).
-5. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
+6. **Restore instance state immediately after installing, before starting.**
+   Same `$INST` (recompute it — the python minor version in the path can move):
+
+   ```sh
+   cp -a /tmp/reachy_companion_backup/.env "$INST/.env"
+   cp -a /tmp/reachy_companion_backup/memory.v1.json "$INST/memory.v1.json"
+   ls -l "$INST/.env" "$INST/memory.v1.json"
+   ```
+
+   Skip whichever file the backup step reported as absent. Verify by reading
+   the restored `memory.v1.json` back (`facts` array length) — the app injects
+   it into every session's instructions via
+   `prompts.get_session_instructions` → `memory.format_memory_for_prompt`, so
+   an empty file is silent data loss, not a visible error. Never bake secrets
+   or memory into the wheel.
+7. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
-6. **App config:** put runtime secrets in the app instance's `.env`. The
-   instance path IS the installed package directory
-   (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
-   `app.py:169` + `main.py:448`), so it exists immediately after install —
-   but it lives inside site-packages, so **every reinstall wipes `.env`;
-   re-place it after each install.** Never bake secrets into the wheel.
-7. **Preload assets before demos:** scp `scripts/preload_assets.py` to the
+8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the
    robot and run with `/venvs/apps_venv/bin/python` as the same user the app
    runs as (emotion clips + YuNet model; cold HF cache = visible stall).
-8. **Start / stop:** `POST /api/apps/start-app/reachy_companion` /
+9. **Start / stop:** `POST /api/apps/start-app/reachy_companion` /
    `POST /api/apps/stop-current-app` — or the dashboard. This is the ONLY
    sanctioned start/stop mechanism.
 

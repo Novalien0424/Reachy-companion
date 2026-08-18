@@ -256,6 +256,56 @@ Revisit trigger: if live tuning at Task 8 can't reach "cute enough," escalate
 to cascaded TTS (output_modalities=["text"] + zh TTS with cute base voice)
 KEEPING the same FX chain on top. Tuned parameter values get recorded here.
 
+## D-011 — Pitch: duration-preserving WSOLA, in numpy (2026-08-18)
+
+Operator verdict after hearing D-010 round 1 on the robot: keep the pitch, kill
+the speed-up. The resample-rate trick raises pitch and shortens speech together
+(0.79x at +4 st), and the "语速放慢" profile line was never a real fix — it asks
+the model to compensate for a DSP artefact and only half works.
+
+Decision: compose a **streaming WSOLA time-stretch** (written in numpy, still
+zero new dependencies, still no engine that primes or resets per call) with the
+existing soxr stream — stretch by `2**(st/12)`, resample by `2**(-st/12)`. Net
+effect: pitch up, duration unchanged. Geometry at 24 kHz: 20 ms hann window,
+10 ms synthesis hop (50 % overlap, periodic hann → COLA sums to exactly 1.0
+whatever offset the search picks), ±5 ms similarity search by normalized
+cross-correlation against the previous frame's natural continuation.
+
+Measured on this implementation: WSOLA lookahead 840 samples = **35.0 ms**
+deterministic; live `pending_delay` (both stages) mean 47.7 ms, p95 60.0 ms,
+peak 63.6 ms — the peak is a soxr block-buffering spike the next chunk drains,
+not a standing delay. Quality: energy outside ±3 bins of the shifted
+fundamental and its 2nd/3rd harmonics is 3.1e-5 / 7.7e-5 / 2.1e-4 for 220 /
+440 / 880 Hz in; mean best correlation 0.9955 on a formant-and-jitter speech
+phantom. Cost ~1.3 % of one dev-box core at 24 kHz. Widening the search to the
+textbook ±hop measured no better and cost 5 ms, so the narrow end won.
+
+Contract changes this forced (all in tests): `duration_ratio` is pinned at 1.0
+(kept as a name, not deleted); `pending_delay` is quoted in input samples for
+the whole chain and reconciles as `len(out) + pending_delay == total_in`, with
+no ratio; chunked-vs-whole equivalence is stated at envelope and seam level
+because a similarity search need not be sample-exact (this one happens to be —
+every decision is keyed to an absolute input position, never to a chunk
+boundary — and a separate test protects that while it holds). The profile's
+speed-compensation line is replaced by "吐字清楚、语气轻快。".
+
+## D-012 — Memory: enable upstream `remember`/`forget` (2026-08-18)
+
+Upstream already ships the tools, a JSON store (`memory.py`) and an injection
+path (`prompts.get_session_instructions` prepends
+`memory.format_memory_for_prompt` to the profile body). Nothing was wired to
+them because the locked profile did not list them. Decision: enable both in
+`default_tools` (13 → 15 tools with the two system tools) and add the Chinese
+behaviour line that gives the model an occasion to use them.
+
+Operational consequence, and the reason this is a decision and not a config
+tweak: the store lives at `<instance_path>/memory.v1.json`, and the instance
+path is the installed package directory inside `site-packages`
+(`reachy_mini/apps/app.py:169` + `main.py:448`) — the same place `.env` lives,
+and it is **wiped by every reinstall**. The `reachy-deploy` skill therefore now
+backs up `.env` *and* `memory.v1.json` before install and restores both after,
+as mandatory steps rather than a footnote.
+
 ## D-008 — Dev environment: Windows host + mockup-sim daemon (2026-08-16)
 
 Development on this Windows machine against `reachy-mini-daemon --mockup-sim`

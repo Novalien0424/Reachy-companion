@@ -1,9 +1,20 @@
-"""Behavioural contract for the cute-robot voice filter (D-010).
+"""Behavioural contract for the cute-robot voice filter (D-010, D-011).
 
-Engine-free by design: the pitch shift is the resample-rate trick through the
-already-shipped stateful `soxr`, so these tests pin *what the chain does to a
-signal* — dominant frequency, duration, chunk-independence, reset — rather than
-any engine's internals.
+Engine-free by design: the pitch shift is a streaming numpy WSOLA time-stretch
+composed with the resample-rate trick through the already-shipped stateful
+`soxr`, so these tests pin *what the chain does to a signal* — dominant
+frequency, duration, latency, harmonic purity, chunk-independence, reset —
+rather than any engine's internals.
+
+Round 2 (D-011) changed three of these contracts on purpose:
+
+* duration is now **preserved**, so `duration_ratio` is a constant 1.0 and the
+  old `1 / 2**(st/12)` formula test is gone;
+* `pending_delay` is quoted in input samples for the whole pitch chain, and
+  reconciles with a plain subtraction instead of a ratio;
+* chunked-vs-whole equivalence is stated at envelope and seam level, because a
+  similarity search is not obliged to be sample-exact (this implementation
+  happens to be — see `test_chunking_does_not_change_the_pitch_output_at_all`).
 """
 
 import logging
@@ -18,6 +29,24 @@ RATE = 24000
 SEMITONES = 4.0
 TONE_HZ = 440.0
 FFT_WINDOW = 8192
+
+# The chunk sizes every streaming test feeds: coprime with the analysis hop and
+# with each other, so no frame boundary can line up with a chunk boundary.
+ODD_CHUNKS = (479, 501, 1024, 137)
+# The WSOLA analysis window at RATE — the unit the duration contract is stated in.
+ANALYSIS_WINDOW = 480
+# WSOLA's own lookahead (window + hop + tolerance) at RATE, in ms.
+LATENCY_MS = 35.0
+# Ceiling for the whole pitch chain's in-flight audio, in ms. WSOLA contributes a
+# deterministic 35.0 ms; soxr adds its filter tail plus a block-buffering spike
+# that the next chunk drains. Measured over 5 s of tone: mean 47.7 ms, p95
+# 60.0 ms, peak 63.6 ms.
+LATENCY_BUDGET_MS = 70.0
+# Energy outside +/-3 bins of the shifted fundamental and its 2nd/3rd harmonics,
+# as a fraction of total energy. Measured on this implementation at +4 st:
+# 3.1e-5 at 220 Hz, 7.7e-5 at 440 Hz, 2.1e-4 at 880 Hz. Pinned ~2x above the
+# worst of those so a real quality regression trips it but jitter does not.
+THD_PROXY_MAX = 5e-4
 
 VOICEFX_LOGGER = "reachy_companion.audio.voicefx"
 ENVPARSE_LOGGER = "reachy_companion.audio.envparse"
@@ -79,6 +108,46 @@ def _dominant_hz(pcm: np.ndarray, start: int = 4096) -> float:
     return float(np.fft.rfftfreq(FFT_WINDOW, 1.0 / RATE)[int(np.argmax(spectrum))])
 
 
+def _thd_proxy(pcm: np.ndarray, target: float, start: int = 8192, size: int = 16384) -> float:
+    """Return the fraction of energy that is neither `target` nor its 2nd/3rd harmonic.
+
+    A sine in must give a sine out: every stitch artefact a time-stretcher can
+    make — a doubled pitch pulse, a phase-cancelled splice, a period-rate warble
+    — puts energy somewhere other than the shifted fundamental and its first two
+    harmonics. +/-3 bins around each keeps the analysis window's own leakage
+    (and the shift's fractional bin offset) out of the numerator; the first few
+    bins are excluded as DC leakage.
+    """
+    window = pcm[start : start + size].astype(np.float64)
+    assert len(window) == size
+    spectrum = np.abs(np.fft.rfft(window * np.hanning(size))) ** 2
+    bin_hz = RATE / size
+
+    signal = np.zeros(len(spectrum), dtype=bool)
+    signal[:4] = True
+    for harmonic in (1, 2, 3):
+        centre = target * harmonic
+        if centre >= RATE / 2:
+            continue
+        index = int(round(centre / bin_hz))
+        signal[max(0, index - 3) : index + 4] = True
+
+    total = float(spectrum.sum())
+    return (total - float(spectrum[signal].sum())) / total
+
+
+def _rms_profile(pcm: np.ndarray, milliseconds: int = 100) -> np.ndarray:
+    """Return the RMS of each `milliseconds`-long block, i.e. the loudness envelope."""
+    step = RATE * milliseconds // 1000
+    blocks = len(pcm) // step
+    return np.array([_rms(pcm[i * step : (i + 1) * step]) for i in range(blocks)])
+
+
+def _max_jump(pcm: np.ndarray) -> int:
+    """Return the largest sample-to-sample step — a splice click's fingerprint."""
+    return int(np.abs(np.diff(pcm.astype(np.int32))).max())
+
+
 # --------------------------------------------------------------------------
 # Disabled: the exact pre-task path
 # --------------------------------------------------------------------------
@@ -99,6 +168,7 @@ def test_disabled_exposes_a_neutral_duration_and_no_pending_tail() -> None:
 
     assert fx.duration_ratio == pytest.approx(1.0)
     assert fx.pending_delay == pytest.approx(0.0)
+    assert fx.latency_ms == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------
@@ -106,11 +176,17 @@ def test_disabled_exposes_a_neutral_duration_and_no_pending_tail() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_duration_ratio_is_the_documented_formula() -> None:
-    """`duration_ratio = 1 / 2**(semitones/12)` — the chipmunk tempo side-effect."""
+def test_duration_ratio_is_pinned_at_unity() -> None:
+    """D-011 removed the tempo side-effect, so the ratio is a constant 1.0.
+
+    Round 1's `1 / 2**(semitones/12)` — 0.79 at +4 st, a 26 % speed-up — is the
+    contract this replaces. The property is kept rather than deleted because it
+    is the name the audio path reasons about, and unity is the claim being made.
+    """
     fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0)
-    assert fx.duration_ratio == pytest.approx(1.0 / 2.0 ** (SEMITONES / 12.0))
-    assert fx.duration_ratio == pytest.approx(0.7937005, abs=1e-6)
+
+    assert fx.duration_ratio == pytest.approx(1.0)
+    assert VoiceFX(RATE, semitones=12.0).duration_ratio == pytest.approx(1.0)
 
 
 def test_pitch_up_moves_the_dominant_frequency_by_four_semitones() -> None:
@@ -121,7 +197,7 @@ def test_pitch_up_moves_the_dominant_frequency_by_four_semitones() -> None:
     or +5 shift.
     """
     fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0)
-    got = _feed(fx, _sine(int(RATE * 1.6)), (479, 501, 1024, 137))
+    got = _feed(fx, _sine(int(RATE * 1.6)), ODD_CHUNKS)
 
     target = TONE_HZ * 2.0 ** (SEMITONES / 12.0)
     bin_hz = RATE / FFT_WINDOW
@@ -132,35 +208,120 @@ def test_pitch_up_moves_the_dominant_frequency_by_four_semitones() -> None:
         assert abs(peak - neighbour) > bin_hz
 
 
-def test_output_duration_matches_the_ratio_once_the_pending_tail_is_counted() -> None:
-    """The pitch stream keeps a *pending tail*, not a leading delay.
+@pytest.mark.parametrize("chunks", [ODD_CHUNKS, (240,), (97, 1531, 13), (4096, 61)])
+def test_output_duration_equals_input_duration_whatever_the_chunking(chunks: tuple[int, ...]) -> None:
+    """The whole point of D-011: pitch moves, length does not.
 
-    The stream holds back the samples it has read but not yet emitted, so a
-    chunk sequence's total output is short by exactly that much until more input
-    arrives. `pending_delay` is quoted on the INPUT side, so it converts with
-    `duration_ratio` like any other input length.
+    The chain holds a pending tail — audio it has read but not yet emitted — so
+    the statement is about total input against total output *plus* that tail.
+    The bound is one analysis window, and it is not vacuous: `pending_delay` is
+    computed from the two stages' own state, not from the counters this compares.
     """
+    total_in = int(RATE * 3.0)
     fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0)
-    total_in = int(RATE * 1.6)
-    got = _feed(fx, _sine(total_in), (479, 501, 1024, 137))
+    got = _feed(fx, _sine(total_in), chunks)
 
-    expected = total_in * fx.duration_ratio
-    assert abs(len(got) + fx.pending_delay * fx.duration_ratio - expected) <= 16
-    # The tail is real and material: this is not a vacuous identity.
+    assert abs(len(got) + fx.pending_delay - total_in) <= ANALYSIS_WINDOW
+    # And the raw length is close to the input's on its own, i.e. the tail is a
+    # tail and not a 21 % shortfall: at +4 st round 1 returned 0.79 of the input.
+    assert len(got) / total_in > 0.97
+    # The tail is real and material; this is not a vacuous identity.
     assert fx.pending_delay > 0.0
 
 
-def test_chunked_and_whole_pitch_output_are_the_same_signal() -> None:
-    """Two fresh instances, same signal, different chunking → identical output.
+def test_the_pitch_chain_stays_inside_its_latency_budget() -> None:
+    """Both stages hold audio now, so the budget is stated on the live total.
 
-    Both retain the same pending tail, so no trimming or alignment is needed.
+    `latency_ms` is WSOLA's deterministic share; `pending_delay` adds soxr's
+    filter tail and its block-buffering spike, and is what a caller feels.
+    """
+    fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0)
+    assert fx.latency_ms == pytest.approx(LATENCY_MS)
+    assert fx.pending_delay == pytest.approx(0.0)  # a pending tail, not a priming delay
+
+    signal = _sine(int(RATE * 3.0))
+    peak, i, k = 0.0, 0, 0
+    while i < len(signal):
+        size = ODD_CHUNKS[k % len(ODD_CHUNKS)]
+        k += 1
+        fx.process(signal[i : i + size])
+        peak = max(peak, fx.pending_delay)
+        i += size
+
+    assert peak <= LATENCY_BUDGET_MS * RATE / 1000.0
+    assert peak >= fx.latency_ms * RATE / 1000.0 * 0.5  # the measurement is live, not a constant
+
+
+@pytest.mark.parametrize("tone_hz", [220.0, TONE_HZ, 880.0])
+def test_a_sine_in_is_still_a_sine_out(tone_hz: float) -> None:
+    """Quality floor: the stretch must not smear energy across the spectrum.
+
+    A time-stretcher that splices out of phase produces a period-rate warble, and
+    one that mis-searches produces doubled pitch pulses; both show up as energy
+    away from the shifted fundamental and its first harmonics. The bound is
+    pinned at roughly twice this implementation's worst measured value so the
+    next change to the search or the window geometry has to justify itself.
+    """
+    fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0, gain_db=0.0)
+    got = _feed(fx, _sine(int(RATE * 2.0), freq=tone_hz), ODD_CHUNKS)
+
+    assert _thd_proxy(got, tone_hz * 2.0 ** (SEMITONES / 12.0)) < THD_PROXY_MAX
+
+
+def test_chunked_and_whole_pitch_output_carry_the_same_envelope_and_no_seams() -> None:
+    """Chunking must not be audible: same loudness contour, no splice clicks.
+
+    A similarity search is free to make different (equally valid) choices under
+    different buffering, so sample-exactness is not the contract — these two
+    measurements are. The RMS profile catches level drift or dropouts; the
+    largest sample-to-sample step catches a click stitched in at a chunk seam,
+    which would stand out against the single-shot signal's own steepest slope.
     """
     signal = _sine(int(RATE * 1.6))
-    chunked = _feed(VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0), signal, (479, 501, 1024, 137))
+    chunked = _feed(VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0), signal, ODD_CHUNKS)
     whole = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0).process(signal).reshape(-1)
 
-    assert len(chunked) == len(whole)
-    assert _lsb_diff(chunked, whole) <= 2
+    assert abs(len(chunked) - len(whole)) <= ANALYSIS_WINDOW
+
+    chunked_rms, whole_rms = _rms_profile(chunked), _rms_profile(whole)
+    blocks = min(len(chunked_rms), len(whole_rms))
+    assert blocks >= 10
+    assert np.max(np.abs(chunked_rms[:blocks] - whole_rms[:blocks]) / whole_rms[:blocks]) < 0.10
+
+    assert _max_jump(chunked) <= 2 * _max_jump(whole)
+
+
+def test_chunking_does_not_change_the_pitch_output_at_all() -> None:
+    """Stronger than the contract above, and worth protecting while it holds.
+
+    Every WSOLA decision is keyed to an absolute position on the input timeline,
+    never to where a chunk happened to end, so this implementation is exactly
+    chunk-invariant. If a future change trades that away, weaken this test
+    deliberately — do not delete the envelope/seam test above with it.
+    """
+    signal = _sine(int(RATE * 1.6))
+    whole = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0).process(signal).reshape(-1)
+
+    for chunks in (ODD_CHUNKS, (97, 1531, 13), (240,)):
+        chunked = _feed(VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0), signal, chunks)
+        assert len(chunked) == len(whole)
+        assert _lsb_diff(chunked, whole) == 0
+
+
+def test_a_chunk_shorter_than_the_lookahead_comes_back_empty() -> None:
+    """The chain now buffers, so an early chunk can legitimately emit nothing.
+
+    Downstream (`openai_realtime.emit`) hands whatever comes back to the output
+    resampler, which is fine with an empty buffer — but the shape contract still
+    has to hold, or the (1, N) reshape downstream would fail.
+    """
+    fx = VoiceFX(RATE, semitones=SEMITONES, ringmod_hz=0.0)
+    first = fx.process(_sine(240).reshape(1, -1))
+
+    assert first.shape == (1, 0)
+    assert first.dtype == np.int16
+    # It is buffering, not discarding: enough further input and the audio appears.
+    assert fx.process(_sine(4800).reshape(1, -1)).size > 0
 
 
 def test_process_preserves_the_channel_first_shape() -> None:
@@ -184,12 +345,14 @@ def test_process_accepts_an_empty_chunk() -> None:
 
 
 def test_zero_semitones_does_not_construct_a_pitch_stage() -> None:
-    """st=0 is a HARD bypass: no resampler is built, so there is no latency at all."""
+    """st=0 is a HARD bypass: neither stage is built, so there is no latency at all."""
     fx = VoiceFX(RATE, semitones=0.0, ringmod_hz=55.0, ringmod_mix=0.25)
 
     assert fx._pitch is None
+    assert fx._stretch is None
     assert fx.duration_ratio == pytest.approx(1.0)
     assert fx.pending_delay == pytest.approx(0.0)
+    assert fx.latency_ms == pytest.approx(0.0)
 
     n = 4800
     assert len(fx.process(_sine(n)).reshape(-1)) == n
@@ -318,8 +481,13 @@ def test_gain_alone_does_not_wake_a_bypassed_chain() -> None:
 
 
 def test_reset_restores_a_fresh_instance() -> None:
-    """After reset the filter must behave exactly like one that never ran."""
-    block = _sine(4800)  # ~10x the pitch stage's pending tail
+    """After reset the filter must behave exactly like one that never ran.
+
+    Both pitch stages have to be cleared for this: the stretcher's input buffer,
+    overlap-add tail, correlation template and synthesis timeline, plus soxr's
+    filter tail. Leaving any one of them behind changes this output.
+    """
+    block = _sine(4800)  # ~4x the pitch chain's pending tail
     fresh = VoiceFX(RATE, semitones=SEMITONES).process(block).reshape(-1)
 
     fx = VoiceFX(RATE, semitones=SEMITONES)
@@ -376,6 +544,12 @@ def test_from_env_logs_the_settled_configuration(
 
     assert "VoiceFX enabled" in caplog.text
     assert "+4.0 st" in caplog.text
+    # D-011: which pitch mode is running, and what it costs, are the two things
+    # an on-robot log has to answer — the round-1 chain sounded the same but
+    # played 26 % fast, so "pitched" alone does not identify the build.
+    assert "WSOLA" in caplog.text
+    assert "duration preserved" in caplog.text
+    assert "35.0 ms" in caplog.text
     # The makeup gain is the knob the operator tunes for loudness; it must be visible.
     assert "gain" in caplog.text
     assert "+5.0 dB" in caplog.text
@@ -462,14 +636,17 @@ def test_from_env_malformed_gain_warns_and_uses_the_default(
 
 
 def test_env_example_documents_every_knob() -> None:
-    """An undocumented knob is an unusable one; the tempo note is part of the contract."""
+    """An undocumented knob is an unusable one; the duration note is part of the contract."""
     from pathlib import Path
 
     text = (Path(__file__).resolve().parent.parent / ".env.example").read_text(encoding="utf-8")
 
     for name in _ENV_KNOBS:
         assert name in text
-    assert "semitones" in text  # the duration/tempo caveat is spelled out
+    assert "semitones" in text
+    # D-011 removed the tempo side-effect; the file must not still promise it.
+    assert "duration" in text
+    assert "faster" not in text
 
 
 @pytest.mark.parametrize(

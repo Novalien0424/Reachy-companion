@@ -587,11 +587,12 @@ async def test_emit_with_the_filter_disabled_is_byte_for_byte_the_pre_task_path(
 
 @pytest.mark.asyncio
 async def test_emit_applies_the_filter_when_it_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With the knob on, the audio that reaches the speaker is pitched and shorter.
+    """With the knob on, the audio that reaches the speaker is pitched but NOT shorter.
 
     End-to-end through the real chain — filter, then downsample — so this also
     pins that the pitch survives the 24k->16k stage rather than being an artefact
-    measured before it.
+    measured before it. Round 1's chain shortened the reply by 21 % on the way;
+    D-011's WSOLA stretch removed that, which is the difference this asserts.
     """
     monkeypatch.setenv("VOICEFX_ENABLED", "1")
     monkeypatch.setenv("VOICEFX_PITCH_SEMITONES", "4")
@@ -612,12 +613,14 @@ async def test_emit_applies_the_filter_when_it_is_enabled(monkeypatch: pytest.Mo
     fx = h._voicefx
     assert fx is not None and fx.enabled is True
 
-    # Shorter by the pitch ratio: what the input holds, less what both stages
-    # still hold (the filter's tail is quoted on its own input side).
+    # As long as the input, less only what the three stages still hold (the
+    # filter's tail is quoted on its own input side, which duration preservation
+    # makes the same unit as its output side).
     filtered = n - fx.pending_delay
     expected = filtered * fx.duration_ratio * ROBOT_RATE / MODEL_RATE
     assert abs(len(got) + h._output_resampler.delay - expected) <= 2
-    assert len(got) < n * ROBOT_RATE / MODEL_RATE * 0.81  # unfiltered would be 32000
+    # Unfiltered would be 32000; round 1's resample-only pitch gave ~25400.
+    assert len(got) > n * ROBOT_RATE / MODEL_RATE * 0.95
 
     # And pitched: the dominant frequency at the speaker is 440 * 2**(4/12).
     window = 8192
