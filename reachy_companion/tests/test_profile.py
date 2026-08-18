@@ -98,14 +98,19 @@ def test_a_remembered_fact_reaches_the_locked_profile_session_instructions(
 
     `remember` writes to `<instance_path>/memory.v1.json`; the next session's
     instructions are built by `prompts.get_session_instructions`, which prepends
-    the store's contents *before* the profile body. This proves the injection
-    path is live for the locked profile specifically — the profile is resolved
-    by `config.REACHY_MINI_CUSTOM_PROFILE`, which the lock pins, so a profile
-    lookup regression would show up here as missing Chinese instructions.
+    the store's contents *before* the profile body.
+
+    The Chinese assertion on `baseline` is load-bearing, not decoration: when
+    `read_profile` fails, `get_session_instructions` silently falls back to the
+    packaged **English** default profile (`prompts.py:40-45`), and every other
+    assertion here — memory header, fact text, `endswith` — passes just as
+    happily against that fallback. Without this line the test would prove the
+    injection path works for *some* profile, which is not the claim.
     """
     monkeypatch.setattr("reachy_companion.config.config.REACHY_MINI_CUSTOM_PROFILE", LOCKED_PROFILE)
 
     baseline = get_session_instructions(tmp_path)
+    assert "中文" in baseline  # it really is the locked profile, not the English fallback
     assert "Things you remember about the user" not in baseline
 
     add_memory_fact(tmp_path, "Prefers to be called 小明")

@@ -300,7 +300,17 @@ cross-correlation against the previous frame's natural continuation.
 Measured on this implementation: WSOLA lookahead 840 samples = **35.0 ms**
 deterministic; live `pending_delay` (both stages) mean 47.7 ms, p95 60.0 ms,
 peak 63.6 ms — the peak is a soxr block-buffering spike the next chunk drains,
-not a standing delay. Quality: energy outside ±3 bins of the shifted
+not a standing delay.
+
+**Controller ruling (2026-08-18 review):** the draft ~60 ms budget is formally
+revised to **70 ms**, matching the `LATENCY_BUDGET_MS = 70.0` test constant; the
+63.6 ms peak is accepted because it is a soxr transient over a ~40 ms standing
+delay, not added lag, and the live turn measured 39 ms first-audio-delta. The
+levers stay documented and untaken unless the operator asks for them: a 16 ms
+analysis window (−4 ms, below the stated 20–40 ms band) or a lower soxr quality
+for the pitch stage (changes audio that is already shipped and accepted).
+
+Quality: energy outside ±3 bins of the shifted
 fundamental and its 2nd/3rd harmonics is 3.1e-5 / 7.7e-5 / 2.1e-4 for 220 /
 440 / 880 Hz in; mean best correlation 0.9955 on a formant-and-jitter speech
 phantom. Cost ~1.3 % of one dev-box core at 24 kHz. Widening the search to the

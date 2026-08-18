@@ -56,7 +56,12 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
 
 1. Mic pass (2 min): Chinese multi-turn, voice barge-in, ~1 s pause,
    VoiceFX ear-tuning (`scripts\dev_daemon.ps1` + `scripts\run_app_dev.ps1`).
-2. Robot power-on → resume `reachy-deploy` at Step 1 (procedure corrected).
+2. Live mic pass on the **new build already installed on the robot** (round 2:
+   WSOLA duration-preserving pitch, 15 tools). Wake it with an antenna touch —
+   `startup_app` is `reachy_companion` — and listen for: pitch still cute at
+   natural pace; `remember`/`forget` used at the right moments; no audible
+   tail bleeding across turns (a ~48-63 ms carry is known and expected to be
+   inaudible — if it is not, a response-end flush is the fix).
 3. Notion MCP + Home Assistant credentials → Tasks 12.5 / 13.5.
 
 ## Next after operator items

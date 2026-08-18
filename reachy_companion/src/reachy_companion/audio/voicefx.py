@@ -62,8 +62,8 @@ not a standing delay; the standing part is WSOLA's 35 ms plus soxr's 4.8 ms
 filter tail.
 
 Round-1 note for readers of the old code: `duration_ratio` is retained at a
-constant 1.0. Duration is preserved now; there is no tempo side-effect left to
-account for.
+constant 1.0, for test-contract continuity only — no code under `src/` reads it.
+Duration is preserved now; there is no tempo side-effect left to account for.
 """
 
 import math
@@ -368,11 +368,15 @@ class VoiceFX:
     def duration_ratio(self) -> float:
         """Output duration as a fraction of input duration — now always 1.0.
 
-        Retained as a named constant rather than deleted: it is the contract the
-        rest of the audio path reasons about, and pinning it at unity is the
-        statement that the D-011 pitch chain has no tempo side-effect. The
-        round-1 value was `1 / 2**(semitones/12)`, and the profile carried a
-        "speak slowly" line to offset it; both are gone.
+        There are **no production readers**: nothing under `src/` reads this, not
+        even the `from_env` log line any more. It is retained rather than deleted as a D-011
+        choice about test-contract continuity: round 1 stated the tempo
+        side-effect through this name (`1 / 2**(semitones/12)`, 0.79 at +4 st,
+        offset by a "speak slowly" profile line), so pinning the same name at
+        unity is a legible statement that the side-effect is gone, where a
+        deletion would only have removed the evidence. Delete it freely if a
+        future round finds the name more confusing than useful; nothing in the
+        audio path will break.
         """
         return 1.0
 
