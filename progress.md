@@ -44,9 +44,10 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
   endpoint is structurally dead — vision/face rehearsals need the robot.
 - T11 latency: 16.8 s to spoken answer; 4.5 s is per-call MCP session setup
   (session-reuse opportunity, deferred).
-- D-011 carry-overs: pitch chain peak latency 63.6 ms vs the ~60 ms budget
-  (soxr block-buffering spike; standing delay is ~40 ms), and it costs **14.8 %
-  of one robot core** while the assistant speaks (1.3 % on the dev box).
+- D-011 carry-overs: pitch chain 63.6 ms peak accepted under the revised 70 ms
+  budget (D-011) — a soxr block-buffering spike; standing delay is ~40 ms — and
+  it costs **14.8 % of one robot core** while the assistant speaks (1.3 % on the
+  dev box).
 - D-012 carry-over: `memory.v1.json` lives inside site-packages and survives
   redeploys only because the skill backs it up. Moving it to `XDG_DATA_HOME`
   (already supported by `memory_path_for_instance`) would orphan any existing

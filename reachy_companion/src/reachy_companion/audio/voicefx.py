@@ -104,8 +104,8 @@ _TWO_PI = 2.0 * math.pi
 #
 # 20 ms window / 10 ms synthesis hop: long enough to hold two periods of a 100 Hz
 # male fundamental (the hardest case for the similarity search), short enough
-# that the whole pitch chain stays inside the 60 ms latency budget for a
-# conversational turn-taking loop.
+# that the whole pitch chain stays inside the 70 ms latency budget for a
+# conversational turn-taking loop (D-011).
 _WSOLA_WINDOW_MS = 20.0
 # +/-5 ms of search, i.e. a 10 ms span: one whole period of a 100 Hz fundamental,
 # so the search can always find a pitch-synchronous splice for any voice above

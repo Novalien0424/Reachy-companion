@@ -55,6 +55,10 @@ first).
      wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
      redeploy**; a user who told Reachy their name last week must not have to
      say it again because we shipped a wheel.
+   - `faces.v1.json` — the enrolled faces the `remember_face` tool wrote
+     (`faces.py:33`, `FACES_FILENAME`, D-013). Same rule, higher cost to lose:
+     re-enrolling means asking every person to stand in front of the camera
+     again, and the wake-time greeting silently stops using anyone's name.
 
    ```sh
    INST=$(/venvs/apps_venv/bin/python -c \
@@ -62,10 +66,11 @@ first).
    mkdir -p /tmp/reachy_companion_backup
    cp -a "$INST/.env" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no .env yet"
    cp -a "$INST/memory.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no memory yet"
+   cp -a "$INST/faces.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no faces yet"
    ls -l /tmp/reachy_companion_backup
    ```
 
-   On a first deploy both are absent — record that explicitly in the deploy
+   On a first deploy all three are absent — record that explicitly in the deploy
    notes rather than treating a missing file as a failed backup.
 5. **Install into the shared apps venv** (an app-level action, allowed) —
    NEVER bare `--force-reinstall` (it reinstalls `reachy-mini` too, whose
@@ -82,20 +87,39 @@ first).
    ```sh
    cp -a /tmp/reachy_companion_backup/.env "$INST/.env"
    cp -a /tmp/reachy_companion_backup/memory.v1.json "$INST/memory.v1.json"
-   ls -l "$INST/.env" "$INST/memory.v1.json"
+   cp -a /tmp/reachy_companion_backup/faces.v1.json "$INST/faces.v1.json"
+   ls -l "$INST/.env" "$INST/memory.v1.json" "$INST/faces.v1.json"
    ```
 
    Skip whichever file the backup step reported as absent. Verify by reading
-   the restored `memory.v1.json` back (`facts` array length) — the app injects
-   it into every session's instructions via
-   `prompts.get_session_instructions` → `memory.format_memory_for_prompt`, so
-   an empty file is silent data loss, not a visible error. Never bake secrets
-   or memory into the wheel.
+   **both** stores back — record counts, not just file presence:
+
+   ```sh
+   /venvs/apps_venv/bin/python - <<'PY'
+   import json, pathlib, reachy_companion
+   inst = pathlib.Path(reachy_companion.__file__).parent
+   for name, key in (("memory.v1.json", "facts"), ("faces.v1.json", "faces")):
+       path = inst / name
+       if not path.is_file():
+           print(f"{name}: absent"); continue
+       data = json.loads(path.read_text(encoding="utf-8"))
+       print(f"{name}: {len(data.get(key, []))} records")
+   PY
+   ```
+
+   An empty file is silent data loss, not a visible error: memory is injected
+   into every session's instructions via `prompts.get_session_instructions` →
+   `memory.format_memory_for_prompt`, and faces are read by
+   `face_id.FaceRecognizer.match` → `faces.list_faces`. Neither failure raises
+   anything. Never bake secrets, memory or faces into the wheel.
 7. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
 8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the
    robot and run with `/venvs/apps_venv/bin/python` as the same user the app
-   runs as (emotion clips + YuNet model; cold HF cache = visible stall).
+   runs as — emotion clips, the YuNet detector, and the ~37 MB SFace
+   recognition model (D-013); a cold HF cache is a visible stall, and for
+   SFace it also means the wake-time greeting misses its budget on the first
+   session after a redeploy.
 9. **Start / stop:** `POST /api/apps/start-app/reachy_companion` /
    `POST /api/apps/stop-current-app` — or the dashboard. This is the ONLY
    sanctioned start/stop mechanism.

@@ -23,6 +23,8 @@ EXPECTED_TOOLS = (
     "go_to_sleep",
     "remember",
     "forget",
+    "remember_face",
+    "who_is_this",
     "pollen_robotics_reachy_mini_search_tool__search_web",
 )
 
@@ -88,6 +90,26 @@ def test_locked_profile_can_remember_and_correct_facts_about_the_user() -> None:
     assert (
         "用户告诉你关于他们自己的重要信息（名字、喜好、习惯）时，用 remember 记下来；说错了就用 forget 修正。"
         in profile.instructions
+    )
+
+
+def test_locked_profile_can_remember_and_recall_a_face() -> None:
+    """Face memory ships as tool + instruction together, like every round before it (D-013).
+
+    Both halves are load-bearing: without the enrollment line nobody is ever
+    stored, and without the recall line the model answers "我是谁?" from the
+    conversation instead of looking. The "认不出就坦率说认不出" clause is the
+    honesty rule that keeps an `unknown` status from becoming a guessed name.
+    """
+    profile = read_profile(LOCKED_PROFILE)
+
+    assert "remember_face" in profile.default_tools
+    assert "who_is_this" in profile.default_tools
+    assert (
+        '当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相。' in profile.instructions
+    )
+    assert '当用户问"我是谁"、"你还认得我吗"时，用 who_is_this 工具；认不出就坦率说认不出，不要猜。' in (
+        profile.instructions
     )
 
 

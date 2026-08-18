@@ -20,7 +20,7 @@ from reachy_companion.utils import (
     setup_logger,
     log_connection_troubleshooting,
 )
-from reachy_companion.audio.envparse import env_int
+from reachy_companion.audio.envparse import env_int, env_bool
 
 
 if TYPE_CHECKING:
@@ -362,6 +362,24 @@ def run(
     except Exception as e:
         logger.error("Failed to initialize tools: %s", e)
         sys.exit(1)
+
+    # US-10 / D-013: face memory. Built after the tool registry so the recognizer
+    # is in `deps` before the first session can dispatch `who_is_this`, and warmed
+    # on a daemon thread because a cold build reads ~37 MB of SFace off eMMC —
+    # far more than the wake-time budget the greeting hook allows itself.
+    # FACE_MEMORY_ENABLED=0 is the kill switch: no model, no warm-up, and both
+    # tools plus the wake check answer "unavailable".
+    from reachy_companion.face_id import FaceRecognizer
+
+    face_memory_enabled = env_bool("FACE_MEMORY_ENABLED", True)
+    face_recognizer = FaceRecognizer(instance_path, enabled=face_memory_enabled)
+    deps.face_recognizer = face_recognizer
+    if not face_memory_enabled:
+        logger.info("Face memory disabled by FACE_MEMORY_ENABLED; recognition tools will report unavailable.")
+    elif not deps.camera_enabled:
+        logger.info("Face memory has no camera (--no-camera); skipping model warm-up.")
+    else:
+        face_recognizer.start_warmup()
 
     # Each async service → its own thread/loop
     movement_manager.start()

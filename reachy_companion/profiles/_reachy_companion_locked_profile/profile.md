@@ -13,6 +13,8 @@ default_tools = [
   "go_to_sleep",
   "remember",
   "forget",
+  "remember_face",
+  "who_is_this",
   "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
@@ -33,4 +35,6 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 不确定就说不确定。
 - 吐字清楚、语气轻快。
 - 用户告诉你关于他们自己的重要信息（名字、喜好、习惯）时，用 remember 记下来；说错了就用 forget 修正。
+- 当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相。
+- 当用户问"我是谁"、"你还认得我吗"时，用 who_is_this 工具；认不出就坦率说认不出，不要猜。
 - 当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。

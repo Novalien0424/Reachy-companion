@@ -43,6 +43,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
+from reachy_companion.audio.envparse import env_int, env_bool
 from reachy_companion.tools.core_tools import (
     ToolSpec,
     ToolDependencies,
@@ -64,6 +65,15 @@ logger = logging.getLogger(__name__)
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
+
+# Face memory at wake time (D-013). One monotonic deadline bounds the whole
+# check — model readiness, frame capture and identification together — because
+# this hook runs before the session starts processing events: every millisecond
+# it spends is a millisecond the greeting is late.
+_FACE_WAKE_BUDGET_MS_DEFAULT: Final[int] = 1200
+_FACE_GREETING_PREFIX: Final[str] = (
+    "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
+)
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -451,6 +461,74 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._mark_activity("say")
         await self._safe_response_create()
 
+    async def _recognized_face_prefix(self) -> str:
+        """Return the greeting prefix naming a recognized face, or "" (D-013).
+
+        The single auto-recognition hook in the app: one look at wake time, never
+        a continuous scan. Bounded by one monotonic deadline covering readiness,
+        frame capture and identification together — hitting it, failing to
+        recognize anybody, or any exception at all yields "", so the greeting is
+        sent unchanged and on time. Face memory must never be able to delay or
+        lose the first thing Reachy says.
+        """
+        if not env_bool("FACE_AUTO_GREET", True):
+            return ""
+
+        recognizer = self.deps.face_recognizer
+        if recognizer is None or not self.deps.camera_enabled:
+            return ""
+
+        budget_s = env_int("FACE_WAKE_BUDGET_MS", _FACE_WAKE_BUDGET_MS_DEFAULT, lo=0, hi=10_000) / 1000.0
+        deadline = time.monotonic() + budget_s
+        started = time.monotonic()
+
+        def remaining() -> float:
+            return deadline - time.monotonic()
+
+        try:
+            if remaining() <= 0.0:
+                return ""
+            ready = await asyncio.wait_for(asyncio.to_thread(recognizer.wait_ready, remaining()), remaining())
+            if not ready:
+                logger.info("Face memory not ready within the wake budget; greeting unchanged.")
+                return ""
+
+            if remaining() <= 0.0:
+                return ""
+            # Correction 1: the wake check reads the camera through the same media
+            # path as the tools; a None frame skips recognition entirely.
+            frame = await asyncio.wait_for(asyncio.to_thread(self.deps.reachy_mini.media.get_frame), remaining())
+            if frame is None:
+                return ""
+
+            if remaining() <= 0.0:
+                return ""
+            identification = await asyncio.wait_for(asyncio.to_thread(recognizer.identify, frame), remaining())
+        except asyncio.TimeoutError:
+            logger.info("Face memory exceeded its %.0f ms wake budget; greeting unchanged.", budget_s * 1000.0)
+            return ""
+        except Exception as e:
+            logger.warning("Face memory check failed at wake time: %s: %s", type(e).__name__, e)
+            return ""
+
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        if identification.status != "recognized" or not identification.name:
+            logger.info(
+                "Wake face check: status=%s score=%s in %.0f ms; greeting unchanged.",
+                identification.status,
+                identification.score,
+                elapsed_ms,
+            )
+            return ""
+
+        logger.info(
+            "Wake face check: recognized %s (score %.3f) in %.0f ms; greeting personalized.",
+            identification.name,
+            identification.score or 0.0,
+            elapsed_ms,
+        )
+        return _FACE_GREETING_PREFIX.format(name=identification.name) + "\n"
+
     async def _send_startup_greeting_prompt(self) -> None:
         """Prompt the model to open the conversation once the session is ready."""
         if self._startup_greeting_sent or not self.connection:
@@ -460,6 +538,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not greeting_prompt:
             self._startup_greeting_sent = True
             return
+
+        greeting_prompt = await self._recognized_face_prefix() + greeting_prompt
 
         try:
             await self.connection.conversation.item.create(

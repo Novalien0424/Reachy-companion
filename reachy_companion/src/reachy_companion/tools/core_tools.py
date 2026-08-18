@@ -43,6 +43,11 @@ class ToolDependencies:
     camera_enabled: bool = False
     motion_duration_s: float = 1.0
     go_to_sleep: Callable[[], dict[str, Any]] | None = None
+    # FaceRecognizer from face_id.py (D-013). Optional and untyped for the same
+    # reason as go_to_sleep: the runtime injects it in main.py, and every other
+    # construction site — tests, the settings UI, older deployments — must keep
+    # working with face memory simply absent.
+    face_recognizer: Any = None
 
 
 class ToolSpec(TypedDict):
