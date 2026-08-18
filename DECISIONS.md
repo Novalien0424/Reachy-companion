@@ -282,6 +282,18 @@ New hardware finding: the robot is a Raspberry Pi **CM4**, not a Pi 5 — see
 D-013 for what that costs. Evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/task-17-report.md`.
 
+Task 17 fix-round redeploy (2026-08-18, commit `0fac21a`): same ritual, second
+pass, carrying the review fixes (blob-contract test, cv2 guard on indented
+imports, `runner_up` dropped from `recognized`, explicit `enabled` check in the
+wake hook, `align_face` dimension guard). `.env` (1027 B) backed up and
+re-placed; `memory.v1.json` and `faces.v1.json` still absent — nobody has
+enrolled yet — and recorded as such. **17 tools**; `Face memory ready … 976 ms`;
+`Wake face check: status=no_face … in 258 ms; greeting unchanged`; zero
+tracebacks and zero app `ERROR` lines; robot ASLEEP (`motor_control_mode
+disabled`, head pitch 0.511 rad). No preload needed — the SFace cache from the
+first pass was already warm, which is itself the evidence that the preload step
+does its job across redeploys.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict

@@ -2,16 +2,16 @@
 
 ## Current verified state (2026-08-18 — Task 17 face memory shipped to the robot)
 
-Suite: **510 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+Suite: **515 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
 
-Task 17 (commit `1d7eaa0`): **D-013** face memory — Reachy enrolls a face by
+Task 17 (commits `1d7eaa0` + review fixes `0fac21a`): **D-013** face memory — Reachy enrolls a face by
 name (`remember_face`), answers "我是谁" (`who_is_this`), and greets a
 recognized person by name at wake time. Reuses the SDK's YuNet detector and
 adds SFace fp32 with **zero new dependencies**; the app venv has no cv2, so
 alignment is a numpy Umeyama warp. Separate `faces.v1.json` store, now in the
 deploy backup/restore ritual. 15 → **17 tools**. Redeployed and verified on the
-robot; robot left ASLEEP. Evidence:
+robot twice (feature, then the review fix round); robot left ASLEEP. Evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/task-17-report.md`.
 
 Operator round 2 (commits `72c242c`, `7f68edc`): **D-011** replaced the
