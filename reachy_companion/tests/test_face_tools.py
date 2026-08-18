@@ -53,6 +53,10 @@ class _FakeRecognizer:
         return None
 
     def wait_ready(self, timeout_s: float) -> bool:
+        # Honour the kill switch exactly as the real class does, so a test that
+        # forgets the `enabled` guard cannot pass against a more permissive fake.
+        if not self.enabled:
+            return False
         if self._wait_delay_s:
             time.sleep(self._wait_delay_s)
         return self._ready
@@ -485,7 +489,34 @@ async def test_greeting_is_not_delayed_past_the_wake_budget(monkeypatch: pytest.
     elapsed_ms = (time.monotonic() - started) * 1000.0
 
     assert _sent_text(handler) == GREETING
-    assert elapsed_ms < 1000.0
+    # 300 ms budget + slack. Loose enough for a busy CI box, tight enough that
+    # the 3 s sleep could never hide inside it.
+    assert elapsed_ms < 500.0
+
+
+@pytest.mark.asyncio
+async def test_greeting_hook_is_a_no_op_for_a_disabled_recognizer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The kill switch composed with the wake hook, against the REAL recognizer.
+
+    Not a fake: `FaceRecognizer(enabled=False)` is what `main.py` constructs
+    under `FACE_MEMORY_ENABLED=0`, and the promise is that it loads no model and
+    burns none of the wake budget. The log line must say so, rather than
+    misattributing the skip to a budget that was never started.
+    """
+    recognizer = FaceRecognizer(tmp_path, enabled=False)
+    handler = _handler(recognizer, monkeypatch)
+
+    with caplog.at_level("INFO", logger="reachy_companion.huggingface_realtime"):
+        started = time.monotonic()
+        await handler._send_startup_greeting_prompt()
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+
+    assert _sent_text(handler) == GREETING
+    assert elapsed_ms < 100.0
+    assert recognizer._sface is None  # no model was ever built
+    assert "Face memory is disabled" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -36,16 +36,22 @@ def _face_at(points: NDArray[np.float64]) -> Face:
     )
 
 
-def _smooth_disc_frame() -> NDArray[np.uint8]:
-    """Return a 112x112 BGR test frame: a smooth pattern inside a centered disc, black outside.
+def _smooth_disc_frame(size: int = ALIGNED_SIZE) -> NDArray[np.uint8]:
+    """Return a `size`x`size` BGR test frame: a smooth pattern inside a centered disc.
 
     Rotation-invariant support matters here. A full-bleed random frame loses its
     corners to the frame edge under any rotation, so a rotate/unrotate round trip
     would be compared against content that no longer exists. Keeping every
     non-black pixel inside a disc of radius 40 means the roll test measures
     resampling error, not cropping.
+
+    The pattern is one continuous function of *canonical* (112-frame)
+    coordinates, sampled on the requested grid. A 224 frame is therefore the
+    exact same image at twice the scale, which is what lets the scale test
+    compare a 224 source against the 112 reference pixel for pixel.
     """
-    ys, xs = np.mgrid[0:ALIGNED_SIZE, 0:ALIGNED_SIZE].astype(np.float64)
+    zoom = size / ALIGNED_SIZE
+    ys, xs = (np.mgrid[0:size, 0:size].astype(np.float64) / zoom)
     dx, dy = xs - 55.5, ys - 55.5
     radius = np.hypot(dx, dy)
     pattern = 128.0 + 90.0 * np.sin(dx / 13.0) * np.cos(dy / 11.0)
@@ -138,6 +144,33 @@ def test_align_undoes_roll() -> None:
     assert np.abs(aligned.astype(int) - frame.astype(int)).mean() < 8
 
 
+def test_align_undoes_scale() -> None:
+    """A face twice the canonical size must be scaled down, not merely cropped.
+
+    The regression this pins is a sign error in the inverse transform: sampling
+    at `source * scale` instead of `source / scale` reads the top-left quarter of
+    the frame and still returns a plausible-looking 112x112 crop. Landmarks at
+    exactly `REFERENCE_POINTS * 2` in a 224 frame make the right answer the
+    reference frame itself, pixel for pixel.
+    """
+    reference = _smooth_disc_frame()
+    doubled = _smooth_disc_frame(ALIGNED_SIZE * 2)
+
+    aligned = align_face(doubled, _face_at(REFERENCE_POINTS.astype(np.float64) * 2.0))
+
+    assert np.abs(aligned.astype(int) - reference.astype(int)).max() <= 1
+
+
+def test_align_returns_a_black_crop_for_an_unusable_frame() -> None:
+    """The helper is public; a 1-px or 2-D frame must not raise out of it."""
+    tiny = align_face(np.zeros((1, 1, 3), dtype=np.uint8), _face_at(REFERENCE_POINTS.astype(np.float64)))
+    flat = align_face(np.zeros((64, 64), dtype=np.uint8), _face_at(REFERENCE_POINTS.astype(np.float64)))
+
+    assert tiny.shape == (ALIGNED_SIZE, ALIGNED_SIZE, 3)
+    assert not tiny.any()
+    assert flat.shape == (ALIGNED_SIZE, ALIGNED_SIZE, 3)
+
+
 def test_align_survives_degenerate_landmarks() -> None:
     """Three collinear (or identical) landmarks must not raise — identify() must stay total."""
     frame = _smooth_disc_frame()
@@ -154,7 +187,13 @@ def test_no_module_imports_cv2() -> None:
     offenders = [
         path.name
         for path in package_root.rglob("*.py")
-        if any(line.startswith(("import cv2", "from cv2")) for line in path.read_text(encoding="utf-8").splitlines())
+        # `.strip()` is load-bearing: our own modules import lazily *inside*
+        # functions (face_id._load, _scale_face), so an indented `import cv2`
+        # is the shape this guard most needs to catch.
+        if any(
+            line.strip().startswith(("import cv2", "from cv2"))
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
     ]
 
     assert offenders == []
@@ -174,7 +213,13 @@ def test_cosine_is_scale_invariant_and_bounded() -> None:
 
 
 def test_match_reports_recognized_for_a_clear_winner(tmp_path: Path) -> None:
-    """One person over the threshold, well clear of the runner-up, is a recognition."""
+    """One person over the threshold, well clear of the runner-up, is a recognition.
+
+    The runner-up is deliberately **not** reported here. `who_is_this` hands its
+    whole result to the model, and a confident answer that also names a second,
+    absent person leaks who else is enrolled while adding nothing. Only
+    `ambiguous` — where the near-tie is the answer — carries it.
+    """
     basis = _basis()
     probe = basis[0]
     upsert_face(tmp_path, "A", _at_cosine(0.60, basis[1], probe))
@@ -185,7 +230,7 @@ def test_match_reports_recognized_for_a_clear_winner(tmp_path: Path) -> None:
     assert result.status == "recognized"
     assert result.name == "A"
     assert result.score == pytest.approx(0.60, abs=1e-3)
-    assert result.runner_up == "B"
+    assert result.runner_up is None
 
 
 def test_match_reports_ambiguous_on_a_near_tie(tmp_path: Path) -> None:
@@ -365,6 +410,66 @@ def test_identify_detects_on_the_downscaled_frame_and_aligns_on_the_full_one(tmp
 
     assert detector.seen_shape == (360, 640, 3)
     assert aligned_from == [(ALIGNED_SIZE, ALIGNED_SIZE, 3)]
+
+
+# --- blob contract (no model, no network) -----------------------------------
+
+
+class _RecordingSession:
+    """An ORT session stand-in that captures the feed dict `embed` builds."""
+
+    def __init__(self) -> None:
+        self.feed: dict[str, NDArray[np.float32]] = {}
+
+    def run(self, _outputs: object, feed: dict[str, NDArray[np.float32]]) -> list[NDArray[np.float32]]:
+        self.feed = feed
+        return [np.ones((1, 128), dtype=np.float32)]
+
+
+def test_embed_builds_the_blob_opencv_builds(tmp_path: Path) -> None:
+    """Pin the blob: BGR->RGB, values 0-255, no mean and no scaling.
+
+    This is the failure mode the design singled out as *silent*: feeding BGR, or
+    dividing by 255, degrades accuracy without ever raising. `test_sface_contract`
+    cannot catch it — it feeds zeros, which are invariant to both channel order
+    and scaling — so the real assertion lives here, against a recorder rather
+    than the 37 MB model.
+    """
+    recognizer = FaceRecognizer(tmp_path)
+    session = _RecordingSession()
+    recognizer._sface = session
+    recognizer._sface_input_name = "data"
+    recognizer._loaded = True
+    recognizer._load_done.set()
+
+    aligned = np.zeros((ALIGNED_SIZE, ALIGNED_SIZE, 3), dtype=np.uint8)
+    aligned[..., 0] = 10  # B
+    aligned[..., 1] = 120  # G
+    aligned[..., 2] = 240  # R
+
+    recognizer.embed(aligned)
+
+    blob = session.feed["data"]
+    assert blob.shape == (1, 3, ALIGNED_SIZE, ALIGNED_SIZE)
+    assert blob.dtype == np.float32
+    # swapRB=true: the first plane must be the red channel, the last the blue one.
+    assert np.array_equal(blob[0, 0], aligned[..., 2].astype(np.float32))
+    assert np.array_equal(blob[0, 1], aligned[..., 1].astype(np.float32))
+    assert np.array_equal(blob[0, 2], aligned[..., 0].astype(np.float32))
+    # scale 1.0, no mean subtraction: values stay in 0-255, not 0-1.
+    assert blob.max() == pytest.approx(240.0)
+    assert blob.max() > 1.0
+
+
+def test_embed_rejects_a_crop_of_the_wrong_size(tmp_path: Path) -> None:
+    """A mis-sized crop is a programming error; fail loudly rather than feed the model garbage."""
+    recognizer = FaceRecognizer(tmp_path)
+    recognizer._sface = _RecordingSession()
+    recognizer._loaded = True
+    recognizer._load_done.set()
+
+    with pytest.raises(ValueError):
+        recognizer.embed(np.zeros((64, 64, 3), dtype=np.uint8))
 
 
 # --- model contract (gated on the local HF cache, no network) ---------------

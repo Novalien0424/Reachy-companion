@@ -475,7 +475,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return ""
 
         recognizer = self.deps.face_recognizer
-        if recognizer is None or not self.deps.camera_enabled:
+        if recognizer is None:
+            return ""
+        # Checked here rather than left to `wait_ready` returning False, so the
+        # log says "disabled" instead of misattributing the skip to the budget.
+        if not getattr(recognizer, "enabled", True):
+            logger.info("Face memory is disabled; greeting unchanged.")
+            return ""
+        if not self.deps.camera_enabled:
+            logger.info("No camera available for the wake face check; greeting unchanged.")
             return ""
 
         budget_s = env_int("FACE_WAKE_BUDGET_MS", _FACE_WAKE_BUDGET_MS_DEFAULT, lo=0, hi=10_000) / 1000.0

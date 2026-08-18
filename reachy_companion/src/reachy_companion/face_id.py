@@ -191,7 +191,16 @@ def align_face(frame_bgr: NDArray[np.uint8], face: Any) -> NDArray[np.uint8]:
     pixel coordinates. Pure numpy: a least-squares similarity fit followed by an
     inverse-mapped bilinear resample, the cv2-free equivalent of
     `FaceRecognizerSF.alignCrop()`.
+
+    A frame too small or the wrong shape to sample yields a black crop rather
+    than an exception: `identify()` guards its own input, but this helper is
+    public and must be safe standalone.
     """
+    frame = np.asarray(frame_bgr)
+    if frame.ndim != 3 or frame.shape[2] != 3 or frame.shape[0] < 2 or frame.shape[1] < 2:
+        logger.warning("align_face received an unusable frame of shape %s; returning a black crop.", frame.shape)
+        return np.zeros((ALIGNED_SIZE, ALIGNED_SIZE, 3), dtype=np.uint8)
+
     landmarks = np.array([face.right_eye, face.left_eye, face.nose], dtype=np.float64)
     scale, rotation, translation = _similarity_transform(landmarks, REFERENCE_POINTS)
 
@@ -199,7 +208,7 @@ def align_face(frame_bgr: NDArray[np.uint8], face: Any) -> NDArray[np.uint8]:
     destination = np.stack([grid_x, grid_y], axis=-1) - translation
     # Inverse of `scale * rotation @ p`: for row vectors, `rotation.T @ v` is `v @ rotation`.
     source = (destination @ rotation) / scale
-    return _sample_bilinear(frame_bgr, source[..., 0], source[..., 1])
+    return _sample_bilinear(frame, source[..., 0], source[..., 1])
 
 
 class FaceRecognizer:
@@ -368,7 +377,11 @@ class FaceRecognizer:
                 runner_up=runner_up_name,
             )
 
-        return MatchResult(status="recognized", name=best_name, score=best_score, runner_up=runner_up_name)
+        # A confident recognition reports no runner-up: naming a second, absent
+        # person to the model buys nothing and leaks who else is enrolled. The
+        # `ambiguous` branch above keeps it, because there the runner-up is the
+        # whole point of the answer.
+        return MatchResult(status="recognized", name=best_name, score=best_score)
 
     def identify(self, frame_bgr: NDArray[np.uint8] | None) -> Identification:
         """Return who is in front of the camera, as a status that is never an exception."""
