@@ -264,6 +264,24 @@ with no observed degradation but worth watching under concurrent camera/dance
 load. Evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/operator-round-2-report.md`.
 
+Task 17 redeploy (2026-08-18): app-only redeploy of the D-013 face-memory build
+onto daemon 1.10.0rc5, two-step `--no-deps` install, dependency set unchanged
+(no new wheel). **17 tools** loaded with `remember_face` and `who_is_this`
+registered and handed to the model; `Face memory ready: YuNet + SFace sessions
+built in 845 ms`; the wake check ran and reported `status=no_face … in 305 ms;
+greeting unchanged`; zero tracebacks; robot left ASLEEP (`motor_control_mode
+disabled`, head pitch 0.51 rad).
+
+Third run of the backup/restore ritual, now covering `faces.v1.json` as well:
+`.env` (1027 B) backed up and re-placed; **both** `memory.v1.json` and
+`faces.v1.json` were absent — expected, since no one has used `remember` or
+`remember_face` on this robot yet — and recorded as absent rather than treated
+as a backup failure. The preloader now warms the 37 MB SFace model as `pollen`
+(13 s), so the first wake check does not build its session off a cold cache.
+New hardware finding: the robot is a Raspberry Pi **CM4**, not a Pi 5 — see
+D-013 for what that costs. Evidence:
+`.superpowers/sdd/2026-08-16-reachy-mini-poc/task-17-report.md`.
+
 ## D-010 — Voice: local VoiceFX chain, not cascaded TTS (2026-08-17)
 
 Operator requirement: a "very cute robotic voice." Research verdict
@@ -341,6 +359,62 @@ path is the installed package directory inside `site-packages`
 and it is **wiped by every reinstall**. The `reachy-deploy` skill therefore now
 backs up `.env` *and* `memory.v1.json` before install and restores both after,
 as mandatory steps rather than a footnote.
+
+## D-013 — Face memory: SFace on top of the SDK's YuNet, cv2-free (2026-08-18)
+
+Operator requirement (2026-08-18), promoted from a PRD non-goal: Reachy should
+recognize returning people and greet them by name. Decision: reuse
+`reachy_mini.vision.face_detector.FaceDetector` untouched for detection and add
+**one** model — SFace fp32 from `opencv/face_recognition_sface` (36.9 MiB,
+Apache-2.0, 128-d) — with **zero new Python dependencies**, preloaded exactly
+like the YuNet model.
+
+The decisive constraint was **no cv2 in the app venv on the dev machine**, where
+the canonical path (`cv2.FaceRecognizerSF.alignCrop` + `blobFromImage`) does not
+exist. Adding `opencv-python` for one function would be a ~35 MB native
+dependency and a new entry in the aarch64 resolution set, so both OpenCV steps
+are replicated in numpy (`face_id.py`): a least-squares similarity fit (Umeyama)
+from the three landmarks the SDK exposes onto the first three canonical SFace
+reference points, then an inverse-mapped bilinear resample; the blob is BGR→RGB,
+float32 0-255, no mean, no scaling. This follows the precedent the SDK sets in
+`media/camera_utils.py` ("Pure numpy equivalent of `cv2.undistortPoints()`").
+Deploy-time finding: the robot's *shared* apps venv does currently carry
+cv2 5.0.0 (pulled in by another installed app) — that changes nothing, because
+the venv is shared and can lose it whenever another app is removed, and the dev
+venv never had it. Our modules import cv2 nowhere, and a test asserts it.
+
+Three points instead of five is what lets us import the detector rather than
+fork its `_decode`. The cost is that OpenCV's published 0.363 cosine threshold
+is not exactly ours, so the default is a conservative **0.40 plus a 0.05 margin
+rule**: a near-tie reports `ambiguous` instead of confidently naming the wrong
+person. Both are env-tunable and every score is logged, because the honest
+calibration data can only come from real people on the robot.
+
+Storage is a **sibling** file, `faces.v1.json`, never an extension of
+`memory.v1.json`: `MemoryFact.to_json` is an external contract read by the
+mobile app, and a 1.2 KB embedding would be re-read and re-serialized on every
+`remember` call and every prompt build. Same idioms, same instance path, same
+consequence — it is inside site-packages and wiped by every reinstall, so the
+`reachy-deploy` ritual now backs up and restores it alongside `memory.v1.json`,
+with a record-count read-back for both.
+
+Privacy is a design property, not a promise: no image is ever persisted (names,
+128-float vectors, timestamps), no image or embedding ever leaves the robot (the
+model receives a name and a status string), recognition is **not continuous** —
+one check at wake plus explicit `who_is_this` calls — enrollment is explicit and
+verbal, and `FACE_MEMORY_ENABLED=0` removes the feature entirely while
+`FACE_AUTO_GREET=0` keeps the tools but drops the automatic look.
+
+Measured on the robot (Raspberry Pi **CM4**, Cortex-A72 — not the Pi 5 the plan
+assumed): sessions build in 845 ms during app startup; one SFace embed is
+**239 ms idle / 362 ms with the app running**, ~3-5x the plan's estimate, and
+YuNet at 640x360 is 143 ms. The wake check therefore costs ~305 ms observed with
+nobody in frame and an estimated ~600-700 ms with a face, inside the 1200 ms
+budget but with less margin than planned. Tuning levers if that margin proves
+too thin, both requiring their own measurement: `intra_op_num_threads=2` halved
+the embed to 140 ms in an isolated test (against this file's own one-thread
+rule, so it is a deliberate trade, not a free win), or the int8bq model at a
+quarter the size.
 
 ## D-008 — Dev environment: Windows host + mockup-sim daemon (2026-08-16)
 
