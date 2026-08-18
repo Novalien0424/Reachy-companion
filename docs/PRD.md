@@ -1,62 +1,119 @@
 # PRD — Reachy Mini Realtime AI Agent POC
 
-**Version:** 0.2  
-**Date:** August 2026  
-**Stage:** Proof of Concept  
-**Robot:** Reachy Mini Wireless  
-**Primary AI Model:** `gpt-realtime-2.1`
+**Product:** Reachy Companion
+**Version:** 1.0
+**Date:** 2026-08-19
+**Status:** POC implemented, live validation pending
+**Robot:** Reachy Mini Wireless
+**Primary AI model:** `gpt-realtime-2.1`
 
 ---
 
-## 1. Product Goal
+## Table of Contents
 
-Build a custom Reachy Mini application that demonstrates a more capable AI companion experience while preserving the best parts of the official Reachy ecosystem.
+| §   | Title                                            |
+| --- | ------------------------------------------------ |
+| 1   | [Overview & Goals](#1-overview--goals)           |
+| 2   | [Mandatory Pre-Development Research](#2-mandatory-pre-development-research) |
+| 3   | [Product Experience & Persona](#3-product-experience--persona) |
+| 4   | [User Stories](#4-user-stories)                  |
+| 5   | [Primary User Journey](#5-primary-user-journey)  |
+| 6   | [Extended User Journeys](#6-extended-user-journeys) |
+| 7   | [Functional Scope](#7-functional-scope)          |
+| 8   | [POC Success Criteria](#8-poc-success-criteria)  |
+| 9   | [Non-Goals](#9-non-goals)                        |
+| 10  | [Implementation Philosophy](#10-implementation-philosophy) |
+| 11  | [Adversarial Review](#11-adversarial-review)     |
+| 12  | [System Architecture](#12-system-architecture)   |
+| 13  | [Definition of Done](#13-definition-of-done)     |
+| A   | [Appendix — Current Status](#appendix-a--current-status-2026-08-19) |
 
-The POC should prove that Reachy can:
+---
 
-1. Have fast, natural, interruptible voice conversations.
+## 1. Overview & Goals
+
+### 1.1 Problem statement
+
+A voice assistant answers questions. A robot that only answers questions is a
+speaker with a face. Reachy Mini has a camera, motors, antennas and a head that
+can look at a person — none of which a conventional assistant loop uses. The gap
+is not intelligence; it is presence. Conversation latency, turn handling, gaze
+and physical reaction have to be good enough that a person stops adapting their
+behaviour to the machine.
+
+This POC exists to answer one question: does putting a fast, interruptible,
+tool-using realtime model behind an expressive physical body produce an
+interaction that feels categorically different from a smart speaker?
+
+### 1.2 Target user
+
+An individual at home or at a desk who talks to Reachy in Chinese (primary) or
+whatever language they open with, expects to be understood at natural speaking
+pace, and expects the robot to look at them, react, see what they are holding,
+look things up, and act on the house.
+
+A secondary user is the developer extending Reachy: adding one more capability
+must not mean touching the conversation engine.
+
+### 1.3 Product goal
+
+Build a custom Reachy Mini application that demonstrates a more capable AI
+companion experience while preserving the best parts of the official Reachy
+ecosystem.
+
+The POC proves that Reachy can:
+
+1. Hold fast, natural, interruptible voice conversations.
 2. Look at and track the person speaking.
-3. React with appropriate physical expressions and movements.
+3. React with appropriate physical expression and movement.
 4. Use its camera to understand what it sees.
 5. Search the live web when current information is required.
 6. Use external tools and MCP integrations.
-7. Add new Skills, including controlling devices in the home.
+7. Gain new Skills, including control of devices in the home.
+8. Sound like a character rather than a default synthetic voice.
+9. Remember what it is told, and remember who it is talking to.
 
-The goal is **not** to build a generic robotics or agent platform yet.
+The goal is **not** to build a generic robotics or agent platform.
+
+### 1.4 Success at a glance
+
+Success is five demonstrations working reliably in front of a person, defined in
+§8: Chinese conversation with interruption, physical expression, camera-based
+description, automatic web search, and one real home-device action. Everything
+else in this document exists to support those five.
 
 ---
 
-# 2. Mandatory Pre-Development Research
+## 2. Mandatory Pre-Development Research
 
-Before implementing the POC, the developer must first study the current official Reachy Mini codebase.
+Before implementing the POC, the developer must first study the current official
+Reachy Mini codebase. This is a gate, not a suggestion: no robot-facing code is
+written until both studies exist in writing.
 
-### A. Reachy Mini SDK
+### 2.1 Reachy Mini SDK
 
-Repository:
-
-`pollen-robotics/reachy_mini`
+Repository: `pollen-robotics/reachy_mini`
 
 Understand how the official SDK handles:
 
 - Robot connection
 - Camera
 - Microphone and speaker
-- Face/head tracking
+- Face and head tracking
 - Motion
 - Robot state
 - App lifecycle
 
-The official SDK is the foundation and should be reused instead of recreating robot-level functionality. citeturn238566search1turn238566search6
+The official SDK is the foundation and is reused instead of recreating
+robot-level functionality.
 
-### B. Reachy Mini Conversation App
+### 2.2 Reachy Mini Conversation App
 
-Repository:
-
-`pollen-robotics/reachy_mini_conversation_app`
+Repository: `pollen-robotics/reachy_mini_conversation_app`
 
 Study especially:
 
-- OpenAI Realtime integration
+- Realtime backend integration
 - Audio handling
 - Turn handling
 - Face tracking
@@ -66,306 +123,385 @@ Study especially:
 - Movement arbitration
 - Tool calling
 
-The current official app already supports multiple realtime backends, vision, layered motion, head tracking, and asynchronous tools. These implementations should be reused or adapted where practical rather than recreated unnecessarily. citeturn238566search0
+The official app already provides realtime backends, vision, layered motion,
+head tracking and asynchronous tools. These implementations are reused or
+adapted where practical rather than recreated.
 
-### Development Principle
+### 2.3 Development principle
 
-Create **our own application repository**, but use the official repositories as reference implementations and dependencies.
+Create our own application repository, but treat the official repositories as
+reference implementations and dependencies. Do not maintain a heavily modified
+long-lived fork unless investigation shows that doing so is clearly simpler.
 
-Do not permanently develop as a heavily modified fork unless investigation shows that doing so is clearly simpler.
-
----
-
-# 3. Core Experience
-
-The intended experience is:
-
-> Reachy feels like a physically present AI character rather than a voice assistant attached to a robot.
-
-The interaction should combine:
-
-**Voice + Vision + Physical Reaction + Tools**
+**Outcome of the research phase:** the official scaffolder produces an app that
+is a one-time copy of the conversation app with its own package identity, and
+the upstream app is explicitly not designed to be imported as a library. The
+project therefore adapts a scaffolded copy in place and keeps read-only clones
+of both official repositories for diffing.
 
 ---
 
-# 4. User Stories
+## 3. Product Experience & Persona
 
-## US-01 — Natural Conversation
+### 3.1 The experience pillar
 
-**As a user,**  
-I want to speak naturally with Reachy, including short pauses and interruptions,  
-**so that** I do not need to adapt my speaking style to the robot.
+> Reachy feels like a physically present AI character rather than a voice
+> assistant attached to a robot.
+
+Four things have to arrive together for that to land:
+
+**Voice + Vision + Physical reaction + Tools**
+
+Any one of them alone is a familiar product. The combination is the bet.
+
+### 3.2 Reachy's character
+
+Reachy is a small desktop robot companion with a consistent personality, shipped
+as a single locked persona rather than a menu of interchangeable characters.
+
+| Trait          | Expression                                                       |
+| -------------- | ---------------------------------------------------------------- |
+| Cheerful       | Light, upbeat tone; celebrates with the body, not just words     |
+| Concise        | Answers like a person sitting across the table, never a lecture  |
+| Chinese-first  | Speaks natural, colloquial Chinese by default; follows the user into another language if they switch |
+| Honest         | Says it does not know rather than guessing; never guesses a face |
+| Cute robotic   | A pitched-up, subtly ring-modulated voice at natural speaking pace |
+| Embodied       | Looks at the speaker, reacts physically, sleeps when asked       |
+
+### 3.3 Voice identity
+
+The realtime model ships a fixed catalogue of voices and no custom-voice option,
+and "robotic" is a texture no stock voice produces. Reachy's voice is therefore
+built on the robot: the model's chosen voice is pitched up and lightly
+ring-modulated on-device, with the duration preserved so the speaking pace stays
+natural. The model's own emotional performance survives the treatment — the
+effect is a character filter, not a different speaker.
+
+---
+
+## 4. User Stories
+
+### US-01 — Natural conversation
+
+**As a user,** I want to speak naturally with Reachy, including short pauses and
+interruptions, **so that** I do not have to adapt my speaking style to a robot.
 
 Requirements:
 
-- Use `gpt-realtime-2.1`.
-- User can interrupt Reachy while it is speaking.
-- Reachy should avoid prematurely responding during normal mid-sentence pauses.
-- Chinese conversation is a primary POC scenario.
+- Speech-to-speech conversation on `gpt-realtime-2.1`.
+- The user can interrupt Reachy while it is speaking and Reachy stops.
+- Reachy does not respond prematurely during a normal mid-sentence pause.
+- Chinese conversation is the primary POC scenario.
 
-`gpt-realtime-2.1` supports realtime audio input/output and configurable reasoning. citeturn778729view0
+### US-02 — Reachy looks at me
 
----
-
-## US-02 — Reachy Looks at Me
-
-**As a user,**  
-I want Reachy to naturally look toward me while we interact,  
-**so that** the conversation feels physically engaging.
+**As a user,** I want Reachy to look toward me while we interact, **so that** the
+conversation feels physically engaging.
 
 Requirements:
 
-- Use Reachy's existing face/head tracking.
-- Tracking should continue without requiring the AI model to repeatedly issue movement commands.
-- Head movement should remain smooth and not constantly jitter.
+- Reuse the robot's existing face and head tracking.
+- Tracking runs continuously from app start; it does not depend on the AI model
+  issuing movement commands.
+- Head movement stays smooth and does not jitter.
 
----
+### US-03 — Reachy shows emotion
 
-## US-03 — Reachy Shows Emotion
+**As a user,** I want Reachy to physically react to what I say, **so that** its
+responses feel expressive rather than purely verbal.
 
-**As a user,**  
-I want Reachy to physically react to what I say,  
-**so that** its responses feel expressive rather than purely verbal.
+Example: the user says "I finally got the job!" — Reachy plays a celebratory
+move with head, body and antennas, and responds verbally.
 
-Example:
+Requirements:
 
-> User: "I finally got the job!"
+- Use the existing emotion library and speech-reactive motion as the primary
+  source of expression before creating anything new.
+- Emotion moves layer over face tracking and idle breathing without fighting
+  them.
 
-Reachy may:
+### US-04 — Reachy can see
 
-- React with an excited/happy movement.
-- Move its head/body/antennas.
-- Respond verbally.
+**As a user,** I want to ask Reachy about something in front of it, **so that**
+the conversation can include the physical environment.
 
-Existing official Conversation App emotions and motion behavior should be used as the primary reference before creating new animations. citeturn238566search0
+Example: "What am I holding?"
 
----
+Requirements:
 
-## US-04 — Reachy Can See
+- Capture a single camera frame on demand.
+- Attach the image to the ongoing realtime conversation.
+- Answer from what the frame actually shows.
+- No continuous video streaming to the cloud.
 
-**As a user,**  
-I want to ask Reachy about something in front of it,  
-**so that** the conversation can include the physical environment.
+### US-05 — Reachy can search the web
 
-Example:
+**As a user,** I want Reachy to search the internet automatically when I ask
+about current information, **so that** it is not limited to model knowledge.
 
-> "What am I holding?"
+Example: "What happened with NVIDIA today?"
 
-Reachy should:
+Requirements:
 
-1. Capture an image using its camera.
-2. Provide the image to `gpt-realtime-2.1`.
-3. Answer based on what it sees.
+- Reachy recognises on its own that fresh information is needed.
+- The user never has to say "use web search".
+- The answer is spoken back inside the same conversation.
 
-`gpt-realtime-2.1` supports image input in addition to realtime audio. citeturn778729view0
+### US-06 — Reachy can use tools
 
-Continuous cloud video analysis is not required.
+**As a user,** I want Reachy to perform actions, not only answer questions.
 
----
-
-## US-05 — Reachy Can Search the Web
-
-**As a user,**  
-I want Reachy to automatically search the internet when I ask about current information,  
-**so that** it is not limited to model knowledge.
-
-Example:
-
-> "What happened with NVIDIA today?"
-
-Reachy should recognize that fresh information is required, invoke a web-search tool, and answer using the result.
-
-The user should not need to explicitly say:
-
-> "Use web search."
-
----
-
-## US-06 — Reachy Can Use Tools
-
-**As a user,**  
-I want Reachy to perform actions rather than only answer questions.
-
-The POC should demonstrate tool calling for at least:
+Requirements — tool calling demonstrated for at least:
 
 - Camera
 - Web search
-- Robot expression/action
+- Robot expression and motion
 - One external service
 
-`gpt-realtime-2.1` supports function calling. citeturn778729view1
+### US-07 — Reachy can reach an external service
+
+**As a user,** I want Reachy to reach an external service such as Notion, **so
+that** it can work with information outside the conversation.
+
+Example: "What is the latest status of my Magic Mirror project in Notion?"
+
+Requirements:
+
+- One working MCP integration is sufficient for the POC.
+- A server that is unreachable or unauthorised is skipped, logged, and never
+  blocks startup.
+
+### US-08 — Reachy can control the home
+
+**As a user,** I want to ask Reachy to control something in the house in natural
+language.
+
+Examples: "Turn on the living room lights." / "Make the room cooler."
+
+Requirements:
+
+- One real Home Control Skill acting on one real device.
+- The model may only target devices from an explicit configured allowlist.
+- The integration may use Home Assistant, MCP, or another practical API.
+
+### US-09 — New Skills can be added
+
+**As a developer,** I want to add another capability without rewriting the
+conversation system, **so that** Reachy's functionality can grow.
+
+Requirements:
+
+- Adding a Skill is one new file plus one line in the persona profile.
+- The conversational core is never edited to add a Skill.
+- A Skill that already exists as a remote MCP server needs no code at all.
+- A simple, understandable extension pattern is enough — no plugin platform.
+
+### US-10 — Reachy has a voice of its own
+
+**As a user,** I want Reachy to sound like a character rather than a default
+text-to-speech voice, **so that** it reads as a robot companion and not as an app.
+
+Requirements:
+
+- The voice is pitched up into a cute robotic register.
+- Speaking pace is preserved — pitch moves, duration does not.
+- A subtle robotic timbre sits on top without making speech hard to understand.
+- The whole effect is produced on the robot, adds only a few tens of
+  milliseconds, and can be switched off without changing anything else.
+
+### US-11 — Reachy remembers what I tell it
+
+**As a user,** I want Reachy to remember facts I tell it — my name, my
+preferences — **so that** I do not have to reintroduce myself every session.
+
+Requirements:
+
+- Reachy records a fact when the user shares something durable about themselves.
+- Remembered facts are available in later sessions.
+- Memory survives an app update or reinstall.
+- The user can ask Reachy to forget or correct a fact, and it does.
+
+### US-12 — Reachy remembers faces
+
+**As a user,** I want Reachy to learn my face on request and recognise me later,
+**so that** it greets me by name instead of treating me as a stranger.
+
+Requirements:
+
+- The user can enrol a face by name in conversation ("remember me, I'm X").
+- Reachy answers "who am I?" using what it has enrolled.
+- On waking, Reachy takes one look and greets a recognised person by name.
+- An unknown or uncertain person is reported as unknown. Reachy never guesses a
+  name, and a near-tie between two enrolled people is reported as ambiguous.
+- Recognition is not continuous: one check at wake, plus explicit requests.
+- The feature can be disabled entirely, and the automatic greeting check can be
+  disabled while keeping the conversational tools.
+
+> **Privacy.** Face recognition runs entirely on the robot. No image is ever
+> stored — only a name, a numeric face signature and a timestamp — and no image
+> or signature ever leaves the device. Only a name and a status word are ever
+> sent to the cloud model.
 
 ---
 
-## US-07 — Reachy Can Access an External Service
+## 5. Primary User Journey
 
-**As a user,**  
-I want Reachy to access an external service such as Notion,  
-**so that** it can work with information outside the conversation.
+### Journey A — Normal conversation
 
-Example:
+1. Reachy is awake and idle; the head is already tracking faces.
+2. The user approaches and starts talking. Reachy's head follows them.
+3. The user speaks naturally, including brief mid-sentence pauses. Reachy waits
+   through them instead of cutting in.
+4. When the turn is genuinely complete, Reachy answers in speech, in the user's
+   language.
+5. While speaking, Reachy makes subtle speech-reactive movement.
+6. Where the content warrants it, Reachy adds an emotional reaction — a
+   celebratory move, an antenna flick — layered over the tracking pose.
+7. The user interrupts mid-sentence. Reachy stops speaking and listens
+   immediately.
+8. The conversation continues from the interruption without a restart.
 
-> "What is the latest status of my Magic Mirror project in Notion?"
-
-For the POC, supporting **one working MCP integration** is sufficient.
-
-The POC should validate the integration rather than attempt to create a universal MCP management platform.
-
----
-
-## US-08 — Reachy Can Control the Home
-
-**As a user,**  
-I want to ask Reachy to control something in the house using natural language.
-
-Examples:
-
-> "Turn on the living room lights."
-
-> "Make the room cooler."
-
-> "Play some music."
-
-The POC only needs **one real Home Control Skill** to demonstrate the concept.
-
-The specific integration may use Home Assistant, MCP, or another practical API.
+**Success:** the exchange feels fast, and the user never modifies how they speak
+to accommodate the robot.
 
 ---
 
-## US-09 — New Skills Can Be Added
+## 6. Extended User Journeys
 
-**As a developer,**  
-I want to add another capability without rewriting the conversation system,  
-**so that** Reachy's functionality can grow over time.
+### Journey B — Vision
 
-Future examples might include:
+The user asks: "What am I holding?"
 
-- Home control
-- Notion
-- Calendar
-- Music
-- Weather
-- Personal knowledge
-- Guest greeting
-- Custom APIs
+1. Reachy is already looking toward the user.
+2. Reachy captures one camera frame.
+3. The frame is attached to the running conversation for the model to read.
+4. Reachy describes what is actually in the frame, verbally.
+5. If the view is dark or blocked, Reachy says so instead of inventing an object.
 
-For the POC, this only requires a **simple and understandable extension pattern**.
+### Journey C — Current information
 
-A full plugin marketplace or generic Skill platform is explicitly out of scope.
+The user asks: "What's the weather tomorrow?" or "What's the latest OpenAI news?"
 
----
+1. Reachy recognises that model knowledge is not enough.
+2. Reachy invokes web search without being told to.
+3. Reachy may briefly indicate that it is checking.
+4. Reachy answers from the retrieved result.
+5. The same conversation continues.
 
-# 5. Primary User Journey
+### Journey D — External knowledge
 
-## Journey A — Normal Conversation
+The user asks: "Check my Notion and tell me the current project status."
 
-1. Reachy is ready.
-2. User approaches and begins talking.
-3. Reachy tracks the user's face.
-4. User speaks naturally, including brief pauses.
-5. Reachy determines when the turn is complete.
-6. `gpt-realtime-2.1` responds through speech.
-7. Reachy performs subtle speaking movement.
-8. If appropriate, Reachy adds an emotional reaction.
-9. User interrupts Reachy.
-10. Reachy stops speaking and listens immediately.
+1. Reachy determines an external tool is required.
+2. Reachy calls the configured MCP integration.
+3. The result comes back.
+4. Reachy summarises it conversationally rather than reading it out.
 
-**Success:** conversation feels fast and does not require unnatural speaking behavior.
+### Journey E — Home control
 
----
+The user says: "Turn on the living room lights."
 
-# 6. Extended User Journeys
+1. Reachy understands the requested action and maps it to a configured device.
+2. Reachy calls the Home Control Skill.
+3. The device changes state.
+4. Reachy confirms verbally, optionally with a small physical reaction.
+5. If the named device is not on the allowlist, Reachy says which devices it can
+   actually control.
 
-## Journey B — Vision
+### Journey F — Wake and recognition
 
-User:
+1. Reachy sits asleep on the desk: motors relaxed, sleep pose, nothing running.
+2. The user touches an antenna.
+3. The companion app starts automatically — no laptop, no dashboard, no console.
+4. Reachy takes a single look at whoever is in front of the camera.
+5. If it recognises them, the opening greeting uses their name. If it does not,
+   or the look runs out of time, Reachy greets normally and on schedule — the
+   check never delays the greeting.
+6. Conversation proceeds as in Journey A.
+7. The user says "去睡觉吧" ("go to sleep").
+8. Reachy says a short goodbye, then returns to the sleep pose and releases the
+   motors.
 
-> "What am I holding?"
-
-Reachy:
-
-1. Looks toward the user.
-2. Captures a camera image.
-3. Interprets the image.
-4. Answers verbally.
-
----
-
-## Journey C — Current Information
-
-User:
-
-> "What is the weather tomorrow?"
-
-or:
-
-> "What is the latest OpenAI news?"
-
-Reachy:
-
-1. Recognizes that current information is required.
-2. Invokes web search.
-3. May briefly indicate that it is checking.
-4. Returns the current answer.
-5. Continues the same conversation.
+**Success:** the entire session, from asleep to asleep, is driven by touching
+the robot and talking to it.
 
 ---
 
-## Journey D — External Knowledge
+## 7. Functional Scope
 
-User:
+The POC must deliver the following. Requirements are grouped by subsystem.
 
-> "Check my Notion and tell me the current project status."
+### 7.1 Conversation
 
-Reachy:
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-C1  | Speech-to-speech conversation on `gpt-realtime-2.1`                      |
+| F-C2  | Turn detection tuned so a natural mid-sentence pause does not end the turn |
+| F-C3  | Barge-in: the user's voice interrupts Reachy's speech                    |
+| F-C4  | Chinese as the default conversational language, following the user if they switch |
+| F-C5  | A single locked persona, authoritative over any other profile setting    |
+| F-C6  | A character voice applied on-device: pitch-shifted, duration-preserving, lightly ring-modulated, with an off switch |
 
-1. Determines that an external tool is required.
-2. Calls the configured integration.
-3. Receives the result.
-4. Summarizes it conversationally.
+### 7.2 Embodiment
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-E1  | Face tracking active from app start, requiring no model tool call        |
+| F-E2  | Speech-reactive movement while Reachy speaks                             |
+| F-E3  | Emotion moves from the existing library, selectable by the model         |
+| F-E4  | Arbitration between emotion moves, idle breathing and tracking, with idle behaviour resuming automatically |
+| F-E5  | Explicit motion tools — head pose, look sweep, dance, and stop controls  |
+
+### 7.3 Vision
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-V1  | On-demand single-frame capture, attached to the live conversation        |
+| F-V2  | No continuous video sent to the cloud                                    |
+| F-V3  | On-device face detection and recognition; frames and face signatures never leave the robot |
+
+### 7.4 Knowledge and tools
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-K1  | Function/tool calling exposed to the model                               |
+| F-K2  | Web search invoked automatically when current information is needed      |
+| F-K3  | One working external MCP integration                                     |
+| F-K4  | One Home Control Skill, restricted to an explicit device allowlist       |
+| F-K5  | A new Skill can be added without editing the conversational core         |
+| F-K6  | Tools never crash the app: failures return an error result the model can recover from |
+| F-K7  | Long-running tools run in the background with status and cancel controls |
+
+### 7.5 Memory
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-M1  | Reachy stores durable facts the user tells it, and can forget them on request |
+| F-M2  | Stored facts are injected into the model's context each session          |
+| F-M3  | Face enrolment by name, recall on request, and one recognition check at wake |
+| F-M4  | Unknown and ambiguous outcomes are reported honestly, never guessed      |
+| F-M5  | Both stores live on the robot and survive an app reinstall               |
+
+### 7.6 Lifecycle
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-L1  | The app installs as a managed app under the robot's own daemon           |
+| F-L2  | An antenna touch on the sleeping robot starts the app                    |
+| F-L3  | A spoken request puts Reachy back to sleep, with a goodbye first         |
+| F-L4  | Configuration is read from environment settings on the robot; no secrets in source |
+| F-L5  | The same application runs unchanged against a simulated daemon on a development machine |
 
 ---
 
-## Journey E — Physical Skill
-
-User:
-
-> "Turn on the living room lights."
-
-Reachy:
-
-1. Understands the requested action.
-2. Calls the Home Control Skill.
-3. Executes the action.
-4. Confirms the result verbally and optionally with a small physical reaction.
-
----
-
-# 7. POC Functional Scope
-
-The POC must demonstrate:
-
-- `gpt-realtime-2.1` speech-to-speech conversation.
-- Good conversational turn handling.
-- Barge-in / interruption.
-- Face tracking.
-- Existing Reachy expression/motion reuse.
-- Camera-based visual question answering.
-- Live web search.
-- Function/tool calling.
-- One MCP/external-service integration.
-- One Home Control Skill.
-- Ability to add another Skill without rewriting the conversational core.
-
----
-
-# 8. POC Success Criteria
+## 8. POC Success Criteria
 
 The POC is successful if the following five demonstrations work reliably.
 
 ### Demo 1 — Conversation
 
-A user can maintain a natural multi-turn Chinese conversation and interrupt Reachy while it is speaking.
+A user can maintain a natural multi-turn Chinese conversation and interrupt
+Reachy while it is speaking.
 
 ### Demo 2 — Expression
 
@@ -377,130 +513,310 @@ The user shows Reachy an object and Reachy correctly describes it.
 
 ### Demo 4 — Web
 
-The user asks a question requiring information from today and Reachy automatically searches before answering.
+The user asks a question requiring information from today, and Reachy
+automatically searches before answering.
 
 ### Demo 5 — Skill
 
-The user asks Reachy to control one real device in the home and the action succeeds.
+The user asks Reachy to control one real device in the home, and the action
+succeeds.
 
 ---
 
-# 9. Explicit Non-Goals
+## 9. Non-Goals
 
-The POC should **not** build:
+The POC does **not** build:
 
-- A generic agent platform.
-- A generic plugin marketplace.
-- A sophisticated Skill SDK.
-- Multi-model routing.
-- Cost optimization.
-- Long-term memory architecture.
-- Complex user identity/profile systems.
-- Continuous video understanding.
-- Advanced authorization systems.
-- A new robot motion engine.
-- Custom motor control.
-- Custom face recognition.
-- A mobile application.
-- A new desktop application.
-- Production-scale observability.
-- Enterprise security architecture.
+- A generic agent platform
+- A generic plugin marketplace
+- A sophisticated Skill SDK
+- Multi-model routing
+- Cost optimisation
+- A long-term memory architecture
+- Complex user identity or profile systems
+- Continuous video understanding
+- Advanced authorisation systems
+- A new robot motion engine
+- Custom motor control
+- Mobile or desktop applications
+- Production-scale observability
+- Enterprise security architecture
 
-These should only be considered after the core experience has been proven.
+These are considered only after the core experience is proven.
+
+> **Amended 2026-08-18.** "Custom face recognition" was originally on this list.
+> It was promoted to a requirement (US-12) on an explicit product request, under
+> a strict constraint: reuse the SDK's existing face detector, add exactly one
+> model, add no new dependencies, and keep everything on the robot. It is not a
+> face-recognition subsystem; it is one look at wake time and two conversational
+> tools.
 
 ---
 
-# 10. Implementation Philosophy
+## 10. Implementation Philosophy
 
-For every feature, use the following order:
+### 10.1 The reuse-first ladder
 
-1. **Check whether Reachy Mini SDK already provides it.**
-2. **Check how the official Conversation App implements it.**
-3. **Reuse the existing implementation if it solves the problem.**
-4. Modify it only where the POC requirements are different.
-5. Write new functionality only when necessary.
+For every feature, in this order:
 
-In particular, do not recreate:
+1. Check whether the Reachy Mini SDK already provides it.
+2. Check how the official Conversation App implements it.
+3. Reuse the existing implementation if it solves the problem.
+4. Adapt it only where the POC's requirements genuinely differ.
+5. Write new functionality only when nothing above applies.
 
-- Face tracking.
-- Camera access.
-- Robot motion primitives.
-- Existing emotion animations.
-- Existing speech-reactive movements.
+### 10.2 Never recreate
 
-The POC should spend engineering effort on what is actually different:
+- Face and head tracking
+- Gaze smoothing and jitter control
+- Camera access
+- Audio input and output
+- Robot motion primitives
+- Motion layering and arbitration
+- Existing emotion animations
+- Existing speech-reactive movements
+- App lifecycle management
 
-- `gpt-realtime-2.1`
-- Better conversation behavior
+### 10.3 Spend effort here instead
+
+- `gpt-realtime-2.1` integration
+- Conversation and turn behaviour
+- Voice identity
 - Web access
-- External tools
-- MCP
-- Skills
+- External tools and MCP
+- The Skills pattern
 - Home interaction
+- Memory and face memory
+- Thin glue around official APIs
+
+Reuse is also a maintenance position: the smaller the diff against upstream, the
+easier it stays to pull in official fixes.
 
 ---
 
-# 11. Adversarial Review
+## 11. Adversarial Review
 
-The following potential mistakes must be actively avoided.
+Seven ways this project could plausibly fail, and the standing decision against
+each.
 
-### Mistake 1 — Rebuilding the Official App
+### Mistake 1 — Rebuilding the official app
 
 The official Conversation App already solves many robot-specific problems.
 
 **Decision:** inspect and reuse first.
 
-### Mistake 2 — Turning the POC into a Platform Project
+### Mistake 2 — Turning the POC into a platform project
 
-"Skills" can easily lead to months of framework design.
+"Skills" can easily consume months of framework design.
 
-**Decision:** implement one Home Skill and one external integration. Generalize only what is obviously necessary.
+**Decision:** implement one Home Skill and one external integration. Generalise
+only what is obviously necessary.
 
-### Mistake 3 — Putting Every Robot Movement Through the LLM
+### Mistake 3 — Putting every robot movement through the LLM
 
-This creates latency and unnatural behavior.
+This adds latency and produces unnatural behaviour.
 
-**Decision:** basic face tracking and normal robot behavior should continue using existing Reachy capabilities.
+**Decision:** face tracking and baseline robot behaviour keep running through
+existing Reachy capabilities, independent of the model.
 
 ### Mistake 4 — Overbuilding MCP
 
-The objective is to prove that Reachy can use external capabilities, not to build an MCP management product.
+The objective is to prove Reachy can use external capabilities, not to build an
+MCP management product.
 
-**Decision:** one reliable MCP integration is enough for the POC.
+**Decision:** one reliable MCP integration is enough. No OAuth flows, no server
+management UI.
 
-### Mistake 5 — Continuous Vision
+### Mistake 5 — Continuous vision
 
-Continuously sending camera frames increases complexity and cost without proving the core concept.
+Streaming camera frames continuously adds complexity and cost without proving
+the core concept.
 
-**Decision:** use local tracking plus on-demand camera snapshots.
+**Decision:** local tracking plus on-demand snapshots. Face recognition is one
+check at wake plus explicit requests — never a running loop.
 
-### Mistake 6 — Optimizing Cost Before Experience
+### Mistake 6 — Optimising cost before experience
 
-The first question is whether `gpt-realtime-2.1` creates a meaningfully better interaction.
+The first question is whether `gpt-realtime-2.1` creates a meaningfully better
+interaction.
 
-**Decision:** establish the best interaction first. Optimize model cost later.
+**Decision:** establish the best interaction first; optimise model cost later.
 
-### Mistake 7 — Designing the Final Architecture Too Early
+### Mistake 7 — Designing the final architecture too early
 
-The official code may already solve problems we would otherwise design abstractions for.
+The official code may already solve problems we would otherwise invent
+abstractions for.
 
-**Decision:** architecture decisions come **after** inspecting the SDK and Conversation App and completing the first integration spike.
+**Decision:** architecture decisions come after inspecting the SDK and
+Conversation App and completing the first integration spike.
 
 ---
 
-# 12. Definition of Done
+## 12. System Architecture
 
-The POC is done when a person can walk up to Reachy and naturally:
+This section describes what was actually built.
 
-1. Talk with it.
-2. Pause and interrupt it.
-3. Be visually tracked.
-4. See appropriate physical reactions.
-5. Ask what Reachy sees.
-6. Ask a question requiring live web information.
-7. Ask it to retrieve something from one external service.
-8. Ask it to control one real device in the home.
+### 12.1 The robot
 
-If those eight experiences work convincingly, the POC has proven the product direction.
+The Reachy Mini Wireless runs Pollen Robotics' own daemon. The daemon owns the
+hardware outright: motors, camera, microphone, speaker, the face tracker, and a
+50 Hz control loop that turns motion requests into smooth movement. It also
+manages applications — it installs them into a shared application environment,
+discovers them, and decides which one starts.
 
-Anything beyond that should be justified by what is learned from the POC rather than designed in advance.
+Nothing in this project modifies the daemon. Reachy Companion is a guest on the
+robot, installed and started through the daemon's official interfaces.
+
+### 12.2 Reachy Companion
+
+Reachy Companion is a managed application. It is installed into the daemon's
+shared application environment, advertises itself so the daemon can discover it,
+and is registered as the startup application — which is why touching an antenna
+on the sleeping robot brings the whole experience up with no other device
+involved.
+
+The app began as a scaffolded copy of the official Conversation App and is
+adapted in place. Its audio pipeline, motion arbitration, tool registry and app
+lifecycle are upstream code. The genuinely new parts are the realtime backend,
+the voice filter, the Skills, the MCP configuration seam, and the two memories.
+
+### 12.3 Runtime components
+
+**Realtime conversation loop.** Connects the robot's microphone and speaker to
+`gpt-realtime-2.1` over the Realtime API as a continuous speech-to-speech
+session. Turn-taking is decided server-side, tuned so that a natural
+mid-sentence pause in Chinese does not end the turn, and so the user's voice can
+cut in while Reachy is speaking. Audio is resampled between the robot's rate and
+the model's rate in both directions.
+
+**VoiceFX.** A small signal chain sitting on the assistant's audio just before
+it reaches the speaker. It shifts pitch upward while preserving duration,
+applies a light ring modulation for the robotic timbre, and adds makeup gain. It
+runs on the robot, adds a few tens of milliseconds, and is fully reversible —
+disabled, the audio path is unchanged.
+
+**Tool layer.** Seventeen tools are offered to the model: robot expression and
+motion, camera capture, web search, home control, fact memory, face memory,
+sleep, and two housekeeping tools for tracking long-running work. Tools run
+asynchronously alongside the conversation and are contractually forbidden to
+crash the app — a failure returns an error the model can talk about.
+
+**MCP seam.** External MCP servers declared in configuration are discovered at
+startup and their tools merged into the same registry the model sees, under a
+namespaced prefix. Discovery is bounded and non-fatal; an unreachable server is
+logged and skipped. Notion is the planned first integration and is awaiting
+credentials.
+
+**On-device face recognition.** Detection reuses the SDK's own face detector; a
+single added recognition model turns a detected face into a numeric signature.
+Both run on the robot's CPU. Enrolment is explicit and verbal, recognition
+happens at wake time and on request, and no frame is ever stored or transmitted.
+
+**Persistent state.** Two small stores live on the robot — remembered facts and
+the enrolled-face database. Both sit in the application's own directory and are
+backed up and restored as a mandatory step of every deployment, so they survive
+reinstalls.
+
+### 12.4 Component diagram
+
+```mermaid
+flowchart TB
+    subgraph robot["Reachy Mini Wireless"]
+        subgraph daemon["Pollen daemon (official, untouched)"]
+            hw["Motors · Camera · Microphone · Speaker"]
+            loop["50 Hz control loop<br/>face tracking · motion blending"]
+            apps["Managed apps host<br/>discovery · startup app"]
+        end
+        subgraph app["Reachy Companion (managed app)"]
+            rt["Realtime conversation loop<br/>turn detection · barge-in"]
+            vfx["VoiceFX<br/>pitch · ring-mod · gain"]
+            tools["Tool layer — 17 tools"]
+            mcp["MCP seam"]
+            faceid["On-device face recognition"]
+            store[("Persistent state<br/>facts · face database")]
+        end
+    end
+
+    model["OpenAI gpt-realtime-2.1<br/>Realtime API"]
+    search["Web search service"]
+    mcpsrv["External MCP servers<br/>Notion — planned"]
+    ha["Home Assistant"]
+
+    hw <--> loop
+    apps -.->|"antenna touch starts the app"| app
+    loop <-->|"audio in · audio out · frames · motion"| rt
+    rt <-->|"speech · events · tool calls"| model
+    rt --> vfx
+    vfx -->|"assistant audio"| loop
+    rt <--> tools
+    tools --> search
+    tools --> ha
+    tools <--> store
+    tools <--> faceid
+    faceid <--> store
+    mcp -->|"merged tool specs"| tools
+    mcp <--> mcpsrv
+
+    classDef cloud fill:#eef,stroke:#88a,color:#000
+    class model,search,mcpsrv,ha cloud
+```
+
+### 12.5 Development loop
+
+The same application runs unchanged on a Windows development machine against a
+simulated daemon. The simulator provides real kinematics and the local webcam
+and microphone, with no physics — enough to exercise conversation, tool calling
+and the audio chain end to end without a robot on the desk. Two behaviours
+cannot be rehearsed there and require the physical robot: live face tracking of
+a real person, and any camera scene that needs a properly selected, lit camera.
+
+### 12.6 Deployment shape
+
+The app is built as a single wheel and installed into the robot's shared
+application environment through the daemon's official interfaces. Nothing else
+on the robot is modified. Configuration and both persistent stores live in the
+installed application's own directory, which a reinstall replaces — so
+deployment is a ritual that backs them up first and restores them afterward.
+
+---
+
+## 13. Definition of Done
+
+The POC is done when a person can walk up to a sleeping Reachy and naturally:
+
+1. Wake it with an antenna touch and be greeted by name.
+2. Talk with it.
+3. Pause mid-sentence without being cut off, and interrupt it without waiting.
+4. Be visually tracked while they speak.
+5. See appropriate physical reactions.
+6. Ask what Reachy sees.
+7. Ask a question that requires live web information.
+8. Ask it to retrieve something from one external service.
+9. Ask it to control one real device in the home.
+10. Tell it something about themselves and have it remembered next time.
+11. Tell it to go to sleep, and watch it say goodbye and settle.
+
+If those experiences work convincingly, the POC has proven the product
+direction. Anything beyond that is justified by what the POC teaches, not
+designed in advance.
+
+---
+
+## Appendix A — Current status (2026-08-19)
+
+| Capability                                  | Status                                    |
+| ------------------------------------------- | ----------------------------------------- |
+| Demo 1 — Chinese conversation + interruption | Implemented, dev-verified; awaiting live operator validation |
+| Demo 2 — Physical expression                | Implemented, dev-verified; awaiting live operator validation |
+| Demo 3 — Camera object description          | Implemented, image path proven end to end; awaiting live operator validation (the development simulator cannot present a usable scene) |
+| Demo 4 — Automatic web search               | Implemented, dev-verified with real results; awaiting live operator validation |
+| Demo 5 — Real home-device action            | Implemented; awaiting Home Assistant credentials, then live validation |
+| US-07 — External service via MCP            | Integration seam implemented; awaiting Notion credentials |
+| US-10 — Cute robotic voice                  | Implemented and verified on the robot; awaiting an operator listening pass |
+| US-11 — Fact memory                         | Implemented and deployed to the robot; awaiting live operator validation |
+| US-12 — Face memory                         | Implemented and deployed to the robot; awaiting live operator validation, which is also the only source of recognition-threshold calibration |
+
+**Standing risk.** Every remaining item needs a human in front of the robot. The
+recognition threshold in particular cannot be calibrated without two real people
+in a live session; until then it is set conservatively, which biases the system
+toward reporting "unknown" rather than naming the wrong person.
