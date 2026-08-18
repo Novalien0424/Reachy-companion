@@ -1130,6 +1130,391 @@ scope is keyless; live tuning at Task 8.
 
 - [ ] **Step 9 (deferred to Task 8 dev-run): live A/B tuning** — tune semitones/ringmod by ear; record values in D-010; capture recording evidence for feature_list VOICE-1. Escalation stays per D-010: if chipmunk aesthetics fail the "cute" bar, upgrade path is a true duration-preserving engine (requires solving the aarch64 wheel problem first) or cascaded TTS — both KEEP this chain.
 
+
+<!-- Task 17 amendment (operator-requested face memory, 2026-08-18) -->
+
+# Task 17 (amendment draft) — Face memory: recognize returning people across sessions
+
+DRAFT for operator approval, 2026-08-18. The PRD listed face *recognition* as a
+non-goal; the operator has now explicitly requested it, so it becomes a
+first-class task. Nothing here is implemented — this is the spec a fresh agent
+executes without re-research. **Composes with** the parallel round enabling text
+memory (`remember`/`forget`, `memory.v1.json`, redeploy backup/restore ritual):
+face memory is a *second* store joining the same ritual, and never touches
+`memory.v1.json`.
+
+## Decisions claimed (renumber to the next free IDs; D-010 is taken)
+
+- **(a) Reuse the SDK's YuNet detector; add only SFace.** `reachy_mini.vision.face_detector.FaceDetector` is pure numpy + onnxruntime + huggingface_hub — **no cv2** (verified: it imports and runs in our app venv, which has no cv2). Import it, don't fork it.
+- **(b) SFace fp32 from HF `opencv/face_recognition_sface` — one 36.9 MiB file, Apache-2.0, ZERO new Python dependencies.** Preloaded exactly like the YuNet model.
+- **(c) Separate `faces.v1.json`; cv2-free numpy alignment; one-shot recognition on wake, never continuous scanning.**
+
+## Files
+
+New: `faces.py` (store; mirrors `memory.py` idioms exactly — SCHEMA_VERSION,
+module `threading.Lock`, atomic tmp+`replace`, `*_for_instance` path helper,
+tolerant readers returning `[]` on corruption); `face_id.py` (`FaceRecognizer` —
+lazy ORT sessions, numpy align, embed, match; no camera, no image I/O);
+`tools/remember_face.py`; `tools/who_is_this.py`; `tests/test_faces.py`;
+`tests/test_face_id.py`; `tests/test_face_tools.py`.
+
+| Edited | Change |
+|---|---|
+| `tools/core_tools.py` | `ToolDependencies` gains `face_recognizer: Any = None` (same optional-field style as `go_to_sleep`). |
+| `main.py` | Build `FaceRecognizer`, assign to `deps.face_recognizer`, start its warm-up thread right after `initialize_tools(...)` (`main.py:361`). |
+| `huggingface_realtime.py` | `_send_startup_greeting_prompt()` (`:454-482`) prepends a recognition line to the greeting text. **The only auto-recognition hook.** |
+| `profiles/_reachy_companion_locked_profile/profile.md` | `default_tools` += `remember_face`, `who_is_this`; two behaviour lines (below). |
+| `scripts/preload_assets.py` | `hf_hub_download("opencv/face_recognition_sface", "face_recognition_sface_2021dec.onnx")`. |
+
+```
+- 当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相。
+- 当用户问"我是谁"、"你还认得我吗"时，用 who_is_this 工具；认不出就坦率说认不出，不要猜。
+```
+
+## Interfaces
+
+```python
+# faces.py
+FACES_FILENAME = "faces.v1.json"; SCHEMA_VERSION = 1
+MAX_PEOPLE = 12; MAX_EMBEDDINGS_PER_PERSON = 3; EMBEDDING_DIM = 128
+
+@dataclass(frozen=True)
+class FaceRecord:
+    id: str                                    # "f_<ms>_<6 chars>", MemoryFact.id shape
+    name: str                                  # normalized, <= 40 chars
+    embeddings: tuple[tuple[float, ...], ...]  # each L2-normalized, len 128
+    created_at: int; updated_at: int           # ms
+
+def faces_path_for_instance(instance_path) -> Path      # mirrors memory_path_for_instance
+def list_faces(instance_path) -> list[FaceRecord]       # newest-updated first
+def upsert_face(instance_path, name, embedding) -> FaceRecord
+    # same casefolded name -> append, ring-buffer to 3 (drop oldest), bump updated_at.
+    # new name -> new record; over MAX_PEOPLE, evict least-recently-updated.
+def forget_face(instance_path, name) -> FaceRecord | None
+def clear_faces(instance_path) -> None
+
+# face_id.py
+SFACE_REPO = "opencv/face_recognition_sface"
+SFACE_FILE = "face_recognition_sface_2021dec.onnx"
+DEFAULT_MATCH_THRESHOLD = 0.40   # env FACE_MATCH_THRESHOLD
+DEFAULT_MARGIN          = 0.05   # env FACE_MATCH_MARGIN
+MIN_FACE_PX = 60                 # bbox width at full frame resolution
+DETECT_DOWNSCALE = 2             # 1280x720 -> 640x360 via frame[::2, ::2]
+
+def align_face(frame_bgr, face: Face) -> NDArray[np.uint8]  # (112,112,3) BGR
+def embed(aligned_bgr) -> NDArray[np.float32]               # (128,), L2-normalized
+def cosine(a, b) -> float
+
+@dataclass(frozen=True)
+class Identification:
+    status: Literal["recognized","unknown","ambiguous","no_face",
+                    "multiple_faces","too_far","unavailable"]
+    name: str | None = None; score: float | None = None
+    runner_up: str | None = None; face_count: int = 0
+    reason: str | None = None                               # only for "unavailable"
+
+class FaceRecognizer:
+    def __init__(self, instance_path, *, enabled: bool = True) -> None: ...
+    def start_warmup(self) -> None                # daemon thread: build both ORT sessions
+    def wait_ready(self, timeout_s: float) -> bool
+    def identify(self, frame_bgr) -> Identification
+    def enroll(self, frame_bgr, name) -> tuple[FaceRecord | None, Identification]
+```
+
+Runtime rules baked into `FaceRecognizer`:
+
+- Both ORT sessions: `intra_op_num_threads=1`, `inter_op_num_threads=1`,
+  `providers=["CPUExecutionProvider"]` — the SDK detector's rationale
+  (`face_detector.py:69`): never spread across cores and starve the 50 Hz loop.
+- Detect on `frame[::2, ::2]` (exact 2x decimation, no interpolation); scale
+  bbox/landmarks back by 2; **take the alignment crop from the full-res frame**.
+- Align: least-squares similarity (Umeyama with scale) from YuNet's three exposed
+  landmarks (`right_eye`, `left_eye`, `nose`) to the first three canonical SFace
+  reference points `(38.2946,51.6963) (73.5318,51.5014) (56.0252,71.7366)` in the
+  112x112 frame, then an inverse-mapped bilinear resample in numpy. **No cv2.**
+- Blob: aligned BGR -> RGB (`aligned[..., ::-1]`, matching OpenCV `swapRB=true`)
+  -> float32 values 0-255, **no mean subtraction, no scaling** ->
+  `transpose(2,0,1)[None]`. Input tensor `data`; output `fc1` is `[1,128]`.
+- Match: cosine over L2-normalized vectors; per-person score = max over its <=3
+  embeddings. `recognized` iff `best >= threshold` **and** `best - second >=
+  margin`; threshold met but margin failed -> `ambiguous` with `runner_up`; else
+  `unknown`. `identify()` never raises — every failure becomes a status; disabled
+  or failed-to-load model -> `unavailable`.
+
+### Tool surface
+
+| Tool | `needs_response` | Args | Returns |
+|---|---|---|---|
+| `remember_face` | `True` (default) | `{"name": str}` | `{"status":"saved","name":...}` or a failure status |
+| `who_is_this` | `True` (default) | `{}` | the `Identification` fields as a dict |
+
+One file per tool. Both grab the frame themselves via
+`deps.reachy_mini.media.get_frame()` (BGR ndarray, `media_manager.py:243-255`),
+check `deps.camera_enabled` first, and run CPU work under `asyncio.to_thread(...)`
+so the realtime event loop is never blocked. **Neither ever returns image bytes.**
+Enrollment requires exactly one face; more -> `{"status":"multiple_faces","face_count":n}`.
+
+### Auto-recognition hook
+
+`_send_startup_greeting_prompt()` is the single hook: it already fires once per
+session, before the model's first word, and already injects a synthetic *user*
+text turn. New behaviour, guarded by `FACE_AUTO_GREET` (default `1`):
+
+1. `await asyncio.to_thread(recognizer.wait_ready, budget)`, budget =
+   `FACE_GREET_BUDGET_MS/1000` (default `1.2`). Not ready -> skip.
+2. `ident = await asyncio.to_thread(recognizer.identify, frame)`.
+3. Only on `status == "recognized"`, prepend one line to the greeting text:
+   `（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）`
+4. Any other status, any exception, or budget expiry -> the greeting text is sent
+   **completely unchanged**. The greeting must never be delayed or lost because of
+   face memory.
+
+Least-creepy default: one check at wake, no continuous scanning, no recognition
+mid-conversation unless the user asks.
+
+## TDD steps
+
+Write each test first, watch it fail, then implement.
+
+1. **Store** (`test_faces.py`, `tmp_path`, no model)
+   ```python
+   def test_upsert_appends_and_ring_buffers(tmp_path):
+       e = [np.eye(128, dtype=np.float32)[i] for i in range(4)]
+       for v in e: upsert_face(tmp_path, "小明", v)
+       rec, = list_faces(tmp_path)
+       assert rec.name == "小明" and len(rec.embeddings) == 3
+       assert rec.embeddings[-1] == pytest.approx(e[3].tolist(), abs=1e-6)  # newest kept
+   ```
+   Plus: casefold dedupe of names; `MAX_PEOPLE` evicts least-recently-*updated*;
+   truncated/garbage `faces.v1.json` yields `[]` + a warning, never raises;
+   `forget_face` returns the record / `None`; no `.faces.v1.json.*.tmp` left behind.
+
+2. **Matching maths** (`test_face_id.py`, synthetic vectors, no model)
+   ```python
+   def test_margin_rule_reports_ambiguous():
+       store = [("A", [v_a]), ("B", [v_b])]     # cosine 0.52 and 0.50 vs probe
+       out = match(probe, store, threshold=0.40, margin=0.05)
+       assert out.status == "ambiguous" and {out.name, out.runner_up} == {"A", "B"}
+   ```
+   Plus: `best < threshold` -> `unknown` with the score reported; one person above
+   threshold -> `recognized`; empty store -> `unknown`.
+
+3. **Alignment, cv2-free** (`test_face_id.py`, no model — `rotate_bilinear` is a
+   numpy-only test helper)
+   ```python
+   def test_align_identity_is_a_plain_crop():
+       out = align_face(frame112, face_at_reference_points)
+       assert out.shape == (112, 112, 3)
+       assert np.abs(out.astype(int) - frame112.astype(int)).max() <= 1
+
+   def test_align_undoes_roll():                # rotate_bilinear = numpy-only helper
+       out = align_face(rotate_bilinear(frame112, 20), landmarks_rotated_20deg)
+       assert np.abs(out.astype(int) - frame112.astype(int)).mean() < 8
+   ```
+   Plus a source-grep test asserting no new module imports `cv2` — the robot venv
+   has none, so an accidental import is a deploy-time crash, not a test failure.
+
+4. **Model contract** (`test_face_id.py`, gated on the HF cache, no network)
+   ```python
+   @pytest.mark.skipif(not _sface_cached(), reason="SFace model not in HF cache")
+   def test_sface_contract(tmp_path):
+       r = FaceRecognizer(tmp_path); r.start_warmup(); assert r.wait_ready(60)
+       assert r._sface.get_inputs()[0].name == "data"
+       assert r._sface.get_outputs()[0].shape == [1, 128]
+       v = r._embed(np.zeros((112,112,3), np.uint8))
+       assert v.shape == (128,) and abs(np.linalg.norm(v) - 1.0) < 1e-5
+   ```
+
+5. **Degradation ladder** (`test_face_tools.py`, fake recognizer + fake media)
+   ```python
+   @pytest.mark.asyncio
+   async def test_who_is_this_degrades_without_a_face(deps_with_fake_camera):
+       out = await WhoIsThis()(deps_with_fake_camera)
+       assert out == {"status": "no_face", "face_count": 0} and "b64_im" not in out
+   ```
+   One test per status: `no_face`, `too_far` (bbox < 60 px), `multiple_faces`,
+   `unknown`, `ambiguous`, `recognized`, `unavailable` (camera disabled; model not
+   ready). Assert **no tool result ever carries image bytes**. `remember_face` with
+   two faces must refuse and store nothing.
+
+6. **Enrollment -> recognition round-trip** (`test_face_tools.py`): stub the
+   embedder to a deterministic function of the frame, call `remember_face(name="小明")`,
+   then `who_is_this()` on a perturbed frame; assert `recognized` + the name, and
+   that `faces.v1.json` holds exactly one record.
+
+7. **Greeting hook** (`test_face_tools.py`)
+   ```python
+   @pytest.mark.asyncio
+   async def test_greeting_prefixes_recognized_name(handler):
+       handler.deps.face_recognizer = FakeRecognizer(recognized="小明")
+       await handler._send_startup_greeting_prompt()
+       text = sent_item_text(handler)
+       assert "小明" in text and text.endswith(get_session_greeting_prompt().strip())
+   ```
+   Plus: `unknown` / `unavailable` / recognizer raising / `FACE_AUTO_GREET=0` -> the
+   sent text equals the greeting prompt **exactly**; a recognizer that sleeps past
+   the budget does not delay the send beyond `FACE_GREET_BUDGET_MS` + slack.
+
+8. **Profile pin** (extend `tests/test_profile.py`): the tool list grows by
+   `remember_face` + `who_is_this` and both behaviour lines are asserted present —
+   same pattern and reason as the `go_to_sleep` round (tool and instruction ship together).
+
+9. **Gates**: `python -m pytest` from `reachy_companion/` (baseline 422 passed / 30
+   skipped must not regress), `ruff check`, `mypy --strict`.
+
+## Redeploy step
+
+1. `preload_assets.py` gains the SFace download; on the robot it runs **as `pollen`**
+   (the app user), as in deploy attempt 3, so the cache lands in that user's
+   `~/.cache/huggingface`. ~37 MB; skipping it means a visible first-run stall.
+2. The `reachy-deploy` backup/restore ritual (added in the parallel memory round)
+   must cover **`faces.v1.json` alongside `memory.v1.json`**. The instance path is
+   the site-packages dir and is wiped on every reinstall (D-009) — an un-backed-up
+   `faces.v1.json` means the robot forgets everyone.
+3. Normal `--no-deps` two-step redeploy. **No new wheel dependency**, so the aarch64
+   resolution set is unchanged (still 43 deps).
+
+## Evidence criteria
+
+- [ ] `python -m pytest` >= 422 passed / 0 failed; ruff + mypy strict green.
+- [ ] Grep evidence no new module imports `cv2`; `python -c "import cv2"` still fails
+      inside the robot's app venv.
+- [ ] On-robot log line: warm-up completed (with measured session build time) before
+      the first greeting.
+- [ ] **Enrollment**: "记住我，我叫X" -> `remember_face` fires -> `faces.v1.json` has
+      one record, one embedding. Repeat twice -> 3 embeddings, ring-buffered.
+- [ ] **Same-session recall**: "我是谁?" -> correct name spoken; cosine score logged.
+- [ ] **Cross-session recall (the actual feature)**: stop app, restart, stand in front
+      -> the *greeting itself* uses the name, unprompted. Injected text logged.
+- [ ] **Stranger**: second person -> `unknown`; Reachy says so rather than guessing.
+- [ ] **Two faces**: enrollment refuses with `multiple_faces`.
+- [ ] **Degradation**: camera covered -> greeting sent unchanged, no stall, no traceback.
+- [ ] On-robot latency logged for one `who_is_this` call and for the wake-time check.
+- [ ] `faces.v1.json` survives a redeploy via the backup/restore ritual.
+
+---
+
+# Design rationale (appendix)
+
+## Verified, not assumed
+
+Measured in **our own app venv** (`C:\Project\Reachy-mini\.venv`; robot runs 3.12 aarch64):
+
+| Check | Result |
+|---|---|
+| `onnxruntime` / `numpy` in app venv | **present, 1.27.0** (SDK pin) / 2.5.2 |
+| `cv2` in app venv | **MISSING** — the decisive constraint |
+| SDK `FaceDetector` import + run in app venv | **works** (pure numpy + ORT + `huggingface_hub`) |
+| SFace file size | 38,696,353 B = **36.9 MiB** |
+| SFace input / output | `data [1,3,112,112]` f32 / **`fc1 [1,128]`** f32 |
+| SFace inference / session init, 1 thread, dev x86 | **16.6 ms** / 42 ms (warm file cache) |
+| YuNet detect, 1 thread, dev x86 | 1280x720 **23.8 ms**; 640x360 **5.6 ms**; 320x192 1.3 ms |
+| YuNet `kps_*` tensor width | **10** = all 5 landmarks present in the raw output |
+
+Pi 5 (Cortex-A76) single-thread ORT CPU runs roughly 3-4x slower than a modern
+desktop core on these graphs: budget **~20 ms** detection at 640x360, **~50-70 ms**
+per embedding, **~100-150 ms end to end** including the frame grab. Invisible inside
+a tool call and comfortably inside the 1.2 s greeting budget — *provided the sessions
+are already built*. A cold build reads 37 MB off eMMC (plausibly 0.5-2 s), hence the
+warm-up thread plus the hard budget at greeting time.
+
+## The cv2 constraint decided the architecture
+
+The canonical way to run SFace is `cv2.FaceRecognizerSF`, whose `alignCrop()` does the
+5-landmark warp for you. **We cannot use it**: no cv2 in the app venv, and the SDK pulls
+`opencv-python` only in its `examples`/`opencv` *extras*
+(`reference/reachy_mini/pyproject.toml:63-65,86`) — the base install, and so the robot's
+`apps_venv`, has none. Adding it would be a ~35 MB native dependency and a new entry in
+the 43-dep aarch64 set, for one function. So we replicate the two OpenCV steps in numpy,
+precisely the precedent the SDK sets (`media/camera_utils.py:56`: *"Pure numpy
+equivalent of `cv2.undistortPoints()`"*). From `modules/objdetect/src/face_recognize.cpp`:
+`getSimilarityTransformMatrix()` reference points are `(38.2946,51.6963)
+(73.5318,51.5014) (56.0252,71.7366) (41.5493,92.3655) (70.7299,92.2041)`; `feature()`
+uses `blobFromImage(aligned, 1, Size(112,112), Scalar(0,0,0), swapRB=true, crop=false)`
+— **scale 1.0, no mean, BGR->RGB**, easy to get wrong and silently accuracy-degrading
+rather than crashing; `match()` L2-normalizes both features, then cosine = dot product.
+
+## Landmarks: 3 vs 5, and the threshold
+
+The SDK's `Face` exposes only `right_eye`, `left_eye`, `nose` (`face_detector.py:18-25`)
+— all head tracking needs — but the raw `kps_*` tensors carry all 5 (verified). We
+deliberately fit from **3 points** so we can import the SDK detector untouched instead of
+forking its 45-line `_decode`; three non-collinear points determine a similarity by least
+squares, and the eyes+nose triangle is well conditioned. The cost: our crops differ
+slightly from canonical 5-point crops, so **OpenCV's published 0.363 cosine threshold is
+not exactly ours**. Enrollment and recognition run the identical pipeline, so
+self-consistency is what matters, but we default to **0.40** (conservative) plus a
+**0.05 margin rule** so a near-tie reports `ambiguous` rather than confidently naming the
+wrong person. Both env-tunable; calibrate on-robot from the logged scores. If accuracy
+proves inadequate, the escape hatch is a ~15-line subclass overriding `_decode` to emit
+all 5 landmarks — the tensor already has them.
+
+## Model choice
+
+| Candidate | Size | Dim | Verdict |
+|---|---|---|---|
+| **SFace `face_recognition_sface_2021dec.onnx`** | **36.9 MiB** | **128** | **CHOSEN.** Apache-2.0, on HF hub (`opencv/face_recognition_sface`, fits our preload pattern), LFW 0.9940, canonical partner of the exact YuNet the SDK already runs (shared landmark convention), published threshold to anchor tuning. |
+| SFace int8 | 9.9 MiB | 128 | **REJECTED now.** opencv_zoo #189 reports 0.999999 similarity between *different* people, unresolved. A 4x size win is not worth an unverified accuracy cliff on a demo. |
+| SFace int8bq | 10.7 MiB | 128 | Deferred. Card claims 0.9942 (above fp32) but newest and unvalidated by us — a good follow-up size optimization with a measured check. |
+| InsightFace `w600k_mbf` | ~13 MiB | 512 | **REJECTED.** Different landmark convention, and the practical path is the `insightface` package — a real new dependency with an aarch64 build story. |
+| ArcFace `w600k_r50` | ~166 MiB | 512 | **REJECTED.** Far too large for the download and page-cache budget; accuracy we don't need. |
+| Standalone MobileFaceNet ONNX | ~5 MiB | 128 | **REJECTED.** No single stable licensed canonical host. SFace *is* a MobileFaceNet trained with SFace loss — same small backbone without the sourcing risk. |
+
+36.9 MiB is large for a MobileFaceNet backbone, but it is a one-time preload on a robot
+that already downloads the emotions library, and costs nothing at inference beyond
+~100 MB resident session memory.
+
+## Other rejected alternatives
+
+- **Reuse the daemon's detection instead of our own YuNet pass.** `get_tracked_face()`
+  rides the 1 Hz status stream and `FaceTarget` carries an aim direction — no crop, no
+  landmarks, nothing to embed; `GET /api/media/tracking/face` is faster with the same
+  shape problem. Our own pass costs ~20 ms on an already-cached model and yields the
+  landmarks alignment requires.
+- **Extend `memory.v1.json`.** `MemoryFact.to_json` is documented as *"the persisted JSON
+  shape used by the mobile app"* — an external contract. Embeddings are ~1.2 KB each and
+  would be re-read and re-serialized on every `remember` call and every prompt build. A
+  sibling file costs one line in the backup ritual. Stored as floats rounded to 6 dp
+  (cosine error < 1e-6) so the file stays inspectable on-robot.
+- **Always-on recognition loop.** Wrong on CPU and on privacy: the daemon already runs
+  YuNet continuously for head tracking on a Pi also carrying a 50 Hz control loop,
+  GStreamer, and our realtime websocket. A single wake check buys the entire "it
+  remembered me" moment for ~150 ms of CPU once per session.
+- **Folding recognition into the existing `camera` tool.** `camera` uploads a JPEG to the
+  model; `who_is_this` must not. Separation is what makes the privacy claim checkable.
+
+## Privacy
+
+**No image is ever persisted** — `faces.v1.json` holds names, 128-float vectors and
+timestamps, nothing else. **No image or embedding ever leaves the robot**: the model
+receives only a *name* and a status string, and the one path that uploads pixels is the
+existing `camera` tool, which fires only when the user asks Reachy to look.
+**Not continuous** — one check at wake plus explicit `who_is_this` calls;
+`FACE_MEMORY_ENABLED=0` disables the feature, `FACE_AUTO_GREET=0` keeps the tools but
+drops the wake-time check. **Enrollment is explicit and verbal** — a name spoken with
+"remember me", never a silent enrollment of passers-by. `forget_face` exists in the store
+from day one, so a "忘了我" tool is a five-line addition rather than a redesign.
+
+## Sources
+
+- [opencv/face_recognition_sface — Hugging Face](https://huggingface.co/opencv/face_recognition_sface)
+- [opencv_zoo face_recognition_sface (README, Apache-2.0)](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface)
+- [opencv_zoo issue #189 — int8 accuracy report](https://github.com/opencv/opencv_zoo/issues/189)
+- [OpenCV `face_recognize.cpp` — reference landmarks, blob, match](https://raw.githubusercontent.com/opencv/opencv/4.x/modules/objdetect/src/face_recognize.cpp)
+- [OpenCV DNN face tutorial — 0.363 cosine / 1.128 L2 thresholds](https://docs.opencv.org/4.13.0/d0/dd4/tutorial_dnn_face.html)
+
+### Task 17 — Codex round 1 corrections (BINDING; override the section above where they conflict)
+
+All five findings accepted (2026-08-18). The implementer must apply these:
+
+1. **(Blocker) Wake recognition frame source:** the wake hook must guard `deps.camera_enabled`, acquire the frame via `await asyncio.to_thread(deps.reachy_mini.media.get_frame)` (BGR, `media_manager.py:243`), and on `None` skip recognition entirely (original greeting unchanged). No other frame path.
+2. **(Major) One monotonic deadline:** a single `FACE_WAKE_BUDGET_MS` (default 1200) bounds readiness-wait + frame capture + identification TOGETHER (monotonic clock). Deadline hit at any stage → send the original greeting; the hook must never delay session events past the budget (it runs before event processing, `huggingface_realtime.py:740`).
+3. **(Major) Kill switch wired:** `FACE_MEMORY_ENABLED` (env_bool, default true) parsed in `main.py` and passed into construction; disabled → no model load/warm-up, no wake recognition, and the tools return `{"error": "face memory is disabled"}`-style unavailable results. Test the disabled path.
+4. **(Major) Deploy skill in scope:** add `.claude/skills/reachy-deploy/SKILL.md` to this task's Files; extend the backup/restore ritual (steps 4 and 6) to include `faces.v1.json` with a restored-record-count read-back, same as memory.v1.json.
+5. **(Minor) API-name consistency:** the recognizer's public surface is `FaceRecognizer.embed(aligned_112x112) -> np.ndarray(128)` and `FaceRecognizer.match(embedding) -> MatchResult` — declare exactly these and use exactly these names in every test; no module-level `embed()`, no `_embed()` in tests.
+
+Cross-round constraint (Codex-verified): operator round 2 has landed — the profile edits here must PRESERVE `remember`/`forget` in `default_tools` and the round-2 instruction lines; `voicefx.py` is untouched by this task.
+
 ## Self-Review (performed at plan time)
 
 - **Spec coverage:** US-01→Tasks 5,6,8; US-02→Task 6 (startup enable) + Task 9 (verify, no-tool); US-03→Task 9; US-04→Task 10; US-05→Task 11; US-06→Tasks 11–13; US-07→Task 12; US-08→Task 13; US-09→Task 14; PRD §8 gate→Task 15. §2 research done (docs/research-*.md). §9 non-goals: no task builds any.
