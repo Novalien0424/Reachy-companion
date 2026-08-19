@@ -71,6 +71,11 @@ _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
 # this hook runs before the session starts processing events: every millisecond
 # it spends is a millisecond the greeting is late.
 _FACE_WAKE_BUDGET_MS_DEFAULT: Final[int] = 1200
+# Several looks fit inside that budget, and at a dozen enrolled people extra
+# frames buy more recognitions than any model change does (D-015): a blink, a
+# turned head or a shadow is a per-frame accident, not a per-person one.
+_FACE_WAKE_ATTEMPTS_DEFAULT: Final[int] = 3
+_FACE_WAKE_RETRY_PAUSE_S: Final[float] = 0.15
 _FACE_GREETING_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
 )
@@ -462,14 +467,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         await self._safe_response_create()
 
     async def _recognized_face_prefix(self) -> str:
-        """Return the greeting prefix naming a recognized face, or "" (D-013).
+        """Return the greeting prefix naming a recognized face, or "" (D-013, D-015).
 
-        The single auto-recognition hook in the app: one look at wake time, never
-        a continuous scan. Bounded by one monotonic deadline covering readiness,
-        frame capture and identification together — hitting it, failing to
-        recognize anybody, or any exception at all yields "", so the greeting is
-        sent unchanged and on time. Face memory must never be able to delay or
-        lose the first thing Reachy says.
+        The single auto-recognition hook in the app: one bounded check at wake
+        time, never a continuous scan. Inside it, up to `FACE_WAKE_ATTEMPTS`
+        looks, and the first confident one wins. Every round shares **one**
+        monotonic deadline covering readiness, frame capture and identification
+        together — hitting it, failing to recognize anybody, or any exception at
+        all yields "", so the greeting is sent unchanged and on time. Face memory
+        must never be able to delay or lose the first thing Reachy says.
         """
         if not env_bool("FACE_AUTO_GREET", True):
             return ""
@@ -487,12 +493,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return ""
 
         budget_s = env_int("FACE_WAKE_BUDGET_MS", _FACE_WAKE_BUDGET_MS_DEFAULT, lo=0, hi=10_000) / 1000.0
+        attempts = env_int("FACE_WAKE_ATTEMPTS", _FACE_WAKE_ATTEMPTS_DEFAULT, lo=1, hi=5)
         deadline = time.monotonic() + budget_s
         started = time.monotonic()
 
         def remaining() -> float:
             return deadline - time.monotonic()
 
+        # `Identification` from face_id.py, untyped here for the same reason the
+        # recognizer itself is: the runtime injects it, and this module must keep
+        # working with face memory absent entirely.
+        identification: Any = None
+        rounds = 0
         try:
             if remaining() <= 0.0:
                 return ""
@@ -501,17 +513,38 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 logger.info("Face memory not ready within the wake budget; greeting unchanged.")
                 return ""
 
-            if remaining() <= 0.0:
-                return ""
-            # Correction 1: the wake check reads the camera through the same media
-            # path as the tools; a None frame skips recognition entirely.
-            frame = await asyncio.wait_for(asyncio.to_thread(self.deps.reachy_mini.media.get_frame), remaining())
-            if frame is None:
-                return ""
+            for attempt in range(1, attempts + 1):
+                if remaining() <= 0.0:
+                    break
+                round_started = time.monotonic()
+                # Correction 1: the wake check reads the camera through the same
+                # media path as the tools; a None frame skips recognition entirely.
+                frame = await asyncio.wait_for(asyncio.to_thread(self.deps.reachy_mini.media.get_frame), remaining())
+                if frame is None:
+                    return ""
 
-            if remaining() <= 0.0:
-                return ""
-            identification = await asyncio.wait_for(asyncio.to_thread(recognizer.identify, frame), remaining())
+                if remaining() <= 0.0:
+                    break
+                identification = await asyncio.wait_for(asyncio.to_thread(recognizer.identify, frame), remaining())
+                rounds = attempt
+                logger.info(
+                    "Wake face check round %d/%d: status=%s score=%s in %.0f ms",
+                    attempt,
+                    attempts,
+                    identification.status,
+                    identification.score,
+                    (time.monotonic() - round_started) * 1000.0,
+                )
+                if identification.status == "recognized" and identification.name:
+                    break
+
+                # A short pause between looks, so the next frame is a genuinely
+                # different one — the pose, the blink or the light has moved on.
+                # Never past the deadline: the pause is budget, not extra time.
+                pause = min(_FACE_WAKE_RETRY_PAUSE_S, remaining())
+                if attempt == attempts or pause <= 0.0:
+                    break
+                await asyncio.sleep(pause)
         except asyncio.TimeoutError:
             logger.info("Face memory exceeded its %.0f ms wake budget; greeting unchanged.", budget_s * 1000.0)
             return ""
@@ -520,19 +553,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return ""
 
         elapsed_ms = (time.monotonic() - started) * 1000.0
-        if identification.status != "recognized" or not identification.name:
+        if identification is None or identification.status != "recognized" or not identification.name:
             logger.info(
-                "Wake face check: status=%s score=%s in %.0f ms; greeting unchanged.",
-                identification.status,
-                identification.score,
+                "Wake face check: %d round(s), last status=%s score=%s in %.0f ms; greeting unchanged.",
+                rounds,
+                identification.status if identification is not None else "none",
+                identification.score if identification is not None else None,
                 elapsed_ms,
             )
             return ""
 
         logger.info(
-            "Wake face check: recognized %s (score %.3f) in %.0f ms; greeting personalized.",
+            "Wake face check: recognized %s (score %.3f) on round %d of %d in %.0f ms; greeting personalized.",
             identification.name,
             identification.score or 0.0,
+            rounds,
+            attempts,
             elapsed_ms,
         )
         return _FACE_GREETING_PREFIX.format(name=identification.name) + "\n"

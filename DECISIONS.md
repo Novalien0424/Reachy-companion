@@ -499,3 +499,54 @@ the overclaims the audit found — the unscoped face-privacy sentence, "the chec
 never delays the greeting", "layered over the tracking pose", tracking running
 continuously, "nothing else on the robot is modified", the "Make the room
 cooler" example, and the tense on US-07 — are corrected in place.
+
+## D-015 — Face pipeline tuned from measured evidence (2026-08-19)
+
+D-013 shipped with three open questions and one carry-over: the CM4's 239 ms
+idle / 362 ms busy SFace embed, an uncalibrated 0.40 threshold, and a wake check
+that stakes everything on a single frame. A measurement round answered all of
+them, and the answers were not the ones the plan expected.
+
+**1. int8 quantization is rejected.** The obvious lever — the int8bq model at a
+quarter the size — is *slower* on this robot. The Cortex-A72 has no dot-product
+instructions (`sdot`/`udot`, ARMv8.2), so ONNX Runtime falls back to a NEON int8
+path whose de/requantization costs more than the fp32 GEMM it replaces. OpenCV
+zoo's own Raspberry Pi 4 benchmark — the same SoC — measures the int8 SFace at
+**27 % slower** than fp32. No further work; the fp32 model stays.
+
+**2. Alignment now uses all five landmarks, and the threshold is OpenCV's.**
+YuNet computes five keypoints — the `kps_*` tensors are `[1, anchors, 10]` — but
+the SDK's parser reads columns 0-5 and discards 6-9, the two mouth corners. That
+is why D-013 fitted three points, and why OpenCV's published cosine threshold did
+not apply to us. `face_id._decode_five_points` re-parses the same raw outputs
+with the mouth corners kept, in a `FaceDetector` subclass that overrides
+`_decode` and nothing else (the SDK builds its `Face` inline, so there is no
+finer seam); `REFERENCE_POINTS` is completed to the canonical five-row ArcFace
+template. The pipeline now reproduces `alignCrop` semantics — same template, same
+similarity warp, same raw 0-255 RGB blob — so `FACE_MATCH_THRESHOLD` defaults to
+**0.363**, OpenCV's own number for this exact model, instead of the conservative
+0.40 guess. The 0.05 margin rule is unchanged. **Consequence: embeddings enrolled
+under the three-point warp are not comparable to five-point ones.** No migration
+code exists and none is warranted — no live enrollment has happened — but any
+pre-existing `faces.v1.json` must be re-enrolled.
+
+**3. The SFace session runs on three threads with busy-spinning off.** ORT spins
+its intra-op pool by default, so the recognizer's thread pool burns a core
+*between* embeds; that is the likeliest cause of the 239 → 362 ms regression
+under load. `session.intra_op.allow_spinning=0` plus
+`FACE_ORT_INTRA_OP_THREADS=3` (default 3, clamped 1-4) makes the recognizer both
+faster and a politer neighbour. This supersedes D-013's one-thread rule **for the
+recognizer only** — recognition is one short burst per wake, and a ~100 ms burst
+is invisible to the 50 Hz loop, where a continuous load would not be. The SDK's
+YuNet detector keeps its own one-thread session, untouched. Dev-box median for
+one embed: 17.4 ms at one thread with spinning, 8.3 ms at three without.
+
+**4. The wake check may look at up to three frames.** At the twelve people this
+POC enrolls, the failures that matter are per-frame accidents — a blink, a turned
+head, a shadow — not per-person confusions, so extra frames buy more recognitions
+than any model change does. `FACE_WAKE_ATTEMPTS` (default 3, clamped 1-5) rounds
+of grab-frame-then-identify run inside the **unchanged** 1200 ms
+`FACE_WAKE_BUDGET_MS` deadline, with a 150 ms pause between them so the next
+frame is genuinely different. The first confident recognition wins and stops the
+sequence; the deadline stops it otherwise. Every path that returned the greeting
+unchanged before still does.

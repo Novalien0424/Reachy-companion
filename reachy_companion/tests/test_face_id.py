@@ -6,35 +6,43 @@ maths that decides who Reachy thinks you are is checkable offline.
 """
 
 import logging
+from types import SimpleNamespace
+from typing import Any
 from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from reachy_mini.vision.face_detector import Face
 from reachy_companion.faces import upsert_face
 from reachy_companion.face_id import (
+    SFACE_FILE,
     ALIGNED_SIZE,
     DEFAULT_MARGIN,
     REFERENCE_POINTS,
     IDENTIFICATION_REASONS,
     DEFAULT_MATCH_THRESHOLD,
+    DEFAULT_ORT_INTRA_OP_THREADS,
+    Face5,
     FaceRecognizer,
     cosine,
     align_face,
     sface_is_cached,
+    _decode_five_points,
+    _five_point_detector_class,
 )
 
 
-def _face_at(points: NDArray[np.float64]) -> Face:
-    """Build a `Face` whose three landmarks sit at `points` (right eye, left eye, nose)."""
+def _face_at(points: NDArray[np.float64]) -> Face5:
+    """Build a `Face5` whose five landmarks sit at `points`, in the canonical order."""
     xs, ys = points[:, 0], points[:, 1]
-    return Face(
+    return Face5(
         bbox=(float(xs.min()), float(ys.min()), float(np.ptp(xs)), float(np.ptp(ys))),
         right_eye=(float(points[0, 0]), float(points[0, 1])),
         left_eye=(float(points[1, 0]), float(points[1, 1])),
         nose=(float(points[2, 0]), float(points[2, 1])),
+        right_mouth=(float(points[3, 0]), float(points[3, 1])),
+        left_mouth=(float(points[4, 0]), float(points[4, 1])),
     )
 
 
@@ -174,13 +182,126 @@ def test_align_returns_a_black_crop_for_an_unusable_frame() -> None:
 
 
 def test_align_survives_degenerate_landmarks() -> None:
-    """Three collinear (or identical) landmarks must not raise — identify() must stay total."""
+    """Five identical (or collinear) landmarks must not raise — identify() must stay total."""
     frame = _smooth_disc_frame()
-    degenerate = np.array([[50.0, 50.0], [50.0, 50.0], [50.0, 50.0]])
+    degenerate = np.repeat(np.array([[50.0, 50.0]]), 5, axis=0)
 
     aligned = align_face(frame, _face_at(degenerate))
 
     assert aligned.shape == (ALIGNED_SIZE, ALIGNED_SIZE, 3)
+
+
+def test_align_is_bounds_safe_for_landmarks_off_the_frame() -> None:
+    """A face straddling the frame edge samples outside it; that must zero-fill, not raise."""
+    frame = _smooth_disc_frame()
+    off_frame = np.array([[-30.0, -20.0], [5.0, -18.0], [-12.0, 4.0], [-28.0, 30.0], [2.0, 31.0]])
+
+    aligned = align_face(frame, _face_at(off_frame))
+
+    assert aligned.shape == (ALIGNED_SIZE, ALIGNED_SIZE, 3)
+    assert aligned.dtype == np.uint8
+
+
+def test_align_uses_the_mouth_corners_too() -> None:
+    """All five landmarks drive the fit: moving only the mouth must move the crop (D-015).
+
+    The regression this pins is a partial 5-point migration — a template grown to
+    five rows while `align_face` still feeds three landmarks would keep passing
+    every other alignment test here.
+    """
+    frame = _smooth_disc_frame()
+    moved_mouth = REFERENCE_POINTS.astype(np.float64).copy()
+    moved_mouth[3:] += 12.0  # both mouth corners; eyes and nose untouched
+
+    canonical = align_face(frame, _face_at(REFERENCE_POINTS.astype(np.float64)))
+    shifted = align_face(frame, _face_at(moved_mouth))
+
+    assert np.abs(canonical.astype(int) - shifted.astype(int)).max() > 1
+
+
+def test_reference_points_are_opencvs_canonical_five() -> None:
+    """Pin the template and its order: it must match the landmark order `align_face` builds.
+
+    These are the five rows of `getSimilarityTransformMatrix()` in OpenCV's
+    `modules/objdetect/src/face_recognize.cpp`. Reproducing them exactly is half
+    of what makes OpenCV's published 0.363 threshold valid for our pipeline.
+    """
+    assert REFERENCE_POINTS.shape == (5, 2)
+    assert REFERENCE_POINTS.tolist() == [
+        [38.2946, 51.6963],  # right eye
+        [73.5318, 51.5014],  # left eye
+        [56.0252, 71.7366],  # nose tip
+        [41.5493, 92.3655],  # right mouth corner
+        [70.7299, 92.2041],  # left mouth corner
+    ]
+
+
+# --- five-landmark parse (no model) -----------------------------------------
+
+
+def _yunet_outputs(anchor: int, keypoints: list[float], width: int = 64) -> dict[str, NDArray[np.float32]]:
+    """Return synthetic YuNet head outputs with exactly one face firing at stride 8.
+
+    Shapes follow the real graph: `cls_*`/`obj_*` are [1, anchors, 1], `bbox_*` is
+    [1, anchors, 4] and `kps_*` is [1, anchors, 10] — the ten-wide tensor whose
+    last four columns the SDK's parser discards.
+    """
+    outputs: dict[str, NDArray[np.float32]] = {}
+    for stride in (8, 16, 32):
+        count = (width // stride) ** 2
+        outputs[f"cls_{stride}"] = np.zeros((1, count, 1), dtype=np.float32)
+        outputs[f"obj_{stride}"] = np.zeros((1, count, 1), dtype=np.float32)
+        outputs[f"bbox_{stride}"] = np.zeros((1, count, 4), dtype=np.float32)
+        outputs[f"kps_{stride}"] = np.zeros((1, count, 10), dtype=np.float32)
+    outputs["cls_8"][0, anchor, 0] = 1.0
+    outputs["obj_8"][0, anchor, 0] = 1.0
+    outputs["bbox_8"][0, anchor] = np.array([0.5, 0.5, 1.0, 1.0], dtype=np.float32)
+    outputs["kps_8"][0, anchor] = np.array(keypoints, dtype=np.float32)
+    return outputs
+
+
+def test_five_point_parse_recovers_the_mouth_corners_the_sdk_drops() -> None:
+    """The local parse must agree with the SDK on eyes/nose/bbox and add the two mouth points.
+
+    Both halves matter. The mouth coordinates are new, so they are asserted
+    against hand-computed full-resolution pixels; the other three are the SDK's
+    answer verbatim, which is what proves the copy did not drift from the parse
+    it mirrors.
+    """
+    from reachy_mini.vision.face_detector import FaceDetector
+
+    anchor, stride, width = 9, 8, 64  # cols = 8, so anchor 9 sits at col 1, row 1
+    keypoints = [0.2, 0.3, 0.6, 0.35, 0.4, 0.5, 0.25, 0.7, 0.55, 0.72]
+    outputs = _yunet_outputs(anchor, keypoints, width)
+
+    detector: Any = object.__new__(_five_point_detector_class())
+    detector._score_threshold = 0.6
+    detector._nms_threshold = 0.3
+    (face,) = detector._decode(outputs, width)
+    (sdk_face,) = FaceDetector._decode(SimpleNamespace(_score_threshold=0.6, _nms_threshold=0.3), outputs, width)
+
+    col, row = anchor % (width // stride), anchor // (width // stride)
+    expected = [((col + keypoints[i]) * stride, (row + keypoints[i + 1]) * stride) for i in range(0, 10, 2)]
+    assert face.right_mouth == pytest.approx(expected[3])
+    assert face.left_mouth == pytest.approx(expected[4])
+    # Identical to the SDK's own parse, point for point.
+    assert (face.bbox, face.right_eye, face.left_eye, face.nose) == (
+        sdk_face.bbox,
+        sdk_face.right_eye,
+        sdk_face.left_eye,
+        sdk_face.nose,
+    )
+    assert [value for point in (face.right_eye, face.left_eye, face.nose) for value in point] == pytest.approx(
+        [value for point in expected[:3] for value in point]
+    )
+
+
+def test_five_point_parse_drops_faces_below_the_score_threshold() -> None:
+    """The mirrored parse keeps the SDK's score gate; a weak anchor yields no face."""
+    outputs = _yunet_outputs(9, [0.2, 0.3, 0.6, 0.35, 0.4, 0.5, 0.25, 0.7, 0.55, 0.72])
+    outputs["obj_8"][0, 9, 0] = 0.1  # geometric mean 0.32, under the 0.6 gate
+
+    assert _decode_five_points(outputs, 64, 0.6, 0.3) == []
 
 
 def test_no_module_imports_cv2() -> None:
@@ -296,7 +417,17 @@ def test_thresholds_are_env_tunable(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     assert (recognizer.threshold, recognizer.margin) == (0.15, 0.01)
     assert recognizer.match(probe).status == "recognized"
-    assert (DEFAULT_MATCH_THRESHOLD, DEFAULT_MARGIN) == (0.40, 0.05)
+
+
+def test_default_threshold_is_opencvs_published_value() -> None:
+    """0.363 is OpenCV's own cosine threshold for this exact SFace model (D-015).
+
+    It is only ours because the pipeline now reproduces `alignCrop` semantics —
+    the full five-point template, the same similarity warp, the same raw 0-255
+    RGB blob. Dropping back to a three-point fit would invalidate it, so the
+    number and the alignment are pinned together.
+    """
+    assert (DEFAULT_MATCH_THRESHOLD, DEFAULT_MARGIN) == (0.363, 0.05)
 
 
 # --- kill switch ------------------------------------------------------------
@@ -348,16 +479,16 @@ def test_identify_reports_unavailable_without_a_frame(tmp_path: Path) -> None:
 class _FakeDetector:
     """A YuNet stand-in returning a fixed face list, recording the frame it saw."""
 
-    def __init__(self, faces: list[Face]) -> None:
+    def __init__(self, faces: list[Face5]) -> None:
         self.faces = faces
         self.seen_shape: tuple[int, ...] | None = None
 
-    def detect(self, frame_bgr: NDArray[np.uint8]) -> list[Face]:
+    def detect(self, frame_bgr: NDArray[np.uint8]) -> list[Face5]:
         self.seen_shape = frame_bgr.shape
         return self.faces
 
 
-def _loaded_recognizer(tmp_path: Path, faces: list[Face]) -> tuple[FaceRecognizer, _FakeDetector]:
+def _loaded_recognizer(tmp_path: Path, faces: list[Face5]) -> tuple[FaceRecognizer, _FakeDetector]:
     """Return a recognizer wired to a fake detector and a deterministic embedder."""
     recognizer = FaceRecognizer(tmp_path)
     detector = _FakeDetector(faces)
@@ -368,13 +499,15 @@ def _loaded_recognizer(tmp_path: Path, faces: list[Face]) -> tuple[FaceRecognize
     return recognizer, detector
 
 
-def _face_of_width(width: float) -> Face:
+def _face_of_width(width: float) -> Face5:
     """Return one face whose bbox is `width` px wide at full resolution, landmarks inside it."""
-    return Face(
+    return Face5(
         bbox=(100.0, 100.0, width, width),
         right_eye=(100.0 + width * 0.3, 100.0 + width * 0.4),
         left_eye=(100.0 + width * 0.7, 100.0 + width * 0.4),
         nose=(100.0 + width * 0.5, 100.0 + width * 0.6),
+        right_mouth=(100.0 + width * 0.35, 100.0 + width * 0.75),
+        left_mouth=(100.0 + width * 0.65, 100.0 + width * 0.75),
     )
 
 
@@ -480,6 +613,110 @@ def test_embed_rejects_a_crop_of_the_wrong_size(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         recognizer.embed(np.zeros((64, 64, 3), dtype=np.uint8))
+
+
+# --- ONNX Runtime session tuning (no model, no network) ---------------------
+
+
+class _StubOptions:
+    """A `SessionOptions` stand-in recording everything the loader sets on it."""
+
+    def __init__(self) -> None:
+        self.intra_op_num_threads = 0
+        self.inter_op_num_threads = 0
+        self.log_severity_level = 0
+        self.config_entries: dict[str, str] = {}
+
+    def add_session_config_entry(self, key: str, value: str) -> None:
+        self.config_entries[key] = value
+
+
+class _StubSession:
+    """An `InferenceSession` stand-in that records the model path and its options."""
+
+    built: list[tuple[str, _StubOptions]] = []
+
+    def __init__(self, model_path: str, options: _StubOptions, providers: list[str] | None = None) -> None:
+        type(self).built.append((model_path, options))
+
+    def get_inputs(self) -> list[Any]:
+        return [SimpleNamespace(name="data")]
+
+    def get_outputs(self) -> list[Any]:
+        return [SimpleNamespace(name="fc1")]
+
+
+def _load_with_stub_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, _StubOptions]]:
+    """Run the real `_load()` against stubbed ORT and hub calls; return what was built.
+
+    Both sessions are covered on purpose: the assertions below have to show that
+    the recognizer's session was retuned *and* that the SDK detector's own
+    one-thread configuration was left exactly as the SDK wrote it.
+    """
+    import onnxruntime as ort
+    import huggingface_hub
+
+    import reachy_mini.vision.face_detector as sdk_detector
+
+    def _fake_download(repo_id: str, filename: str, **kwargs: Any) -> str:
+        return f"{tmp_path}/{repo_id}/{filename}"
+
+    monkeypatch.setattr(ort, "SessionOptions", _StubOptions)
+    monkeypatch.setattr(ort, "InferenceSession", _StubSession)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
+    monkeypatch.setattr(sdk_detector, "hf_hub_download", _fake_download)
+    monkeypatch.setattr(_StubSession, "built", [])
+
+    recognizer = FaceRecognizer(tmp_path)
+    recognizer._load()
+
+    assert recognizer._loaded, recognizer._load_error
+    return list(_StubSession.built)
+
+
+def _sface_options(built: list[tuple[str, _StubOptions]]) -> _StubOptions:
+    """Return the options the SFace session was built with."""
+    return next(options for path, options in built if SFACE_FILE in path)
+
+
+def test_sface_session_runs_multi_threaded_without_busy_spinning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recognition is one short burst per wake, so it may use more than one core (D-015).
+
+    Two things are pinned. Three intra-op threads cut the measured 239 ms embed
+    towards ~100 ms, which is negligible against the 50 Hz loop for a burst that
+    happens once. And `allow_spinning=0` stops ORT's default busy-wait pool from
+    holding a core hot *between* bursts — the regression that turned a 239 ms
+    idle embed into 362 ms under load.
+    """
+    built = _load_with_stub_sessions(tmp_path, monkeypatch)
+
+    options = _sface_options(built)
+    assert options.intra_op_num_threads == DEFAULT_ORT_INTRA_OP_THREADS == 3
+    assert options.inter_op_num_threads == 1
+    assert options.config_entries["session.intra_op.allow_spinning"] == "0"
+
+
+def test_the_sdk_detector_keeps_its_own_session_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """We retune our recognizer, never the SDK's detector: YuNet stays on one thread."""
+    built = _load_with_stub_sessions(tmp_path, monkeypatch)
+
+    yunet = next(options for path, options in built if SFACE_FILE not in path)
+    assert (yunet.intra_op_num_threads, yunet.inter_op_num_threads) == (1, 1)
+    assert yunet.config_entries == {}
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("4", 4), ("0", 1), ("9", 4), ("nonsense", 3)])
+def test_sface_thread_count_is_env_tunable_and_clamped(
+    raw: str, expected: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On-robot tuning happens through the env, and never outside [1, 4] on a 4-core CM4."""
+    monkeypatch.setenv("FACE_ORT_INTRA_OP_THREADS", raw)
+
+    built = _load_with_stub_sessions(tmp_path, monkeypatch)
+
+    assert _sface_options(built).intra_op_num_threads == expected
 
 
 # --- model contract (gated on the local HF cache, no network) ---------------

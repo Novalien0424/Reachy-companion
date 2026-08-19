@@ -15,12 +15,12 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from reachy_mini.vision.face_detector import Face
 import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion.faces import list_faces
 from reachy_companion.face_id import (
     ALIGNED_SIZE,
     IDENTIFICATION_REASONS,
+    Face5,
     FaceRecognizer,
     Identification,
 )
@@ -44,6 +44,8 @@ class _FakeRecognizer:
         ready: bool = True,
         record: Any = None,
         wait_delay_s: float = 0.0,
+        identify_delay_s: float = 0.0,
+        results: list[Identification] | None = None,
         raises: Exception | None = None,
     ) -> None:
         self.identification = identification or Identification(status="no_face")
@@ -51,6 +53,9 @@ class _FakeRecognizer:
         self._ready = ready
         self._record = record
         self._wait_delay_s = wait_delay_s
+        self._identify_delay_s = identify_delay_s
+        # A scripted answer per round; the last one repeats once exhausted.
+        self._results = list(results) if results else None
         self._raises = raises
         self.frames_seen = 0
 
@@ -70,6 +75,10 @@ class _FakeRecognizer:
         self.frames_seen += 1
         if self._raises is not None:
             raise self._raises
+        if self._identify_delay_s:
+            time.sleep(self._identify_delay_s)
+        if self._results:
+            return self._results.pop(0) if len(self._results) > 1 else self._results[0]
         return self.identification
 
     def enroll(self, frame_bgr: NDArray[np.uint8] | None, name: str) -> tuple[Any, Identification]:
@@ -314,16 +323,23 @@ async def test_remember_face_is_unavailable_when_disabled_or_blind() -> None:
 class _StubDetector:
     """Detector stand-in returning fixed faces, so the round trip needs no YuNet."""
 
-    def __init__(self, faces: list[Face]) -> None:
+    def __init__(self, faces: list[Face5]) -> None:
         self.faces = faces
 
-    def detect(self, frame_bgr: NDArray[np.uint8]) -> list[Face]:
+    def detect(self, frame_bgr: NDArray[np.uint8]) -> list[Face5]:
         return self.faces
 
 
-def _face() -> Face:
+def _face() -> Face5:
     """One face large enough to pass MIN_FACE_PX once scaled back to full resolution."""
-    return Face(bbox=(10.0, 10.0, 60.0, 60.0), right_eye=(25.0, 30.0), left_eye=(45.0, 30.0), nose=(35.0, 40.0))
+    return Face5(
+        bbox=(10.0, 10.0, 60.0, 60.0),
+        right_eye=(25.0, 30.0),
+        left_eye=(45.0, 30.0),
+        nose=(35.0, 40.0),
+        right_mouth=(28.0, 50.0),
+        left_mouth=(42.0, 50.0),
+    )
 
 
 def _brightness_embedder(aligned: NDArray[np.uint8]) -> NDArray[np.float32]:
@@ -548,6 +564,80 @@ async def test_greeting_is_not_delayed_past_the_wake_budget(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_wake_check_takes_a_second_look_and_the_first_hit_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A miss on frame one is not an answer: a later look inside the budget still greets by name.
+
+    This is D-015's whole point — at a dozen enrolled people, a blink, a turned
+    head or a shadow costs far more recognitions than any model change buys back.
+    """
+    recognizer = _FakeRecognizer(
+        results=[
+            Identification(status="no_face"),
+            Identification(status="recognized", name="小明", score=0.51, face_count=1),
+            Identification(status="unknown", score=0.1, face_count=1),
+        ]
+    )
+    handler = _handler(recognizer, monkeypatch)
+
+    await handler._send_startup_greeting_prompt()
+
+    text = _sent_text(handler)
+    assert "小明" in text
+    assert text.endswith(GREETING)
+    # Stops the moment somebody is recognized: the third look never happens.
+    assert recognizer.frames_seen == 2
+
+
+@pytest.mark.asyncio
+async def test_wake_check_stops_after_the_attempt_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nobody recognized in any round leaves the greeting exactly as it was, after N looks."""
+    recognizer = _FakeRecognizer(Identification(status="unknown", score=0.2, face_count=1))
+    handler = _handler(recognizer, monkeypatch)
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _sent_text(handler) == GREETING
+    assert recognizer.frames_seen == 3
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("5", 5), ("0", 1), ("77", 5), ("nonsense", 3)])
+@pytest.mark.asyncio
+async def test_wake_attempt_count_is_env_tunable_and_clamped(
+    raw: str, expected: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry count is tunable on the robot, and never outside [1, 5]."""
+    monkeypatch.setenv("FACE_WAKE_ATTEMPTS", raw)
+    monkeypatch.setenv("FACE_WAKE_BUDGET_MS", "10000")  # the deadline must not decide this test
+    recognizer = _FakeRecognizer(Identification(status="no_face"))
+    handler = _handler(recognizer, monkeypatch)
+
+    await handler._send_startup_greeting_prompt()
+
+    assert recognizer.frames_seen == expected
+    assert _sent_text(handler) == GREETING
+
+
+@pytest.mark.asyncio
+async def test_wake_check_rounds_share_one_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retries live *inside* the existing budget; they can never extend it.
+
+    Three 120 ms looks plus their pauses would need ~700 ms. The 400 ms budget
+    must cut the sequence short and still send the greeting on time.
+    """
+    monkeypatch.setenv("FACE_WAKE_BUDGET_MS", "400")
+    recognizer = _FakeRecognizer(Identification(status="no_face"), identify_delay_s=0.12)
+    handler = _handler(recognizer, monkeypatch)
+
+    started = time.monotonic()
+    await handler._send_startup_greeting_prompt()
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+
+    assert _sent_text(handler) == GREETING
+    assert 0 < recognizer.frames_seen < 3
+    assert elapsed_ms < 600.0
+
+
+@pytest.mark.asyncio
 async def test_greeting_hook_is_a_no_op_for_a_disabled_recognizer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -611,4 +701,5 @@ async def test_greeting_hook_runs_recognition_off_the_event_loop(monkeypatch: py
     await handler._send_startup_greeting_prompt()
 
     assert loop_thread is asyncio.get_running_loop()
-    assert seen == [False]
+    # One entry per round since D-015; every one of them off the event loop.
+    assert seen and not any(seen)

@@ -2,8 +2,22 @@
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
-Suite: **527 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+Suite: **548 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
+
+Face-pipeline research round (2026-08-19, **D-015**): the D-013 carry-overs were
+measured rather than guessed, and three changes landed. int8 quantization is
+**rejected** — the CM4's Cortex-A72 has no dot-product instructions, so ORT's
+int8 path is slower (OpenCV zoo's own Pi 4 bench: 27 % slower than fp32).
+Alignment now uses **five landmarks**, recovered by re-parsing the mouth corners
+YuNet already computes and the SDK's parser discards, which lets the default
+threshold move to OpenCV's published **0.363** for this model; any face enrolled
+before this change must be re-enrolled. The SFace session runs on **3 intra-op
+threads with busy-spinning disabled** (one short burst per wake; the SDK's YuNet
+detector is untouched) — 17.4 → 8.3 ms per embed on the dev box. And the wake
+check now looks at up to **3 frames** inside the unchanged 1200 ms budget, first
+confident hit wins. All three are unit-covered; the robot numbers are still the
+ones only a live pass can produce.
 
 Audit round (2026-08-19): a five-auditor adversarial review compared
 `docs/PRD.md` against the code. **Six defects fixed** in commit `a5f682d`, each
@@ -85,11 +99,12 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
   the plan assumed, so one SFace embed costs **239 ms idle / 362 ms with the app
   running** (plan: 50-70 ms). The wake check measured 305 ms with nobody in
   frame and should land ~600-700 ms with a face — inside the 1200 ms budget,
-  with less margin than planned. Levers: `FACE_WAKE_BUDGET_MS`,
-  `intra_op_num_threads=2` (140 ms in an isolated test, against D-013's
-  one-thread rule), or the int8bq model.
-- **D-013 carry-over: the 0.40 threshold is uncalibrated against real faces.**
-  Synthetic crops cannot validate it — out-of-distribution inputs collapse into
+  with less margin than planned. **Acted on in D-015**: the session now runs at
+  3 intra-op threads with spinning off; int8 is rejected outright. The remaining
+  lever is `FACE_WAKE_BUDGET_MS`, and the new per-round timings need a live pass.
+- **D-013 carry-over, superseded by D-015: the threshold is 0.363 (OpenCV's own),
+  still unconfirmed against real faces.** Synthetic crops cannot validate it —
+  out-of-distribution inputs collapse into
   a narrow cone (two unrelated noise crops scored 0.87 on-robot). Only a live
   session with two people produces the numbers: every score is logged by
   `who_is_this` and the wake check, so tune `FACE_MATCH_THRESHOLD` /
@@ -117,7 +132,11 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
    → then 「我是谁?」 in the same session → stop the app, restart, stand in front
    → the *greeting itself* should use the name. Then a second person, who must
    come back `unknown` rather than guessed. Report the cosine scores from the
-   log; they are the calibration data for `FACE_MATCH_THRESHOLD`.
+   log; they are the calibration data for `FACE_MATCH_THRESHOLD`. Since D-015
+   the default is **0.363** — OpenCV's own published threshold for this model,
+   now valid because the alignment reproduces `alignCrop` — so this pass
+   *confirms* a number rather than discovering one. Enroll fresh: any face
+   stored before D-015 used the old three-point warp and is not comparable.
 4. Home Assistant credentials → Task 13.5. Notion MCP is **deferred by operator
    decision** (D-014); the web-search MCP Space already satisfies F-K3, so
    US-07's mechanism is proven without it.

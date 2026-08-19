@@ -367,10 +367,12 @@ Requirements:
 
 - The user can enrol a face by name in conversation ("remember me, I'm X").
 - Reachy answers "who am I?" using what it has enrolled.
-- On waking, Reachy takes one look and greets a recognised person by name.
+- On waking, Reachy checks once and greets a recognised person by name.
 - An unknown or uncertain person is reported as unknown. Reachy never guesses a
   name, and a near-tie between two enrolled people is reported as ambiguous.
-- Recognition is not continuous: one check at wake, plus explicit requests.
+- Recognition is not continuous: one bounded check at wake — up to a few frames
+  inside a single time budget, stopping at the first confident match — plus
+  explicit requests.
 - The feature can be disabled entirely, and the automatic greeting check can be
   disabled while keeping the conversational tools.
 
@@ -461,7 +463,8 @@ The user says: "Turn on the living room lights."
 1. Reachy sits asleep on the desk: motors relaxed, sleep pose, nothing running.
 2. The user touches an antenna.
 3. The companion app starts automatically — no laptop, no dashboard, no console.
-4. Reachy takes a single look at whoever is in front of the camera.
+4. Reachy takes up to a few quick glances at whoever is in front of the camera,
+   all inside one time budget.
 5. If it recognises them, the opening greeting uses their name. The check is
    deliberately in front of the greeting, so it may hold the greeting back by up
    to its own time budget — 1.2 seconds by default, tunable. On an overrun, a
@@ -597,8 +600,8 @@ These are considered only after the core experience is proven.
 > It was promoted to a requirement (US-12) on an explicit product request, under
 > a strict constraint: reuse the SDK's existing face detector, add exactly one
 > model, add no new dependencies, and keep everything on the robot. It is not a
-> face-recognition subsystem; it is one look at wake time and two conversational
-> tools.
+> face-recognition subsystem; it is one bounded check at wake time and two
+> conversational tools.
 
 ---
 
@@ -777,8 +780,8 @@ plays against.
 **On-device face recognition.** Detection reuses the SDK's own face detector; a
 single added recognition model turns a detected face into a numeric signature.
 Both run on the robot's CPU. Enrolment is explicit and verbal, recognition
-happens at wake time and on request, and no recognition frame is ever stored or
-transmitted. The camera tool is a separate path and does send its frame to the
+happens in one bounded check at wake time — a few frames at most, inside a single
+budget — and on request, and no recognition frame is ever stored or transmitted. The camera tool is a separate path and does send its frame to the
 model, on explicit request.
 
 **Persistent state.** Two small stores live on the robot — remembered facts and

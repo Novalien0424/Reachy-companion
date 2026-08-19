@@ -7,16 +7,23 @@ Two hard constraints shaped this module (D-013):
   (`cv2.FaceRecognizerSF.alignCrop` + `blobFromImage`) is therefore replicated in
   numpy here, following the precedent the SDK itself sets in
   `media/camera_utils.py` ("Pure numpy equivalent of `cv2.undistortPoints()`").
-* **Never steal the control loop.** Both ONNX sessions are pinned to a single
-  intra/inter-op thread, exactly as `reachy_mini.vision.face_detector.FaceDetector`
-  does, so recognition cannot spread across the cores the 50 Hz loop needs.
+* **Never steal the control loop.** The detector keeps the SDK's own one-thread
+  session, untouched. The recognizer's does not (D-015): recognition is a single
+  short burst per wake, so a ~100 ms three-thread burst is invisible to the 50 Hz
+  loop, while ORT's default busy-spinning pool would keep a core hot *between*
+  bursts. Spinning is therefore disabled — of the two, the politer setting, not
+  the riskier one.
 
 Alignment fits a least-squares similarity transform (Umeyama, with scale) from
-YuNet's three exposed landmarks — right eye, left eye, nose — onto the first
-three canonical SFace reference points, then inverse-maps with bilinear
-resampling. Three points instead of five is what lets us import the SDK detector
-untouched; the cost is that OpenCV's published 0.363 cosine threshold is not
-exactly ours, hence the conservative 0.40 default plus a margin rule.
+five landmarks — right eye, left eye, nose, right mouth corner, left mouth
+corner — onto the five canonical SFace reference points, then inverse-maps with
+bilinear resampling. YuNet computes all five, but the SDK's parser keeps only the
+first three, so `_decode_five_points` re-parses the very same raw outputs with
+the mouth corners kept (D-015). Reproducing `alignCrop` semantics — full
+template, same similarity warp, same raw 0-255 RGB blob — is what makes OpenCV's
+published **0.363** cosine threshold ours as well; it is the default, with a 0.05
+margin rule on top. Embeddings enrolled under the earlier three-point warp are
+not comparable to these and must be re-enrolled.
 
 `identify()` never raises: every failure — disabled, model missing, bad frame,
 detector error — comes back as a status, and its `reason` is one of the fixed
@@ -31,13 +38,14 @@ import logging
 import threading
 from typing import Any, Literal, get_args
 from pathlib import Path
+from functools import lru_cache
 from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
 from reachy_companion.faces import EMBEDDING_DIM, FaceRecord, list_faces, upsert_face
-from reachy_companion.audio.envparse import env_float
+from reachy_companion.audio.envparse import env_int, env_float
 
 
 logger = logging.getLogger(__name__)
@@ -45,20 +53,26 @@ logger = logging.getLogger(__name__)
 SFACE_REPO = "opencv/face_recognition_sface"
 SFACE_FILE = "face_recognition_sface_2021dec.onnx"
 
-DEFAULT_MATCH_THRESHOLD = 0.40
+# OpenCV's own published cosine threshold for this exact model, valid here
+# because the pipeline reproduces `alignCrop` semantics point for point (D-015).
+DEFAULT_MATCH_THRESHOLD = 0.363
 DEFAULT_MARGIN = 0.05
+DEFAULT_ORT_INTRA_OP_THREADS = 3
 MIN_FACE_PX = 60
 DETECT_DOWNSCALE = 2
 ALIGNED_SIZE = 112
 
-# The first three of OpenCV's five canonical alignment targets, from
-# `getSimilarityTransformMatrix()` in modules/objdetect/src/face_recognize.cpp:
-# right eye, left eye, nose tip, in the 112x112 aligned frame.
+# OpenCV's five canonical alignment targets, from `getSimilarityTransformMatrix()`
+# in modules/objdetect/src/face_recognize.cpp: right eye, left eye, nose tip,
+# right mouth corner, left mouth corner, in the 112x112 aligned frame. The order
+# is YuNet's own keypoint order, which is what `Face5` and `align_face` produce.
 REFERENCE_POINTS: NDArray[np.float64] = np.array(
     [
         [38.2946, 51.6963],
         [73.5318, 51.5014],
         [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
     ],
     dtype=np.float64,
 )
@@ -86,6 +100,31 @@ IdentificationReason = Literal[
 ]
 
 IDENTIFICATION_REASONS: frozenset[str] = frozenset(get_args(IdentificationReason))
+
+
+@dataclass(frozen=True)
+class Face5:
+    """A detected face with all five YuNet landmarks, in pixel coordinates.
+
+    The SDK's own `Face` carries three of them. This is the same record with the
+    two mouth corners YuNet already computed and the SDK's parser throws away —
+    the points SFace's canonical alignment needs (D-015). Field order is YuNet's
+    keypoint order, and it must stay in step with `REFERENCE_POINTS`.
+    """
+
+    bbox: tuple[float, float, float, float]
+    right_eye: tuple[float, float]
+    left_eye: tuple[float, float]
+    nose: tuple[float, float]
+    right_mouth: tuple[float, float]
+    left_mouth: tuple[float, float]
+
+    def landmarks(self) -> NDArray[np.float64]:
+        """Return the five landmarks as a (5, 2) array in `REFERENCE_POINTS` order."""
+        return np.array(
+            [self.right_eye, self.left_eye, self.nose, self.right_mouth, self.left_mouth],
+            dtype=np.float64,
+        )
 
 
 @dataclass(frozen=True)
@@ -142,6 +181,97 @@ def cosine(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
     if norms <= 0.0:
         return 0.0
     return float(np.dot(left, right) / norms)
+
+
+def _decode_five_points(
+    outputs: dict[str, NDArray[np.float32]],
+    width: int,
+    score_threshold: float,
+    nms_threshold: float,
+) -> list[Face5]:
+    """Parse YuNet's raw head outputs into faces, keeping all five landmarks.
+
+    A deliberate mirror of `FaceDetector._decode` in the pinned SDK
+    (`reachy_mini.vision.face_detector`, 1.10.0rc5): same geometric-mean score
+    fusion, same anchor decoding, same greedy NMS — the SDK's own `_nms` is
+    reused rather than reimplemented. The single difference is the keypoint
+    slice. `kps_*` is [1, anchors, 10]; the SDK reads columns 0-5 and discards
+    6-9, which are the right and left mouth corners. We read all ten.
+
+    Copying the loop is the smallest available seam: the SDK builds its `Face`
+    inline inside `_decode`, so there is nothing finer to override.
+    """
+    from reachy_mini.vision.face_detector import _STRIDES, _nms
+
+    boxes: list[tuple[float, float, float, float]] = []
+    scores: list[float] = []
+    faces: list[Face5] = []
+    for stride in _STRIDES:
+        cls = outputs[f"cls_{stride}"][0, :, 0]
+        obj = outputs[f"obj_{stride}"][0, :, 0]
+        score = np.sqrt(np.clip(cls, 0.0, 1.0) * np.clip(obj, 0.0, 1.0))
+        idx = np.nonzero(score >= score_threshold)[0]
+        if idx.size == 0:
+            continue
+        bbox = outputs[f"bbox_{stride}"][0][idx]
+        kps = outputs[f"kps_{stride}"][0][idx]
+        cols = width // stride
+        col = (idx % cols).astype(np.float32)
+        row = (idx // cols).astype(np.float32)
+        cx = (col + bbox[:, 0]) * stride
+        cy = (row + bbox[:, 1]) * stride
+        w = np.exp(bbox[:, 2]) * stride
+        h = np.exp(bbox[:, 3]) * stride
+        for k in range(idx.size):
+            box = (
+                float(cx[k] - w[k] / 2),
+                float(cy[k] - h[k] / 2),
+                float(w[k]),
+                float(h[k]),
+            )
+            boxes.append(box)
+            scores.append(float(score[idx[k]]))
+            points = [
+                (float((col[k] + kps[k, i]) * stride), float((row[k] + kps[k, i + 1]) * stride))
+                for i in range(0, 10, 2)
+            ]
+            faces.append(
+                Face5(
+                    bbox=box,
+                    right_eye=points[0],
+                    left_eye=points[1],
+                    nose=points[2],
+                    right_mouth=points[3],
+                    left_mouth=points[4],
+                )
+            )
+    return [faces[i] for i in _nms(boxes, scores, nms_threshold)]
+
+
+@lru_cache(maxsize=1)
+def _five_point_detector_class() -> type[Any]:
+    """Return the `FaceDetector` subclass that keeps all five landmarks.
+
+    Built on first use, not at import: the SDK detector module pulls onnxruntime
+    and the hub client, which this module otherwise touches only when a model is
+    actually loaded.
+    """
+    from reachy_mini.vision.face_detector import FaceDetector
+
+    # The SDK ships no `py.typed`, so its detector is `Any` to mypy; subclassing
+    # it is exactly what we want here, and is the one thing strict mode forbids.
+    class FivePointFaceDetector(FaceDetector):  # type: ignore[misc]
+        """The SDK's YuNet detector, returning `Face5` instead of the SDK's `Face`.
+
+        Everything else — model, revision, thresholds, the one-thread session —
+        is the SDK's, untouched. Only the output parse is overridden.
+        """
+
+        def _decode(self, outputs: dict[str, NDArray[np.float32]], width: int) -> list[Face5]:
+            """Decode the head outputs with the two mouth corners kept."""
+            return _decode_five_points(outputs, width, self._score_threshold, self._nms_threshold)
+
+    return FivePointFaceDetector
 
 
 def _similarity_transform(source: NDArray[np.float64], target: NDArray[np.float64]) -> tuple[
@@ -201,13 +331,14 @@ def _sample_bilinear(
     return sampled
 
 
-def align_face(frame_bgr: NDArray[np.uint8], face: Any) -> NDArray[np.uint8]:
+def align_face(frame_bgr: NDArray[np.uint8], face: Face5) -> NDArray[np.uint8]:
     """Warp the face in `frame_bgr` onto the canonical 112x112 SFace frame.
 
-    `face` is a `reachy_mini.vision.face_detector.Face` in **full-resolution**
-    pixel coordinates. Pure numpy: a least-squares similarity fit followed by an
-    inverse-mapped bilinear resample, the cv2-free equivalent of
-    `FaceRecognizerSF.alignCrop()`.
+    `face` carries all five landmarks in **full-resolution** pixel coordinates.
+    Pure numpy: a least-squares similarity fit followed by an inverse-mapped
+    bilinear resample, the cv2-free equivalent of
+    `FaceRecognizerSF.alignCrop()` — and, with the full five-point template,
+    equivalent in semantics too, which is what the 0.363 threshold rests on.
 
     A frame too small or the wrong shape to sample yields a black crop rather
     than an exception: `identify()` guards its own input, but this helper is
@@ -218,8 +349,7 @@ def align_face(frame_bgr: NDArray[np.uint8], face: Any) -> NDArray[np.uint8]:
         logger.warning("align_face received an unusable frame of shape %s; returning a black crop.", frame.shape)
         return np.zeros((ALIGNED_SIZE, ALIGNED_SIZE, 3), dtype=np.uint8)
 
-    landmarks = np.array([face.right_eye, face.left_eye, face.nose], dtype=np.float64)
-    scale, rotation, translation = _similarity_transform(landmarks, REFERENCE_POINTS)
+    scale, rotation, translation = _similarity_transform(face.landmarks(), REFERENCE_POINTS)
 
     grid_y, grid_x = np.mgrid[0:ALIGNED_SIZE, 0:ALIGNED_SIZE].astype(np.float64)
     destination = np.stack([grid_x, grid_y], axis=-1) - translation
@@ -291,16 +421,23 @@ class FaceRecognizer:
             import onnxruntime as ort
             from huggingface_hub import hf_hub_download
 
-            from reachy_mini.vision.face_detector import FaceDetector
-
-            detector = FaceDetector()
+            detector = _five_point_detector_class()()
             model_path = hf_hub_download(SFACE_REPO, SFACE_FILE)
 
             options = ort.SessionOptions()
-            # Same rationale as the SDK detector: one thread, so recognition can
-            # never spread across the cores the 50 Hz control loop needs.
-            options.intra_op_num_threads = 1
+            # D-015, from measurements on the robot. Recognition is one short
+            # burst per wake, not a continuous load: three intra-op threads turn
+            # a 239 ms embed into ~100 ms, which the 50 Hz loop never feels once.
+            # Disabling the busy-wait pool is the other half — ORT spins its
+            # worker threads by default, burning a core *between* bursts, which
+            # is what made the same embed cost 362 ms with the app running. Both
+            # settings make the recognizer a politer neighbour, not a greedier
+            # one. The detector's session stays exactly as the SDK built it.
+            options.intra_op_num_threads = env_int(
+                "FACE_ORT_INTRA_OP_THREADS", DEFAULT_ORT_INTRA_OP_THREADS, lo=1, hi=4
+            )
             options.inter_op_num_threads = 1
+            options.add_session_config_entry("session.intra_op.allow_spinning", "0")
             # SFace ships its batch-norm constants as graph inputs, which makes ORT
             # log ~50 initializer warnings per session build. They are informational
             # and would bury the app's own startup log on the robot.
@@ -482,16 +619,20 @@ class FaceRecognizer:
         )
 
 
-def _scale_face(face: Any, factor: int) -> Any:
-    """Return `face` with bbox and landmarks scaled from the decimated frame to full resolution."""
-    from reachy_mini.vision.face_detector import Face
-
+def _scale_face(face: Face5, factor: int) -> Face5:
+    """Return `face` with bbox and all five landmarks scaled from the decimated frame to full resolution."""
     x, y, width, height = face.bbox
-    return Face(
+
+    def scaled(point: tuple[float, float]) -> tuple[float, float]:
+        return (point[0] * factor, point[1] * factor)
+
+    return Face5(
         bbox=(x * factor, y * factor, width * factor, height * factor),
-        right_eye=(face.right_eye[0] * factor, face.right_eye[1] * factor),
-        left_eye=(face.left_eye[0] * factor, face.left_eye[1] * factor),
-        nose=(face.nose[0] * factor, face.nose[1] * factor),
+        right_eye=scaled(face.right_eye),
+        left_eye=scaled(face.left_eye),
+        nose=scaled(face.nose),
+        right_mouth=scaled(face.right_mouth),
+        left_mouth=scaled(face.left_mouth),
     )
 
 
@@ -499,6 +640,7 @@ __all__ = [
     "ALIGNED_SIZE",
     "DEFAULT_MARGIN",
     "DEFAULT_MATCH_THRESHOLD",
+    "DEFAULT_ORT_INTRA_OP_THREADS",
     "DETECT_DOWNSCALE",
     "EMBEDDING_DIM",
     "MIN_FACE_PX",
@@ -506,6 +648,7 @@ __all__ = [
     "SFACE_FILE",
     "SFACE_REPO",
     "IDENTIFICATION_REASONS",
+    "Face5",
     "FaceRecognizer",
     "Identification",
     "IdentificationReason",
