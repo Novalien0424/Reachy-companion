@@ -160,9 +160,16 @@ reachability, attempt 2 on the version gate. Full history in DECISIONS.md D-009.
 Robot state: daemon on the **1.10.0rc line** (git-source install, so the version
 gate passes and future daemon syncs follow the git ref); startup app is
 `reachy_companion`; the robot was last left **ASLEEP** running the build of
-commit `f37e6d9`.
+commit `9188a15` (sixth install, 2026-08-19: six audit fixes `a5f682d` + D-015
+face-pipeline tuning). Deploy-time evidence: on-robot embed median **141.7 ms**
+(3 threads, no spinning), face memory ready in 787 ms warm with threshold 0.363
+live, all 17 tools registered, multi-frame wake check exercised (2 rounds
+~295 ms each, clean budget expiry, greeting on time). `memory.v1.json` and
+`faces.v1.json` did not exist yet (no live enrollment); `.env` backed up and
+restored (1027 bytes verified both ways).
 
-Local `main` is ahead of the robot and **not yet deployed**: the PRD/README docs
-commit `fb6fd69`, the six audit fixes `a5f682d`, and the docs-alignment commit
-that follows them. Nothing has been installed since `f37e6d9`, so the next
-deployment resumes at **Step 1** and carries all three.
+Two pitfalls this deploy confirmed: Git Bash mangles a remote command whose
+first token is a POSIX path (`/venvs/...` became `C:/Program Files/...` and the
+force-reinstall silently didn't run — the plain install then reports "already
+installed" because the wheel version never changes); run plink/pscp from
+PowerShell. And plink needs `-hostkey <SHA256 fingerprint>` in batch mode.

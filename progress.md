@@ -35,9 +35,13 @@ deployment shape, and US-07's tense. Operator rulings recorded as **D-014**:
 the unauthenticated local console/RPC exposure is accepted as-is for a home
 POC, the idle-motion policy is accepted as personality, and Notion is deferred.
 
-**The robot still runs the `f37e6d9` build** — none of the audit fixes are on it
-yet; they ship with the next deployment. The `move_head` body-yaw fix in
-particular is unit-covered but still needs on-device confirmation.
+**Deployed 2026-08-19: the robot now runs `9188a15`** (audit fixes `a5f682d` +
+D-015 face-pipeline tuning). On-robot evidence: embed median 141.7 ms at 3
+threads (was 239/362 ms), face memory ready 787 ms warm with threshold 0.363
+live, 17 tools registered, multi-frame wake check ran live (2× ~295 ms rounds,
+budget expiry clean, greeting on time), VoiceFX chain up, Chinese greeting
+spoken. Robot left ASLEEP, `startup_app` set. The `move_head` body-yaw fix
+still needs a human-visible on-device check (ask Reachy to look left/right).
 
 Task 17 (commits `1d7eaa0` + review fixes `0fac21a`): **D-013** face memory — Reachy enrolls a face by
 name (`remember_face`), answers "我是谁" (`who_is_this`), and greets a
@@ -122,8 +126,8 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
 
 1. Mic pass (2 min): Chinese multi-turn, voice barge-in, ~1 s pause,
    VoiceFX ear-tuning (`scripts\dev_daemon.ps1` + `scripts\run_app_dev.ps1`).
-2. Live mic pass on the build **currently installed on the robot** (`f37e6d9`;
-   Task 17: WSOLA pitch, 17 tools, face memory). Wake it with an antenna touch —
+2. Live mic pass on the build **currently installed on the robot** (`9188a15`;
+   WSOLA pitch, 17 tools, face memory with 5-point alignment). Wake it with an antenna touch —
    `startup_app` is `reachy_companion` — and listen for: pitch still cute at
    natural pace; `remember`/`forget` used at the right moments; no audible
    tail bleeding across turns (a ~48-63 ms carry is known and expected to be
