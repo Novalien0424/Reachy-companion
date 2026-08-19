@@ -442,3 +442,60 @@ this machine; the robot's daemon must be brought to the matching 1.10.0rc
 line at Task 15. Related: `mcp` is bounded `<2` (mcp 2.0 renamed attributes
 and silently broke the 1.x-style reads in `mcp_client.py`); other deps still
 float — lockfile decision deferred to demo prep.
+
+## D-014 — Audit outcome: what we accept, defer and close (2026-08-19)
+
+A five-auditor adversarial review compared `docs/PRD.md` against the code. Six
+defects were real and are fixed in commit `a5f682d` (background-tool wedge guard
+at both call sites, per-server MCP discovery isolation, `move_head` body-yaw
+arguments, the face-tool reason contract below, dead package data, a dead env
+key). The rest of the findings resolved into four rulings, recorded here because
+each one is a standing position, not a pending chore.
+
+**1. The local console and JSON-RPC channel stay unauthenticated.** The app is
+served on `0.0.0.0:7860` — `main.py:457` sets `custom_app_url`, and the SDK's
+own `ReachyMiniApp` webserver binds that host with only a no-cache middleware
+(`reference/reachy_mini/src/reachy_mini/apps/app.py:52-66,100-115`) — and
+`console.py:570-637` mounts `/rpc` on it with methods that make Reachy speak,
+interrupt it, mute the microphone and rewrite persona and tool settings. No
+password, no token, no origin check anywhere in
+`console.py`. Operator ruling: **accepted as-is** for a POC on a trusted home
+network. This is a documentation item (PRD §12.7, root README "Behavior notes"),
+not a work item, and it must be revisited before anything leaves a home LAN.
+
+**2. The idle-motion policy stays.** After 180 s of conversation inactivity, and
+only when the movement manager is otherwise idle
+(`conversation_handler.py:29,72-94`), the app selects a movement locally and
+plays it without telling the model. `idle_do_nothing` — the 0.60-weighted
+stillness option — is not in the locked profile's `default_tools`, so
+`choose_idle_tool_call` filters it out and renormalizes across dance, emotion
+and head turn (`idle_policy.py:60-90`): in this build the idle timer *always*
+moves. Operator ruling: **accepted as personality.** A companion that never
+stirs reads as switched off.
+
+**3. Notion is deferred, and the MCP requirement is already met.** The bundled
+web-search tool is a remote MCP Space (`tool_spaces.py:49-71`), discovered and
+namespaced through the same seam, and it has run live with real results — so
+F-K3 is satisfied today. `mcp_servers._SERVER_ENV` (`mcp_servers.py:39`) carries
+exactly one hardcoded alias, `notion`, and its credentials are blank. Operator
+decision: **deferred**, not blocked. The PRD's "a remote MCP server needs no code
+at all" is therefore true only for that preconfigured slot; a second server is a
+new tuple plus two env vars.
+
+**4. The face tool's `reason` is a closed machine-code contract.** An
+`Identification` is echoed verbatim to the cloud model, so raw exception text in
+`reason` would be an exfiltration path out of an otherwise on-device feature.
+`reason` is now typed `IdentificationReason` — a seven-member `Literal`
+(`face_id.py:78-88`): `face_memory_disabled`, `camera_disabled`, `no_frame`,
+`unsupported_frame`, `model_unavailable`, `invalid_name`, `internal_error`. The
+exception detail is logged locally and never travels
+(`face_id.py:470-473`). Tests in `tests/test_face_id.py` and
+`tests/test_face_tools.py` pin the closure.
+
+Consequence for the docs, applied in the same pass: PRD §12.7 documents the
+accepted behaviours and the remaining local surfaces (auto-sleep at 24 h, the
+60-fact and 12-people×3-signature caps, the external-tools autoload flag), and
+the overclaims the audit found — the unscoped face-privacy sentence, "the check
+never delays the greeting", "layered over the tracking pose", tracking running
+continuously, "nothing else on the robot is modified", the "Make the room
+cooler" example, and the tense on US-07 — are corrected in place.

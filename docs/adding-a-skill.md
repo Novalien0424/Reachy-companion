@@ -12,8 +12,8 @@ All paths below are relative to `reachy_companion/`.
 
 **The filename is the contract.** The loader imports `reachy_companion.tools.<tool_name>`
 where `<tool_name>` is the string listed in the profile
-(`tools/core_tools.py:398`), then picks up every non-abstract `Tool` subclass
-*defined in that module* (`core_tools.py:207-225`). So the file must be named after the
+(`tools/core_tools.py:403`), then picks up every non-abstract `Tool` subclass
+*defined in that module* (`core_tools.py:212-230`). So the file must be named after the
 tool, and `Tool.name` must match the filename — otherwise the profile enables a name
 the registry never produces.
 
@@ -55,7 +55,7 @@ class MySkill(Tool):
         return {"ok": True, "target": target}
 ```
 
-The `Tool` ABC (`core_tools.py:57-88`) requires exactly `name`, `description`,
+The `Tool` ABC (`core_tools.py:62-93`) requires exactly `name`, `description`,
 `parameters_schema` and `async __call__`. That is the whole surface.
 
 ## Step 2 — enable it in the locked profile
@@ -78,7 +78,7 @@ the instruction body below the `+++` block. `home_control` has one.
 ## Step 3 — restart the app
 
 The registry is built once, cached behind a signature of profile + directories
-(`core_tools.py:421-470`), and only rebuilt on `initialize_tools(force=True)`.
+(`core_tools.py:426-478`), and only rebuilt on `initialize_tools(force=True)`.
 A new file is not hot-loaded.
 
 ## Rules the loader and the runtime enforce
@@ -86,32 +86,32 @@ A new file is not hot-loaded.
 - **Never raise — return an error.** Convention is `{"ok": False, "error": "..."}`, plus
   any field that helps the model self-correct (`home_control.py:91` echoes the known
   device list). A raised exception is caught by the dispatcher and turned into
-  `{"error": "TypeError: ..."}` (`core_tools.py:510-513`) — a differently shaped payload
+  `{"error": "TypeError: ..."}` (`core_tools.py:518-521`) — a differently shaped payload
   with no `ok` key. Degrade, don't die.
 - **`__init__` must never raise either.** Tools are instantiated at
-  `core_tools.py:286`, *outside* the `try/except` that guards module loading
-  (`:412-416`); an exception there propagates out of `initialize_tools()` and
-  `main.py:336-338` exits the process. `home_control._entities()` is the worked example:
+  `core_tools.py:291`, *outside* the `try/except` that guards module loading
+  (`:404-421`); an exception there propagates out of `initialize_tools()` and
+  `main.py:360-364` exits the process. `home_control._entities()` is the worked example:
   a typo in the `HA_ENTITIES` JSON logs a warning and yields an empty allowlist instead
   of bricking startup with a `json.decoder` traceback.
-- **Read env in `__init__` if you want it in the schema.** `main.py:156-166` loads the
-  instance `.env` *before* `initialize_tools()` (`main.py:335`), so construction-time
+- **Read env in `__init__` if you want it in the schema.** `main.py:179-189` loads the
+  instance `.env` *before* `initialize_tools()` (`main.py:361`), so construction-time
   `os.getenv` is safe. `home_control` builds its `target` enum and description this way.
-  This works because `Tool.spec()` reads `self.` (`core_tools.py:76-83`) — instance
+  This works because `Tool.spec()` reads `self.` (`core_tools.py:81-88`) — instance
   attributes shadow the class defaults, and nothing anywhere reads `type(tool).x`.
   A later env change needs an `initialize_tools(force=True)` rebuild.
 - **`async` means async — do not block.** Tools run as `asyncio.create_task` on the
   realtime session's own loop (`background_tool_manager.py:157`, started at
-  `huggingface_realtime.py:881`). A blocking `requests.get` or `time.sleep` stalls audio
+  `huggingface_realtime.py:830`). A blocking `requests.get` or `time.sleep` stalls audio
   and conversation. Use `httpx.AsyncClient` (already a direct dependency), `await`
   everything, and wrap unavoidably synchronous work in `asyncio.to_thread`
   (`tools/go_to_sleep.py:33`).
 - **`needs_response`** (class var, defaults `True`) — leave it `True` when the model
   should speak a confirmation; set `False` for tools whose effect is physical and
   self-evident (`play_emotion`, `move_head`). Consumed at
-  `huggingface_realtime.py:685`; errors always trigger a response regardless.
+  `huggingface_realtime.py:779-780`; errors always trigger a response regardless.
 - **Names must be unique.** A duplicate `Tool.name` raises at registry build
-  (`core_tools.py:295-300`).
+  (`core_tools.py:300-305`).
 
 ## Verify it worked
 
@@ -123,7 +123,7 @@ cd C:\Project\Reachy-mini\reachy_companion
 Use the project-root venv — a bare `python` picks up Anaconda and fails collection.
 
 Then prove the tool actually reaches the model's session config, which is what
-`get_tool_specs()` returns (`core_tools.py:476-481`):
+`get_tool_specs()` returns (`core_tools.py:481-486`):
 
 ```powershell
 ..\.venv\Scripts\python.exe -c "from reachy_companion.tools.core_tools import get_tool_specs; print(sorted(s['name'] for s in get_tool_specs()))"
@@ -133,14 +133,14 @@ Your tool name must appear in that list. Pin it with a test — see
 `tests/test_home_control.py::test_locked_profile_registers_the_skill_by_filename`,
 which rebuilds the real registry and asserts the name is in `get_tool_specs()`.
 Also check the startup log line `tool registered: <name> - <description>`
-(`core_tools.py:472-473`).
+(`core_tools.py:477-478`).
 
 ## The other route: remote MCP tools
 
 A Skill that already exists as a remote MCP server needs no Python file at all.
 `mcp_servers.py` discovers any HTTP(S) MCP endpoint declared in the environment at
 startup and registers each of its tools through the persistent `EXTRA_TOOLS` seam
-(`core_tools.py:106-119`), which survives every registry rebuild. Server aliases and
+(`core_tools.py:111-124`), which survives every registry rebuild. Server aliases and
 their env vars live in `mcp_servers.py:39` — currently
 `NOTION_MCP_URL` / `NOTION_MCP_TOKEN`, documented in `.env.example`. Tool names are
 namespaced by alias (`notion__search_pages`). Discovery is bounded and never raises:

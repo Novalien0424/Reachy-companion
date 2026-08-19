@@ -149,9 +149,20 @@ so rollback is always app-only.
 
 ## Status
 
-Attempt 1 (2026-08-17): BLOCKED at reachability — robot offline (no ARP, no
-mDNS, all ports timeout). Local prep complete: wheel built (pure
-py3-none-any, entry point verified), aarch64 dep tree fully wheel-resolvable.
-Procedure corrected from SDK source (version route, --no-deps install,
-instance-path/.env lifecycle) — see DECISIONS.md D-009 Attempt 1. Next
-attempt: power the robot, then resume at Step 1.
+Current as of 2026-08-19.
+
+Deployment works and this procedure is proven. Five successful installs to
+date, all app-only: the first deploy (Task 15 attempt 3), operator rounds 1 and
+2, the Task 17 face-memory deploy, and the Task 17 fix-round redeploy. The two
+earlier attempts that failed did so before touching the robot — attempt 1 on
+reachability, attempt 2 on the version gate. Full history in DECISIONS.md D-009.
+
+Robot state: daemon on the **1.10.0rc line** (git-source install, so the version
+gate passes and future daemon syncs follow the git ref); startup app is
+`reachy_companion`; the robot was last left **ASLEEP** running the build of
+commit `f37e6d9`.
+
+Local `main` is ahead of the robot and **not yet deployed**: the PRD/README docs
+commit `fb6fd69`, the six audit fixes `a5f682d`, and the docs-alignment commit
+that follows them. Nothing has been installed since `f37e6d9`, so the next
+deployment resumes at **Step 1** and carries all three.

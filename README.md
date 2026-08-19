@@ -32,14 +32,34 @@ and does all of it in a pitched-up, cute robotic voice.
   allowlist you configure.
 - **Cute robotic voice** — an on-device pitch shift that preserves speaking
   pace, plus a light ring modulation. Fully reversible.
-- **Memory that survives redeploys** — remembered facts and enrolled faces are
-  stored on the robot and restored across app reinstalls.
+- **Memory that survives redeploys** — remembered facts and enrolled faces live
+  on the robot, inside the installed package. A reinstall would wipe them, so
+  the deployment procedure backs both stores up before installing and restores
+  them afterwards; that mandatory step is what makes them survive.
 - **On-device face recognition** — enrol by name in conversation, get greeted by
-  name at wake. Frames and face signatures never leave the robot; only names
-  reach the cloud model.
+  name at wake. Recognition frames and face signatures never leave the robot;
+  what the cloud model gets is a status, a face count, the matched name, a
+  rounded similarity score, a runner-up name only on an ambiguous answer, and a
+  reason code from a closed set. The camera tool is a separate, explicitly
+  requested path that does send one frame to the model.
 - **Runs as a managed app on the robot** — installed under the robot's own
   daemon and set as the startup app, so an antenna touch wakes the whole
   experience. No laptop, no dashboard.
+
+## Behavior notes
+
+Two properties of this build are deliberate and accepted for a home-network
+proof of concept rather than defects to file:
+
+- **The local console and control channel are unauthenticated.** The app serves
+  a web console and a JSON-RPC control channel on the robot, reachable from any
+  device on the same network, with no password or token. Anyone who can reach it
+  can make Reachy speak, interrupt it, mute the microphone and change settings.
+  Fine on a trusted home LAN; not something to expose beyond one.
+- **Reachy moves on its own, and eventually sleeps.** After about three minutes
+  with no conversation it plays a spontaneous dance, emotion or head turn — a
+  personality choice, not a bug. After 24 hours of inactivity it returns to the
+  sleep pose and shuts the app down.
 
 ## Repository layout
 
@@ -51,7 +71,7 @@ and does all of it in a pitched-up, cute robotic voice.
 | `.claude/skills/`    | Project automation skills — deployment, research, and the reuse-first checklist |
 | `reference/`         | Read-only clones of the official Pollen Robotics repos (gitignored, never committed) |
 | `progress.md`        | Current verified state, known defects, open operator items          |
-| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-013)                    |
+| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-014)                    |
 | `feature_list.json`  | The five demo gates and per-feature verification evidence           |
 
 ## How it's built
@@ -111,10 +131,13 @@ selected, lit camera.
 
 ## Deployment
 
-The app is built as a single wheel and installed into the robot's shared managed
-apps environment through the daemon's own official APIs, then registered as the
-startup app so an antenna touch on the sleeping robot brings the whole
-experience up. The daemon itself is never modified, and configuration plus both
+The app is built as a single wheel, copied to the robot over SSH and installed
+into the shared managed apps environment; the daemon's own official APIs cover
+discovery, start/stop and registering the app as the startup app, so an antenna
+touch on the sleeping robot brings the whole experience up. The daemon's code
+and configuration are out of scope for deployment — the one exception on record
+is a one-time authorised update of the daemon to the required version line
+during bring-up, through the robot's own updater. Configuration plus both
 persistent stores are backed up and restored around every install.
 
 The full procedure — version gate, two-step install, `.env` and store

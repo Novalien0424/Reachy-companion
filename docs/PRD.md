@@ -165,7 +165,7 @@ as a single locked persona rather than a menu of interchangeable characters.
 | Concise        | Answers like a person sitting across the table, never a lecture  |
 | Chinese-first  | Speaks natural, colloquial Chinese by default; follows the user into another language if they switch |
 | Honest         | Says it does not know rather than guessing; never guesses a face |
-| Cute robotic   | A pitched-up, subtly ring-modulated voice at natural speaking pace |
+| Cute robotic   | A pitched-up, subtly ring-modulated voice at natural speaking pace, applied whenever the voice filter is enabled in configuration |
 | Embodied       | Looks at the speaker, reacts physically, sleeps when asked       |
 
 ### 3.3 Voice identity
@@ -175,7 +175,9 @@ and "robotic" is a texture no stock voice produces. Reachy's voice is therefore
 built on the robot: the model's chosen voice is pitched up and lightly
 ring-modulated on-device, with the duration preserved so the speaking pace stays
 natural. The model's own emotional performance survives the treatment — the
-effect is a character filter, not a different speaker.
+effect is a character filter, not a different speaker. The filter is applied
+when it is enabled in configuration: the code default is off, and the robot
+ships with it switched on.
 
 ---
 
@@ -193,6 +195,16 @@ Requirements:
 - Reachy does not respond prematurely during a normal mid-sentence pause.
 - Chinese conversation is the primary POC scenario.
 
+**How interruption actually works.** The decision is server-side: the session
+runs with server voice-activity detection and `interrupt_response` on, so the
+model stops generating when it hears the user. The app's own part is local — on
+the "user started speaking" event it clears the audio it has queued for the
+speaker. It does not send a cancel or a truncate back to the model, so the
+model's context can still hold audio the user never heard. The on-screen stop
+button is a different path with a known open bug: it clears the local queue
+without stopping the response, and playback resumes. Voice barge-in is the path
+the demo depends on.
+
 ### US-02 — Reachy looks at me
 
 **As a user,** I want Reachy to look toward me while we interact, **so that** the
@@ -201,8 +213,12 @@ conversation feels physically engaging.
 Requirements:
 
 - Reuse the robot's existing face and head tracking.
-- Tracking runs continuously from app start; it does not depend on the AI model
-  issuing movement commands.
+- Tracking runs from app start; it does not depend on the AI model issuing
+  movement commands.
+- One deliberate exception: while Reachy itself is speaking, tracking is
+  released — its weight drops to zero and the head holds the pose it had locked
+  onto — so emotion and speech-reactive motion own the head for the length of
+  the turn. Tracking re-engages at full weight when the turn ends.
 - Head movement stays smooth and does not jitter.
 
 ### US-03 — Reachy shows emotion
@@ -217,8 +233,12 @@ Requirements:
 
 - Use the existing emotion library and speech-reactive motion as the primary
   source of expression before creating anything new.
-- Emotion moves layer over face tracking and idle breathing without fighting
-  them.
+- Emotion moves do not compete with tracking or breathing; they take over from
+  them. Tracking is already released while Reachy speaks, and the emotion plays
+  as an offset from the head pose frozen at that moment, so the move stays aimed
+  at the person instead of drifting off them. Idle breathing is a primary move
+  like any other, so an emotion cancels it, and it restarts about 0.3 s after
+  the last movement activity.
 
 ### US-04 — Reachy can see
 
@@ -271,12 +291,20 @@ Requirements:
 - A server that is unreachable or unauthorised is skipped, logged, and never
   blocks startup.
 
+**Where this stands.** The MCP mechanism is live, not planned: the bundled web
+search tool is itself an MCP server integration — a remote MCP Space discovered
+and namespaced at startup — and it has been exercised in a live run with real
+results. What is deferred, by operator decision, is the *external personal
+service*: Notion is configured but has no credentials, so its tools do not
+register.
+
 ### US-08 — Reachy can control the home
 
 **As a user,** I want to ask Reachy to control something in the house in natural
 language.
 
-Examples: "Turn on the living room lights." / "Make the room cooler."
+Examples: "Turn on the living room lights." / "Turn off the lamp." The Skill
+exposes on, off and toggle — nothing that sets a level or a temperature.
 
 Requirements:
 
@@ -293,7 +321,12 @@ Requirements:
 
 - Adding a Skill is one new file plus one line in the persona profile.
 - The conversational core is never edited to add a Skill.
-- A Skill that already exists as a remote MCP server needs no code at all.
+- A Skill that already exists as a remote MCP server needs no code at all —
+  true today for the one preconfigured server slot, which the MCP module
+  hardcodes under the `notion` alias: filling in its URL and token env vars is
+  the whole integration. A *second* server is still one new tuple in that
+  module's server table plus its two env vars — no change to the conversational
+  core, but not literally zero code.
 - A simple, understandable extension pattern is enough — no plugin platform.
 
 ### US-10 — Reachy has a voice of its own
@@ -318,7 +351,11 @@ Requirements:
 
 - Reachy records a fact when the user shares something durable about themselves.
 - Remembered facts are available in later sessions.
-- Memory survives an app update or reinstall.
+- Memory survives an app update or reinstall — not because the store sits
+  somewhere safe, but because the deployment procedure backs it up before the
+  install and restores it afterwards. The store lives inside the installed
+  package, which a reinstall wipes; the backup/restore step is what makes the
+  guarantee true, and it is mandatory for that reason.
 - The user can ask Reachy to forget or correct a fact, and it does.
 
 ### US-12 — Reachy remembers faces
@@ -337,10 +374,18 @@ Requirements:
 - The feature can be disabled entirely, and the automatic greeting check can be
   disabled while keeping the conversational tools.
 
-> **Privacy.** Face recognition runs entirely on the robot. No image is ever
-> stored — only a name, a numeric face signature and a timestamp — and no image
-> or signature ever leaves the device. Only a name and a status word are ever
-> sent to the cloud model.
+> **Privacy.** Face recognition runs entirely on the robot, and no image is ever
+> stored or transmitted. What the cloud model receives is the whole of the tool
+> result: a status, a count of faces in the frame, the matched name when there
+> is one, a similarity score rounded to three decimals, the runner-up name only
+> when the answer is `ambiguous` — where naming the near-tie is the point of the
+> answer — and, when something went wrong, a machine-readable reason code drawn
+> from a closed set of seven: `face_memory_disabled`, `camera_disabled`,
+> `no_frame`, `unsupported_frame`, `model_unavailable`, `invalid_name`,
+> `internal_error`. Exception text never travels; it stays in the robot's local
+> log. What is stored on the robot for each enrolled person is an id, a name, up
+> to three numeric face signatures and two timestamps — created and last
+> updated. No image, and no signature, ever leaves the device.
 
 ---
 
@@ -356,9 +401,13 @@ Requirements:
    language.
 5. While speaking, Reachy makes subtle speech-reactive movement.
 6. Where the content warrants it, Reachy adds an emotional reaction — a
-   celebratory move, an antenna flick — layered over the tracking pose.
-7. The user interrupts mid-sentence. Reachy stops speaking and listens
-   immediately.
+   celebratory move, an antenna flick. Tracking is already released for the
+   duration of the turn, and the move plays as an offset from the head pose
+   frozen when Reachy began speaking, so it stays aimed at the person.
+7. The user interrupts mid-sentence. The server's voice-activity detection stops
+   the response and the app drops the audio it had queued, so Reachy falls
+   silent and listens. The model's context may still contain the tail the user
+   never heard.
 8. The conversation continues from the interruption without a restart.
 
 **Success:** the exchange feels fast, and the user never modifies how they speak
@@ -376,7 +425,6 @@ The user asks: "What am I holding?"
 2. Reachy captures one camera frame.
 3. The frame is attached to the running conversation for the model to read.
 4. Reachy describes what is actually in the frame, verbally.
-5. If the view is dark or blocked, Reachy says so instead of inventing an object.
 
 ### Journey C — Current information
 
@@ -414,9 +462,10 @@ The user says: "Turn on the living room lights."
 2. The user touches an antenna.
 3. The companion app starts automatically — no laptop, no dashboard, no console.
 4. Reachy takes a single look at whoever is in front of the camera.
-5. If it recognises them, the opening greeting uses their name. If it does not,
-   or the look runs out of time, Reachy greets normally and on schedule — the
-   check never delays the greeting.
+5. If it recognises them, the opening greeting uses their name. The check is
+   deliberately in front of the greeting, so it may hold the greeting back by up
+   to its own time budget — 1.2 seconds by default, tunable. On an overrun, a
+   failure, or nobody recognised, the greeting goes out unchanged.
 6. Conversation proceeds as in Journey A.
 7. The user says "去睡觉吧" ("go to sleep").
 8. Reachy says a short goodbye, then returns to the sleep pose and releases the
@@ -437,7 +486,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | ----- | ------------------------------------------------------------------------ |
 | F-C1  | Speech-to-speech conversation on `gpt-realtime-2.1`                      |
 | F-C2  | Turn detection tuned so a natural mid-sentence pause does not end the turn |
-| F-C3  | Barge-in: the user's voice interrupts Reachy's speech                    |
+| F-C3  | Barge-in: the user's voice interrupts Reachy's speech — decided server-side by voice activity, with the app clearing its own playback queue and sending no cancel or truncate of its own |
 | F-C4  | Chinese as the default conversational language, following the user if they switch |
 | F-C5  | A single locked persona, authoritative over any other profile setting    |
 | F-C6  | A character voice applied on-device: pitch-shifted, duration-preserving, lightly ring-modulated, with an off switch |
@@ -446,10 +495,10 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 
 | ID    | Requirement                                                              |
 | ----- | ------------------------------------------------------------------------ |
-| F-E1  | Face tracking active from app start, requiring no model tool call        |
+| F-E1  | Face tracking active from app start, requiring no model tool call; released to weight zero while Reachy speaks and re-engaged afterwards |
 | F-E2  | Speech-reactive movement while Reachy speaks                             |
 | F-E3  | Emotion moves from the existing library, selectable by the model         |
-| F-E4  | Arbitration between emotion moves, idle breathing and tracking, with idle behaviour resuming automatically |
+| F-E4  | Arbitration between emotion moves, idle breathing and tracking: moves are sequential and exclusive, an emotion cancels breathing, and breathing restarts ~0.3 s after the last movement activity |
 | F-E5  | Explicit motion tools — head pose, look sweep, dance, and stop controls  |
 
 ### 7.3 Vision
@@ -458,7 +507,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | ----- | ------------------------------------------------------------------------ |
 | F-V1  | On-demand single-frame capture, attached to the live conversation        |
 | F-V2  | No continuous video sent to the cloud                                    |
-| F-V3  | On-device face detection and recognition; frames and face signatures never leave the robot |
+| F-V3  | On-device face detection and recognition; recognition frames and face signatures never leave the robot. The camera tool is the separate, explicitly requested path that does upload one frame to the model |
 
 ### 7.4 Knowledge and tools
 
@@ -466,7 +515,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | ----- | ------------------------------------------------------------------------ |
 | F-K1  | Function/tool calling exposed to the model                               |
 | F-K2  | Web search invoked automatically when current information is needed      |
-| F-K3  | One working external MCP integration                                     |
+| F-K3  | One working MCP integration — already met by the bundled web-search MCP Space; the external personal service (Notion) is deferred by operator decision |
 | F-K4  | One Home Control Skill, restricted to an explicit device allowlist       |
 | F-K5  | A new Skill can be added without editing the conversational core         |
 | F-K6  | Tools never crash the app: failures return an error result the model can recover from |
@@ -480,7 +529,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | F-M2  | Stored facts are injected into the model's context each session          |
 | F-M3  | Face enrolment by name, recall on request, and one recognition check at wake |
 | F-M4  | Unknown and ambiguous outcomes are reported honestly, never guessed      |
-| F-M5  | Both stores live on the robot and survive an app reinstall               |
+| F-M5  | Both stores live on the robot and survive an app reinstall — the stores sit inside the installed package, so the mandatory backup/restore step in the deployment procedure is what carries them across |
 
 ### 7.6 Lifecycle
 
@@ -659,13 +708,20 @@ This section describes what was actually built.
 ### 12.1 The robot
 
 The Reachy Mini Wireless runs Pollen Robotics' own daemon. The daemon owns the
-hardware outright: motors, camera, microphone, speaker, the face tracker, and a
-50 Hz control loop that turns motion requests into smooth movement. It also
+hardware outright: motors, camera, microphone, speaker, the face tracker, and
+the 50 Hz control loop that turns motion requests into smooth movement. It also
 manages applications — it installs them into a shared application environment,
-discovers them, and decides which one starts.
+discovers them, and decides which one starts. What it does not own is the choice
+of *what* to move: blending emotion moves, dances, idle breathing and the
+tracking hand-off happens in the app, which sends the daemon a single stream of
+targets.
 
-Nothing in this project modifies the daemon. Reachy Companion is a guest on the
-robot, installed and started through the daemon's official interfaces.
+Reachy Companion is a guest on the robot. The daemon's official APIs cover
+discovery, start/stop and startup-app registration; the install itself is a
+wheel copied over SSH and installed into the shared apps environment. The
+daemon's own code and configuration are out of bounds — with one recorded
+exception, a one-time operator-authorised update of the daemon to the required
+version line during bring-up, performed through the robot's own updater.
 
 ### 12.2 Reachy Companion
 
@@ -692,8 +748,11 @@ the model's rate in both directions.
 **VoiceFX.** A small signal chain sitting on the assistant's audio just before
 it reaches the speaker. It shifts pitch upward while preserving duration,
 applies a light ring modulation for the robotic timbre, and adds makeup gain. It
-runs on the robot, adds a few tens of milliseconds, and is fully reversible —
-disabled, the audio path is unchanged.
+runs on the robot and is fully reversible — disabled, the audio path is
+unchanged. What it costs, measured on the robot: about 48 ms of added delay
+typically and 64 ms at the peak (the peak is a resampler buffering spike the
+next chunk drains, not standing lag), and roughly the mid-teens percentage of
+one CPU core for as long as the assistant is speaking.
 
 **Tool layer.** Seventeen tools are offered to the model: robot expression and
 motion, camera capture, web search, home control, fact memory, face memory,
@@ -701,16 +760,26 @@ sleep, and two housekeeping tools for tracking long-running work. Tools run
 asynchronously alongside the conversation and are contractually forbidden to
 crash the app — a failure returns an error the model can talk about.
 
-**MCP seam.** External MCP servers declared in configuration are discovered at
-startup and their tools merged into the same registry the model sees, under a
-namespaced prefix. Discovery is bounded and non-fatal; an unreachable server is
-logged and skipped. Notion is the planned first integration and is awaiting
-credentials.
+**MCP seam.** Remote MCP servers are discovered at startup and their tools
+merged into the same registry the model sees, under a namespaced prefix.
+Discovery is bounded and non-fatal, per server: an unreachable or unauthorised
+server costs only its own tools. This seam is already carrying traffic — the web
+search tool is a remote MCP Space reached exactly this way. The other route,
+for an HTTP MCP endpoint declared in the environment, has one preconfigured
+slot; Notion sits in it and is awaiting credentials.
+
+**Motion arbitration.** Primary moves — emotions, dances, explicit head poses,
+idle breathing — are mutually exclusive and run in sequence on the app's own
+worker, which is the single writer to the daemon. While Reachy speaks, tracking
+is released and the head pose it had locked onto becomes the anchor an emotion
+plays against.
 
 **On-device face recognition.** Detection reuses the SDK's own face detector; a
 single added recognition model turns a detected face into a numeric signature.
 Both run on the robot's CPU. Enrolment is explicit and verbal, recognition
-happens at wake time and on request, and no frame is ever stored or transmitted.
+happens at wake time and on request, and no recognition frame is ever stored or
+transmitted. The camera tool is a separate path and does send its frame to the
+model, on explicit request.
 
 **Persistent state.** Two small stores live on the robot — remembered facts and
 the enrolled-face database. Both sit in the application's own directory and are
@@ -722,14 +791,15 @@ reinstalls.
 ```mermaid
 flowchart TB
     subgraph robot["Reachy Mini Wireless"]
-        subgraph daemon["Pollen daemon (official, untouched)"]
+        subgraph daemon["Pollen daemon (official — outside app scope)"]
             hw["Motors · Camera · Microphone · Speaker"]
-            loop["50 Hz control loop<br/>face tracking · motion blending"]
+            loop["50 Hz control loop<br/>face tracking · target execution"]
             apps["Managed apps host<br/>discovery · startup app"]
         end
         subgraph app["Reachy Companion (managed app)"]
             rt["Realtime conversation loop<br/>turn detection · barge-in"]
             vfx["VoiceFX<br/>pitch · ring-mod · gain"]
+            motion["Motion arbitration<br/>emotions · dance · breathing · tracking hand-off"]
             tools["Tool layer — 17 tools"]
             mcp["MCP seam"]
             faceid["On-device face recognition"]
@@ -738,24 +808,26 @@ flowchart TB
     end
 
     model["OpenAI gpt-realtime-2.1<br/>Realtime API"]
-    search["Web search service"]
-    mcpsrv["External MCP servers<br/>Notion — planned"]
+    search["Web search MCP Space<br/>Pollen, bundled"]
+    mcpsrv["External MCP server slot<br/>Notion — deferred"]
     ha["Home Assistant"]
 
     hw <--> loop
     apps -.->|"antenna touch starts the app"| app
-    loop <-->|"audio in · audio out · frames · motion"| rt
+    loop <-->|"audio in · audio out · frames"| rt
+    motion -->|"one stream of targets"| loop
     rt <-->|"speech · events · tool calls"| model
     rt --> vfx
     vfx -->|"assistant audio"| loop
     rt <--> tools
-    tools --> search
-    tools --> ha
+    tools --> motion
     tools <--> store
     tools <--> faceid
     faceid <--> store
     mcp -->|"merged tool specs"| tools
+    mcp <--> search
     mcp <--> mcpsrv
+    tools --> ha
 
     classDef cloud fill:#eef,stroke:#88a,color:#000
     class model,search,mcpsrv,ha cloud
@@ -772,11 +844,54 @@ a real person, and any camera scene that needs a properly selected, lit camera.
 
 ### 12.6 Deployment shape
 
-The app is built as a single wheel and installed into the robot's shared
-application environment through the daemon's official interfaces. Nothing else
-on the robot is modified. Configuration and both persistent stores live in the
-installed application's own directory, which a reinstall replaces — so
+The app is built as a single wheel, copied to the robot over SSH, and installed
+into the shared application environment. The daemon's official APIs cover the
+rest of the lifecycle: discovery, start and stop, and registering the app as the
+one an antenna touch wakes into. Configuration and both persistent stores live
+in the installed application's own directory, which a reinstall replaces — so
 deployment is a ritual that backs them up first and restores them afterward.
+
+The daemon's own code and configuration stay out of scope, with the single
+recorded exception noted in §12.1: a one-time authorised update of the daemon to
+the required version line during bring-up, through the robot's own updater.
+
+### 12.7 Accepted behaviours and local surfaces
+
+These are real properties of the build, reviewed and accepted as they are for a
+home-network POC (operator ruling, 2026-08-19). They are documented here rather
+than fixed, and each would need revisiting before anything resembling a product.
+
+**A local console and control channel on the LAN, unauthenticated.** The app
+serves a web console and a JSON-RPC control channel bound to all interfaces on
+the robot. Anyone who can reach the robot on the home network can make Reachy
+speak a chosen line, interrupt it, mute and unmute the microphone, and change
+settings including the persona and the enabled tools. There is no password, no
+token and no origin check. Accepted for a POC on a trusted home network; it is
+not a surface to expose beyond one.
+
+**Spontaneous idle motion.** After about three minutes with no conversation
+activity, and only when the body is otherwise idle, the app picks a movement for
+itself and plays it — a dance, an emotion, or a small head turn — without
+telling the model and without speaking. The "do nothing" option in that lottery
+is not among the enabled tools, so in this build the idle timer always produces
+movement, weighted roughly two-fifths dance, two-fifths emotion, one-fifth head
+turn. Accepted as personality: a robot that never stirs reads as switched off.
+
+**Auto-sleep.** The app shuts itself down after 24 hours without activity, and
+the robot returns to the daemon's sleep state. Configurable, and disabled by
+setting it to zero.
+
+**Memory caps.** Facts are capped at 60, oldest dropped past that. Faces are
+capped at 12 people with up to 3 signatures each; a new signature for a known
+person replaces the oldest of theirs, and a thirteenth person evicts whichever
+record was least recently updated. These are deliberate, small, and silent — no
+one is told a memory fell off the end.
+
+**An environment escape hatch for tools.** Pointing the app at an external tools
+directory and setting the autoload flag makes every tool module found there load
+and register, regardless of what the locked profile lists. It is off by default,
+and it exists for development; on the robot it is a way to hand the model
+capabilities the persona never declared.
 
 ---
 
@@ -811,10 +926,14 @@ designed in advance.
 | Demo 3 — Camera object description          | Implemented, image path proven end to end; awaiting live operator validation (the development simulator cannot present a usable scene) |
 | Demo 4 — Automatic web search               | Implemented, dev-verified with real results; awaiting live operator validation |
 | Demo 5 — Real home-device action            | Implemented; awaiting Home Assistant credentials, then live validation |
-| US-07 — External service via MCP            | Integration seam implemented; awaiting Notion credentials |
+| US-07 — External service via MCP            | The MCP mechanism is live and proven — the bundled web-search tool is itself an MCP server integration, exercised in a live run. The external personal service (Notion) is deferred by operator decision; its slot is configured and awaiting credentials |
 | US-10 — Cute robotic voice                  | Implemented and verified on the robot; awaiting an operator listening pass |
 | US-11 — Fact memory                         | Implemented and deployed to the robot; awaiting live operator validation |
 | US-12 — Face memory                         | Implemented and deployed to the robot; awaiting live operator validation, which is also the only source of recognition-threshold calibration |
+| Audit fixes (commit `a5f682d`)              | Six defects found by the 2026-08-19 PRD-vs-code audit are fixed and unit-covered: the background-tool wedge guard at both call sites, per-server MCP discovery isolation, the `move_head` body-yaw arguments, the closed face-tool reason-code contract, dead package data, and a dead environment key. The `move_head` fix is the one still pending confirmation on the robot |
+
+**Deployment state.** The robot is still running the build from before the audit
+fixes; the fixes ship with the next deployment.
 
 **Standing risk.** Every remaining item needs a human in front of the robot. The
 recognition threshold in particular cannot be calibrated without two real people

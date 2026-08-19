@@ -1,9 +1,29 @@
 # Progress
 
-## Current verified state (2026-08-18 — Task 17 face memory shipped to the robot)
+## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
-Suite: **515 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+Suite: **527 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
+
+Audit round (2026-08-19): a five-auditor adversarial review compared
+`docs/PRD.md` against the code. **Six defects fixed** in commit `a5f682d`, each
+unit-covered: the background-tool wedge guard at both call sites (a raise before
+the dispatcher used to kill the task silently, leaving the model's `call_id`
+unanswered and the turn wedged), per-server MCP discovery isolation (one
+malformed server entry no longer disables every other server's tools), the
+`move_head` body-yaw arguments, the face-tool `reason` field closed to a
+seven-member machine-code contract (raw exception text is logged locally and
+never reaches the model), dead package data, and a dead env key. The PRD and
+both READMEs were then amended to as-built accuracy — face-privacy scope, the
+wake check's 1.2 s greeting delay, tracking released while Reachy speaks,
+emotions playing from a frozen anchor, the honest barge-in mechanism, the
+deployment shape, and US-07's tense. Operator rulings recorded as **D-014**:
+the unauthenticated local console/RPC exposure is accepted as-is for a home
+POC, the idle-motion policy is accepted as personality, and Notion is deferred.
+
+**The robot still runs the `f37e6d9` build** — none of the audit fixes are on it
+yet; they ship with the next deployment. The `move_head` body-yaw fix in
+particular is unit-covered but still needs on-device confirmation.
 
 Task 17 (commits `1d7eaa0` + review fixes `0fac21a`): **D-013** face memory — Reachy enrolls a face by
 name (`remember_face`), answers "我是谁" (`who_is_this`), and greets a
@@ -74,13 +94,21 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
   session with two people produces the numbers: every score is logged by
   `who_is_this` and the wake check, so tune `FACE_MATCH_THRESHOLD` /
   `FACE_MATCH_MARGIN` from those.
+- Audit carry-over: the `move_head` body-yaw fix (`a5f682d`) is unit-covered but
+  has never run on the robot — it needs on-device confirmation at the next
+  deployment.
+- Accepted, not defects (D-014, 2026-08-19): the local console + `/rpc` on
+  `0.0.0.0:7860` is unauthenticated and can make Reachy speak, mute the mic and
+  rewrite settings; the idle policy plays a spontaneous dance/emotion/head turn
+  after 180 s of silence. Both stay as they are for the POC and are documented
+  in PRD §12.7.
 
 ## Waiting on operator
 
 1. Mic pass (2 min): Chinese multi-turn, voice barge-in, ~1 s pause,
    VoiceFX ear-tuning (`scripts\dev_daemon.ps1` + `scripts\run_app_dev.ps1`).
-2. Live mic pass on the **new build already installed on the robot** (Task 17:
-   WSOLA pitch, 17 tools, face memory). Wake it with an antenna touch —
+2. Live mic pass on the build **currently installed on the robot** (`f37e6d9`;
+   Task 17: WSOLA pitch, 17 tools, face memory). Wake it with an antenna touch —
    `startup_app` is `reachy_companion` — and listen for: pitch still cute at
    natural pace; `remember`/`forget` used at the right moments; no audible
    tail bleeding across turns (a ~48-63 ms carry is known and expected to be
@@ -90,9 +118,12 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
    → the *greeting itself* should use the name. Then a second person, who must
    come back `unknown` rather than guessed. Report the cosine scores from the
    log; they are the calibration data for `FACE_MATCH_THRESHOLD`.
-4. Notion MCP + Home Assistant credentials → Tasks 12.5 / 13.5.
+4. Home Assistant credentials → Task 13.5. Notion MCP is **deferred by operator
+   decision** (D-014); the web-search MCP Space already satisfies F-K3, so
+   US-07's mechanism is proven without it.
 
 ## Next after operator items
 
-Final whole-branch review (most capable model, per SDD) → Task 15 on-robot
-five-demo gate → close feature_list with evidence.
+Redeploy so the robot carries the audit fixes (`a5f682d`) and confirm `move_head`
+on-device → final whole-branch review (most capable model, per SDD) → Task 15
+on-robot five-demo gate → close feature_list with evidence.

@@ -57,8 +57,11 @@ the app; the registry is not hot-loaded.
 
 Full pattern, loader rules and verification steps:
 [`../docs/adding-a-skill.md`](../docs/adding-a-skill.md). A Skill that already
-exists as a remote MCP server needs no Python file at all — declare its endpoint
-in the environment and its tools are discovered and namespaced at startup.
+exists as a remote MCP server needs no Python file at all — for the one
+preconfigured server slot (`notion`), filling in its URL and token env vars is
+the whole integration, and its tools are discovered and namespaced at startup.
+A second server is one more tuple in `mcp_servers._SERVER_ENV` plus its two env
+vars; still nothing in the conversational core.
 
 ## Configuration
 
