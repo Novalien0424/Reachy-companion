@@ -49,7 +49,7 @@ reachy-mini-dances-library = false
 
 [tool.setuptools.package-data]
 reachy_talk_data = [ "profiles/**/*.md",]
-reachy_companion = [ "static/**/*", ".env.example",]
+reachy_companion = [ "static/**/*",]
 
 [tool.ruff.lint]
 select = [ "E", "F", "W", "I", "C4", "D",]

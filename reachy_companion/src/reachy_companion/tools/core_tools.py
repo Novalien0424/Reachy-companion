@@ -504,10 +504,13 @@ def _safe_load_obj(args_json: str) -> Dict[str, Any]:
 
 
 async def _dispatch_tool_call(tool_name: str, args: Dict[str, Any], deps: ToolDependencies) -> Dict[str, Any]:
-    tool = get_tools().get(tool_name)
-    if not tool:
-        return {"error": f"unknown tool: {tool_name}"}
     try:
+        # The registry lookup is inside the guard on purpose: a failure here
+        # (registry rebuild, lazy import) must come back as an error result like
+        # any other, or the caller's call_id is never answered.
+        tool = get_tools().get(tool_name)
+        if not tool:
+            return {"error": f"unknown tool: {tool_name}"}
         return await tool(deps, **args)
     except asyncio.CancelledError:
         logger.info("Tool cancelled: %s", tool_name)

@@ -226,6 +226,39 @@ async def test_bad_config_does_not_break_startup(monkeypatch: pytest.MonkeyPatch
     assert await register_mcp_tools() == []
 
 
+@pytest.mark.asyncio
+async def test_one_malformed_server_does_not_disable_the_others(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Config errors are isolated per server: a bad entry costs only its own tools.
+
+    The module's contract is "never raises, degrade and skip" (:100-106). Loading
+    every server's config in one shot broke that at the granularity that matters:
+    one malformed URL aborted discovery for every other configured server too.
+    """
+    monkeypatch.setattr(
+        mcp_servers,
+        "_SERVER_ENV",
+        (("broken", "BROKEN_MCP_URL", "BROKEN_MCP_TOKEN"), ("notion", "NOTION_MCP_URL", "NOTION_MCP_TOKEN")),
+    )
+    # Plain http off localhost: RemoteMcpServerConfig.__post_init__ rejects it.
+    monkeypatch.setenv("BROKEN_MCP_URL", "http://not-https.example.com/mcp")
+    monkeypatch.setenv("BROKEN_MCP_TOKEN", "x")
+    monkeypatch.setenv("NOTION_MCP_URL", "https://mcp.notion.com/mcp")
+    monkeypatch.setenv("NOTION_MCP_TOKEN", "secret")
+    monkeypatch.setattr(FakeClient, "instances", [])
+    monkeypatch.setattr(mcp_servers, "RemoteMcpToolClient", FakeClient)
+
+    with caplog.at_level(logging.WARNING):
+        names = await register_mcp_tools()
+
+    assert names == ["notion__search_pages"]
+    assert "notion__search_pages" in core_tools().EXTRA_TOOLS
+    assert "broken" in caplog.text
+    # Only the healthy server was ever contacted (discovery + live client).
+    assert [client.server.alias for client in FakeClient.instances] == ["notion", "notion"]
+
+
 def test_seam_tool_colliding_with_a_builtin_is_dropped_not_fatal(caplog: pytest.LogCaptureFixture) -> None:
     """A colliding seam name must degrade to a warning, never brick startup.
 

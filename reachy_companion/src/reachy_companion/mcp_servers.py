@@ -39,37 +39,44 @@ _TOOL_TIMEOUT_S = 30.0
 _SERVER_ENV: tuple[tuple[str, str, str], ...] = (("notion", "NOTION_MCP_URL", "NOTION_MCP_TOKEN"),)
 
 
+def _load_server(alias: str, url_var: str, token_var: str) -> RemoteMcpServerConfig | None:
+    """Build one server's config from the environment, or None when it is unconfigured.
+
+    An unset URL means "server not configured". A URL that *is* set but is
+    unusable (non-HTTPS off localhost, missing token) raises ValueError so the
+    misconfiguration is loud; the caller decides how far that failure travels.
+    """
+    url = (os.getenv(url_var) or "").strip()
+    if not url:
+        return None
+
+    token = (os.getenv(token_var) or "").strip()
+    if not token:
+        raise ValueError(f"{url_var} is set but {token_var} is empty; cannot authenticate to MCP server '{alias}'.")
+
+    # RemoteMcpServerConfig.__post_init__ runs validate_http_mcp_url, which
+    # rejects plain http outside localhost.
+    return RemoteMcpServerConfig(
+        alias=alias,
+        url=url,
+        headers={"Authorization": f"Bearer {token}"},
+        request_timeout_s=_REQUEST_TIMEOUT_S,
+        tool_timeout_s=_TOOL_TIMEOUT_S,
+    )
+
+
 def load_mcp_servers() -> list[RemoteMcpServerConfig]:
     """Build remote MCP server configs from the environment.
 
-    An unset URL means "server not configured" and yields no entry. A URL that
-    *is* set but is unusable (non-HTTPS off localhost, missing token) raises
-    ValueError so the misconfiguration is loud rather than silently ignored;
-    `register_mcp_tools` downgrades that to a logged skip at startup.
+    Strict by design: the first unusable entry raises ValueError rather than
+    being silently ignored. `register_mcp_tools` does not use this — it loads
+    each server separately so one bad entry cannot disable the rest.
     """
     servers: list[RemoteMcpServerConfig] = []
     for alias, url_var, token_var in _SERVER_ENV:
-        url = (os.getenv(url_var) or "").strip()
-        if not url:
-            continue
-
-        token = (os.getenv(token_var) or "").strip()
-        if not token:
-            raise ValueError(
-                f"{url_var} is set but {token_var} is empty; cannot authenticate to MCP server '{alias}'."
-            )
-
-        # RemoteMcpServerConfig.__post_init__ runs validate_http_mcp_url, which
-        # rejects plain http outside localhost.
-        servers.append(
-            RemoteMcpServerConfig(
-                alias=alias,
-                url=url,
-                headers={"Authorization": f"Bearer {token}"},
-                request_timeout_s=_REQUEST_TIMEOUT_S,
-                tool_timeout_s=_TOOL_TIMEOUT_S,
-            )
-        )
+        server = _load_server(alias, url_var, token_var)
+        if server is not None:
+            servers.append(server)
     return servers
 
 
@@ -108,14 +115,18 @@ async def register_mcp_tools() -> list[str]:
     # imported from the startup path before the registry exists.
     from reachy_companion.tools.core_tools import RemoteMcpTool, register_extra_tool
 
-    try:
-        servers = load_mcp_servers()
-    except Exception as exc:
-        logger.error("Remote MCP configuration is invalid; continuing without MCP tools: %s", exc)
-        return []
-
     registered_names: list[str] = []
-    for server in servers:
+    for alias, url_var, token_var in _SERVER_ENV:
+        # Config is loaded per server, not in one batch: a single malformed entry
+        # must cost only its own tools, never every other server's.
+        try:
+            server = _load_server(alias, url_var, token_var)
+        except Exception as exc:
+            logger.error("MCP server '%s' is misconfigured and is skipped: %s", alias, exc)
+            continue
+        if server is None:
+            continue
+
         # Discovery gets a short-timeout copy of the config; the tools then get a
         # client on the real config, seeded with what we just discovered so the
         # first live call does not have to re-discover (same pattern as

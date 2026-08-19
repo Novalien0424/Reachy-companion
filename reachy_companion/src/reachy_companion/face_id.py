@@ -19,14 +19,17 @@ untouched; the cost is that OpenCV's published 0.363 cosine threshold is not
 exactly ours, hence the conservative 0.40 default plus a margin rule.
 
 `identify()` never raises: every failure — disabled, model missing, bad frame,
-detector error — comes back as a status.
+detector error — comes back as a status, and its `reason` is one of the fixed
+codes in `IDENTIFICATION_REASONS`. That closure is deliberate: an
+`Identification` becomes a tool result, which is echoed verbatim to the cloud
+model, so exception text must stay in the local log and never in `reason`.
 """
 
 from __future__ import annotations
 import time
 import logging
 import threading
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -70,6 +73,20 @@ IdentificationStatus = Literal[
     "unavailable",
 ]
 
+# The complete vocabulary of `Identification.reason`. Short machine codes, not
+# prose and never exception text: the model sees these, the log gets the detail.
+IdentificationReason = Literal[
+    "face_memory_disabled",
+    "camera_disabled",
+    "no_frame",
+    "unsupported_frame",
+    "model_unavailable",
+    "invalid_name",
+    "internal_error",
+]
+
+IDENTIFICATION_REASONS: frozenset[str] = frozenset(get_args(IdentificationReason))
+
 
 @dataclass(frozen=True)
 class MatchResult:
@@ -90,7 +107,7 @@ class Identification:
     score: float | None = None
     runner_up: str | None = None
     face_count: int = 0
-    reason: str | None = None
+    reason: IdentificationReason | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the tool-result shape: fields that are set, and never image bytes."""
@@ -406,9 +423,10 @@ class FaceRecognizer:
             record = upsert_face(self.instance_path, name, embedding)
         except ValueError as exc:
             logger.warning("Face enrollment rejected: %s", exc)
-            return None, Identification(status="unavailable", face_count=1, reason=str(exc))
+            return None, Identification(status="unavailable", face_count=1, reason="invalid_name")
         if record is None:
-            return None, Identification(status="unavailable", face_count=1, reason="name was empty")
+            logger.warning("Face enrollment rejected: the name was empty.")
+            return None, Identification(status="unavailable", face_count=1, reason="invalid_name")
         return record, identification
 
     def _capture(
@@ -417,20 +435,21 @@ class FaceRecognizer:
     ) -> tuple[NDArray[np.float32] | None, Identification]:
         """Run the whole pipeline once, returning the embedding when there is exactly one face."""
         if not self.enabled:
-            return None, Identification(status="unavailable", reason="face memory is disabled")
+            return None, Identification(status="unavailable", reason="face_memory_disabled")
         if frame_bgr is None:
-            return None, Identification(status="unavailable", reason="no frame available")
+            return None, Identification(status="unavailable", reason="no_frame")
 
         frame = np.asarray(frame_bgr)
         if frame.ndim != 3 or frame.shape[2] != 3 or frame.shape[0] < 2 or frame.shape[1] < 2:
-            return None, Identification(status="unavailable", reason="unsupported frame shape")
+            return None, Identification(status="unavailable", reason="unsupported_frame")
 
         try:
             if not self._ensure_loaded():
-                return None, Identification(
-                    status="unavailable",
-                    reason=self._load_error or "face recognition model is unavailable",
+                logger.warning(
+                    "Face identification unavailable: %s",
+                    self._load_error or "face recognition model is unavailable",
                 )
+                return None, Identification(status="unavailable", reason="model_unavailable")
 
             # Detect on an exact 2x decimation (no interpolation): ~4x cheaper than
             # full resolution, and the landmarks scale back linearly.
@@ -449,8 +468,9 @@ class FaceRecognizer:
             aligned = align_face(frame, face)
             embedding = self.embed(aligned)
         except Exception as exc:
+            # The detail stays here; `reason` is a code because it reaches the model.
             logger.warning("Face identification failed: %s: %s", type(exc).__name__, exc)
-            return None, Identification(status="unavailable", reason=f"{type(exc).__name__}: {exc}")
+            return None, Identification(status="unavailable", reason="internal_error")
 
         result = self.match(embedding)
         return embedding, Identification(
@@ -485,8 +505,10 @@ __all__ = [
     "REFERENCE_POINTS",
     "SFACE_FILE",
     "SFACE_REPO",
+    "IDENTIFICATION_REASONS",
     "FaceRecognizer",
     "Identification",
+    "IdentificationReason",
     "MatchResult",
     "align_face",
     "cosine",

@@ -5,6 +5,7 @@ alignment is pure numpy and the matching rules read the JSON store, so the
 maths that decides who Reachy thinks you are is checkable offline.
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ from reachy_companion.face_id import (
     ALIGNED_SIZE,
     DEFAULT_MARGIN,
     REFERENCE_POINTS,
+    IDENTIFICATION_REASONS,
     DEFAULT_MATCH_THRESHOLD,
     FaceRecognizer,
     cosine,
@@ -308,22 +310,30 @@ def test_disabled_recognizer_never_loads_a_model(tmp_path: Path) -> None:
     assert recognizer.wait_ready(0.5) is False
     identification = recognizer.identify(np.zeros((64, 64, 3), dtype=np.uint8))
     assert identification.status == "unavailable"
-    assert identification.reason == "face memory is disabled"
+    assert identification.reason == "face_memory_disabled"
     record, enroll_identification = recognizer.enroll(np.zeros((64, 64, 3), dtype=np.uint8), "小明")
     assert record is None
     assert enroll_identification.status == "unavailable"
 
 
-def test_identify_reports_unavailable_instead_of_raising(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every failure becomes a status: identify() is total by contract."""
+def test_identify_reports_unavailable_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every failure becomes a status: identify() is total by contract.
+
+    The exception text stays in the local log — `reason` is a stable code,
+    because it is echoed to the cloud model inside the tool result.
+    """
     recognizer = FaceRecognizer(tmp_path)
     monkeypatch.setattr(recognizer, "_ensure_loaded", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
 
-    identification = recognizer.identify(np.zeros((64, 64, 3), dtype=np.uint8))
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.face_id"):
+        identification = recognizer.identify(np.zeros((64, 64, 3), dtype=np.uint8))
 
     assert identification.status == "unavailable"
-    assert identification.reason is not None
-    assert "boom" in identification.reason
+    assert identification.reason == "internal_error"
+    assert identification.reason in IDENTIFICATION_REASONS
+    assert "boom" in caplog.text  # the detail is kept, locally
 
 
 def test_identify_reports_unavailable_without_a_frame(tmp_path: Path) -> None:

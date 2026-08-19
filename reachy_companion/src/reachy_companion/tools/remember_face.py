@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
-from reachy_companion.tools.face_support import capture_frame, recognizer_or_unavailable
+from reachy_companion.tools.face_support import unavailable, capture_frame, recognizer_or_unavailable
 
 
 logger = logging.getLogger(__name__)
@@ -37,19 +37,19 @@ class RememberFace(Tool):
             logger.warning("remember_face: empty name")
             return {"error": "name must be a non-empty string"}
 
-        recognizer, unavailable = recognizer_or_unavailable(deps)
-        if unavailable is not None:
-            return unavailable
+        recognizer, blocked = recognizer_or_unavailable(deps)
+        if blocked is not None:
+            return blocked
 
-        frame, unavailable = await capture_frame(deps)
-        if unavailable is not None:
-            return unavailable
+        frame, blocked = await capture_frame(deps)
+        if blocked is not None:
+            return blocked
 
         try:
             record, identification = await asyncio.to_thread(recognizer.enroll, frame, name)
         except Exception as e:
-            logger.error("remember_face failed: %s", e)
-            return {"status": "unavailable", "face_count": 0, "reason": f"{type(e).__name__}: {e}"}
+            logger.error("remember_face failed: %s: %s", type(e).__name__, e)
+            return unavailable("internal_error")
 
         if record is None:
             logger.info("Tool call: remember_face refused name=%s status=%s", name[:40], identification.status)

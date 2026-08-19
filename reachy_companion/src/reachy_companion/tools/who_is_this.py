@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
-from reachy_companion.tools.face_support import capture_frame, recognizer_or_unavailable
+from reachy_companion.tools.face_support import unavailable, capture_frame, recognizer_or_unavailable
 
 
 logger = logging.getLogger(__name__)
@@ -28,19 +28,19 @@ class WhoIsThis(Tool):
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> dict[str, Any]:
         """Identify the face in the current camera frame."""
-        recognizer, unavailable = recognizer_or_unavailable(deps)
-        if unavailable is not None:
-            return unavailable
+        recognizer, refusal = recognizer_or_unavailable(deps)
+        if refusal is not None:
+            return refusal
 
-        frame, unavailable = await capture_frame(deps)
-        if unavailable is not None:
-            return unavailable
+        frame, refusal = await capture_frame(deps)
+        if refusal is not None:
+            return refusal
 
         try:
             identification = await asyncio.to_thread(recognizer.identify, frame)
         except Exception as e:
-            logger.error("who_is_this failed: %s", e)
-            return {"status": "unavailable", "face_count": 0, "reason": f"{type(e).__name__}: {e}"}
+            logger.error("who_is_this failed: %s: %s", type(e).__name__, e)
+            return unavailable("internal_error")
 
         logger.info(
             "Tool call: who_is_this status=%s name=%s score=%s",

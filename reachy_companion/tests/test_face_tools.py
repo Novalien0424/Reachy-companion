@@ -18,7 +18,12 @@ from numpy.typing import NDArray
 from reachy_mini.vision.face_detector import Face
 import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion.faces import list_faces
-from reachy_companion.face_id import ALIGNED_SIZE, FaceRecognizer, Identification
+from reachy_companion.face_id import (
+    ALIGNED_SIZE,
+    IDENTIFICATION_REASONS,
+    FaceRecognizer,
+    Identification,
+)
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.who_is_this import WhoIsThis
 from reachy_companion.tools.remember_face import RememberFace
@@ -108,6 +113,18 @@ def _assert_carries_no_image(result: dict[str, Any]) -> None:
     assert not any("image" in key or "frame" in key for key in result)
 
 
+def _assert_reason_is_a_stable_code(result: dict[str, Any]) -> None:
+    """Assert `reason` is one of the published codes and leaks no exception text.
+
+    Tool results are echoed verbatim to the cloud model, so a raw
+    `"RuntimeError: <message>"` there would ship internal detail off-device.
+    """
+    reason = result.get("reason")
+    if reason is None:
+        return
+    assert reason in IDENTIFICATION_REASONS, f"unstable reason: {reason!r}"
+
+
 # --- who_is_this degradation ladder -----------------------------------------
 
 
@@ -175,7 +192,8 @@ async def test_who_is_this_is_unavailable_when_the_camera_is_off() -> None:
 
     result = await WhoIsThis()(_deps(recognizer, camera_enabled=False))
 
-    assert result == {"status": "unavailable", "face_count": 0, "reason": "camera is disabled"}
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "camera_disabled"}
+    _assert_reason_is_a_stable_code(result)
     assert recognizer.frames_seen == 0
 
 
@@ -185,18 +203,20 @@ async def test_who_is_this_is_unavailable_when_face_memory_is_disabled() -> None
     disabled = await WhoIsThis()(_deps(_FakeRecognizer(enabled=False)))
     absent = await WhoIsThis()(_deps(None))
 
-    assert disabled == {"status": "unavailable", "face_count": 0, "reason": "face memory is disabled"}
+    assert disabled == {"status": "unavailable", "face_count": 0, "reason": "face_memory_disabled"}
     assert absent == disabled
+    _assert_reason_is_a_stable_code(disabled)
 
 
 @pytest.mark.asyncio
 async def test_who_is_this_is_unavailable_when_the_model_is_not_ready() -> None:
     """A failed or still-loading model surfaces as `unavailable`, with the reason kept."""
-    identification = Identification(status="unavailable", reason="model not ready")
+    identification = Identification(status="unavailable", reason="model_unavailable")
 
     result = await WhoIsThis()(_deps(_FakeRecognizer(identification)))
 
-    assert result == {"status": "unavailable", "face_count": 0, "reason": "model not ready"}
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "model_unavailable"}
+    _assert_reason_is_a_stable_code(result)
 
 
 @pytest.mark.asyncio
@@ -204,16 +224,49 @@ async def test_who_is_this_is_unavailable_without_a_frame() -> None:
     """A camera that returns no frame is a status, not an exception."""
     result = await WhoIsThis()(_deps(_FakeRecognizer(), frame=None))
 
-    assert result == {"status": "unavailable", "face_count": 0, "reason": "no frame available"}
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "no_frame"}
+    _assert_reason_is_a_stable_code(result)
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_survives_a_recognizer_exception() -> None:
-    """Even a broken recognizer must not take the turn down."""
-    result = await WhoIsThis()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))))
+async def test_who_is_this_survives_a_recognizer_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """Even a broken recognizer must not take the turn down — nor leak its message.
 
-    assert result["status"] == "unavailable"
-    assert "boom" in result["reason"]
+    Tool results go straight to the cloud model, so the exception text belongs in
+    the local log and `reason` stays a stable code.
+    """
+    with caplog.at_level("ERROR", logger="reachy_companion.tools.who_is_this"):
+        result = await WhoIsThis()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))))
+
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
+    _assert_reason_is_a_stable_code(result)
+    assert "boom" not in str(result)
+    assert "boom" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_remember_face_survives_an_enrollment_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """The enrollment path sanitizes its failures exactly like who_is_this does."""
+    with caplog.at_level("ERROR", logger="reachy_companion.tools.remember_face"):
+        result = await RememberFace()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))), name="小明")
+
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
+    assert "boom" not in str(result)
+    assert "boom" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_camera_failure_is_reported_without_its_exception_text(caplog: pytest.LogCaptureFixture) -> None:
+    """A raising `get_frame()` is a stable code too, not a transport traceback."""
+    deps = _deps(_FakeRecognizer())
+    deps.reachy_mini.media.get_frame.side_effect = OSError("v4l2 device fell over")
+
+    with caplog.at_level("ERROR", logger="reachy_companion.tools.face_support"):
+        result = await WhoIsThis()(deps)
+
+    assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
+    assert "v4l2" not in str(result)
+    assert "v4l2" in caplog.text
 
 
 # --- remember_face ----------------------------------------------------------
@@ -251,8 +304,8 @@ async def test_remember_face_is_unavailable_when_disabled_or_blind() -> None:
     blind = await RememberFace()(_deps(_FakeRecognizer(), camera_enabled=False), name="小明")
 
     assert disabled["status"] == "unavailable"
-    assert disabled["reason"] == "face memory is disabled"
-    assert blind["reason"] == "camera is disabled"
+    assert disabled["reason"] == "face_memory_disabled"
+    assert blind["reason"] == "camera_disabled"
 
 
 # --- enrollment -> recognition round trip -----------------------------------
@@ -406,7 +459,7 @@ async def test_greeting_prefixes_a_recognized_name(monkeypatch: pytest.MonkeyPat
         Identification(status="unknown", score=0.1, face_count=1),
         Identification(status="ambiguous", name="A", runner_up="B", score=0.5, face_count=1),
         Identification(status="no_face"),
-        Identification(status="unavailable", reason="model not ready"),
+        Identification(status="unavailable", reason="model_unavailable"),
     ],
 )
 @pytest.mark.asyncio

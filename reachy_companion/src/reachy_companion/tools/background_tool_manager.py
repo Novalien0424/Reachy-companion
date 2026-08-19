@@ -170,7 +170,19 @@ class BackgroundToolManager(BaseModel):
         tool_call_routine: ToolCallRoutine,
     ) -> None:
         """Execute the tool and handle completion."""
-        result: dict[str, Any] = await tool_call_routine(self)
+        try:
+            result: dict[str, Any] = await tool_call_routine(self)
+        except Exception as e:
+            # core_tools._dispatch_tool_call guards the tool body, but anything
+            # failing before it reaches this task as a raw raise. Unguarded that
+            # kills the task silently: no notification, so the realtime handler
+            # never answers the model for this call_id and the turn wedges.
+            result = {"error": f"{type(e).__name__}: {e}"}
+            logger.exception(
+                "Background tool crashed outside the dispatcher: %s (id=%s)",
+                background_tool.tool_name,
+                background_tool.id,
+            )
         background_tool.completed_at = time.monotonic()
         error = result.get("error")
 

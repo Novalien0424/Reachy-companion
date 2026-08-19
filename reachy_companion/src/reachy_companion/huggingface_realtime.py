@@ -768,7 +768,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             if isinstance(completed_tool.id, str):
                 self._in_flight_tool_calls.discard(completed_tool.id)
 
-            tool = core_tools.get_tools().get(completed_tool.tool_name)
+            try:
+                tool = core_tools.get_tools().get(completed_tool.tool_name)
+            except Exception:
+                # The result is already submitted and the call is out of flight;
+                # a broken registry must not stop the response that closes the turn.
+                logger.exception("Tool registry lookup failed for '%s'", completed_tool.tool_name)
+                tool = None
             # Always surface errors, skip the spoken follow-up for tools that opt out.
             if model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
                 self._tool_batch_needs_response = True

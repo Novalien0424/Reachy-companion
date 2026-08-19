@@ -58,6 +58,25 @@ def _make_routine(
     return routine
 
 
+def _make_crashing_routine(tool_name: str, error: Exception) -> ToolCallRoutine:
+    """Create a routine that lets *error* escape instead of returning an error dict.
+
+    This is the shape the dispatcher itself cannot produce: a failure *before*
+    ``_dispatch_tool_call``'s catch-all (the registry lookup, a lazy import),
+    which reaches ``_run_tool`` as a raw raise.
+    """
+    routine = MagicMock(spec=ToolCallRoutine)
+    routine.tool_name = tool_name
+    routine.args_json_str = "{}"
+
+    async def _call(manager: BackgroundToolManager) -> dict[str, Any]:
+        raise error
+
+    routine.__call__ = _call  # type: ignore[method-assign]
+    routine.side_effect = _call
+    return routine
+
+
 # ---------------------------------------------------------------------------
 # Model / data-class sanity checks
 # ---------------------------------------------------------------------------
@@ -240,6 +259,28 @@ class TestRunToolLifecycle:
 
         notification = manager._notification_queue.get_nowait()
         assert notification.status == ToolState.FAILED
+
+    @pytest.mark.asyncio
+    async def test_escaping_exception_still_completes_the_tool(self, manager: BackgroundToolManager) -> None:
+        """A raise that escapes the dispatcher must still produce a FAILED notification.
+
+        Without this the task dies silently: no notification is queued, so the
+        realtime handler never answers the model for that call_id and the
+        conversation wedges while the app stays up.
+        """
+        routine = _make_crashing_routine("wedging_tool", RuntimeError("registry exploded"))
+        bg = await manager.start_tool("c1", routine, is_idle_tool_call=False)
+
+        await asyncio.sleep(0.05)
+
+        assert bg.status == ToolState.FAILED
+        assert "RuntimeError: registry exploded" in (bg.error or "")
+        assert bg.completed_at is not None
+
+        notification = manager._notification_queue.get_nowait()
+        assert notification.id == "c1"
+        assert notification.status == ToolState.FAILED
+        assert "registry exploded" in (notification.error or "")
 
     @pytest.mark.asyncio
     async def test_tool_cancellation(self, manager: BackgroundToolManager) -> None:

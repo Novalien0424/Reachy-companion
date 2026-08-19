@@ -7,10 +7,11 @@ import pytest
 
 import reachy_companion.conversation_handler as conv_mod
 import reachy_companion.huggingface_realtime as hf_mod
+from reachy_companion.tools import core_tools
 from reachy_companion.config import config, get_default_voice
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
-from reachy_companion.tools.background_tool_manager import ToolState, ToolNotification
+from reachy_companion.tools.background_tool_manager import ToolState, ToolCallRoutine, ToolNotification
 
 
 HF_DEFAULT_VOICE = get_default_voice()
@@ -213,6 +214,49 @@ async def test_parallel_tool_calls_trigger_single_response(monkeypatch: Any) -> 
     assert create.await_count == 0
 
     await handler._handle_tool_result(_completed("call_b"))
+    assert create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_crash_does_not_wedge_the_conversation(monkeypatch: Any) -> None:
+    """A crash before the dispatcher's guard must still answer the model for that call_id.
+
+    `get_tools()` used to run outside `_dispatch_tool_call`'s try, and
+    `_run_tool` awaited the routine unguarded: a registry failure mid-session
+    killed the background task silently, stranded the call_id in
+    `_in_flight_tool_calls`, and the response trigger never fired again.
+    """
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = AsyncMock()
+    handler.output_queue = asyncio.Queue()
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+    create = AsyncMock()
+    monkeypatch.setattr(handler, "_safe_response_create", create)
+
+    def _explode() -> dict[str, Any]:
+        raise RuntimeError("registry exploded")
+
+    monkeypatch.setattr(core_tools, "get_tools", _explode)
+
+    handler.tool_manager.start_up(tool_callbacks=[handler._handle_tool_result])
+    try:
+        handler._in_flight_tool_calls.add("call-x")
+        await handler.tool_manager.start_tool(
+            call_id="call-x",
+            tool_call_routine=ToolCallRoutine(tool_name="camera", args_json_str="{}", deps=handler.deps),
+            is_idle_tool_call=False,
+        )
+        await asyncio.sleep(0.1)
+    finally:
+        await handler.tool_manager.shutdown()
+
+    (submitted,) = handler.connection.conversation.item.create.await_args_list
+    item = submitted.kwargs["item"]
+    assert item["type"] == "function_call_output"
+    assert item["call_id"] == "call-x"
+    assert "registry exploded" in item["output"]
+
+    assert handler._in_flight_tool_calls == set()
     assert create.await_count == 1
 
 
