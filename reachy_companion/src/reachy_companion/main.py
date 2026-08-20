@@ -193,6 +193,14 @@ def run(
         except Exception as e:
             logger.warning("Failed to load startup settings: %s", e)
 
+    # D-016: name the persona source once, after the instance .env is loaded (it
+    # may carry PERSONA_FILE) and before the first session can use it. Each
+    # antenna wake starts the app fresh, so this line is the operator's proof
+    # that the persona.md they edited on the robot is the one in play.
+    from reachy_companion.persona import log_persona_source
+
+    log_persona_source(instance_path)
+
     logger.info(
         "Configured OpenAI realtime backend, transcription language: %s",
         runtime_config.REALTIME_TRANSCRIPTION_LANGUAGE,

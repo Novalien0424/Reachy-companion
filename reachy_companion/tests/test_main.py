@@ -130,6 +130,22 @@ def test_face_memory_does_not_warm_up_without_a_camera(monkeypatch, tmp_path) ->
     result.recognizer_cls.return_value.start_warmup.assert_not_called()
 
 
+def test_run_names_the_persona_source_at_startup(monkeypatch, tmp_path) -> None:
+    """Startup logs which persona is in play, for the instance it was given (D-016)."""
+    recorded = []
+
+    def record(instance_path=None) -> str:
+        """Stand in for the persona source logger and record its argument."""
+        recorded.append(instance_path)
+        return "built-in locked profile"
+
+    monkeypatch.setattr("reachy_companion.persona.log_persona_source", record)
+
+    _run_app(monkeypatch, instance_path=str(tmp_path))
+
+    assert recorded == [str(tmp_path)]
+
+
 def test_inactivity_timeout_thread_goes_to_sleep() -> None:
     """The watchdog should use the shared sleep shutdown path once activity is too old."""
     stream_manager = SimpleNamespace(seconds_since_activity=lambda: 10.0, close=MagicMock())

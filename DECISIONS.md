@@ -550,3 +550,58 @@ of grab-frame-then-identify run inside the **unchanged** 1200 ms
 frame is genuinely different. The first confident recognition wins and stops the
 sequence; the deadline stops it otherwise. Every path that returned the greeting
 unchanged before still does.
+
+## D-016 — Persona externalized to an instance `persona.md` (2026-08-20)
+
+Operator-requested. D-001 locked the app to one persona and put its text in
+`profiles/_reachy_companion_locked_profile/profile.md` — a file inside the
+wheel. Rewriting the character therefore meant building and redeploying, which
+is the wrong cost for the thing most likely to be iterated on. The persona is
+now editable *on the robot*.
+
+**The file.** `persona.md` in the app's instance directory — the same directory
+that holds `.env`, `memory.v1.json` and `faces.v1.json`, resolved through the
+same `config.INSTANCE_PATH` those use. `PERSONA_FILE` (absolute path) moves the
+lookup elsewhere, with identical rules.
+
+**The parser is shared, not cloned.** `profile_store.split_front_matter` /
+`read_document_text` / `optional_string_field` were lifted out of
+`_parse_profile_document` and are now called by both documents, so `persona.md`
+is `profile.md` — same `+++` delimiter, same TOML dialect, same fields — with
+everything optional: front matter may carry any of `voice`, `greeting`,
+`default_tools` (`hidden` is deliberately not accepted; a single-persona app has
+nothing to hide it from), and the body is the persona text. A file that is
+nothing but persona text is valid. Copying the shipped `profile.md` verbatim and
+editing it is also valid, `schema_version` included. Fields the file omits keep
+the built-in value — the overlay is per field, not per file.
+
+**Every failure is total, never partial.** Missing, not-a-file, unreadable, bad
+TOML, unknown key, or an empty body: each logs a WARNING naming the problem and
+uses the built-in profile *whole*. Half a persona — a new voice on the old
+character — would be worse than either endpoint, so no path produces one. An
+empty body discards the file's front matter too, for the same reason.
+
+**One line of proof.** `persona.log_persona_source`, called from `main.run` after
+the instance `.env` is loaded (it may carry `PERSONA_FILE`), logs `persona:
+instance persona.md (<path>)` or `persona: built-in locked profile`. The operator
+verifies from the log which text the robot is actually running, which matters
+precisely because the fallbacks are silent about themselves otherwise.
+
+**Where it hooks in.** `profile_store.read_profile` applies the overlay, and only
+when the requested profile is the active one, so instructions, voice, greeting
+and `default_tools` all pick it up through the paths they already use
+(`prompts._active_profile`, `profile_toolsets.read_profile_default_tool_names`)
+and no other profile is affected. `persona` imports `profile_store` for the
+parser, so `read_profile` imports `persona` inside the function to break the
+cycle. The resolution is cached on the file's path, mtime and size — the "loaded
+at app start" semantics the operator asked for, without going stale if the file
+does change under a running process.
+
+**It is user state.** Like `.env`, the instance directory is inside
+site-packages on the robot, so a reinstall wipes it. The `reachy-deploy` skill's
+mandatory backup and restore blocks now cover `persona.md`; losing it silently
+reverts Reachy to the built-in Chinese persona, and the `persona:` startup line
+is how that is caught.
+
+Verified: 566 passed / 30 skipped (18 new tests in `tests/test_persona.py` and
+`tests/test_main.py`), ruff and mypy strict green.

@@ -58,7 +58,8 @@ def normalize_tool_names(tool_names: Iterable[str]) -> list[str]:
     return normalized
 
 
-def _optional_string(metadata: dict[str, object], field_name: str, source_path: Path) -> str | None:
+def optional_string_field(metadata: dict[str, object], field_name: str, source_path: Path) -> str | None:
+    """Return a trimmed optional string field from parsed front matter."""
     value = metadata.get(field_name)
     if value is None:
         return None
@@ -67,22 +68,40 @@ def _optional_string(metadata: dict[str, object], field_name: str, source_path: 
     return value.strip() or None
 
 
-def _parse_profile_document(source_path: Path) -> ProfileDefinition:
+def read_document_text(source_path: Path, *, label: str = "profile") -> str:
+    """Read a profile-format document, reporting read failures as format errors."""
     try:
-        content = source_path.read_text(encoding="utf-8")
+        return source_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        raise ProfileFormatError(f"Failed to read profile from {source_path}: {exc}") from exc
+        raise ProfileFormatError(f"Failed to read {label} from {source_path}: {exc}") from exc
 
+
+def split_front_matter(
+    source_path: Path,
+    content: str,
+    *,
+    required: bool = True,
+    label: str = "profile",
+) -> tuple[dict[str, object], str]:
+    """Split a profile-format document into its TOML front matter and its body.
+
+    `required=False` accepts a document with no front matter at all — the whole
+    file is then body — which is what the operator-editable `persona.md` allows
+    (D-016). Everything else, including the delimiter and the TOML dialect, is
+    identical for both documents because both go through this one function.
+    """
     lines = content.splitlines()
     if not lines or lines[0].strip() != _FRONT_MATTER_DELIMITER:
-        raise ProfileFormatError(f"Invalid profile {source_path}: expected TOML front matter starting with '+++'.")
+        if not required:
+            return {}, content.strip()
+        raise ProfileFormatError(f"Invalid {label} {source_path}: expected TOML front matter starting with '+++'.")
     try:
         closing_index = next(
             index for index, line in enumerate(lines[1:], start=1) if line.strip() == _FRONT_MATTER_DELIMITER
         )
     except StopIteration as exc:
         raise ProfileFormatError(
-            f"Invalid profile {source_path}: missing closing '+++' front matter delimiter."
+            f"Invalid {label} {source_path}: missing closing '+++' front matter delimiter."
         ) from exc
 
     try:
@@ -90,8 +109,12 @@ def _parse_profile_document(source_path: Path) -> ProfileDefinition:
     except tomllib.TOMLDecodeError as exc:
         raise ProfileFormatError(f"Invalid TOML front matter in {source_path}: {exc}") from exc
     if not isinstance(raw_metadata, dict):
-        raise ProfileFormatError(f"Invalid profile metadata in {source_path}: expected a TOML table.")
-    metadata: dict[str, object] = raw_metadata
+        raise ProfileFormatError(f"Invalid {label} metadata in {source_path}: expected a TOML table.")
+    return raw_metadata, "\n".join(lines[closing_index + 1 :]).strip()
+
+
+def _parse_profile_document(source_path: Path) -> ProfileDefinition:
+    metadata, instructions = split_front_matter(source_path, read_document_text(source_path))
     unknown_fields = sorted(set(metadata) - _PROFILE_METADATA_FIELDS)
     if unknown_fields:
         raise ProfileFormatError(f"Unknown profile metadata in {source_path}: {', '.join(unknown_fields)}.")
@@ -111,14 +134,13 @@ def _parse_profile_document(source_path: Path) -> ProfileDefinition:
     if not isinstance(hidden, bool):
         raise ProfileFormatError(f"Invalid hidden flag in {source_path}: expected a boolean.")
 
-    instructions = "\n".join(lines[closing_index + 1 :]).strip()
     if not instructions:
         raise ProfileFormatError(f"Profile {source_path} has an empty instruction body.")
     return ProfileDefinition(
         instructions=instructions,
         default_tools=tuple(normalize_tool_names(raw_tools)),
-        voice=_optional_string(metadata, "voice", source_path),
-        greeting=_optional_string(metadata, "greeting", source_path),
+        voice=optional_string_field(metadata, "voice", source_path),
+        greeting=optional_string_field(metadata, "greeting", source_path),
         hidden=hidden,
     )
 
@@ -132,11 +154,26 @@ def read_profile_from_directory(profile_name: str, profile_directory: Path) -> P
 
 
 def read_profile(profile: str | None) -> ProfileDefinition:
-    """Read a profile selected through the runtime configuration."""
+    """Read a profile selected through the runtime configuration.
+
+    For the *active* profile — the locked persona in our build — an operator's
+    `persona.md` in the instance directory takes precedence field by field
+    (D-016). Every other profile is read straight off disk.
+    """
     profile_name = canonical_profile_name(profile)
     if profile_name == DEFAULT_PROFILE_NAME:
-        return read_packaged_default_profile()
-    return read_profile_from_directory(profile_name, config.resolve_profile_dir(profile_name))
+        definition = read_packaged_default_profile()
+    else:
+        definition = read_profile_from_directory(profile_name, config.resolve_profile_dir(profile_name))
+
+    if profile_name != canonical_profile_name(config.REACHY_MINI_CUSTOM_PROFILE):
+        return definition
+
+    # Imported here, not at module scope: reachy_companion.persona reuses this
+    # module's document parser, so a top-level import would be a cycle.
+    from reachy_companion.persona import apply_persona_override
+
+    return apply_persona_override(definition)
 
 
 def read_packaged_default_profile() -> ProfileDefinition:

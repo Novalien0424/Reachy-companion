@@ -31,6 +31,28 @@ instruction *to* Reachy, not words spoken *as* Reachy. Its body carries the
 Chinese persona text and the behaviour rules that tell the model when to reach
 for each tool.
 
+### Editing the persona on the robot
+
+`profile.md` ships inside the wheel, so changing it means a redeploy. To change
+the character without one, drop a `persona.md` into the **instance directory** —
+the same directory that holds `.env`, `memory.v1.json` and `faces.v1.json`, which
+on the robot is the installed package directory (D-016).
+
+It uses the same format and the same parser as `profile.md`, with everything
+optional: front matter may set any of `voice`, `greeting` and `default_tools`,
+and the markdown body is the persona text. Whatever the file omits keeps the
+built-in value, so a file that is nothing but persona text is valid. `PERSONA_FILE`
+(absolute path) points the loader somewhere else.
+
+The file is read when the app starts — an antenna wake starts it fresh — so the
+edit-restart-listen loop is the whole workflow. Nothing is ever half-applied: a
+missing file, unreadable file, bad TOML, unknown key or empty body all fall back
+to the built-in profile whole, the problem is logged as a WARNING, and one INFO
+line at startup names the source in use (`persona: instance persona.md` or
+`persona: built-in locked profile`). Like `.env`, this is user state that a
+reinstall would wipe — the deploy skill backs it up and restores it around every
+install.
+
 ## Tools
 
 Seventeen tools reach the model: the fifteen listed in `default_tools` plus two
@@ -70,8 +92,9 @@ Copy `.env.example` to `.env` in the package instance directory and fill it in.
 VoiceFX chain, face memory, and the Notion and Home Assistant integrations, and
 each is documented inline. Never commit a filled-in `.env`. On the robot the
 instance directory is the installed package directory, which a reinstall
-replaces — the deploy skill backs up and restores `.env`, `memory.v1.json` and
-`faces.v1.json` around every install.
+replaces — the deploy skill backs up and restores `.env`, `persona.md`,
+`memory.v1.json` and `faces.v1.json` around every install. `PERSONA_FILE` is
+documented above, under the persona override.
 
 ## Tests
 

@@ -48,9 +48,15 @@ first).
    IS the installed package directory
    (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
    `app.py:169` + `main.py:448`), so it sits *inside* site-packages and every
-   reinstall wipes it. Two files there are user state, not build output, and
-   losing either is a visible regression:
+   reinstall wipes it. Four files there are user state, not build output, and
+   losing any of them is a visible regression:
    - `.env` — runtime secrets (API keys, home-control config).
+   - `persona.md` — the operator's edited personality / system prompt
+     (`persona.py`, `PERSONA_FILENAME`, D-016). Externalizing the persona is
+     what lets the character change **without** a redeploy, so a redeploy that
+     eats this file silently reverts Reachy to the built-in Chinese persona.
+     The revert is visible in the startup log — `persona: built-in locked
+     profile` where it should read `persona: instance persona.md`.
    - `memory.v1.json` — the long-term facts the `remember`/`forget` tools
      wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
      redeploy**; a user who told Reachy their name last week must not have to
@@ -65,12 +71,13 @@ first).
      "import reachy_companion, pathlib; print(pathlib.Path(reachy_companion.__file__).parent)")
    mkdir -p /tmp/reachy_companion_backup
    cp -a "$INST/.env" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no .env yet"
+   cp -a "$INST/persona.md" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no persona.md yet"
    cp -a "$INST/memory.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no memory yet"
    cp -a "$INST/faces.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no faces yet"
    ls -l /tmp/reachy_companion_backup
    ```
 
-   On a first deploy all three are absent — record that explicitly in the deploy
+   On a first deploy all four are absent — record that explicitly in the deploy
    notes rather than treating a missing file as a failed backup.
 5. **Install into the shared apps venv** (an app-level action, allowed) —
    NEVER bare `--force-reinstall` (it reinstalls `reachy-mini` too, whose
@@ -86,13 +93,14 @@ first).
 
    ```sh
    cp -a /tmp/reachy_companion_backup/.env "$INST/.env"
+   cp -a /tmp/reachy_companion_backup/persona.md "$INST/persona.md"
    cp -a /tmp/reachy_companion_backup/memory.v1.json "$INST/memory.v1.json"
    cp -a /tmp/reachy_companion_backup/faces.v1.json "$INST/faces.v1.json"
-   ls -l "$INST/.env" "$INST/memory.v1.json" "$INST/faces.v1.json"
+   ls -l "$INST/.env" "$INST/persona.md" "$INST/memory.v1.json" "$INST/faces.v1.json"
    ```
 
    Skip whichever file the backup step reported as absent. Verify by reading
-   **both** stores back — record counts, not just file presence:
+   **both** JSON stores back — record counts, not just file presence:
 
    ```sh
    /venvs/apps_venv/bin/python - <<'PY'
@@ -111,7 +119,9 @@ first).
    into every session's instructions via `prompts.get_session_instructions` →
    `memory.format_memory_for_prompt`, and faces are read by
    `face_id.FaceRecognizer.match` → `faces.list_faces`. Neither failure raises
-   anything. Never bake secrets, memory or faces into the wheel.
+   anything. `persona.md` is the one that does announce itself — read the
+   `persona:` line in the startup log to confirm the restore took. Never bake
+   secrets, an edited persona, memory or faces into the wheel.
 7. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
 8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the

@@ -20,7 +20,10 @@ and does all of it in a pitched-up, cute robotic voice.
   detection tuned so a natural mid-sentence pause in Chinese does not cut you
   off, and barge-in so you can interrupt mid-answer.
 - **Chinese-first persona** — a single locked personality: cheerful, concise,
-  colloquial Chinese by default, following you if you switch languages.
+  colloquial Chinese by default, following you if you switch languages. The
+  persona text is editable on the robot: a `persona.md` next to `.env` in the
+  instance directory replaces the built-in one at the next app start, so
+  rewriting the character costs an antenna touch instead of a redeploy.
 - **Embodiment** — face tracking runs from startup with no model involvement;
   emotion moves and speech-reactive motion layer over it and hand back to idle
   breathing automatically.
@@ -155,6 +158,7 @@ values.
 | Key                                | Meaning                                                        |
 | ---------------------------------- | -------------------------------------------------------------- |
 | `OPENAI_API_KEY`                   | API key for the `gpt-realtime-2.1` backend. Required.          |
+| `PERSONA_FILE`                     | Absolute path to the persona override, if not the default `persona.md` beside `.env`. Same fallback rules. |
 | `REALTIME_TRANSCRIPTION_LANGUAGE`  | Input transcription language. Defaults to `zh`.                |
 | `REALTIME_VAD_TYPE`                | Turn detection: `server_vad` (default) or `semantic_vad`.      |
 | `REALTIME_VAD_SILENCE_DURATION_MS` | Silence before Reachy takes its turn. Default `800`, raised from the API default so Chinese mid-sentence pauses do not cut you off. |

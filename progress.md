@@ -2,8 +2,18 @@
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
-Suite: **548 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+Suite: **566 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
+
+Persona externalized (2026-08-20, **D-016**, operator-requested): a `persona.md`
+in the instance directory — beside `.env`, same parser as `profile.md`, every
+field optional — replaces the built-in locked persona at app start, so the
+character can be rewritten over SSH and taken live with an antenna touch instead
+of a redeploy. Anything wrong with the file falls back to the built-in persona
+whole with a WARNING, and one INFO line (`persona: …`) names the source in use.
+It is user state: the deploy skill's backup/restore ritual now covers it, and a
+redeploy that skips that step silently reverts the character. Not yet exercised
+on the robot — it ships with the next deploy.
 
 Face-pipeline research round (2026-08-19, **D-015**): the D-013 carry-overs were
 measured rather than guessed, and three changes landed. int8 quantization is

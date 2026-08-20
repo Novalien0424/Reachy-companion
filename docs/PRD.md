@@ -491,7 +491,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | F-C2  | Turn detection tuned so a natural mid-sentence pause does not end the turn |
 | F-C3  | Barge-in: the user's voice interrupts Reachy's speech — decided server-side by voice activity, with the app clearing its own playback queue and sending no cancel or truncate of its own |
 | F-C4  | Chinese as the default conversational language, following the user if they switch |
-| F-C5  | A single locked persona, authoritative over any other profile setting    |
+| F-C5  | A single locked persona, authoritative over any other profile setting — its text operator-editable on the robot through an instance `persona.md` that is loaded at every app start, with the built-in persona as the fallback (D-016) |
 | F-C6  | A character voice applied on-device: pitch-shifted, duration-preserving, lightly ring-modulated, with an off switch |
 
 ### 7.2 Embodiment
