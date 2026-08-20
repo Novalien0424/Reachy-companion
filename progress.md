@@ -35,8 +35,13 @@ character can be rewritten over SSH and taken live with an antenna touch instead
 of a redeploy. Anything wrong with the file falls back to the built-in persona
 whole with a WARNING, and one INFO line (`persona: …`) names the source in use.
 It is user state: the deploy skill's backup/restore ritual now covers it, and a
-redeploy that skips that step silently reverts the character. Not yet exercised
-on the robot — it ships with the next deploy.
+redeploy that skips that step silently reverts the character. **Deployed and
+verified live 2026-08-20** (build `2aa0403`, seventh install): the robot's
+startup log reads `persona: instance persona.md`, seeded from the built-in
+persona body — edit it over SSH, antenna-wake to reload. The same deploy took
+D-017 live: the log shows the new chain (pitch +5 st, comb, AM off, soft knee)
+and a full 3-round wake check in 1171 ms. The D-017 acceptance check —
+does it *sound* cute and static-free — is the operator's ear, next wake.
 
 Face-pipeline research round (2026-08-19, **D-015**): the D-013 carry-overs were
 measured rather than guessed, and three changes landed. int8 quantization is

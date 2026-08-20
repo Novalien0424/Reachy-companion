@@ -170,13 +170,16 @@ reachability, attempt 2 on the version gate. Full history in DECISIONS.md D-009.
 Robot state: daemon on the **1.10.0rc line** (git-source install, so the version
 gate passes and future daemon syncs follow the git ref); startup app is
 `reachy_companion`; the robot was last left **ASLEEP** running the build of
-commit `9188a15` (sixth install, 2026-08-19: six audit fixes `a5f682d` + D-015
-face-pipeline tuning). Deploy-time evidence: on-robot embed median **141.7 ms**
-(3 threads, no spinning), face memory ready in 787 ms warm with threshold 0.363
-live, all 17 tools registered, multi-frame wake check exercised (2 rounds
-~295 ms each, clean budget expiry, greeting on time). `memory.v1.json` and
-`faces.v1.json` did not exist yet (no live enrollment); `.env` backed up and
-restored (1027 bytes verified both ways).
+commit `2aa0403` (seventh install, 2026-08-20: D-016 externalized persona +
+D-017 VoiceFX comb/soft-knee chain). Deploy-time evidence: startup log shows
+`persona: instance persona.md` (seeded from the built-in persona body during
+this deploy — the operator can now edit it over SSH), the full new VoiceFX
+chain line (pitch +5 st, comb 4 ms g 0.45 mix 0.35, AM off, +5 dB into soft
+knee at -1 dBFS), 17 tools, and a full 3-round wake check inside budget
+(275/255/256 ms). The restored `.env` had its four stale `VOICEFX_*` value
+lines stripped so the D-017 defaults apply (only `VOICEFX_ENABLED=true`
+remains); `memory.v1.json` / `faces.v1.json` still absent (no live
+enrollment yet).
 
 Two pitfalls this deploy confirmed: Git Bash mangles a remote command whose
 first token is a POSIX path (`/venvs/...` became `C:/Program Files/...` and the
