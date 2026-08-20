@@ -605,3 +605,140 @@ is how that is caught.
 
 Verified: 566 passed / 30 skipped (18 new tests in `tests/test_persona.py` and
 `tests/test_main.py`), ruff and mypy strict green.
+
+## D-017 — VoiceFX static: comb + soft knee replace the tremolo and the hard clip (2026-08-20)
+
+Operator report: the assistant voice was "not very robotic and cute, rather full
+of static noise". An offline diagnosis ran the **shipped code**, chunked exactly
+as the runtime chunks it, on a speech-shaped phantom at realistic TTS levels.
+Four plausible causes were measured and eliminated — int16 wraparound at the
+daemon boundary (0 sign flips in 7911 overshooting samples; libsoxr saturates),
+chunk-boundary discontinuities (seam/within-chunk jump ratio 0.99-1.21x), WSOLA
+overlap-add artefacts (roughness proxy -24.68 dB vs the input's -24.46 dB), and
+ring-mod overshoot (`|y| <= |x|` by construction below mix 0.5). Two real causes
+were found, and the first created the second.
+
+**Cause 1 — the "ring modulator" was a maximum-roughness buzz generator.**
+`x*(1-mix) + x*sin*mix` is `x * [(1-mix) + mix*sin]`: an *interpolation*, so at
+the shipped `mix = 0.25` it never inverts sign and never suppresses the carrier.
+It was not ring modulation at all — it was a **6.02 dB tremolo**. Its 55 Hz
+carrier sat at **0.956 of the psychoacoustic roughness peak** (~70 Hz, where the
+*asper* is defined; the roughness band is ~20-150 Hz), and `2*fc = 110 Hz` put
+every sideband pair inside one ERB critical band (~132 Hz at 1 kHz) — the
+textbook condition for beating rather than timbre. Measured: envelope energy in
+the 30-120 Hz roughness band rose from **-38.1 dB** (pitch only) to **-15.0 dB**,
+**+23.1 dB**, with the dominant envelope modulation moving to **56 Hz**. That was
+present at zero gain with zero clipped samples, which isolates it beyond doubt.
+
+**Cause 2 — the +5 dB makeup gain hard-clipped real material.** The tremolo cost
+exactly `sqrt((1-m)^2 + m^2/2)` = **-2.26 dB** of RMS (theory and measurement
+agreed to two decimals), which is *why* the gain was raised to +5 dB. x1.7783
+destroys everything above -5.0 dBFS: on a peak-normalized -1 dBFS speech signal
+**3.29 %** of samples pinned (4.90 % at 0 dBFS), a **-19.2 dB** nonlinear
+residual (~11 % distortion) on the loudest vowels. Level-dependent, so it came
+and went with the syllables — which is what "intermittent static" is. Hard
+clipping is also the worst available way to bound a signal: a discontinuous
+first derivative, a series decaying as 1/k, 10 dB more H7 and a 3.5 % (vs 2.1 %)
+high-order share against a soft knee at the same drive.
+
+**Cause 3, consequential — a second, uncontrolled clip downstream.** The clipped
+int16 then went 24 k -> 16 k, where band-limited reconstruction overshot the
+flat tops back over full scale and soxr saturated them again: true peak
+**+0.10 to +0.14 dBTP** against the EBU R128 / ITU-R BS.1770 production limit of
+-1 dBTP, 1079-1560 extra samples per 4 s.
+
+### The new chain
+
+```
+int16 -> float32 -> WSOLA+soxr pitch (+5 st, UNCHANGED) -> feedback comb
+      -> [AM, off by default] -> makeup gain -> soft-knee saturator
+      -> np.clip(+/-1) [retained, no-op] -> int16
+```
+
+**Comb, not more AM.** Every candidate colour stage was measured on the same
+signal. The AM stage adds roughness at *every* carrier (best case -38.2 dB at
+250 Hz, and only because that carrier happened to land on the shifted F0 — not
+robust). A feedback comb `y[n] = x[n] + g*y[n-D]` is the only candidate that
+adds audible robot character while measuring **cleaner than the untreated
+reference** (-43.6 dB vs -38.7 dB roughness), because it is linear and
+time-invariant: it reshapes the spectrum and modulates the envelope not at all.
+4 ms at 24 kHz resonates every 250 Hz with 8.4 dB of peak-to-null ripple — the
+"small speaker inside a tin robot" colour — at no intelligibility cost, which
+matters because Chinese is a primary scenario and it is tonal. Implemented as
+one `scipy.signal.lfilter` call with `zi` carried across chunks.
+
+**Soft knee, not a limiter.** A lookahead-free limiter was implemented and
+measured against the stateless saturator and lost on every axis: quieter
+(-10.16 vs -9.12 dBFS), 6.7x the CPU, ~3 ms more latency — and decisively, its
+output **depended on the chunk size** (0.245 difference between 2400- and
+137-sample chunks). `response.output_audio.delta` sizes are variable and not
+ours to control, so a chunk-dependent stage is itself an artefact source. The
+saturator is exactly linear below `knee * ceiling` and tanh-asymptotic above it;
+because `|tanh| < 1` strictly, the ceiling is never reached, which is what turns
+the trailing `np.clip(-1, 1)` into a genuine no-op backstop rather than a second
+clipper.
+
+**Streaming and chunk-invariant, asserted byte-exactly.** Comb state is an
+exact-state IIR delay line; the saturator is memoryless; WSOLA is keyed to
+absolute input positions. The whole chain is bit-identical at 480/960/1600/4800
+and at mixed coprime chunk sizes. The comb's delay line resets with the same
+lifecycle as the WSOLA and soxr state — `VoiceFX.reset()`, which barge-in
+reaches through `OpenAIRealtimeHandler._reset_output_pipeline`.
+
+### Defaults, and why the carrier is *gated* rather than clamped
+
+| knob | was | now |
+|---|---|---|
+| `VOICEFX_PITCH_SEMITONES` | 4.0 | **5.0** — more character at zero latency/CPU cost; WSOLA lookahead is geometry-bound at 35.0 ms and does not move with the shift |
+| `VOICEFX_RINGMOD_HZ` | 55.0, clamp 0-2000 | **0.0**, legal set `{0}` and `[150, 4000]` |
+| `VOICEFX_RINGMOD_MIX` | 0.25 | **0.0** |
+| `VOICEFX_COMB_MS` | — | **4.0**, 0 = off, else clamp 0.5-20 |
+| `VOICEFX_COMB_FEEDBACK` | — | **0.45**, clamp 0-0.9 |
+| `VOICEFX_COMB_MIX` | — | **0.35**, clamp 0-1 |
+| `VOICEFX_GAIN_DB` | 5.0, clamp -6..12 | unchanged in value and range; its **meaning** is now "gain into the saturator", safe by construction across the whole range |
+| `VOICEFX_CEILING_DBFS` | — | **-1.0**, clamp -12-0 |
+| `VOICEFX_KNEE` | — | **0.75**, clamp 0.1-0.99, read as a *fraction of the ceiling* |
+
+A carrier in `(0, 150)` is **refused with a warning and defaults to off**, not
+clamped up to 150. The whole 20-150 Hz band is harmful, not merely
+out-of-preference, and clamping would silently hand the operator a carrier they
+never chose — warn-and-default is what every other malformed knob does. 55 Hz,
+the value that shipped, is now unreachable.
+
+**No `VOICEFX_PRESET`.** The candidate characters differ by two or three scalars
+and the knobs are already independent and env-driven; a preset would add a
+second configuration mechanism that silently shadows explicit `.env` values.
+`.env.example` instead carries three commented, paste-able blocks — "cute robot
+(default)", "more metallic", "plain pitched voice".
+
+The startup INFO line now names the whole chain — pitch, comb delay/feedback/mix
+with its resonance spacing, AM state, gain, knee and ceiling — because that line
+is how the operator verifies which chain is actually deployed.
+
+### Also fixed in passing
+
+`streaming.audio_to_int16` did an unguarded `(audio * 32767).astype(np.int16)`,
+which wraps on `|x| > 1.0` — 1.001 lands near -32768, a full-scale polarity flip.
+On today's emit path it only ever receives int16, so it was a latent hazard
+rather than a live bug; it now clips before scaling.
+
+### Measured result
+
+Same phantom, same chunking, -1 dBFS peak-normalized input: output RMS
+**-8.80 -> -6.77 dBFS** (*louder*, which answers the complaint that put the
++5 dB gain there), clipped samples **3.29 % -> 0.00 %**, downstream over-rail
+samples **1079 -> 0**, true peak **+0.10 -> -0.98 dBTP**, roughness
+**-16.3 -> -40.5 dB**, intelligibility proxy essentially unchanged. Zero clipped
+samples at every input level from -20 dBFS to full scale, so the conclusion does
+not depend on guessing the real TTS crest factor. Latency delta **zero** — the
+comb has no lookahead and the saturator has no state. CPU delta measured on the
+dev box: 0.99 % -> 1.15 % of one core, i.e. ~15 % -> ~16 % on the CM4.
+
+**Residual risk:** the phantom is synthetic, and whether 250 Hz comb spacing
+reads as "cute robot" or as "phone on speaker" is a listening judgement no test
+can make. `VOICEFX_COMB_MIX=0.0` bypasses the stage, and the "plain pitched
+voice" block isolates the pitch stage if the operator wants to hear it alone.
+The on-robot listening pass is still owed.
+
+Verified: 622 passed / 30 skipped (56 new tests in `tests/test_voicefx.py` and
+`tests/test_streaming.py`), ruff and mypy strict green.

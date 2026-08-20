@@ -309,9 +309,11 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
 
         The voice filter (D-010) runs *before* the downsample, on the model's
         24 kHz PCM: its pitch stage is a rate trick that assumes the model rate,
-        and the ring modulator wants the full 24 kHz band. Disabled — the shipped
-        default — it returns the same array object, leaving the chain exactly as
-        it was before the filter existed.
+        and the colour stages want the full 24 kHz band. Its -1 dBFS ceiling
+        (D-017) is also what keeps the downsample below its own clip point,
+        since band-limited reconstruction overshoots a signal pushed to 0 dBFS.
+        Disabled — the shipped default — it returns the same array object,
+        leaving the chain exactly as it was before the filter existed.
         """
         handler_output = await super().emit()
         if not isinstance(handler_output, tuple):

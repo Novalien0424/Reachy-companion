@@ -34,7 +34,7 @@ and does all of it in a pitched-up, cute robotic voice.
 - **Home control** — natural-language commands against a Home Assistant
   allowlist you configure.
 - **Cute robotic voice** — an on-device pitch shift that preserves speaking
-  pace, plus a light ring modulation. Fully reversible.
+  pace, plus a comb resonator for the metallic robot character. Fully reversible.
 - **Memory that survives redeploys** — remembered facts and enrolled faces live
   on the robot, inside the installed package. A reinstall would wipe them, so
   the deployment procedure backs both stores up before installing and restores

@@ -2,8 +2,31 @@
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
-Suite: **566 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+Suite: **622 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
+
+VoiceFX rebuilt (2026-08-20, **D-017**): the operator's "full of static noise"
+was diagnosed against the shipped code, not guessed. Two causes, and the first
+made the second. The "ring modulator" was never ring modulation — an
+interpolated mix makes it a 6 dB **tremolo**, and its 55 Hz carrier sat at 0.956
+of the psychoacoustic roughness peak, adding **+23 dB** of 30-120 Hz envelope
+energy at zero gain and zero clipping. That tremolo cost exactly -2.26 dB of
+RMS, which is why the makeup gain was +5 dB — and +5 dB into a hard clip pinned
+**3.3 %** of samples on a -1 dBFS speech signal and overshot the downstream
+24 k -> 16 k resample into a second clip. Four other hypotheses (int16 wrap,
+chunk seams, WSOLA artefacts, ring-mod overshoot) were measured and ruled out.
+The AM stage is now **off by default** and its carrier gated to `{0}` and
+`[150, 4000]` Hz; a **feedback comb** (4 ms / g 0.45 / mix 0.35, 250 Hz spacing)
+carries the robot character and measures *cleaner* than the untreated signal
+because it is LTI; a stateless **soft-knee saturator** at a -1 dBFS ceiling
+replaces the hard clip, which stays as a proven no-op backstop. Pitch default
++4 -> +5 st, pitch code unchanged. Result on the same phantom: RMS -8.80 ->
+-6.77 dBFS (louder), clipped samples 3.29 % -> 0.00 % at every input level from
+-20 dBFS to full scale, roughness -16.3 -> -40.5 dB, latency delta zero, CPU
+~15 % -> ~16 % of one robot core. The whole chain is byte-exactly chunk
+invariant. Also fixed a latent int16 wrap in `streaming.audio_to_int16`.
+**Not yet heard on the robot** — the ear-tuning pass below is now the check that
+matters, and `.env.example` carries three paste-able settings blocks for it.
 
 Persona externalized (2026-08-20, **D-016**, operator-requested): a `persona.md`
 in the instance directory — beside `.env`, same parser as `profile.md`, every
@@ -104,7 +127,14 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
 - D-011 carry-overs: pitch chain 63.6 ms peak accepted under the revised 70 ms
   budget (D-011) — a soxr block-buffering spike; standing delay is ~40 ms — and
   it costs **14.8 % of one robot core** while the assistant speaks (1.3 % on the
-  dev box).
+  dev box). D-017 adds the comb and the saturator on top: latency delta zero
+  (neither has lookahead or state that delays), CPU ~+1 % of one robot core.
+- D-017 carry-over: every number behind the rebuild comes from a **synthetic**
+  speech phantom, not real `gpt-realtime-2.1` output. The fix is
+  level-independent by construction (0 clipped samples from -20 dBFS to full
+  scale), so the conclusion does not rest on the crest factor — but whether
+  250 Hz comb spacing reads as "cute robot" by ear is a judgement only the
+  operator pass can make.
 - D-012 carry-over: `memory.v1.json` lives inside site-packages and survives
   redeploys only because the skill backs it up. Moving it to `XDG_DATA_HOME`
   (already supported by `memory_path_for_instance`) would orphan any existing
@@ -136,6 +166,12 @@ reinstall, version gate is decisive because the daemon force-syncs apps_venv).
 
 1. Mic pass (2 min): Chinese multi-turn, voice barge-in, ~1 s pause,
    VoiceFX ear-tuning (`scripts\dev_daemon.ps1` + `scripts\run_app_dev.ps1`).
+   **This is now the D-017 acceptance check**: the static should be gone and the
+   voice should read as metallic rather than buzzy. If the comb reads as "phone
+   on speaker" rather than "tin robot", paste the "plain pitched voice" block
+   from `.env.example` to hear the pitch stage alone, or the "more metallic"
+   block for a stronger colour. Confirm from the startup INFO line which chain
+   is actually running.
 2. Live mic pass on the build **currently installed on the robot** (`9188a15`;
    WSOLA pitch, 17 tools, face memory with 5-point alignment). Wake it with an antenna touch —
    `startup_app` is `reachy_companion` — and listen for: pitch still cute at

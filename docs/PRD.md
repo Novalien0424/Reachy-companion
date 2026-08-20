@@ -165,19 +165,19 @@ as a single locked persona rather than a menu of interchangeable characters.
 | Concise        | Answers like a person sitting across the table, never a lecture  |
 | Chinese-first  | Speaks natural, colloquial Chinese by default; follows the user into another language if they switch |
 | Honest         | Says it does not know rather than guessing; never guesses a face |
-| Cute robotic   | A pitched-up, subtly ring-modulated voice at natural speaking pace, applied whenever the voice filter is enabled in configuration |
+| Cute robotic   | A pitched-up voice with a light metallic resonance, at natural speaking pace, applied whenever the voice filter is enabled in configuration |
 | Embodied       | Looks at the speaker, reacts physically, sleeps when asked       |
 
 ### 3.3 Voice identity
 
 The realtime model ships a fixed catalogue of voices and no custom-voice option,
 and "robotic" is a texture no stock voice produces. Reachy's voice is therefore
-built on the robot: the model's chosen voice is pitched up and lightly
-ring-modulated on-device, with the duration preserved so the speaking pace stays
-natural. The model's own emotional performance survives the treatment — the
-effect is a character filter, not a different speaker. The filter is applied
-when it is enabled in configuration: the code default is off, and the robot
-ships with it switched on.
+built on the robot: the model's chosen voice is pitched up and passed through a
+comb resonator that adds a metallic "tin robot" character, with the duration
+preserved so the speaking pace stays natural. The model's own emotional
+performance survives the treatment — the effect is a character filter, not a
+different speaker. The filter is applied when it is enabled in configuration:
+the code default is off, and the robot ships with it switched on.
 
 ---
 
@@ -492,7 +492,7 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | F-C3  | Barge-in: the user's voice interrupts Reachy's speech — decided server-side by voice activity, with the app clearing its own playback queue and sending no cancel or truncate of its own |
 | F-C4  | Chinese as the default conversational language, following the user if they switch |
 | F-C5  | A single locked persona, authoritative over any other profile setting — its text operator-editable on the robot through an instance `persona.md` that is loaded at every app start, with the built-in persona as the fallback (D-016) |
-| F-C6  | A character voice applied on-device: pitch-shifted, duration-preserving, lightly ring-modulated, with an off switch |
+| F-C6  | A character voice applied on-device: pitch-shifted, duration-preserving, lightly comb-resonated, bounded below full scale, with an off switch |
 
 ### 7.2 Embodiment
 
@@ -749,13 +749,24 @@ cut in while Reachy is speaking. Audio is resampled between the robot's rate and
 the model's rate in both directions.
 
 **VoiceFX.** A small signal chain sitting on the assistant's audio just before
-it reaches the speaker. It shifts pitch upward while preserving duration,
-applies a light ring modulation for the robotic timbre, and adds makeup gain. It
-runs on the robot and is fully reversible — disabled, the audio path is
-unchanged. What it costs, measured on the robot: about 48 ms of added delay
-typically and 64 ms at the peak (the peak is a resampler buffering spike the
-next chunk drains, not standing lag), and roughly the mid-teens percentage of
-one CPU core for as long as the assistant is speaking.
+it reaches the speaker. It shifts pitch upward while preserving duration, passes
+the result through a comb resonator that gives it a metallic "small speaker in a
+tin robot" character, adds makeup gain, and bounds the result with a soft-knee
+saturator that leaves a deliberate margin below full scale. An optional
+amplitude-modulation stage is available and off by default. It runs on the robot
+and is fully reversible — disabled, the audio path is unchanged. What it costs,
+measured on the robot: about 48 ms of added delay typically and 64 ms at the
+peak (the peak is a resampler buffering spike the next chunk drains, not
+standing lag), and roughly the mid-teens percentage of one CPU core for as long
+as the assistant is speaking.
+
+The first version of this chain used amplitude modulation for the robotic timbre
+and a hard clip for overload, and the operator heard the result as static noise.
+Both were replaced after a measurement pass: the modulation was running at the
+frequency the ear finds roughest, and the gain in front of the hard clip was
+destroying a few percent of every loud vowel. The rebuilt chain measures louder,
+smoother and quieter in the roughness band than the one it replaces, at no added
+delay. See DECISIONS.md D-017.
 
 **Tool layer.** Seventeen tools are offered to the model: robot expression and
 motion, camera capture, web search, home control, fact memory, face memory,
@@ -801,7 +812,7 @@ flowchart TB
         end
         subgraph app["Reachy Companion (managed app)"]
             rt["Realtime conversation loop<br/>turn detection · barge-in"]
-            vfx["VoiceFX<br/>pitch · ring-mod · gain"]
+            vfx["VoiceFX<br/>pitch · comb · gain · soft knee"]
             motion["Motion arbitration<br/>emotions · dance · breathing · tracking hand-off"]
             tools["Tool layer — 17 tools"]
             mcp["MCP seam"]

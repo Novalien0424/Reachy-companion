@@ -37,11 +37,20 @@ async def wait_for_item(queue: asyncio.Queue[QueueItem], timeout: float = 0.1) -
 
 
 def audio_to_int16(audio: AudioArray) -> NDArray[np.int16]:
-    """Convert int16 or float32 audio data to int16 samples."""
+    """Convert int16 or float32 audio data to int16 samples.
+
+    Float input is clipped to [-1, 1] before scaling (D-017). Without that,
+    `astype(np.int16)` on anything above full scale is undefined C behaviour
+    that wraps in practice — 1.001 lands near -32768, a full-scale polarity
+    flip, which is the loudest artefact this codebase can produce. On today's
+    emit path this function only ever receives already-int16 data, so the guard
+    is a latent-hazard fix rather than a live bug fix; it costs one pass over
+    the buffer and removes the hazard for every future caller.
+    """
     if audio.dtype == np.int16:
         return audio.astype(np.int16, copy=False)
     if audio.dtype == np.float32:
-        return (audio * 32767.0).astype(np.int16)
+        return (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
     raise TypeError(f"Unsupported audio data type: {audio.dtype}")
 
 
