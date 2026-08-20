@@ -57,6 +57,12 @@ first).
      eats this file silently reverts Reachy to the built-in Chinese persona.
      The revert is visible in the startup log — `persona: built-in locked
      profile` where it should read `persona: instance persona.md`.
+     A git-tracked **local working copy lives at repo-root `persona.md`**;
+     after editing it, sync it to the robot with
+     `pscp … persona.md pollen@$REACHY_HOST:$INST/persona.md` and antenna-wake
+     (or restart the app) to load it — no wheel rebuild. Keep the two copies in
+     step: whichever side was edited last wins, and this repo copy is the one
+     under version control.
    - `memory.v1.json` — the long-term facts the `remember`/`forget` tools
      wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
      redeploy**; a user who told Reachy their name last week must not have to
