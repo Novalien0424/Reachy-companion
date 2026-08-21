@@ -229,7 +229,7 @@ async def test_the_other_task_tools_do_not_need_a_list_id(monkeypatch):
     import reachy_companion.tools.task_list as task_list_module
 
     monkeypatch.delenv("HANOVA_GTASKS_LIST_ID")
-    monkeypatch.setattr(task_list_module.gtasks, "list_task_lists", lambda: [])
+    monkeypatch.setattr(task_list_module.gtasks, "list_task_lists_page", lambda: ([], False))
     out = await TaskList()(deps=_deps())
     assert out["ok"] is True
 
@@ -364,16 +364,56 @@ async def test_task_list_groups_by_list(monkeypatch):
     """The model needs to know which list an item is in to talk about it."""
     import reachy_companion.tools.task_list as task_list_module
 
-    monkeypatch.setattr(task_list_module.gtasks, "list_task_lists", lambda: [{"id": "a", "title": "Work"}])
+    monkeypatch.setattr(
+        task_list_module.gtasks, "list_task_lists_page", lambda: ([{"id": "a", "title": "Work"}], False)
+    )
     monkeypatch.setattr(
         task_list_module.gtasks,
-        "list_tasks",
-        lambda list_id, limit=50, show_completed=False: [{"id": "t1", "title": "Gym", "due": None}],
+        "list_tasks_page",
+        lambda list_id, limit=50, show_completed=False: ([{"id": "t1", "title": "Gym", "due": None}], False),
     )
     out = await TaskList()(deps=_deps())
     assert out["ok"] is True
     assert out["lists"][0]["title"] == "Work"
     assert out["lists"][0]["tasks"][0]["title"] == "Gym"
+    # A complete walk says so explicitly rather than staying silent: the model
+    # must be able to tell "this is all of it" from "this is an older payload".
+    assert out["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_task_list_says_when_it_could_not_read_everything(monkeypatch):
+    """Review finding 2: a capped count presented as a total is a wrong answer.
+
+    `count` stays what it always was -- how many tasks are in this payload -- but
+    a truncated walk pairs it with the flag, so the model says "at least N"
+    instead of reporting a floor as a total. Both walks feed the same signal: a
+    list whose tasks did not fit, and an account whose task lists did not fit.
+    """
+    import reachy_companion.tools.task_list as task_list_module
+
+    monkeypatch.setattr(
+        task_list_module.gtasks, "list_task_lists_page", lambda: ([{"id": "a", "title": "Work"}], False)
+    )
+    monkeypatch.setattr(
+        task_list_module.gtasks,
+        "list_tasks_page",
+        lambda list_id, limit=50, show_completed=False: ([{"id": "t1", "title": "Gym", "due": None}], True),
+    )
+    out = await TaskList()(deps=_deps())
+    assert out["ok"] is True and out["count"] == 1
+    assert out["truncated"] is True
+
+    # The other direction: every list read whole, but not every list reached.
+    monkeypatch.setattr(
+        task_list_module.gtasks, "list_task_lists_page", lambda: ([{"id": "a", "title": "Work"}], True)
+    )
+    monkeypatch.setattr(
+        task_list_module.gtasks,
+        "list_tasks_page",
+        lambda list_id, limit=50, show_completed=False: ([{"id": "t1", "title": "Gym", "due": None}], False),
+    )
+    assert (await TaskList()(deps=_deps()))["truncated"] is True
 
 
 @pytest.mark.asyncio

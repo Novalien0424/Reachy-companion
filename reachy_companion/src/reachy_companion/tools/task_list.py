@@ -3,7 +3,7 @@
 from __future__ import annotations
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from reachy_companion.hanova import gtasks, redact, settings
 from reachy_companion.hanova.gauth import GoogleApiError, friendly_message
@@ -40,14 +40,25 @@ class TaskList(Tool):
         include_completed = bool(kwargs.get("include_completed"))
         logger.info("Tool call: task_list include_completed=%s", include_completed)
 
-        def collect() -> List[Dict[str, Any]]:
-            """Walk every list once, on the worker thread, and compact the result."""
+        def collect() -> Tuple[List[Dict[str, Any]], bool]:
+            """Walk every list once, on the worker thread, and compact the result.
+
+            Returns the groups and whether **any** walk was capped -- the account's
+            task lists, or one list's tasks. Review finding 2: reading through the
+            truncation-blind wrappers reported a capped count as a total.
+            """
             grouped: List[Dict[str, Any]] = []
-            for task_list in gtasks.list_task_lists():
+            task_lists, truncated = gtasks.list_task_lists_page()
+            for task_list in task_lists:
                 list_id = str(task_list.get("id") or "")
                 if not list_id:
                     continue
-                tasks = gtasks.list_tasks(list_id, limit=_PER_LIST_LIMIT, show_completed=include_completed)
+                tasks, list_truncated = gtasks.list_tasks_page(
+                    list_id,
+                    limit=_PER_LIST_LIMIT,
+                    show_completed=include_completed,
+                )
+                truncated = truncated or list_truncated
                 grouped.append(
                     {
                         "id": list_id,
@@ -58,11 +69,20 @@ class TaskList(Tool):
                         ],
                     }
                 )
-            return grouped
+            return grouped, truncated
 
         try:
-            lists = await asyncio.to_thread(collect)
+            lists, truncated = await asyncio.to_thread(collect)
         except (GoogleApiError, OSError, ValueError, KeyError) as exc:
             logger.warning("task_list failed: %s", redact.error(exc))
             return {"ok": False, "error": friendly_message(exc)}
-        return {"ok": True, "count": sum(len(entry["tasks"]) for entry in lists), "lists": lists}
+        # `count` is how many tasks this payload carries. Paired with `truncated`
+        # it is a floor, not a total, and the model can say "at least N" instead
+        # of stating a capped number as fact. The flag is always present so an
+        # untruncated read is a positive statement rather than an absence.
+        return {
+            "ok": True,
+            "count": sum(len(entry["tasks"]) for entry in lists),
+            "truncated": truncated,
+            "lists": lists,
+        }
