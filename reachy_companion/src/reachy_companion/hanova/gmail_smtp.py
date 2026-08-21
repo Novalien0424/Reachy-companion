@@ -69,9 +69,24 @@ def is_transient(exc: BaseException) -> bool:
         return False
     if isinstance(candidate, _TRANSIENT_SMTP):
         return True
-    # A bare socket problem is transient; anything else we cannot classify is
-    # treated as terminal, because spending an authorisation is the safe error.
-    return isinstance(candidate, (TimeoutError, OSError))
+    # Review finding 1: `smtplib.SMTPException` subclasses `OSError`, so without
+    # this line the socket fallback below claimed the **whole** SMTP family as
+    # transient and the terminal default was unreachable for it. A bare
+    # `SMTPException` -- what `SMTP.login()` raises when no authentication method
+    # is available -- was then offered to the user as "try again" for the life of
+    # the confirmation, against a misconfiguration that can never succeed.
+    #
+    # The transient set stays a **closed allow-list**: an SMTP failure we did not
+    # name above is terminal, including a bare 4xx `SMTPResponseException`. The
+    # genuinely retryable cases each have their own class and are named in
+    # `_TRANSIENT_SMTP`; for anything else, spending the authorisation is the safe
+    # error, because it costs one corrected read-back while the opposite mistake
+    # costs an unbounded retry loop (round 2, finding 9).
+    if isinstance(candidate, smtplib.SMTPException):
+        return False
+    # What is left is a bare socket problem, which is transient. `TimeoutError`
+    # needs no mention of its own: it subclasses `OSError`.
+    return isinstance(candidate, OSError)
 
 
 _TERMINAL_MESSAGES: Dict[type[BaseException], str] = {

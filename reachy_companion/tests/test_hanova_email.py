@@ -468,6 +468,28 @@ def test_the_classification_follows_the_wrapped_cause():
     assert gmail_smtp.is_transient(retryable) is True
 
 
+def test_an_unnamed_smtp_failure_is_terminal_not_transient():
+    """Review finding 1: an SMTP error nobody named transient must spend the claim.
+
+    `smtplib.SMTPException` subclasses `OSError`, so the socket fallback used to
+    claim the **entire** SMTP family as transient and the terminal default was
+    unreachable for it. A bare `SMTPException` is exactly what `SMTP.login()`
+    raises when no authentication method is available -- a permanent
+    misconfiguration that would otherwise be offered to the user as "try again"
+    until the confirmation window ran out.
+    """
+    import smtplib
+
+    assert gmail_smtp.is_transient(smtplib.SMTPException("No suitable authentication method found.")) is False
+    # A response class we never named transient stays terminal too: the contract
+    # is a closed allow-list of known-transient families, and spending an
+    # authorisation is the safe error (round 2, finding 9).
+    assert gmail_smtp.is_transient(smtplib.SMTPResponseException(451, b"try again later")) is False
+    # The named socket faults are untouched by the narrower fallback.
+    assert gmail_smtp.is_transient(OSError("network unreachable")) is True
+    assert gmail_smtp.is_transient(TimeoutError("timed out")) is True
+
+
 @pytest.mark.asyncio
 async def test_a_terminal_failure_spends_the_authorisation(monkeypatch):
     """Round 2, finding 9: a refused recipient means the envelope is wrong.
@@ -490,6 +512,34 @@ async def test_a_terminal_failure_spends_the_authorisation(monkeypatch):
     assert out["ok"] is False
     assert out.get("retryable") is not True
     # Spent: a bare retry now finds nothing armed.
+    again = await EmailSend()(deps=_deps(), confirm=True)
+    assert again["status"] == "confirmation_expired"
+
+
+@pytest.mark.asyncio
+async def test_a_bare_smtp_failure_spends_the_authorisation(monkeypatch):
+    """Review finding 1, at the tool level: no unbounded "try again" loop.
+
+    `SMTPException` subclasses `OSError`, so a login failure with no explicit
+    class of its own reached the model as `retryable: True` with the claim
+    released -- inviting the user to retry, for the whole TTL, a failure that
+    can never succeed as approved.
+    """
+    import smtplib
+
+    import reachy_companion.tools.email_send as email_send_module
+
+    def unauthenticated(**kwargs):
+        raise email_send_module.SmtpError("the mail could not be sent") from smtplib.SMTPException(
+            "No suitable authentication method found."
+        )
+
+    monkeypatch.setattr(email_send_module.gmail_smtp, "send_mail", unauthenticated)
+    await EmailSend()(deps=_deps(), to="a@example.com", subject="Dinner", body="hi")
+    out = await EmailSend()(deps=_deps(), confirm=True)
+    assert out["ok"] is False
+    assert out.get("retryable") is not True
+    # Spent, not released: a bare retry finds nothing armed.
     again = await EmailSend()(deps=_deps(), confirm=True)
     assert again["status"] == "confirmation_expired"
 
