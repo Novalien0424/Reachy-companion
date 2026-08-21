@@ -25,6 +25,8 @@ EXPECTED_TOOLS = (
     # tripwire for an *unplanned* addition rather than a blocker for a planned one.
     "play_music",
     "stop_music",
+    "play_video",
+    "show_on_tv",
     "go_to_sleep",
     "remember",
     "forget",

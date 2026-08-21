@@ -12,6 +12,8 @@ default_tools = [
   "home_control",
   "play_music",
   "stop_music",
+  "play_video",
+  "show_on_tv",
   "go_to_sleep",
   "remember",
   "forget",
