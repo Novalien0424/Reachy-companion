@@ -360,6 +360,13 @@ def run(
         threading.Thread(target=own_ui_server.run, daemon=True, name="ui-server").start()
         logger.info("Web UI available at http://localhost:7860")
 
+    # D-018 / R5: one INFO line per ported tool family, so a deploy can be read
+    # off the log instead of guessed at. Runs after the instance .env is loaded
+    # and before the registry is built, so the verdicts describe this boot.
+    from reachy_companion.hanova.settings import log_family_status
+
+    log_family_status()
+
     # US-07 / D-004: discover remote MCP tools before the registry is built, so
     # the first initialize_tools() already includes them. The persistent seam in
     # core_tools keeps them registered even if the registry is rebuilt later.
