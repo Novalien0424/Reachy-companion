@@ -55,13 +55,16 @@ class PlayMusic(Tool):
         if not found["ok"]:
             # yt-dlp's stderr echoes the query back, so it is summarised, never
             # forwarded (finding 7). The model gets a fixed, speakable reason.
-            logger.info("play_music search failed: %s", redact.error(found["error"] or ""))
+            # `redact.error` on a plain string renders the constant "error" and
+            # nothing else, so the shape of the failure was lost; `redact.text`
+            # is the renderer for free text nobody vouched for (Task 4 review).
+            logger.info("play_music search failed: %s", redact.text(found["error"] or ""))
             return {"ok": False, "error": "no playable result for that request"}
 
         music_dir = media_store.media_dir("music", deps.instance_path)
         downloaded = await asyncio.to_thread(ytdlp.download_audio, found["id"], music_dir)
         if not downloaded["ok"]:
-            logger.info("play_music download failed: %s", redact.error(downloaded["error"] or ""))
+            logger.info("play_music download failed: %s", redact.text(downloaded["error"] or ""))
             return {"ok": False, "error": "the audio could not be fetched right now"}
 
         result = await PLAYER.play(

@@ -33,6 +33,13 @@ KINDS: tuple[str, ...] = ("music", "nas", "images", "sfx")
 # re-exports it so the staging code has one name for it.
 PART_SUFFIX = ".part"
 
+# Task 4 review: `<video id>.resume.mp3` is the ffmpeg cut `music_player`
+# produces when it resumes a ducked track. It is a *derivative* of a cached
+# track, not a cache entry of its own, so it must not consume the keep budget --
+# one ducked song would otherwise halve the cache -- and it must not outlive the
+# track it was cut from.
+RESUME_SUFFIX = ".resume.mp3"
+
 
 def media_root(instance_path: str | Path | None) -> Path:
     """Return the media cache root: the override, the instance dir, or a temp dir."""
@@ -59,6 +66,11 @@ def prune(kind: str, instance_path: str | Path | None, keep: int) -> int:
     Round 2, finding 10: `*.part` files are **skipped**, not counted and not
     deleted. They are staging files belonging to a copy that is still running,
     and an LRU that deletes one destroys the download in progress.
+
+    Task 4 review: `*.resume.mp3` cuts are **not counted** against *keep* either.
+    They are derivatives of a cached track, so a ducked song would otherwise
+    occupy two of the N slots; instead each cut is kept exactly as long as the
+    track it was cut from survives, and dropped with it.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown media kind: {kind!r}; expected one of {KINDS}")
@@ -66,7 +78,7 @@ def prune(kind: str, instance_path: str | Path | None, keep: int) -> int:
     if not directory.is_dir():
         return 0
     try:
-        files = sorted(
+        entries = sorted(
             (path for path in directory.iterdir() if path.is_file() and not path.name.endswith(PART_SUFFIX)),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
@@ -75,8 +87,16 @@ def prune(kind: str, instance_path: str | Path | None, keep: int) -> int:
         # Round 2, finding 6: an OSError renders the full path it failed on.
         logger.warning("Could not list the %s media cache: %s", kind, redact.error(exc))
         return 0
+    files = [path for path in entries if not path.name.endswith(RESUME_SUFFIX)]
+    kept = {path.name for path in files[: max(0, keep)]}
+    doomed = list(files[max(0, keep) :])
+    doomed += [
+        path
+        for path in entries
+        if path.name.endswith(RESUME_SUFFIX) and f"{path.name[: -len(RESUME_SUFFIX)]}.mp3" not in kept
+    ]
     removed = 0
-    for stale in files[max(0, keep) :]:
+    for stale in doomed:
         try:
             stale.unlink()
             removed += 1
@@ -159,6 +179,7 @@ __all__ = [
     "MEDIA_DIRNAME",
     "MEDIA_URL_PREFIX",
     "PART_SUFFIX",
+    "RESUME_SUFFIX",
     "media_dir",
     "media_root",
     "media_url",

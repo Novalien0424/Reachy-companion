@@ -205,6 +205,13 @@ class MusicPlayer:
             if self.current() is not None:
                 await daemon_stop_sound(deps)
                 if not self._is_current(generation):
+                    # Task 4 review: the pre-stop already silenced the previous
+                    # track, so leaving its snapshot in place would leave the
+                    # state claiming `playing` with nothing audible -- and the
+                    # next `pause_for_speech` would bank an elapsed offset for
+                    # a track that stopped seconds ago. Drop it; the newer
+                    # transition establishes its own state.
+                    self._store(None)
                     return _superseded()
 
             started = await daemon_play_sound(deps, str(source_path))

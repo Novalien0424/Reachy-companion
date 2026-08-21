@@ -37,6 +37,7 @@ from reachy_companion.config import (
     get_hf_connection_selection,
     refresh_runtime_config_from_env,
 )
+from reachy_companion.hanova import audio_drain
 from reachy_companion.prompts import get_session_voice, get_session_instructions
 from reachy_companion.streaming import AdditionalOutputs, audio_to_float32
 from reachy_companion.startup_settings import read_startup_settings, write_startup_settings
@@ -877,6 +878,10 @@ class LocalStream:
         # Drain the handler's pending output in place — do NOT replace the
         # queue object, since emit() may be awaiting it (wait_for_item).
         self._drain_output_queue()
+        # D-018 / R7: the audio just flushed will never reach the speaker, so a
+        # resume waiting on it must stop waiting rather than time the phantom
+        # device buffer out.
+        audio_drain.note_cleared()
 
     def _drain_output_queue(self) -> None:
         """Empty the handler's output queue in place without replacing it."""
@@ -908,6 +913,10 @@ class LocalStream:
             try:
                 handler_output = await asyncio.wait_for(handler.emit(), timeout=0.5)
             except asyncio.TimeoutError:
+                # D-018 / R7: nothing arrived to play, so the local playback
+                # queue is empty. One of the four conditions a music resume
+                # waits on (hanova/audio_drain.py).
+                audio_drain.note_queue_empty()
                 continue
 
             if isinstance(handler_output, AdditionalOutputs):
@@ -921,7 +930,7 @@ class LocalStream:
                         )
 
             elif isinstance(handler_output, tuple):
-                _, audio_data = handler_output
+                output_sample_rate, audio_data = handler_output
 
                 # Skip empty audio frames
                 if audio_data.size == 0:
@@ -940,6 +949,13 @@ class LocalStream:
                 audio_frame = audio_to_float32(audio_data)
 
                 self._robot.media.push_audio_sample(audio_frame)
+                # D-018 / R7: retire that much outstanding audio and push out
+                # the device-buffer estimate. Pure bookkeeping — a lock, some
+                # arithmetic, no await: nothing in the audio path may block.
+                audio_drain.note_chunk(
+                    sample_count=int(audio_frame.shape[0]),
+                    sample_rate=int(output_sample_rate),
+                )
                 self._emit_level("assistant", audio_frame)
 
             else:

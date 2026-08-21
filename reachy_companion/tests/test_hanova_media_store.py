@@ -64,6 +64,43 @@ def test_prune_keeps_the_newest_files(tmp_path):
     assert sorted(p.name for p in nas.iterdir()) == ["clip3.mp4", "clip4.mp4"]
 
 
+def test_prune_does_not_spend_the_keep_budget_on_resume_cuts(tmp_path):
+    """Task 4 review: a `.resume.mp3` is a derivative, not a cache entry.
+
+    A ducked song leaves `<id>.resume.mp3` beside `<id>.mp3`. Counting both
+    against keep=N halves the cache, and the cut is written once and then only
+    read -- so a plain mtime LRU deletes the file that is playing right now.
+    """
+    music = media_store.media_dir("music", tmp_path)
+    for index in range(3):
+        track = music / f"song{index}.mp3"
+        track.write_bytes(b"x")
+        os.utime(track, (time.time() + index, time.time() + index))
+    cut = music / "song2.resume.mp3"
+    cut.write_bytes(b"x")
+    os.utime(cut, (time.time() - 999, time.time() - 999))  # the oldest file there is
+
+    removed = media_store.prune("music", tmp_path, keep=2)
+
+    assert removed == 1, "only the evicted track, never the live resume cut"
+    assert sorted(p.name for p in music.iterdir()) == ["song1.mp3", "song2.mp3", "song2.resume.mp3"]
+
+
+def test_prune_drops_a_resume_cut_with_the_track_it_came_from(tmp_path):
+    """A cut that outlives its source track is unreachable garbage."""
+    music = media_store.media_dir("music", tmp_path)
+    for index in range(3):
+        track = music / f"song{index}.mp3"
+        track.write_bytes(b"x")
+        os.utime(track, (time.time() + index, time.time() + index))
+    (music / "song0.resume.mp3").write_bytes(b"x")  # song0 is the one evicted
+
+    removed = media_store.prune("music", tmp_path, keep=2)
+
+    assert removed == 2
+    assert sorted(p.name for p in music.iterdir()) == ["song1.mp3", "song2.mp3"]
+
+
 def test_prune_on_an_empty_cache_is_zero(tmp_path):
     """First run has nothing to prune and must not raise."""
     assert media_store.prune("music", tmp_path, keep=12) == 0

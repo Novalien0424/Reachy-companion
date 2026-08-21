@@ -129,6 +129,17 @@ def download_audio(video_id: str, dest_dir: Path) -> Dict[str, Any]:
 
     out_file = dest_dir / f"{video_id}.mp3"
     if out_file.is_file() and out_file.stat().st_size > 0:
+        # Task 4 review: the music cache is pruned by mtime, and a cache hit
+        # rewrites nothing -- so a track played straight from the cache is the
+        # OLDEST entry in the directory and the prune that runs right after this
+        # play would delete the file currently on the speaker. Touching it makes
+        # the LRU order reflect use rather than download date.
+        try:
+            os.utime(out_file, None)
+        except OSError as exc:
+            # A read-only cache must still be playable; the mtime is an
+            # optimisation, not a precondition.
+            logger.debug("Could not refresh the cached track's mtime: %s", redact.error(exc))
         return {"ok": True, "path": str(out_file), "cached": True, "error": None}
 
     cmd = _ytdlp_argv() + [

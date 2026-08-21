@@ -1,5 +1,7 @@
 """Contract tests for the yt-dlp / ffmpeg layer (D-018, R8). No network, ever."""
 
+import os
+import time
 import subprocess
 
 import pytest
@@ -17,6 +19,11 @@ def available(monkeypatch):
     monkeypatch.setattr(ytdlp, "ytdlp_available", lambda: True)
     monkeypatch.setattr(ytdlp, "ffmpeg_exe", lambda: "/opt/ffmpeg")
     monkeypatch.delenv("HANOVA_YTDLP_SEARCH_N", raising=False)
+    # The argv tests assert the *default* timeout, which an operator's own
+    # override in the ambient environment would otherwise turn into a failure
+    # on their machine and nowhere else (Task 4 review).
+    monkeypatch.delenv("HANOVA_YTDLP_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("HANOVA_YTDLP_DOWNLOAD_TIMEOUT_S", raising=False)
 
 
 def test_search_builds_the_upstream_argv(monkeypatch):
@@ -131,6 +138,27 @@ def test_download_audio_reuses_a_cached_file(monkeypatch, tmp_path):
     monkeypatch.setattr(ytdlp, "run_command", fail_run)
     out = ytdlp.download_audio("abc123", tmp_path)
     assert out == {"ok": True, "path": str(cached), "cached": True, "error": None}
+
+
+def test_a_cache_hit_refreshes_the_mtime(monkeypatch, tmp_path):
+    """Task 4 review: the mtime LRU must order the cache by *use*, not by age.
+
+    A replayed track is never rewritten, so without this touch it is the oldest
+    entry in the music cache -- and the prune `play_music` runs immediately
+    after starting it would delete the file currently on the speaker.
+    """
+    cached = tmp_path / "abc123.mp3"
+    cached.write_bytes(b"ID3data")
+    stale = time.time() - 86_400
+    os.utime(cached, (stale, stale))
+
+    def fail_run(cmd, timeout_s):
+        raise AssertionError("download_audio must not run yt-dlp for a cached track")
+
+    monkeypatch.setattr(ytdlp, "run_command", fail_run)
+    ytdlp.download_audio("abc123", tmp_path)
+
+    assert cached.stat().st_mtime > stale + 1, "the replayed track is still the LRU's first victim"
 
 
 def test_download_audio_passes_the_bundled_ffmpeg(monkeypatch, tmp_path):

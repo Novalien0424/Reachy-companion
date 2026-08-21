@@ -285,11 +285,41 @@ async def test_the_newer_of_two_plays_wins(daemon, tmp_path):
     task_one = asyncio.create_task(PLAYER.play(deps, video_id="one", title="One", source_path=first))
     await asyncio.sleep(0)
     task_two = asyncio.create_task(PLAYER.play(deps, video_id="two", title="Two", source_path=second))
-    await asyncio.gather(task_one, task_two)
+    result_one, result_two = await asyncio.gather(task_one, task_two)
 
     state = PLAYER.current()
     assert state is not None and state.video_id == "two"
     assert daemon.plays[-1] == str(second)
+    # Task 4 review: the loser must *say* it lost. A caller that reads only the
+    # winner's verdict cannot tell a superseded play from a silent failure.
+    assert result_one["status"] == "superseded"
+    assert result_two["status"] == "playing"
+
+
+@pytest.mark.asyncio
+async def test_a_play_superseded_during_its_pre_stop_drops_the_stale_state(daemon, tmp_path):
+    """Task 4 review: the pre-stop silenced the old track, so its snapshot must go.
+
+    A play that loses its race *after* the pre-stop used to return `superseded`
+    with the previous track's snapshot still in place -- state claiming
+    `playing` with nothing audible. The next barge-in then banked an elapsed
+    offset for a track that had stopped seconds earlier, so the eventual resume
+    jumped forward by the length of that silence.
+    """
+    deps = _deps()
+    first = _track(tmp_path, "first.mp3")
+    second = _track(tmp_path, "second.mp3")
+    await PLAYER.play(deps, video_id="one", title="One", source_path=first)
+
+    daemon.stop_delay = 0.05  # the second play's pre-stop is still in flight
+    play_two = asyncio.create_task(PLAYER.play(deps, video_id="two", title="Two", source_path=second))
+    await asyncio.sleep(0)
+    pause = asyncio.create_task(PLAYER.pause_for_speech(deps))
+    await asyncio.sleep(0)  # this bumps the generation and queues on the lock
+
+    assert (await play_two)["status"] == "superseded"
+    assert (await pause)["status"] == "nothing_to_pause", "the pause banked an offset for a stopped track"
+    assert PLAYER.current() is None
 
 
 @pytest.mark.asyncio
@@ -305,7 +335,9 @@ async def test_a_superseded_transition_reports_itself(daemon, tmp_path):
 @pytest.mark.asyncio
 async def test_play_music_reports_unavailable_when_wheels_are_missing(daemon, monkeypatch):
     """R5: the tool disables cleanly instead of raising ImportError."""
-    monkeypatch.setattr("reachy_companion.hanova.settings._music_wheels_ready", lambda: (False, "yt-dlp not installed"))
+    monkeypatch.setattr(
+        "reachy_companion.hanova.settings._music_wheels_ready", lambda: (False, "yt-dlp not installed")
+    )
     out = await PlayMusic()(deps=_deps(), query="anything")
     assert out == {"status": "unavailable", "reason": "MUSIC_WHEELS"}
 
@@ -313,7 +345,9 @@ async def test_play_music_reports_unavailable_when_wheels_are_missing(daemon, mo
 @pytest.mark.asyncio
 async def test_stop_music_is_available_with_zero_configuration(daemon, monkeypatch):
     """Finding 10: the safety lane must answer even when nothing else can."""
-    monkeypatch.setattr("reachy_companion.hanova.settings._music_wheels_ready", lambda: (False, "yt-dlp not installed"))
+    monkeypatch.setattr(
+        "reachy_companion.hanova.settings._music_wheels_ready", lambda: (False, "yt-dlp not installed")
+    )
     out = await StopMusic()(deps=_deps())
     assert out["status"] == "nothing_playing"
 
@@ -390,6 +424,30 @@ async def test_music_logs_never_carry_the_query_or_the_title(daemon, monkeypatch
     caplog.set_level(logging.DEBUG)
     await PlayMusic()(deps=_deps(tmp_path), query=f"a song about {sentinel}")
     assert sentinel not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_search_is_logged_as_a_shape_not_the_word_error(daemon, monkeypatch, caplog, tmp_path):
+    """Task 4 review: `redact.error` on a plain string renders the constant "error".
+
+    The failure reason yt-dlp returns is free text nobody vouched for, so it
+    cannot be logged raw -- but rendering every distinct failure as the same
+    four letters left nothing to diagnose with. `redact.text` keeps the shape.
+    """
+    import reachy_companion.tools.play_music as play_music_module
+
+    sentinel = "SENTINEL_PRIVATE_x7"
+    monkeypatch.setattr(
+        play_music_module.ytdlp,
+        "search",
+        lambda query, max_duration_s=None: {"ok": False, "id": None, "title": None, "error": sentinel},
+    )
+    caplog.set_level(logging.DEBUG)
+    out = await PlayMusic()(deps=_deps(tmp_path), query="anything")
+
+    assert out["ok"] is False
+    assert sentinel not in caplog.text
+    assert f"<text:{len(sentinel)} chars>" in caplog.text
 
 
 def test_both_tools_reach_the_model_session():
