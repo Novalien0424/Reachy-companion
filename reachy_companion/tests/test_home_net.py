@@ -12,6 +12,7 @@ Two rules the whole module exists to keep:
 """
 
 import asyncio
+import threading
 
 import httpx
 import pytest
@@ -22,6 +23,19 @@ from reachy_companion import home_net
 HOME_LAN = "203.0.113.0/24"
 AT_HOME_ADDRESS = "203.0.113.20"
 ELSEWHERE_ADDRESS = "198.51.100.20"
+
+
+class _MustNotBeCalled(BaseException):
+    """Raised by the "this seam must never run" guards below.
+
+    It derives from `BaseException`, not `Exception`, on purpose: `_probe` wraps
+    both the LAN signal and the HTTP call in catch-alls so that a verdict is
+    produced on every path (review finding 3 of the Task 2 review). A guard that
+    raised `AssertionError` would be swallowed by those handlers and silently
+    downgraded to `UNKNOWN` -- which is what several of these tests assert
+    anyway, so the guard would stop guarding. A `BaseException` walks straight
+    out through both handlers and fails the test loudly.
+    """
 
 
 class _FakeResponse:
@@ -135,7 +149,7 @@ async def test_off_home_is_away_even_when_home_assistant_is_unreachable(monkeypa
     """
 
     async def fail_get(self, *args, **kwargs):
-        raise AssertionError("no HTTP call is needed once routing already decided")
+        raise _MustNotBeCalled("no HTTP call is needed once routing already decided")
 
     monkeypatch.setenv("HANOVA_HOME_NETWORKS", HOME_LAN)
     monkeypatch.setattr(home_net, "lan_signal", _lan(reachable=False))
@@ -149,7 +163,7 @@ async def test_no_declared_home_network_can_never_produce_away(monkeypatch):
     """Round 2, finding 3: with nothing declared, absence is unprovable."""
 
     async def fail_get(self, *args, **kwargs):
-        raise AssertionError("no HTTP call once the LAN signal has already failed")
+        raise _MustNotBeCalled("no HTTP call once the LAN signal has already failed")
 
     monkeypatch.setattr(home_net, "lan_signal", _lan(reachable=False))
     monkeypatch.setattr(home_net, "local_address", _local(""))
@@ -162,7 +176,7 @@ async def test_no_tcp_route_from_inside_the_home_network_is_unknown(monkeypatch)
     """Finding 3: a refused port at home is an HA outage, not absence."""
 
     async def fail_get(self, *args, **kwargs):
-        raise AssertionError("no HTTP call once the LAN signal has already failed")
+        raise _MustNotBeCalled("no HTTP call once the LAN signal has already failed")
 
     monkeypatch.setenv("HANOVA_HOME_NETWORKS", HOME_LAN)
     monkeypatch.setattr(home_net, "lan_signal", _lan(reachable=False))
@@ -179,7 +193,7 @@ async def test_a_dns_failure_is_unknown_not_away(monkeypatch):
         return home_net.LanProbe(reachable=False, local_address="", same_subnet=False)
 
     async def fail_get(self, *args, **kwargs):
-        raise AssertionError("a DNS failure must not reach the HTTP layer")
+        raise _MustNotBeCalled("a DNS failure must not reach the HTTP layer")
 
     monkeypatch.setattr(home_net, "lan_signal", dns_failure)
     monkeypatch.setattr(home_net, "local_address", _local(""))
@@ -239,14 +253,46 @@ async def test_server_error_is_unknown_not_away(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_http_timeout_on_a_reachable_host_is_unknown(monkeypatch):
-    """The socket connected, so the robot is on a network that reaches HA."""
+async def test_http_timeout_on_a_reachable_host_is_unknown(monkeypatch, caplog):
+    """The socket connected, so the robot is on a network that reaches HA.
+
+    This is also the only path that reaches `redact.error(exc)`, so the finding-6
+    sentinel assertion belongs here: an httpx error message embeds the full
+    request URL, which is the house's LAN address.
+    """
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("HA_URL", "http://SENTINEL_PRIVATE_x7.invalid:8123")
 
     async def slow_get(self, url, headers=None, **kw):
-        raise httpx.ReadTimeout("timed out")
+        raise httpx.ReadTimeout(f"timed out reading from {url}")
 
     monkeypatch.setattr(httpx.AsyncClient, "get", slow_get)
     assert await home_net.home_state() == home_net.UNKNOWN
+    assert "SENTINEL_PRIVATE_x7" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_non_httpx_failure_in_the_http_layer_is_still_a_verdict(monkeypatch, caplog):
+    """Review finding 3: the catch-all is `Exception`, not just `httpx.HTTPError`.
+
+    A verdict is required on every path. Anything the HTTP layer can raise that
+    is not an `httpx.HTTPError` -- an SSL error, a bad-URL `ValueError`, a
+    third-party wrapper -- used to escape `home_state()` and take every
+    house-bound tool down with it.
+    """
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("HA_URL", "http://SENTINEL_PRIVATE_x7.invalid:8123")
+
+    async def exploding_get(self, url, headers=None, **kw):
+        raise RuntimeError(f"transport exploded talking to {url}")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", exploding_get)
+    assert await home_net.home_state() == home_net.UNKNOWN
+    assert "SENTINEL_PRIVATE_x7" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -266,10 +312,10 @@ async def test_unconfigured_ha_is_unknown_without_any_request(monkeypatch):
     """No HA_URL means no probe at all -- not a 1.5 s wait on nothing."""
 
     async def fail_get(self, *args, **kwargs):
-        raise AssertionError("home_state must not probe when HA_URL is unset")
+        raise _MustNotBeCalled("home_state must not probe when HA_URL is unset")
 
     async def fail_lan(*args, **kwargs):
-        raise AssertionError("home_state must not open a socket when HA_URL is unset")
+        raise _MustNotBeCalled("home_state must not open a socket when HA_URL is unset")
 
     monkeypatch.delenv("HA_URL")
     monkeypatch.setattr(home_net, "lan_signal", fail_lan)
@@ -329,11 +375,9 @@ async def test_cache_expires_and_reprobes(monkeypatch):
 async def test_concurrent_cold_probes_issue_one_request(monkeypatch):
     """Finding 12: a burst of tool calls on a cold cache is one probe, not five."""
     calls = {"n": 0}
-    started = asyncio.Event()
 
     async def slow_get(self, url, headers=None, **kw):
         calls["n"] += 1
-        started.set()
         await asyncio.sleep(0.05)
         return _FakeResponse(200)
 
@@ -341,6 +385,58 @@ async def test_concurrent_cold_probes_issue_one_request(monkeypatch):
     results = await asyncio.gather(*(home_net.home_state() for _ in range(5)))
     assert results == [home_net.HOME] * 5
     assert calls["n"] == 1
+
+
+def test_two_event_loops_on_two_threads_each_get_a_verdict(monkeypatch):
+    """Review finding 1: the single-flight lock must not bind to one event loop.
+
+    The settings web server runs on its own thread with its own loop, so
+    `home_state()` is reachable from two loops in one process. A module-level
+    `asyncio.Lock` binds itself to whichever loop first *contends* it and raises
+    `RuntimeError: ... is bound to a different event loop` in the second one --
+    which breaks the "a verdict on every path" guarantee that every house-bound
+    tool depends on.
+
+    Both threads contend their own loop (three concurrent calls each) and are
+    held at a barrier so the two loops are demonstrably alive at the same time.
+    A zero cache TTL keeps the first thread's verdict from short-circuiting the
+    second thread before it ever reaches the lock.
+    """
+    monkeypatch.setenv("HANOVA_HOME_CACHE_TTL_S", "0")
+
+    async def slow_get(self, url, headers=None, **kw):
+        await asyncio.sleep(0.02)
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", slow_get)
+
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, object] = {}
+
+    def run_own_loop(name: str) -> None:
+        async def contend():
+            barrier.wait(timeout=10)
+            return await asyncio.gather(*(home_net.home_state() for _ in range(3)))
+
+        try:
+            outcomes[name] = asyncio.run(contend())
+        except BaseException as exc:  # noqa: BLE001 - the failure is the point
+            outcomes[name] = exc
+
+    # daemon=True on purpose: against a regressed implementation one of these
+    # threads deadlocks on the shared lock rather than merely raising, and a
+    # non-daemon thread would keep the whole pytest process alive after the
+    # session ended. As daemons they let the assertions below fail loudly and
+    # the process exit.
+    threads = [threading.Thread(target=run_own_loop, args=(name,), daemon=True) for name in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    assert outcomes["first"] == [home_net.HOME] * 3
+    assert outcomes["second"] == [home_net.HOME] * 3
 
 
 @pytest.mark.asyncio

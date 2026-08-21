@@ -30,9 +30,11 @@ to `UNKNOWN` -- honest, and fixable with one config key -- instead of to a lie.
 The probe is a TCP connect plus one `GET {HA_URL}/api/` with the long-lived
 token, both capped at `HANOVA_HOME_PROBE_TIMEOUT_S` (1.5 s) and cached -- all
 three verdicts -- for `HANOVA_HOME_CACHE_TTL_S` (30 s). A single-flight
-`asyncio.Lock` collapses a burst of cold tool calls into one probe; a
-`threading.Lock` guards the cache itself because the settings web server runs on
-its own thread.
+`asyncio.Lock` **per event loop** collapses a burst of cold tool calls into one
+probe (review finding 1: one lock per process would bind to whichever loop first
+contended it and raise in every other one), and a `threading.Lock` guards the
+cache itself, because the settings web server runs its own loop on its own
+thread and both of those seams are reachable from it.
 
 Cloud tools (calendar, tasks, Notion, Drive, email) and music never call this:
 they work from anywhere, and a needless probe would be pure added latency.
@@ -47,6 +49,7 @@ import time
 import socket
 import asyncio
 import logging
+import weakref
 import ipaddress
 import threading
 import urllib.parse
@@ -65,9 +68,34 @@ AWAY = "away"
 UNKNOWN = "unknown"
 
 _LOCK = threading.Lock()
-_PROBE_LOCK = asyncio.Lock()
 _CACHED_VERDICT: str | None = None
 _CACHED_AT: float = 0.0
+
+# One single-flight lock **per event loop**, not one per process (review
+# finding 1). `asyncio.Lock` binds itself to the first loop that actually
+# contends it and raises `RuntimeError: ... is bound to a different event loop`
+# for every later one. That is not hypothetical here: the settings web server
+# runs its own loop on its own thread, so a single module-level lock would make
+# a concurrent `home_state()` from that thread deadlock or explode -- breaking
+# the one guarantee this module owes its callers, which is that a verdict comes
+# back on every path.
+#
+# The map is weak-keyed so a finished loop's entry disappears with it, and it is
+# guarded by a `threading.Lock` because two OS threads can be creating their
+# first lock at the same instant.
+_LOOP_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+_LOOP_LOCKS_GUARD = threading.Lock()
+
+
+def _probe_lock() -> asyncio.Lock:
+    """Return the single-flight probe lock belonging to the running event loop."""
+    loop = asyncio.get_running_loop()
+    with _LOOP_LOCKS_GUARD:
+        lock = _LOOP_LOCKS.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _LOOP_LOCKS[loop] = lock
+        return lock
 
 
 @dataclass(frozen=True)
@@ -255,7 +283,10 @@ async def _probe() -> str:
                 f"{base_url}/api/",
                 headers={"Authorization": f"Bearer {token}"},
             )
-    except httpx.HTTPError as exc:
+    except Exception as exc:  # noqa: BLE001 - a verdict is required on every path
+        # Review finding 3: `httpx.HTTPError` alone is too narrow. An SSL error,
+        # a malformed-URL ValueError or anything a transport wrapper raises used
+        # to escape `home_state()` and take every house-bound tool with it.
         # Finding 6: an httpx error string embeds the full URL.
         logger.info(
             "hanova home probe: HTTP layer failed on a reachable host (%s); verdict unknown.",
@@ -275,7 +306,7 @@ async def home_state() -> str:
     cached = _read_cache(ttl_s)
     if cached is not None:
         return cached
-    async with _PROBE_LOCK:
+    async with _probe_lock():
         cached = _read_cache(ttl_s)
         if cached is not None:
             return cached

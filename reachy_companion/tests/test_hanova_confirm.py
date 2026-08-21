@@ -6,6 +6,8 @@ round 2 finding 2 (every armed action carries an immutable claim id, and every
 mutator must present it together with the current epoch).
 """
 
+import threading
+
 import pytest
 
 from reachy_companion.hanova.confirm import (
@@ -136,6 +138,83 @@ def test_a_bare_abort_cannot_yank_an_action_that_is_executing():
     # With the id it is the claim-bound abort, and it works.
     assert GATE.abort("drive_trash", pending.claim_id) == {"status": "aborted"}
     assert GATE.claim("drive_trash") is None
+
+
+def test_an_in_flight_action_is_not_re_armable_once_its_ttl_lapses():
+    """Review finding 2: in flight is in flight, whatever the clock says.
+
+    The TTL bounds how long an *unused* authorisation may sit waiting for the
+    user. It says nothing about an operation that is already executing: a delete
+    that takes longer than the window is still running, and re-arming its slot
+    would make it claimable a second time -- exactly the hazard this refusal
+    exists to prevent.
+    """
+    GATE.arm("calendar_delete", "delete 'Dentist'", {"event_id": "abc"})
+    in_flight = GATE.claim("calendar_delete")
+    assert in_flight is not None
+
+    GATE.expire_now_for_tests("calendar_delete")
+
+    refused = GATE.arm("calendar_delete", "delete 'Optician'", {"event_id": "xyz"})
+    assert refused["status"] == "action_in_flight"
+    assert refused["status"] != "needs_confirmation"
+
+
+def test_an_in_flight_action_is_not_evicted_by_a_claim_after_its_ttl_lapses():
+    """The same rule from the other side: expiry must not free a running slot.
+
+    `claim()` drops expired actions, which is right for one nobody has started.
+    Applying it to an in-flight action would delete the slot the refusal above
+    depends on, so the very next `arm()` would succeed while the first operation
+    was still executing -- re-opening the hole through a second door.
+    """
+    GATE.arm("drive_trash", "move 'a.txt' to Drive trash", {"file_id": "f1"})
+    in_flight = GATE.claim("drive_trash")
+    assert in_flight is not None
+
+    GATE.expire_now_for_tests("drive_trash")
+
+    assert GATE.claim("drive_trash") is None  # still in flight, so still refused
+    assert GATE.arm("drive_trash", "move 'b.txt' to Drive trash", {"file_id": "f2"})["status"] == "action_in_flight"
+    # And the original operation can still finish and spend its own claim.
+    assert GATE.complete("drive_trash", in_flight.claim_id) is True
+
+
+def test_concurrent_claims_from_many_threads_produce_exactly_one_winner():
+    """Review finding 4: the in-flight test is only worth as much as its locking.
+
+    `test_a_claim_in_flight_cannot_be_claimed_again` proves the rule
+    sequentially; this proves the check-and-mark is actually atomic. Eight
+    threads are released simultaneously by a barrier onto one armed slot, and
+    exactly one may come away with the authorisation.
+    """
+    GATE.arm("drive_trash", "move 'notes.txt' to Drive trash", {"file_id": "f1"})
+
+    racers = 8
+    barrier = threading.Barrier(racers)
+    results = []
+    results_lock = threading.Lock()
+
+    def race() -> None:
+        barrier.wait(timeout=10)
+        pending = GATE.claim("drive_trash")
+        with results_lock:
+            results.append(pending)
+
+    # daemon=True so that a regression which deadlocks `claim()` fails this test
+    # instead of keeping the pytest process alive after the session ends.
+    threads = [threading.Thread(target=race, daemon=True) for _ in range(racers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    winners = [pending for pending in results if pending is not None]
+    assert len(results) == racers
+    assert len(winners) == 1
+    assert winners[0].claim_id
+    assert winners[0].payload == {"file_id": "f1"}
 
 
 def test_a_claim_bound_abort_rejects_the_wrong_id():

@@ -148,12 +148,13 @@ class ConfirmationGate:
                 # open one rather than silently parking a dead action.
                 self._epoch = uuid.uuid4().hex
             existing = self._pending.get(tool_name)
-            if (
-                existing is not None
-                and existing.claimed_at is not None
-                and existing.epoch == self._epoch
-                and existing.expires_at > time.monotonic()
-            ):
+            # Review finding 2: no TTL term here. The window bounds how long an
+            # *unused* authorisation may wait for the user; it says nothing
+            # about an operation that is already executing. A delete that runs
+            # longer than the window is still running, and letting its slot be
+            # re-armed would make it claimable a second time -- precisely the
+            # hazard this refusal exists to prevent.
+            if existing is not None and existing.claimed_at is not None and existing.epoch == self._epoch:
                 logger.info("Confirmation for %s is in flight; refused to re-arm", tool_name)
                 return action_in_flight()
             self._pending[tool_name] = PendingAction(
@@ -185,12 +186,18 @@ class ConfirmationGate:
                 logger.info("Confirmation for %s belonged to an earlier session; refused", tool_name)
                 self._pending.pop(tool_name, None)
                 return None
+            # Review finding 2: the in-flight test comes **before** the expiry
+            # test, and only the expiry test evicts. Otherwise an operation
+            # still executing past its TTL would be deleted from the slot by any
+            # passing `claim()`, and the very next `arm()` would succeed while
+            # it was still running -- re-opening through a second door the hole
+            # the re-arm refusal closes.
+            if pending.claimed_at is not None:
+                logger.info("Confirmation for %s is already in flight; refused", tool_name)
+                return None
             if pending.expires_at <= now:
                 logger.info("Confirmation for %s expired before it was used", tool_name)
                 self._pending.pop(tool_name, None)
-                return None
-            if pending.claimed_at is not None:
-                logger.info("Confirmation for %s is already in flight; refused", tool_name)
                 return None
             in_flight = replace(pending, claimed_at=now)
             self._pending[tool_name] = in_flight
