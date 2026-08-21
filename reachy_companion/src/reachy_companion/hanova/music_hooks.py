@@ -156,7 +156,11 @@ async def on_session_started(deps: Any) -> int:
         logger.info("realtime session %d was superseded while starting", token)
         return token
     GATE.begin_session()
-    # Task 13, Step 6b adds `nas.clear_session()` here once that module exists.
+    # D-018 / finding 16: a new conversation inherits no trip playlist. Imported
+    # inside the function so `music_hooks` keeps no hard import edge to `nas`.
+    from reachy_companion.hanova import nas
+
+    nas.clear_session()
     return token
 
 
@@ -179,7 +183,11 @@ async def on_session_shutdown(deps: Any, token: int) -> None:
     PLAYER.invalidate()
     await PLAYER.stop(deps)
     GATE.end_session()
-    # Task 13, Step 6b adds `nas.clear_session()` here once that module exists.
+    # D-018 / finding 16: a closing conversation leaves no trip playlist behind.
+    # Local import for the same reason as in `on_session_started`.
+    from reachy_companion.hanova import nas
+
+    nas.clear_session()
     _DEPS = None
 
 
