@@ -10,6 +10,8 @@ default_tools = [
   "head_tracking",
   "sweep_look",
   "home_control",
+  "play_music",
+  "stop_music",
   "go_to_sleep",
   "remember",
   "forget",

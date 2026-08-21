@@ -1,0 +1,203 @@
+"""yt-dlp and ffmpeg layer for music playback (D-018, R8).
+
+Upstream shelled out to Homebrew binaries (`server.py:258`, `:338-341`). We have
+no system packages, so both come from wheels: `yt-dlp` is invoked as
+`sys.executable -m yt_dlp` (the console script is not reliably on PATH inside the
+robot's shared apps venv), and ffmpeg comes from `imageio-ffmpeg`, which ships a
+`manylinux2014_aarch64` wheel with the binary inside it and exposes
+`get_ffmpeg_exe()`. `static-ffmpeg` was rejected: it downloads its binaries on
+first use, which needs network at playback time.
+
+Every subprocess goes through `run_command`, the one seam tests monkeypatch.
+Everything here is synchronous and must be called from `asyncio.to_thread`.
+"""
+
+from __future__ import annotations
+import os
+import sys
+import logging
+import subprocess
+import importlib.util
+from typing import Any, Dict
+from pathlib import Path
+
+from reachy_companion.hanova import redact, settings
+
+
+logger = logging.getLogger(__name__)
+
+
+def ytdlp_available() -> bool:
+    """Return whether the yt-dlp wheel is importable in this interpreter."""
+    return importlib.util.find_spec("yt_dlp") is not None
+
+
+def ffmpeg_exe() -> str | None:
+    """Return the path to the wheel-bundled ffmpeg binary, or None."""
+    try:
+        import imageio_ffmpeg
+
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001 - a missing wheel must not raise here
+        # Round 2, finding 6: an ImportError/OSError here renders the venv path.
+        logger.warning("imageio-ffmpeg is unavailable: %s", redact.error(exc))
+        return None
+    return str(path) if path else None
+
+
+def run_command(cmd: list[str], timeout_s: int) -> subprocess.CompletedProcess[str]:
+    """Run one child process with captured text output. The single test seam."""
+    env = os.environ.copy()
+    env.setdefault("LANG", "en_US.UTF-8")
+    env.setdefault("LC_ALL", "en_US.UTF-8")
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout_s,
+        env=env,
+        check=False,
+    )
+
+
+def _ytdlp_argv() -> list[str]:
+    return [sys.executable, "-m", "yt_dlp"]
+
+
+def search(query: str, max_duration_s: int | None = None) -> Dict[str, Any]:
+    """Resolve *query* to one YouTube id and title. Never raises."""
+    if not ytdlp_available():
+        return {"ok": False, "id": None, "title": None, "error": "yt-dlp is not installed on this robot"}
+
+    match_filter = "duration > 30 & !is_live"
+    if max_duration_s:
+        match_filter = f"duration > 30 & duration < {int(max_duration_s)} & !is_live"
+
+    cmd = _ytdlp_argv() + [
+        "--default-search",
+        f"ytsearch{settings.ytdlp_search_n()}:",
+        "--match-filter",
+        match_filter,
+        "--no-playlist",
+        "--print",
+        "id",
+        "--print",
+        "title",
+        "--skip-download",
+        "--no-warnings",
+        "--quiet",
+        query,
+    ]
+    timeout_s = settings.ytdlp_timeout_s()
+    try:
+        proc = run_command(cmd, timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "id": None, "title": None, "error": f"search timed out after {timeout_s}s"}
+    except Exception as exc:  # noqa: BLE001
+        # Round 2, finding 6: the exception text quotes the argv, which contains
+        # the user's query.
+        logger.warning("yt-dlp search failed: %s", redact.error(exc))
+        return {"ok": False, "id": None, "title": None, "error": "the search could not be run"}
+
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return {"ok": True, "id": lines[0], "title": lines[1], "error": None}
+    if proc.returncode != 0:
+        # Finding 6: yt-dlp's stderr echoes the query and the resolved URL back.
+        # The shape reaches the log; the caller gets a fixed, speakable reason.
+        # Round 3, finding 3: the old call passed the raw stderr with a word
+        # allow-list, which is exactly the tokenizing that let an echoed value
+        # through. stderr is free text nobody vouched for, so only its LENGTH is
+        # loggable -- the return code above is the diagnostic that matters.
+        logger.warning(
+            "yt-dlp search exited %d, stderr %s",
+            proc.returncode,
+            redact.text(proc.stderr or ""),
+        )
+        return {"ok": False, "id": None, "title": None, "error": "the search was refused or returned nothing"}
+    return {"ok": False, "id": None, "title": None, "error": "no playable result for that query"}
+
+
+def download_audio(video_id: str, dest_dir: Path) -> Dict[str, Any]:
+    """Download one video's audio as `<video_id>.mp3` into *dest_dir*. Never raises."""
+    if not ytdlp_available():
+        return {"ok": False, "path": None, "cached": False, "error": "yt-dlp is not installed on this robot"}
+    ffmpeg = ffmpeg_exe()
+    if not ffmpeg:
+        return {"ok": False, "path": None, "cached": False, "error": "ffmpeg is unavailable; cannot make an mp3"}
+
+    out_file = dest_dir / f"{video_id}.mp3"
+    if out_file.is_file() and out_file.stat().st_size > 0:
+        return {"ok": True, "path": str(out_file), "cached": True, "error": None}
+
+    cmd = _ytdlp_argv() + [
+        f"https://www.youtube.com/watch?v={video_id}",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "5",
+        "--no-playlist",
+        "--force-overwrites",
+        "--socket-timeout",
+        "20",
+        "--no-warnings",
+        "--quiet",
+        "--ffmpeg-location",
+        ffmpeg,
+        "-o",
+        str(dest_dir / f"{video_id}.%(ext)s"),
+    ]
+    timeout_s = settings.ytdlp_download_timeout_s()
+    try:
+        proc = run_command(cmd, timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "path": None, "cached": False, "error": f"download timed out after {timeout_s}s"}
+    except Exception as exc:  # noqa: BLE001
+        # Round 2, finding 6: the argv in the message carries the video URL and
+        # the instance-directory output template.
+        logger.warning("yt-dlp download failed: %s", redact.error(exc))
+        return {"ok": False, "path": None, "cached": False, "error": "the download could not be run"}
+
+    if not out_file.is_file() or out_file.stat().st_size == 0:
+        # Finding 6: the tail of yt-dlp's output names the video and the path it
+        # tried to write. Log the shape, return a fixed reason. Round 3,
+        # finding 3: a length, never a token lifted out of the text.
+        logger.warning(
+            "yt-dlp produced no audio (rc=%d), output %s",
+            proc.returncode,
+            redact.text(proc.stderr or proc.stdout or ""),
+        )
+        return {"ok": False, "path": None, "cached": False, "error": "no audio could be produced for that track"}
+    return {"ok": True, "path": str(out_file), "cached": False, "error": None}
+
+
+def cut_from(source: Path, offset_s: float, dest: Path) -> bool:
+    """Stream-copy *source* from *offset_s* into *dest*. Returns success."""
+    ffmpeg = ffmpeg_exe()
+    if not ffmpeg or not Path(source).is_file():
+        return False
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{offset_s:.3f}",
+        "-i",
+        str(source),
+        "-c",
+        "copy",
+        str(dest),
+    ]
+    try:
+        proc = run_command(cmd, 30)
+    except Exception as exc:  # noqa: BLE001
+        # Round 2, finding 6: the argv names the cached track's path.
+        logger.warning("ffmpeg seek failed: %s", redact.error(exc))
+        return False
+    if proc.returncode != 0 or not Path(dest).is_file() or Path(dest).stat().st_size == 0:
+        logger.warning("ffmpeg seek produced nothing (rc=%s)", proc.returncode)
+        return False
+    return True

@@ -20,6 +20,11 @@ EXPECTED_TOOLS = (
     "head_tracking",
     "sweep_look",
     "home_control",
+    # Ported HomeAssistant-Nova capabilities (D-018). Each porting task adds its
+    # own names here in the same order the profile lists them, so this stays a
+    # tripwire for an *unplanned* addition rather than a blocker for a planned one.
+    "play_music",
+    "stop_music",
     "go_to_sleep",
     "remember",
     "forget",
