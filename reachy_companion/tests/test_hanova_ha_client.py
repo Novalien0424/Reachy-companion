@@ -287,6 +287,62 @@ async def test_httpxs_own_logger_never_prints_the_ha_url(monkeypatch, restore_lo
 
 
 @pytest.mark.asyncio
+async def test_httpcore_cannot_print_the_ha_host_either(restore_logging):
+    """Follow-up to finding 1: the same leak one layer down.
+
+    Silencing `httpx` alone is not enough. `httpcore` logs
+    `connect_tcp.started host='<ha host>' port=8123` at DEBUG, so on a
+    `--debug` run the house's Home Assistant address still reached the log after
+    the httpx logger went quiet.
+
+    **On the form of this test.** The sibling test above drives httpx's real code
+    over a `MockTransport`, but a MockTransport *replaces* the transport, so
+    httpcore's connect path structurally never executes and no genuine httpcore
+    record can be produced here without opening a real socket to a real host.
+    Asserting the configured **level** is therefore the available evidence, and
+    it is the whole mechanism: a logger pinned to WARNING drops DEBUG and INFO at
+    the source, before any handler sees them. To show that gate actually holds
+    rather than merely reading back the attribute, a record shaped exactly like
+    the real httpcore one is emitted on that logger at both DEBUG and INFO and
+    asserted not to arrive.
+    """
+    from reachy_companion.utils import setup_logger
+
+    root = logging.getLogger()
+    httpcore_logger = logging.getLogger("httpcore")
+    leak = "connect_tcp.started host='SENTINEL_PRIVATE_x7.invalid' port=8123"
+
+    # --- control: at DEBUG that record does reach a handler ---
+    root.setLevel(logging.DEBUG)
+    httpcore_logger.setLevel(logging.DEBUG)
+    control = _Capture()
+    root.addHandler(control)
+    try:
+        httpcore_logger.debug(leak)
+    finally:
+        root.removeHandler(control)
+    assert any("SENTINEL_PRIVATE_x7" in message for message in control.messages), (
+        "control phase failed: this test cannot observe the leak it exists to prevent"
+    )
+
+    # --- production: setup_logger pins it to WARNING, in DEBUG runs too ---
+    setup_logger(debug=False)
+    assert httpcore_logger.level == logging.WARNING
+    setup_logger(debug=True)
+    assert httpcore_logger.level == logging.WARNING
+
+    root.setLevel(logging.DEBUG)
+    tamed = _Capture()
+    root.addHandler(tamed)
+    try:
+        httpcore_logger.debug(leak)
+        httpcore_logger.info(leak)
+    finally:
+        root.removeHandler(tamed)
+    assert tamed.messages == []
+
+
+@pytest.mark.asyncio
 async def test_the_ha_client_logs_no_script_name_url_or_error_body(monkeypatch, caplog):
     """Round 3, finding 3: the HA seam needs a caplog sentinel like every other.
 

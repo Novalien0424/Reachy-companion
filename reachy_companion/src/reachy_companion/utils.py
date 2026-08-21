@@ -71,6 +71,9 @@ def setup_logger(debug: bool) -> logging.Logger:
     # silenced at the source, in DEBUG too: a URL is not more publishable because
     # the operator asked for verbose logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Same leak one layer down: httpcore logs `connect_tcp.started host='<ha
+    # host>' port=8123` at DEBUG, so the address survives httpx being silenced.
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Tame third-party noise (looser in DEBUG)
     if log_level == "DEBUG":
