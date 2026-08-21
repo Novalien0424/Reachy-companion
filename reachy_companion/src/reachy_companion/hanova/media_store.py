@@ -112,6 +112,14 @@ def mount_media_routes(app: Any, instance_path: str | Path | None) -> bool:
     become `unavailable` rather than handing a Chromecast a URL that this process
     is not actually serving (review round 1, finding 11). Never raises: a
     settings app that cannot mount must degrade, not abort startup.
+
+    Review finding 2: the four kinds are mounted **individually**, not as one
+    static route over `media_root()`. Serving the root would publish everything
+    beside the kind directories as well, and `HANOVA_MEDIA_DIR` is free to point
+    at the instance directory itself -- which is where `.env` lives, with the HA
+    token, the SMTP app password and the NAS credentials in it. Mounting per kind
+    means only the four cache directories are reachable, whatever the override is
+    set to. The served URLs are byte-identical either way.
     """
     if not hasattr(app, "mount"):
         logger.warning("Settings app cannot mount routes; hanova media will not be served.")
@@ -122,8 +130,13 @@ def mount_media_routes(app: Any, instance_path: str | Path | None) -> bool:
 
         root = media_root(instance_path)
         for kind in KINDS:
-            (root / kind).mkdir(parents=True, exist_ok=True)
-        app.mount(MEDIA_URL_PREFIX, StaticFiles(directory=str(root)), name="hanova-media")
+            directory = root / kind
+            directory.mkdir(parents=True, exist_ok=True)
+            app.mount(
+                f"{MEDIA_URL_PREFIX}/{kind}",
+                StaticFiles(directory=str(directory)),
+                name=f"hanova-media-{kind}",
+            )
     except Exception as exc:  # noqa: BLE001 - a failed mount must degrade, not abort
         # Round 2, finding 6: `logger.exception` prints a traceback whose frames
         # carry the instance path, and the message interpolated the root too.

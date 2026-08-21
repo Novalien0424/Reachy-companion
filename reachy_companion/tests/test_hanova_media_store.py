@@ -106,6 +106,36 @@ def test_mount_media_routes_serves_a_cached_file(tmp_path):
     assert response.content == b"PNGDATA"
 
 
+def test_the_media_root_itself_is_never_served(tmp_path):
+    """Review finding 2: the mount used to cover `media_root()`, not the kinds.
+
+    `HANOVA_MEDIA_DIR` is documented as a way to move the cache off a full disk,
+    and pointing it at the instance directory is a perfectly ordinary thing for
+    an operator to do -- at which point a single static mount over the root
+    published `.env`, with the HA token, the SMTP app password and the NAS
+    credentials in it, on 0.0.0.0:7860. Only the four kind directories are
+    reachable now, whatever the root turns out to be.
+    """
+    root = media_store.media_root(tmp_path)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".env").write_text("HA_TOKEN=SENTINEL_PRIVATE_x7", encoding="utf-8")
+    images = media_store.media_dir("images", tmp_path)
+    (images / "poster.png").write_bytes(b"PNGDATA")
+
+    app = FastAPI()
+    assert media_store.mount_media_routes(app, tmp_path) is True
+
+    with TestClient(app) as client:
+        leaked = client.get("/hanova-media/.env")
+        served = client.get("/hanova-media/images/poster.png")
+
+    assert leaked.status_code == 404
+    assert b"SENTINEL_PRIVATE_x7" not in leaked.content
+    # ...and the URL shape the HA cast scripts receive is unchanged by the fix.
+    assert served.status_code == 200
+    assert served.content == b"PNGDATA"
+
+
 def test_mount_media_routes_reports_failure_instead_of_raising(tmp_path):
     """A settings app that cannot mount must not brick startup."""
 
@@ -230,15 +260,46 @@ def test_the_real_settings_app_serves_the_cache_with_range_and_type(tmp_path):
 
 
 def test_the_real_settings_app_refuses_a_traversal(tmp_path):
-    """The static mount must not be walkable out of the media root."""
-    media_store.media_dir("nas", tmp_path)
-    (tmp_path / "secret.txt").write_text("SENTINEL_PRIVATE_x7", encoding="utf-8")
+    """The static mount must not be walkable out of the media root.
+
+    Review finding 5: the first version of this test requested a literal
+    `/hanova-media/nas/../../secret.txt`, which proved nothing -- httpx applies
+    RFC 3986 dot-segment removal while building the URL, so the request that
+    actually left the client was `GET /secret.txt`, and the 404 came from
+    FastAPI's router having no such route. The server-side guard was never
+    reached, and the test would have stayed green with the guard removed.
+
+    Percent-encoding the dots defeats that client-side normalisation: httpx keeps
+    `%2e%2e` verbatim in `raw_path`, the ASGI layer unquotes it back to `..`, and
+    the traversal arrives at Starlette's `StaticFiles.lookup_path`, whose
+    realpath/commonpath check is the thing under test here.
+    """
+    nas_dir = media_store.media_dir("nas", tmp_path)
+    (nas_dir / "ok.mp4").write_bytes(b"LEGIT")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SENTINEL_PRIVATE_x7", encoding="utf-8")
 
     stream = _real_console_stream(tmp_path)
 
     with TestClient(stream.settings_app) as client:
-        response = client.get("/hanova-media/nas/../../secret.txt")
-    assert response.status_code in (403, 404)
+        request = client.build_request("GET", "/hanova-media/nas/%2e%2e/%2e%2e/secret.txt")
+        # Premise 1: the traversal survives the client. If httpx ever starts
+        # normalising these away, this test reverts to the tautology it replaced
+        # and must fail loudly rather than pass for the wrong reason.
+        assert b"%2e%2e" in request.url.raw_path
+        response = client.send(request)
+        control = client.get("/hanova-media/nas/ok.mp4")
+
+    # Premise 2: the mount is live and does serve files, so a 404 below is a
+    # refusal rather than a route that was never reachable in the first place.
+    assert control.status_code == 200
+    assert control.content == b"LEGIT"
+    # Premise 3: the file the traversal aims at really is there and readable, so
+    # the only thing standing between the request and it is the guard.
+    assert secret.read_text(encoding="utf-8") == "SENTINEL_PRIVATE_x7"
+    assert secret.resolve() == (nas_dir / ".." / ".." / "secret.txt").resolve()
+
+    assert response.status_code == 404
     assert b"SENTINEL_PRIVATE_x7" not in response.content
 
 

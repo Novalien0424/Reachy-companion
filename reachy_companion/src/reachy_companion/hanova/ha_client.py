@@ -12,6 +12,7 @@ the model as tool output, exactly like `tools/home_control.py:111-113` does.
 from __future__ import annotations
 import logging
 from typing import Any, Dict
+from urllib.parse import quote
 
 import httpx
 
@@ -19,6 +20,19 @@ from reachy_companion.hanova import redact, settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _segment(value: str) -> str:
+    """Percent-encode one URL path segment, escaping the separators too.
+
+    Review finding 4: every segment below is model-supplied (an entity id, a
+    domain, a service, the script name). With `safe=""` a value like
+    `a/b?c` cannot climb out of its own segment and re-target the request at a
+    different endpoint or smuggle in a query string. `quote` leaves the
+    unreserved set (letters, digits, `_.-~`) alone, so ordinary ids such as
+    `media_player.tv` are unchanged on the wire.
+    """
+    return quote(value, safe="")
 
 
 async def _request(method: str, path: str, payload: Dict[str, Any] | None, timeout_s: float) -> Dict[str, Any]:
@@ -37,7 +51,16 @@ async def _request(method: str, path: str, payload: Dict[str, Any] | None, timeo
                 json=payload,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             )
-    except httpx.HTTPError as exc:
+    except Exception as exc:  # noqa: BLE001 - the never-raises contract is the point
+        # Review finding 3: this catches `Exception`, not `httpx.HTTPError`. The
+        # contract is "never raises", and two non-HTTPError failures are reachable
+        # from a model-supplied argument alone: a `TypeError` when `data` holds
+        # something `json.dumps` cannot encode, and an `httpx.InvalidURL` from a
+        # malformed base URL. Either one would otherwise escape into the tool
+        # dispatcher instead of reaching the model as tool output.
+        # `asyncio.CancelledError` derives from `BaseException`, so an interrupted
+        # turn still cancels cleanly rather than being swallowed here.
+        #
         # Finding 7: an httpx error string embeds the full URL, which carries the
         # house's LAN address. Callers get the shape, not the address. Round 2,
         # finding 6: the *path* is not safe either -- it ends in the operator's
@@ -70,14 +93,14 @@ async def ha_call_service(
     timeout_s: float = 30.0,
 ) -> Dict[str, Any]:
     """Call `<domain>.<service>` with *data* as the service payload."""
-    return await _request("POST", f"/api/services/{domain}/{service}", data, timeout_s)
+    return await _request("POST", f"/api/services/{_segment(domain)}/{_segment(service)}", data, timeout_s)
 
 
 async def ha_run_script(script_name: str, data: Dict[str, Any], timeout_s: float = 60.0) -> Dict[str, Any]:
     """Run the Home Assistant script `script.<script_name>` with *data* as its fields."""
-    return await _request("POST", f"/api/services/script/{script_name}", data, timeout_s)
+    return await _request("POST", f"/api/services/script/{_segment(script_name)}", data, timeout_s)
 
 
 async def ha_get_state(entity_id: str, timeout_s: float = 15.0) -> Dict[str, Any]:
     """Read one entity's current state object."""
-    return await _request("GET", f"/api/states/{entity_id}", None, timeout_s)
+    return await _request("GET", f"/api/states/{_segment(entity_id)}", None, timeout_s)

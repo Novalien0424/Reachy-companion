@@ -1,9 +1,30 @@
 """Contract tests for the async Home Assistant REST helper (D-018)."""
 
+import logging
+
 import httpx
 import pytest
 
 from reachy_companion.hanova import ha_client
+
+
+class _Capture(logging.Handler):
+    """Collect every formatted message that reaches the root logger.
+
+    Used instead of `caplog` for the httpx-logger test only: that test calls the
+    production `setup_logger`, whose `logging.basicConfig(force=True)` removes
+    the root handlers -- caplog's included. A test that silently lost its own
+    capture handler would pass no matter how badly httpx leaked, so this one owns
+    a handler it attaches after `setup_logger` has run.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Record one message."""
+        self.messages.append(record.getMessage())
 
 
 class _FakeResponse:
@@ -24,6 +45,25 @@ def ha_env(monkeypatch):
     """Provide the HA config the client reads at call time."""
     monkeypatch.setenv("HA_URL", "http://ha.example.invalid:8123")
     monkeypatch.setenv("HA_TOKEN", "tok")
+
+
+@pytest.fixture
+def restore_logging():
+    """Snapshot global logging state around a test that calls `setup_logger`.
+
+    `setup_logger` runs `logging.basicConfig(force=True)`, which detaches (and
+    closes) every root handler and rewrites the root level. Without this the one
+    test that exercises it would leave the rest of the suite logging into
+    nothing.
+    """
+    root = logging.getLogger()
+    saved = (list(root.handlers), root.level, logging.getLogger("httpx").level)
+    try:
+        yield
+    finally:
+        root.handlers[:] = saved[0]
+        root.setLevel(saved[1])
+        logging.getLogger("httpx").setLevel(saved[2])
 
 
 @pytest.mark.asyncio
@@ -136,6 +176,117 @@ async def test_empty_body_is_still_ok(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_non_serializable_payload_is_a_result_not_a_raise():
+    """Review finding 3: `except httpx.HTTPError` was narrower than the contract.
+
+    `data` reaches this module straight from a model tool call, so a value
+    `json.dumps` cannot encode is reachable without any network involvement at
+    all -- httpx raises `TypeError` while *building* the request, which is not an
+    `HTTPError`, so it escaped the guard and propagated into the tool dispatcher
+    instead of reaching the model as tool output.
+    """
+    out = await ha_client.ha_call_service("script", "turn_on", {"handle": object()})
+    assert out["ok"] is False
+    assert "TypeError" in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_path_segments_are_percent_encoded(monkeypatch):
+    """Review finding 4: an unencoded segment lets a value re-target the request.
+
+    `entity_id` is model-supplied. Interpolated raw, `a/b?c` would become a
+    different path with a query string attached; encoded, it stays exactly one
+    path segment of `/api/states/`.
+    """
+    seen = {}
+
+    async def fake_request(self, method, url, json=None, headers=None, **kw):
+        seen["url"] = url
+        return _FakeResponse(200, {"state": "on"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+    out = await ha_client.ha_get_state("a/b?c")
+    assert out["ok"] is True
+    assert seen["url"] == "http://ha.example.invalid:8123/api/states/a%2Fb%3Fc"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_ids_survive_encoding_unchanged(monkeypatch):
+    """The encoding must not mangle the ids the cast scripts actually receive."""
+    seen = {}
+
+    async def fake_request(self, method, url, json=None, headers=None, **kw):
+        seen["url"] = url
+        return _FakeResponse(200, {})
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+    await ha_client.ha_get_state("media_player.living_room-tv")
+    assert seen["url"].endswith("/api/states/media_player.living_room-tv")
+
+
+@pytest.mark.asyncio
+async def test_httpxs_own_logger_never_prints_the_ha_url(monkeypatch, restore_logging):
+    """Review finding 1: the leak was httpx's logger, not one of ours.
+
+    `hanova/redact.py` can only govern messages this codebase formats. httpx logs
+    `HTTP Request: POST <full url> "HTTP/1.1 200 OK"` at INFO from inside its own
+    `_send_single_request`, so the house's Home Assistant address -- and the
+    operator's `scripts.yaml` entry name, which is the last path segment -- went
+    into the log through a channel no redactor ever sees. `utils.setup_logger`
+    now pins that logger to WARNING.
+
+    httpx's real client code has to run for the record to exist, so this drives a
+    `MockTransport` rather than stubbing `AsyncClient.request` the way the other
+    tests here do -- stubbing the method would skip the very line under test. The
+    control phase proves the harness can still see the leak; without it a broken
+    capture would make the second half pass vacuously.
+    """
+    from reachy_companion.utils import setup_logger
+
+    monkeypatch.setenv("HA_URL", "http://SENTINEL_PRIVATE_x7.invalid:8123")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+
+    def mock_transport_client(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_transport_client)
+    root = logging.getLogger()
+
+    # --- control: with httpx at INFO the URL really does reach a handler ---
+    root.setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    control = _Capture()
+    root.addHandler(control)
+    try:
+        leaked = await ha_client.ha_run_script("SENTINEL_PRIVATE_x7", {})
+    finally:
+        root.removeHandler(control)
+    assert leaked["ok"] is True
+    assert any("SENTINEL_PRIVATE_x7" in message for message in control.messages), (
+        "control phase failed: this test cannot observe the leak it exists to prevent"
+    )
+
+    # --- production: setup_logger silences it, in DEBUG as well as INFO ---
+    setup_logger(debug=False)
+    assert logging.getLogger("httpx").level == logging.WARNING
+    setup_logger(debug=True)
+    assert logging.getLogger("httpx").level == logging.WARNING
+
+    tamed = _Capture()
+    root.addHandler(tamed)
+    try:
+        out = await ha_client.ha_run_script("SENTINEL_PRIVATE_x7", {})
+    finally:
+        root.removeHandler(tamed)
+    assert out["ok"] is True
+    assert not any("SENTINEL_PRIVATE_x7" in message for message in tamed.messages)
+
+
+@pytest.mark.asyncio
 async def test_the_ha_client_logs_no_script_name_url_or_error_body(monkeypatch, caplog):
     """Round 3, finding 3: the HA seam needs a caplog sentinel like every other.
 
@@ -145,8 +296,6 @@ async def test_the_ha_client_logs_no_script_name_url_or_error_body(monkeypatch, 
     operator's `scripts.yaml` entry and the URL IS the house's LAN address. Both
     failure branches are exercised: the transport error and the non-2xx.
     """
-    import logging
-
     caplog.set_level(logging.DEBUG)
     monkeypatch.setenv("HA_URL", "http://SENTINEL_PRIVATE_x7.invalid:8123")
 
