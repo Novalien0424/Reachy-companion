@@ -9,20 +9,19 @@
 
 - Tasks 0–4 COMPLETE (see ledger for commits/rulings). Suite 794 passed / 30
   skipped at `eadad01`; ruff + mypy strict green.
-- **Task 5 implementer was IN FLIGHT and died with the reboot → Task 5 is NOT
-  done.** Working tree was clean at clock-out; if it is dirty now, discard the
-  partial Task-5 work (scoped to reachy_companion/) and delete any partial
-  `task-5-report.md`. Re-dispatch Task 5 fresh from
-  `.superpowers/sdd/2026-08-21-ha-nova-port/task-5-brief.md` with this context:
-  audio_drain module is Task-5-owned (not in music_player); wire GATE
-  begin/end_session at the same boundaries; fold in Task 4's five Low fixes
-  (a: `_store(None)` before superseded-after-pre-stop return; b: cache-hit
-  `os.utime` + exclude `.resume.mp3` from keep budget; c: assert loser status
-  "superseded"; d: delenv HANOVA_YTDLP_TIMEOUT_S in the timeout test;
-  e: ruff-format test_hanova_music.py + redact.text in play_music.py:659,665).
-  Mandatory tests: >12s-outstanding-audio-still-resumes; needs_response=False
-  schedules resume.
-- Then: Task 5 review → Tasks 6–15 per the ledger's established loop
+- **UPDATE (post-clock-out): the Task 5 implementer FINISHED before the
+  reboot.** Commit `4eeb166` on the branch (pushed), 827 passed / 30 skipped,
+  ruff + mypy green, tree clean; report at
+  `.superpowers/sdd/2026-08-21-ha-nova-port/task-5-report.md` (includes two
+  documented brief-test amendments and the Task-4 adjacent fixes, each
+  verified red-first). **Task 5 is implemented but NOT yet reviewed.**
+- Resume point: dispatch the Task 5 TASK REVIEW (opus) — review package range
+  `eadad01..4eeb166`; reviewer lens: drain-signal correctness (resume keys on
+  turn-delivered incl. needs_response=False; ~0.5 s late-resume via play_loop
+  emit timeout — implementer concern 3), the `_handle_tool_result` split
+  firing `on_tool_call_finished` exactly once via finally, session-token
+  stale-shutdown no-ops, and the two amended tests' justifications.
+  Then fix rounds as needed → Tasks 6–15 per the ledger's established loop
   (opus implementers, task reviews, EXPECTED_TOOLS update authorized per
   tool-adding task, gated tools need finally-release per Task 2 ruling).
 
