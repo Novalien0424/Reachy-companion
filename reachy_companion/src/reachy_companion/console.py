@@ -146,6 +146,16 @@ class LocalStream:
         self.handler._clear_queue = self.clear_audio_queue
         self._attach_observers_to_handler()
 
+    @property
+    def settings_app(self) -> Optional[FastAPI]:
+        """The settings FastAPI this stream mounts onto, or None.
+
+        D-018: the media-route integration tests drive the *real* console object
+        and need the app it actually mounted onto, not a stand-in
+        (review round 1 finding 11, round 2 finding 13).
+        """
+        return self._settings_app
+
     def _attach_observers_to_handler(self) -> None:
         """Wire the handler's activity + transcript observers to JSON-RPC pushes."""
         setter = getattr(self.handler, "set_activity_observer", None)
@@ -530,6 +540,14 @@ class LocalStream:
             except Exception:
                 logger.exception("Failed to mount settings UI static assets")
                 raise
+
+        # D-018 / R6: serve the ported media cache from this same uvicorn, which
+        # already binds 0.0.0.0:7860 (main.py:358). A Chromecast on the LAN then
+        # fetches HANOVA_MEDIA_HTTP_BASE + /hanova-media/<kind>/<file>. Failure
+        # to mount degrades casting to unavailable; it must not abort startup.
+        from reachy_companion.hanova.media_store import mount_media_routes
+
+        mount_media_routes(settings_app, self._instance_path)
 
         def _status_payload() -> dict[str, object]:
             hf_session_url = get_hf_session_url()
