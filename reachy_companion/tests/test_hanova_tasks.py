@@ -90,6 +90,83 @@ def test_complete_task_patches_the_status(monkeypatch):
     assert seen["body"] == {"status": "completed"}
 
 
+def test_list_tasks_always_says_whether_completed_items_are_wanted(monkeypatch):
+    """Review finding 1: Google's tasks.list defaults showCompleted to *true*.
+
+    Omitting the flag therefore asked for completed tasks. `complete_task` PATCHes
+    `status` and cannot set the read-only `hidden` flag, so anything ticked off
+    through this app came straight back in the next outstanding-only listing.
+    """
+    seen = {}
+
+    def fake_api_call(method, url, body=None, query=None, account=None):
+        seen.update(query=query)
+        return {"items": []}
+
+    monkeypatch.setattr(gtasks.gauth, "api_call", fake_api_call)
+    gtasks.list_tasks(LIST_ID)
+    assert seen["query"]["showCompleted"] == "false"
+    assert "showHidden" not in seen["query"]
+
+    gtasks.list_tasks(LIST_ID, show_completed=True)
+    assert seen["query"]["showCompleted"] == "true"
+    assert seen["query"]["showHidden"] == "true"
+
+
+def test_list_task_lists_follows_the_next_page(monkeypatch):
+    """Review finding 2: an account's lists can arrive over more than one page."""
+    pages = {
+        None: {"items": [{"id": "a", "title": "Work"}], "nextPageToken": "p2"},
+        "p2": {"items": [{"id": "b", "title": "Home"}]},
+    }
+    monkeypatch.setattr(
+        gtasks.gauth,
+        "api_call",
+        lambda method, url, body=None, query=None, account=None: pages[(query or {}).get("pageToken")],
+    )
+    assert [entry["id"] for entry in gtasks.list_task_lists()] == ["a", "b"]
+
+
+def test_find_task_follows_the_next_page(monkeypatch):
+    """Review finding 2: the 101st task is still a task; one page is not a list."""
+
+    def fake_api_call(method, url, body=None, query=None, account=None):
+        if url.endswith("/users/@me/lists"):
+            return {"items": [{"id": "a", "title": "Work"}]}
+        if (query or {}).get("pageToken") == "p2":
+            return {"items": [{"id": "t2", "title": "Buy milk"}]}
+        return {"items": [{"id": "t1", "title": "Gym"}], "nextPageToken": "p2"}
+
+    monkeypatch.setattr(gtasks.gauth, "api_call", fake_api_call)
+    task, candidates, error = gtasks.find_task("milk")
+    assert error is None and candidates == []
+    assert task is not None and task["id"] == "t2"
+
+
+def test_find_task_refuses_to_call_a_capped_walk_unambiguous(monkeypatch):
+    """Review finding 2: a truncated search proves neither uniqueness nor absence.
+
+    Every page comes back full with another `nextPageToken`, so the walk stops on
+    its own page cap with more still out there. One match was seen -- but a
+    second could be sitting on the page nobody read, and a gated tool must not
+    arm on that. The match is handed back as a candidate, not as *the* answer.
+    """
+
+    def fake_api_call(method, url, body=None, query=None, account=None):
+        if url.endswith("/users/@me/lists"):
+            return {"items": [{"id": "a", "title": "Work"}]}
+        first = (query or {}).get("pageToken") is None
+        return {
+            "items": [{"id": "t-first" if first else "t-filler", "title": "Buy milk" if first else "Gym"}],
+            "nextPageToken": "more",
+        }
+
+    monkeypatch.setattr(gtasks.gauth, "api_call", fake_api_call)
+    task, candidates, error = gtasks.find_task("milk")
+    assert task is None and error == "truncated"
+    assert [item["id"] for item in candidates] == ["t-first"]
+
+
 def _across_lists(monkeypatch, tasks_by_list: dict[str, list[dict]]) -> None:
     """Stub gauth.api_call so find_task walks two lists without a network."""
 
@@ -415,6 +492,36 @@ async def test_task_complete_refuses_an_ambiguous_match(monkeypatch):
     out = await TaskComplete()(deps=_deps(), match="milk")
     assert out["ok"] is False and out["error"] == "ambiguous" and len(out["candidates"]) == 2
     assert GATE.claim("task_complete") is None
+
+
+@pytest.mark.asyncio
+async def test_task_delete_refuses_a_truncated_search(monkeypatch):
+    """Review finding 2: a search that could not finish must arm nothing.
+
+    The tool has to say so out loud rather than deleting the one item it happened
+    to see, so the refusal is machine-readable *and* carries the partial result
+    for the model to name back.
+    """
+    import reachy_companion.tools.task_delete as task_delete_module
+
+    monkeypatch.setattr(
+        task_delete_module.gtasks,
+        "find_task",
+        lambda match, include_completed=False: (
+            None,
+            [{"id": "t1", "title": "Buy milk", "list_id": "a", "list_title": "Work"}],
+            "truncated",
+        ),
+    )
+
+    def fail_delete(list_id, task_id):
+        raise AssertionError("task_delete must not act on a search it could not finish")
+
+    monkeypatch.setattr(task_delete_module.gtasks, "delete_task", fail_delete)
+    out = await TaskDelete()(deps=_deps(), match="milk")
+    assert out["ok"] is False and out["error"] == "search_truncated"
+    assert out["candidates"] == [{"title": "Buy milk", "list": "Work"}]
+    assert GATE.claim("task_delete") is None
 
 
 def test_all_four_tools_reach_the_model_session():

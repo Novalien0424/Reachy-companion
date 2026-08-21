@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 _MIN_MATCH_LEN = 2
 
+# Review finding 2. Wording, not data: it names no task, no list and no id, so
+# it is safe for the model to say out loud verbatim.
+TRUNCATED_MESSAGE = (
+    "The to-do lists were too long to search all the way through, so I cannot be "
+    "sure which task is meant. Ask the user which list it is in, then try again."
+)
+
 
 class TaskDelete(Tool):
     """Delete one to-do item after the user confirms it."""
@@ -71,13 +78,19 @@ class TaskDelete(Tool):
             logger.warning("task_delete lookup failed: %s", redact.error(exc))
             return {"ok": False, "error": friendly_message(exc)}
 
+        candidate_view = [{"title": item.get("title"), "list": item.get("list_title")} for item in candidates]
         if error == "not_found":
             return {"ok": False, "error": "not_found"}
         if error == "ambiguous":
+            return {"ok": False, "error": "ambiguous", "candidates": candidate_view}
+        if error == "truncated":
+            # Review finding 2: the search hit its page cap, so even a single hit
+            # cannot be shown to be the only one. Refuse, and say why.
             return {
                 "ok": False,
-                "error": "ambiguous",
-                "candidates": [{"title": item.get("title"), "list": item.get("list_title")} for item in candidates],
+                "error": "search_truncated",
+                "message": TRUNCATED_MESSAGE,
+                "candidates": candidate_view,
             }
 
         assert task is not None
