@@ -26,6 +26,8 @@ default_tools = [
   "drive_trash",
   "drive_upload",
   "email_send",
+  "self_destruct",
+  "mad_laugh",
   "go_to_sleep",
   "remember",
   "forget",
