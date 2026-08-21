@@ -7,6 +7,15 @@ Assistant, no LAN URL, and no home network required.
 
 Playback goes through the shared `MusicPlayer`, so `stop_music` stops a gag and
 user speech ducks it, with no code specific to gags (R7).
+
+**Review finding 1: yt-dlp's own words never leave this module.** Its failure
+text quotes the video URL and id, the local output path, and whatever the
+network layer said -- and a gag's error is read aloud by the robot and sent to
+OpenAI, so forwarding it would publish a configuration value the model must
+never see (`settings.py:626-628`). `play_music.py:55-68` set the convention for
+this exact function: log the *shape* through `redact.text` at INFO, return one
+fixed, identifier-free reason. Fixing it here rather than in each tool means
+both gags inherit it, and so does anything that calls `ensure_clip` later.
 """
 
 from __future__ import annotations
@@ -15,11 +24,15 @@ import logging
 from typing import Any, Dict
 from pathlib import Path
 
-from reachy_companion.hanova import ytdlp, media_store
+from reachy_companion.hanova import ytdlp, redact, media_store
 from reachy_companion.hanova.music_player import PLAYER
 
 
 logger = logging.getLogger(__name__)
+
+# The one thing a caller is ever told about a failed fetch. Fixed, speakable,
+# and free of anything that identifies the clip, the host or the filesystem.
+_FETCH_FAILED = "the clip could not be fetched right now"
 
 
 async def ensure_clip(video_id: str, instance_path: str | Path | None) -> Dict[str, Any]:
@@ -27,7 +40,10 @@ async def ensure_clip(video_id: str, instance_path: str | Path | None) -> Dict[s
     sfx_dir = media_store.media_dir("sfx", instance_path)
     result = await asyncio.to_thread(ytdlp.download_audio, video_id, sfx_dir)
     if not result["ok"]:
-        return {"ok": False, "path": None, "error": result["error"] or "could not fetch the clip"}
+        # Finding 1: the length is the diagnostic an operator gets; the text
+        # itself is not ours to publish, to the log or to the model.
+        logger.info("A gag clip could not be fetched: %s", redact.text(result["error"] or ""))
+        return {"ok": False, "path": None, "error": _FETCH_FAILED}
     return {"ok": True, "path": result["path"], "error": None}
 
 

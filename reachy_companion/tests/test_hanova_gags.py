@@ -1,6 +1,7 @@
 """Contract tests for the two audio gags (D-018, R2/R3/R5/R7)."""
 
 import types
+import logging
 import importlib
 
 import pytest
@@ -86,16 +87,58 @@ async def test_ensure_clip_caches_by_video_id(monkeypatch, tmp_path):
     assert calls["n"] == 1
 
 
+# Review finding 1: yt-dlp's failure text routinely quotes the video URL, the
+# video id and the local output path. This sentinel stands in for all three.
+_YTDLP_SENTINEL = "ERROR: [youtube] https://sentinel.example/v?id=SECRET: unable to write /home/pollen/hanova_media"
+
+
+def _leaks(haystack: str) -> bool:
+    """Return whether any part of the sentinel survived into *haystack*."""
+    return any(token in haystack for token in ("SECRET", "sentinel.example", "/home/pollen"))
+
+
 @pytest.mark.asyncio
-async def test_ensure_clip_reports_a_download_failure(monkeypatch, tmp_path):
-    """No network at gag time is a spoken answer, not a crash."""
+async def test_ensure_clip_reports_a_download_failure(monkeypatch, tmp_path, caplog):
+    """No network at gag time is a spoken answer, not a crash -- and never yt-dlp's own words.
+
+    Finding 1: this error is spoken aloud by the robot and sent to OpenAI, so the
+    caller gets a fixed, identifier-free reason and the raw text reaches the log
+    only as a length. It is the convention `play_music.py:55-68` already follows
+    for this very function, and a gag is not a reason to break it.
+    """
     monkeypatch.setattr(
         sfx.ytdlp,
         "download_audio",
-        lambda video_id, dest_dir: {"ok": False, "path": None, "cached": False, "error": "no network"},
+        lambda video_id, dest_dir: {"ok": False, "path": None, "cached": False, "error": _YTDLP_SENTINEL},
     )
-    out = await sfx.ensure_clip("sd-clip-id", tmp_path)
-    assert out["ok"] is False and "no network" in out["error"]
+    with caplog.at_level(logging.INFO, logger="reachy_companion.hanova.sfx"):
+        out = await sfx.ensure_clip("sd-clip-id", tmp_path)
+
+    assert out["ok"] is False
+    assert out["error"] == "the clip could not be fetched right now"
+    # The sentinel reaches neither the payload the model reads aloud...
+    assert not _leaks(repr(out))
+    # ...nor the log, which carries its length and nothing else.
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert not _leaks(logged)
+    assert f"<text:{len(_YTDLP_SENTINEL)} chars>" in logged
+
+
+@pytest.mark.asyncio
+async def test_a_failed_gag_never_speaks_ytdlp_back_at_the_user(monkeypatch, tmp_path):
+    """Finding 1, end to end: the fix belongs to sfx, so both tools inherit it."""
+    import reachy_companion.tools.mad_laugh as mad_laugh_module
+
+    monkeypatch.setattr(
+        mad_laugh_module.sfx.ytdlp,
+        "download_audio",
+        lambda video_id, dest_dir: {"ok": False, "path": None, "cached": False, "error": _YTDLP_SENTINEL},
+    )
+    deps, played = _deps(tmp_path)
+    out = await MadLaugh()(deps=deps)
+    assert out == {"ok": False, "error": "the clip could not be fetched right now"}
+    assert not _leaks(repr(out))
+    assert played == []
 
 
 @pytest.mark.asyncio
