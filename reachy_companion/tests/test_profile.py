@@ -34,6 +34,7 @@ EXPECTED_TOOLS = (
     "task_list",
     "task_complete",
     "task_delete",
+    "notion_add",
     "go_to_sleep",
     "remember",
     "forget",
