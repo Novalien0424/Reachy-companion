@@ -38,6 +38,7 @@ EXPECTED_TOOLS = (
     "drive_list",
     "drive_trash",
     "drive_upload",
+    "email_send",
     "go_to_sleep",
     "remember",
     "forget",
