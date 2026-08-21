@@ -25,22 +25,17 @@ logger = logging.getLogger(__name__)
 _IMAGE_SIZE = "1536x1024"
 
 
-def images_available() -> bool:
-    """Return whether image generation is configured.
-
-    Review finding 18: this is a **key-presence check**. The previous version
-    built a whole `AsyncOpenAI` client -- with its own HTTP connection pool --
-    purely to answer a boolean, and then dropped it unclosed on every
-    availability probe, which happens on every `show_on_tv` call.
-    """
-    return bool((os.getenv("OPENAI_API_KEY") or "").strip())
-
-
 def build_client() -> Any | None:
     """Return an AsyncOpenAI client, or None when no API key is configured.
 
     The caller **must** use it as `async with build_client() as client:` so the
     connection pool is closed on every path, success or failure (finding 18).
+
+    This module deliberately exposes **no availability predicate**: whether
+    `show_on_tv` can run is decided once, by `OPENAI_API_KEY` in
+    `settings.TOOL_PREREQS`, so nothing ever builds a client -- with its own HTTP
+    connection pool -- merely to answer a boolean (finding 18), and no caller can
+    route around the ordered first-unmet-key contract.
     """
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:

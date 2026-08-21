@@ -440,19 +440,6 @@ async def test_the_client_is_closed_even_when_generation_fails(monkeypatch, tmp_
     assert client.closed is True
 
 
-def test_availability_is_a_key_check_that_builds_nothing(monkeypatch):
-    """Finding 18: constructing a client to answer a boolean is the bug."""
-
-    def explode():
-        raise AssertionError("images_available must not construct a client")
-
-    monkeypatch.setattr(images, "build_client", explode)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    assert images.images_available() is True
-    monkeypatch.delenv("OPENAI_API_KEY")
-    assert images.images_available() is False
-
-
 @pytest.mark.asyncio
 async def test_generate_image_without_a_key_is_reported(monkeypatch, tmp_path):
     """No OPENAI_API_KEY is a configuration fact, not a crash."""
