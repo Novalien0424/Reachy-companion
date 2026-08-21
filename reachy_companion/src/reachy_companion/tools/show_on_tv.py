@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from reachy_companion.hanova import images, redact, settings, media_store
+from reachy_companion.hanova import nas, images, redact, settings, media_store
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.hanova.ha_client import ha_run_script
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
@@ -83,4 +83,7 @@ class ShowOnTv(Tool):
         if not cast["ok"]:
             logger.info("show_on_tv cast failed: %s", redact.text(cast.get("error") or ""))
             return {"ok": False, "error": "Home Assistant could not put the picture on the TV"}
+        # D-018 / finding 16: this supersedes whatever trip was on the TV, so the
+        # nas_skip playlist must not silently continue afterwards.
+        nas.clear_session()
         return {"ok": True, "status": "casting", "url": url}

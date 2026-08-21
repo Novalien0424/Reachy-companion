@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict
 from pathlib import Path
 
-from reachy_companion.hanova import ytdlp, redact, settings, media_store
+from reachy_companion.hanova import nas, ytdlp, redact, settings, media_store
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 from reachy_companion.hanova.music_player import PLAYER
 
@@ -74,4 +74,8 @@ class PlayMusic(Tool):
             source_path=Path(str(downloaded["path"])),
         )
         media_store.prune("music", deps.instance_path, settings.music_keep())
+        if result.get("ok"):
+            # D-018 / finding 16: this supersedes whatever trip was on the TV, so the
+            # nas_skip playlist must not silently continue afterwards.
+            nas.clear_session()
         return result

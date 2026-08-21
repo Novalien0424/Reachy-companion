@@ -27,6 +27,7 @@ from reachy_companion import home_net
 from reachy_companion.hanova import nas, settings
 from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.nas_skip import NasSkip
+from reachy_companion.hanova.music_player import PLAYER
 from reachy_companion.tools.play_nas_video import PlayNasVideo
 from reachy_companion.tools.nas_play_folder import NasPlayFolder
 from reachy_companion.tools.nas_video_query import NasVideoQuery
@@ -674,6 +675,189 @@ async def test_music_supersedes_the_trip_session(monkeypatch, tmp_path):
 
     out = await NasSkip()(deps=_deps(tmp_path))
     assert out["ok"] is False and out["error"] == "nothing_playing"
+
+
+# --- every superseding media action clears the trip (finding 16, Step 6b) --
+#
+# The semantics the brief states: the clear happens on the **successful** path of
+# `play_music`, `play_video` and `show_on_tv` only -- something else is now on
+# the TV, or the "we are watching the trip" context is over, so `nas_skip` must
+# not silently continue it. Every early return is left alone on purpose: an
+# `unavailable` prerequisite, an `away_from_home` / `home_status_unknown`
+# verdict, an empty query, a failed search and a cast Home Assistant refused all
+# leave whatever was playing exactly where it was, so the trip is still the
+# truth. That is the same rule `play_nas_video` already applies to itself
+# ("a failed play leaves whatever was on the TV alone, and therefore leaves the
+# trip session alone too").
+
+
+async def _at_home() -> str:
+    return home_net.HOME
+
+
+def _live_trip() -> None:
+    """Put a two-clip trip on the TV so a superseding action has something to end."""
+    nas.start_session(list(INDEX["videos"]), 0)
+    assert nas.remaining() == 1
+
+
+def _stub_play_music(monkeypatch, tmp_path, *, played_ok: bool):
+    """Configure play_music down to a stubbed PLAYER.play with the given verdict."""
+    module = importlib.import_module("reachy_companion.tools.play_music")
+    monkeypatch.setattr("reachy_companion.hanova.settings._music_wheels_ready", lambda: (True, ""))
+    track = tmp_path / "track.mp3"
+    track.write_bytes(b"ID3")
+    monkeypatch.setattr(
+        module.ytdlp,
+        "search",
+        lambda query, max_duration_s=None: {"ok": True, "id": "abc", "title": "A Song", "error": None},
+    )
+    monkeypatch.setattr(
+        module.ytdlp,
+        "download_audio",
+        lambda video_id, dest_dir: {"ok": True, "path": str(track), "cached": True, "error": None},
+    )
+
+    async def fake_play(deps, *, video_id, title, source_path):
+        if not played_ok:
+            # What a race with a newer request actually returns (music_player).
+            return {"ok": False, "status": "superseded"}
+        return {"ok": True, "status": "playing", "title": title, "video_id": video_id}
+
+    monkeypatch.setattr(PLAYER, "play", fake_play)
+    return module
+
+
+def _stub_play_video(monkeypatch, *, cast_ok: bool):
+    """Configure play_video down to a stubbed HA cast with the given verdict."""
+    module = importlib.import_module("reachy_companion.tools.play_video")
+    monkeypatch.setenv("HANOVA_HA_SCRIPT_YOUTUBE", "tv_show_youtube")
+    monkeypatch.setattr("reachy_companion.hanova.settings._music_wheels_ready", lambda: (True, ""))
+    monkeypatch.setattr("reachy_companion.tools.play_video.home_state", _at_home)
+    monkeypatch.setattr(
+        module.ytdlp,
+        "search",
+        lambda query, max_duration_s=None: {"ok": True, "id": "vid123", "title": "A Film", "error": None},
+    )
+
+    async def fake_run_script(script_name, data, timeout_s=60.0):
+        if not cast_ok:
+            return {"ok": False, "error": "Home Assistant returned HTTP 500"}
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(module, "ha_run_script", fake_run_script)
+    return module
+
+
+def _stub_show_on_tv(monkeypatch, *, cast_ok: bool):
+    """Configure show_on_tv down to a stubbed HA cast with the given verdict."""
+    module = importlib.import_module("reachy_companion.tools.show_on_tv")
+    monkeypatch.setenv("HANOVA_HA_SCRIPT_IMAGE_URL", "tv_show_image_url")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr("reachy_companion.tools.show_on_tv.home_state", _at_home)
+
+    async def fake_generate(request, images_dir):
+        return {"ok": True, "filename": "drawing.png", "error": None}
+
+    async def fake_run_script(script_name, data, timeout_s=60.0):
+        if not cast_ok:
+            return {"ok": False, "error": "Home Assistant returned HTTP 500"}
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(module.images, "generate_image", fake_generate)
+    monkeypatch.setattr(module, "ha_run_script", fake_run_script)
+    return module
+
+
+@pytest.mark.asyncio
+async def test_play_music_clears_the_trip_session(monkeypatch, tmp_path):
+    """Music on the speaker ends the "we are watching the trip" context."""
+    module = _stub_play_music(monkeypatch, tmp_path, played_ok=True)
+    _live_trip()
+
+    out = await module.PlayMusic()(deps=_deps(tmp_path), query="a song")
+    assert out["ok"] is True
+    assert nas.remaining() == 0, "music supersedes the trip"
+
+    skipped = await NasSkip()(deps=_deps(tmp_path))
+    assert skipped["ok"] is False and skipped["error"] == "nothing_playing"
+
+
+@pytest.mark.asyncio
+async def test_a_play_music_that_never_started_leaves_the_trip_alone(monkeypatch, tmp_path):
+    """Nothing reached the speaker, so nothing superseded the trip."""
+    module = _stub_play_music(monkeypatch, tmp_path, played_ok=False)
+    _live_trip()
+
+    out = await module.PlayMusic()(deps=_deps(tmp_path), query="a song")
+    assert out["ok"] is False
+    assert nas.remaining() == 1, "a failed play must not consume the trip"
+
+
+@pytest.mark.asyncio
+async def test_play_video_clears_the_trip_session(monkeypatch, tmp_path):
+    """Something else is on the TV now, so nas_skip must not continue the trip."""
+    module = _stub_play_video(monkeypatch, cast_ok=True)
+    _live_trip()
+
+    out = await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary")
+    assert out["ok"] is True
+    assert nas.remaining() == 0, "a cast video supersedes the trip"
+
+    skipped = await NasSkip()(deps=_deps(tmp_path))
+    assert skipped["ok"] is False and skipped["error"] == "nothing_playing"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_play_video_leaves_the_trip_alone(monkeypatch, tmp_path):
+    """The TV never accepted it, so the trip is still what is on screen."""
+    module = _stub_play_video(monkeypatch, cast_ok=False)
+    _live_trip()
+
+    out = await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary")
+    assert out["ok"] is False
+    assert nas.remaining() == 1, "a refused cast must not consume the trip"
+
+
+@pytest.mark.asyncio
+async def test_show_on_tv_clears_the_trip_session(monkeypatch, tmp_path):
+    """A picture on the TV supersedes the trip exactly as a video does."""
+    module = _stub_show_on_tv(monkeypatch, cast_ok=True)
+    _live_trip()
+
+    out = await module.ShowOnTv()(deps=_deps(tmp_path), request="a red bicycle")
+    assert out["ok"] is True
+    assert nas.remaining() == 0, "a cast picture supersedes the trip"
+
+    skipped = await NasSkip()(deps=_deps(tmp_path))
+    assert skipped["ok"] is False and skipped["error"] == "nothing_playing"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_show_on_tv_leaves_the_trip_alone(monkeypatch, tmp_path):
+    """The picture never reached the TV, so the trip is untouched."""
+    module = _stub_show_on_tv(monkeypatch, cast_ok=False)
+    _live_trip()
+
+    out = await module.ShowOnTv()(deps=_deps(tmp_path), request="a red bicycle")
+    assert out["ok"] is False
+    assert nas.remaining() == 1, "a refused cast must not consume the trip"
+
+
+@pytest.mark.asyncio
+async def test_a_house_bound_early_return_leaves_the_trip_alone(monkeypatch, tmp_path):
+    """R4 verdicts do no work at all -- including no clearing of the trip."""
+    module = _stub_play_video(monkeypatch, cast_ok=True)
+
+    async def not_home() -> str:
+        return home_net.AWAY
+
+    monkeypatch.setattr("reachy_companion.tools.play_video.home_state", not_home)
+    _live_trip()
+
+    out = await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary")
+    assert out == {"status": "away_from_home"}
+    assert nas.remaining() == 1, "an away verdict changed nothing on the TV"
 
 
 @pytest.mark.asyncio

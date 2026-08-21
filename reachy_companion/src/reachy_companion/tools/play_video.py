@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Any, Dict
 
-from reachy_companion.hanova import ytdlp, redact, settings
+from reachy_companion.hanova import nas, ytdlp, redact, settings
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.hanova.ha_client import ha_run_script
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
@@ -73,4 +73,7 @@ class PlayVideo(Tool):
         if not cast["ok"]:
             logger.info("play_video cast failed: %s", redact.text(cast.get("error") or ""))
             return {"ok": False, "error": "Home Assistant could not start the video on the TV"}
+        # D-018 / finding 16: this supersedes whatever trip was on the TV, so the
+        # nas_skip playlist must not silently continue afterwards.
+        nas.clear_session()
         return {"ok": True, "status": "casting", "title": found["title"], "video_id": found["id"]}
