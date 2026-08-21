@@ -293,12 +293,12 @@ async def test_a_tool_call_defers_the_resume_to_the_follow_up_turn(ok_daemon, tm
     monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
 
     music_hooks.on_response_created()
-    music_hooks.on_tool_call_started()
-    music_hooks.on_assistant_turn_ended(deps)  # response.done for the tool turn
+    music_hooks.on_tool_call_started("call-a")
+    music_hooks.on_assistant_turn_ended(deps, {"call-a"})  # response.done for the tool turn
     await asyncio.sleep(0.05)
     assert calls == [], "a tool call still in flight means the turn is not over"
 
-    music_hooks.on_tool_call_finished(needs_response=True)
+    music_hooks.on_tool_call_finished("call-a", needs_response=True)
     await asyncio.sleep(0.05)
     assert calls == [], "a follow-up response is coming; do not resume in the gap"
 
@@ -327,12 +327,12 @@ async def test_a_final_tool_batch_with_no_follow_up_resumes_the_music(ok_daemon,
     monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
 
     music_hooks.on_response_created()
-    music_hooks.on_tool_call_started()
-    music_hooks.on_assistant_turn_ended(deps)  # response.done for the tool turn
+    music_hooks.on_tool_call_started("call-a")
+    music_hooks.on_assistant_turn_ended(deps, {"call-a"})  # response.done for the tool turn
     await asyncio.sleep(0.02)
     assert calls == []
 
-    music_hooks.on_tool_call_finished(needs_response=False)
+    music_hooks.on_tool_call_finished("call-a", needs_response=False)
     await asyncio.wait_for(_until(lambda: calls == ["resume"]), timeout=1.0)
 
 
@@ -350,14 +350,50 @@ async def test_only_the_last_tool_of_a_batch_closes_the_turn(ok_daemon, tmp_path
     monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
 
     music_hooks.on_response_created()
-    music_hooks.on_tool_call_started()
-    music_hooks.on_tool_call_started()
-    music_hooks.on_assistant_turn_ended(deps)
-    music_hooks.on_tool_call_finished(needs_response=False)
+    music_hooks.on_tool_call_started("call-a")
+    music_hooks.on_tool_call_started("call-b")
+    music_hooks.on_assistant_turn_ended(deps, {"call-a", "call-b"})
+    music_hooks.on_tool_call_finished("call-a", needs_response=False)
     await asyncio.sleep(0.05)
     assert calls == [], "one tool of two finishing does not end the batch"
 
-    music_hooks.on_tool_call_finished(needs_response=False)
+    music_hooks.on_tool_call_finished("call-b", needs_response=False)
+    await asyncio.wait_for(_until(lambda: calls == ["resume"]), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_never_reports_back_does_not_strand_the_music(ok_daemon, tmp_path, monkeypatch):
+    """Fix round, finding 2: a tool the manager cancels must not park the resume.
+
+    `BackgroundToolManager._cleanup` calls `timeout_tools()`, which cancels the
+    tool's task; `_run_tool` guards `Exception`, which does not catch
+    `CancelledError`, so no notification is ever queued and
+    `on_tool_call_finished` never fires for that call. A bare counter therefore
+    stayed at 1 for the rest of the session: every later turn end returned early
+    and the track stayed ducked until the connection dropped. The phase now keys
+    on the call ids the handler already maintains, and the turn-end path
+    reconciles against them.
+    """
+    deps = _deps(tmp_path)
+    calls: list[str] = []
+
+    async def record_resume(_deps):
+        calls.append("resume")
+        return {"ok": True, "status": "resumed"}
+
+    monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
+
+    music_hooks.on_response_created()
+    music_hooks.on_tool_call_started("call-timeout")
+    music_hooks.on_assistant_turn_ended(deps, {"call-timeout"})
+    await asyncio.sleep(0.05)
+    assert calls == [], "a call the handler still lists as live defers the resume"
+
+    # The tool is cancelled without notifying anyone. The handler drops the dead
+    # call id from its own in-flight set on the next completed user transcript,
+    # so the turn that follows presents a set that no longer contains it.
+    music_hooks.on_response_created()
+    music_hooks.on_assistant_turn_ended(deps, set())
     await asyncio.wait_for(_until(lambda: calls == ["resume"]), timeout=1.0)
 
 
@@ -381,6 +417,86 @@ async def test_a_new_response_cancels_a_pending_resume(ok_daemon, tmp_path, monk
     audio_drain.note_cleared()
     await asyncio.sleep(0.05)
     assert calls == []
+
+
+# --- the barge-in's own turn end (fix round, finding 1) -------------------
+@pytest.mark.asyncio
+async def test_a_barge_in_does_not_resume_on_its_own_response_done(ok_daemon, tmp_path, monkeypatch):
+    """Fix round, finding 1: an interrupted turn must not schedule a resume.
+
+    R7's headline scenario. The track is audible, Reachy is mid-sentence -- the
+    "now playing" confirmation that follows `play_music` -- and the user cuts in.
+    `speech_started` ducks the music and flushes the playback queue, and that
+    flush satisfies all four drain conditions at once. So the `response.done` the
+    backend sends for the response it has just cancelled used to schedule a
+    resume that fired immediately: the track came back under the user's own
+    voice, and stayed up under the whole of the next reply.
+    """
+    deps = _deps(tmp_path)
+    track = tmp_path / "abc.mp3"
+    track.write_bytes(b"ID3")
+    await PLAYER.play(deps, video_id="abc", title="A Song", source_path=track)
+
+    calls: list[str] = []
+
+    async def record_resume(_deps):
+        calls.append("resume")
+        return {"ok": True, "status": "resumed"}
+
+    monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
+
+    music_hooks.on_response_created()
+    music_hooks.on_response_audio(sample_count=24000, sample_rate=24000)
+
+    music_hooks.on_user_speech_started(deps)  # the barge-in
+    music_hooks.on_assistant_turn_ended(deps)  # response.done for the cancelled response
+    await music_hooks.drain_pending_for_tests()
+    await asyncio.sleep(0.05)
+
+    assert calls == [], "the interrupted turn's response.done put the music back under the user"
+    state = PLAYER.current()
+    assert state is not None and state.paused is True, "the music must stay ducked"
+
+
+@pytest.mark.asyncio
+async def test_the_turn_after_a_barge_in_is_the_one_that_resumes(ok_daemon, tmp_path, monkeypatch):
+    """Fix round, finding 1, the other half: declining is a deferral, not a drop.
+
+    The resume the interrupted turn refuses to schedule has to arrive from the
+    end of the turn that answers the user -- and not one moment before that
+    turn's own audio has drained.
+    """
+    deps = _deps(tmp_path)
+    track = tmp_path / "abc.mp3"
+    track.write_bytes(b"ID3")
+    await PLAYER.play(deps, video_id="abc", title="A Song", source_path=track)
+
+    calls: list[str] = []
+
+    async def record_resume(_deps):
+        calls.append("resume")
+        return {"ok": True, "status": "resumed"}
+
+    monkeypatch.setattr(PLAYER, "resume_after_speech", record_resume)
+
+    music_hooks.on_response_created()
+    music_hooks.on_response_audio(sample_count=24000, sample_rate=24000)
+    music_hooks.on_user_speech_started(deps)
+    music_hooks.on_assistant_turn_ended(deps)  # the interrupted response
+    await music_hooks.drain_pending_for_tests()
+    await asyncio.sleep(0.05)
+    assert calls == [], "the interrupted turn resumed instead of deferring"
+
+    music_hooks.on_response_created()  # the reply to what the user just said
+    music_hooks.on_response_audio(sample_count=24000, sample_rate=24000)
+    music_hooks.on_assistant_turn_ended(deps)
+    await asyncio.sleep(0.05)
+    assert calls == [], "the reply's own audio is still queued"
+
+    audio_drain.note_chunk(sample_count=24000, sample_rate=24000)
+    audio_drain.note_queue_empty()
+    audio_drain.note_cleared()
+    await asyncio.wait_for(_until(lambda: calls == ["resume"]), timeout=1.0)
 
 
 # --- the receiver must never block (finding 1) ----------------------------
@@ -411,7 +527,7 @@ async def test_user_speech_pauses_the_music(monkeypatch: Any) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: calls.append("pause"))
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with((_FakeEvent("input_audio_buffer.speech_started"),))
@@ -425,7 +541,7 @@ async def test_finished_audio_ends_the_turn(monkeypatch: Any) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: calls.append("turn_end"))
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: calls.append("turn_end"))
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with((_FakeEvent("response.output_audio.done"),))
@@ -439,7 +555,7 @@ async def test_text_only_turn_also_ends_the_turn(monkeypatch: Any) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: calls.append("turn_end"))
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: calls.append("turn_end"))
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with((_FakeEvent("response.done"),))
@@ -458,7 +574,7 @@ async def test_the_receiver_reports_audio_before_it_is_queued(monkeypatch: Any) 
     seen: list[int] = []
 
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
     monkeypatch.setattr(hf_mod, "on_response_audio", lambda sample_count, sample_rate: seen.append(sample_count))
 
@@ -622,7 +738,7 @@ async def test_the_session_hooks_run_in_the_connection_finally(monkeypatch: Any)
     monkeypatch.setattr(hf_mod, "on_session_started", record_start)
     monkeypatch.setattr(hf_mod, "on_session_shutdown", record_stop)
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with(())
@@ -646,7 +762,7 @@ async def test_the_session_is_closed_even_when_the_connection_raises(monkeypatch
     monkeypatch.setattr(hf_mod, "on_session_started", record_start)
     monkeypatch.setattr(hf_mod, "on_session_shutdown", record_stop)
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     # A connection that dies mid-stream, which is what actually happens on a
@@ -680,7 +796,7 @@ async def test_handler_shutdown_is_still_safe_after_the_connection_closed(monkey
     monkeypatch.setattr(hf_mod, "on_session_started", record_start)
     monkeypatch.setattr(hf_mod, "on_session_shutdown", record_stop)
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: None)
-    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with(())
@@ -692,16 +808,27 @@ async def test_handler_shutdown_is_still_safe_after_the_connection_closed(monkey
 
 @pytest.mark.asyncio
 async def test_hooks_are_no_ops_when_nothing_plays(monkeypatch: Any) -> None:
-    """Every turn fires these; with no music they must cost nothing."""
+    """Every turn fires these; with no music they must cost nothing.
 
-    async def fail_post(self, *args, **kwargs):
-        raise AssertionError("music hooks must not touch the daemon when idle")
+    Fix round, finding 4: this used to raise `AssertionError` from inside the
+    patched `post`, which could not fail the test. The hooks are deliberately
+    fire-and-forget and the only collector is `drain_pending_for_tests`, which
+    gathers with `return_exceptions=True` -- so the raise was swallowed and the
+    surviving assertion held whether or not an idle hook had called the daemon.
+    Record the calls in the fake and assert on the record instead.
+    """
+    posted: list[str] = []
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", fail_post)
+    async def record_post(self, url, json=None, **kwargs):
+        posted.append(url)
+        return _Ok()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", record_post)
     deps = _deps()
     music_hooks.on_user_speech_started(deps)
     music_hooks.on_assistant_turn_ended(deps)
     await music_hooks.drain_pending_for_tests()
+    assert posted == [], "an idle hook talked to the daemon"
     assert PLAYER.current() is None
 
 

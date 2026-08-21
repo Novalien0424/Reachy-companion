@@ -40,12 +40,27 @@ Round 3 added two more:
   one, so a late `finally` from a replaced connection tore down its successor.
   `on_session_started()` mints `_SESSION_TOKEN`; `on_session_shutdown()` refuses
   anything else.
+
+The fix round added two more, both of them about state that could get *stuck*:
+
+* **finding 1 -- an interrupted turn does not schedule a resume.** A barge-in
+  flushes the playback queue, which satisfies every drain condition at once, so
+  the `response.done` the backend sends for the response it just cancelled put
+  the track straight back under the user's voice -- and left it there for the
+  whole reply, since nothing re-ducks between two responses. `audio_drain` now
+  marks the generations a flush truncated, and this module declines to schedule
+  for one. The resume comes from the end of the turn that answers the user.
+* **finding 2 -- tool calls are tracked by id, not counted.** A tool the
+  manager times out is cancelled, and a cancelled tool never reports back, so a
+  counter leaked upwards and stranded the music for the rest of the session.
+  `on_assistant_turn_ended` reconciles the ids against the handler's own
+  in-flight set, which the handler empties on every completed user transcript.
 """
 
 from __future__ import annotations
 import asyncio
 import logging
-from typing import Any, Set
+from typing import Any, Set, Collection
 
 from reachy_companion.hanova import audio_drain
 from reachy_companion.hanova.confirm import GATE
@@ -61,7 +76,14 @@ _DRAIN_REPORT_EVERY_S = 12.0
 
 _TASKS: Set[asyncio.Task[Any]] = set()
 _RESUME_TASK: asyncio.Task[Any] | None = None
-_TOOLS_IN_FLIGHT = 0
+# Fix round, finding 2: the call ids of the tool calls this turn is waiting on,
+# never a bare counter. A tool the manager times out is cancelled inside
+# `_run_tool`, whose `except Exception` does not catch `CancelledError`, so it
+# never reports back and a counter would stay above zero for the rest of the
+# session -- every later turn end returning early with the track still ducked.
+# Ids can be reconciled against the handler's own `_in_flight_tool_calls`; a
+# number cannot.
+_TOOL_CALLS_IN_FLIGHT: Set[str] = set()
 _RESPONSE_IN_FLIGHT = False
 # The generation `audio_drain` handed us for the response currently being
 # spoken. 0 means "no response has been created in this session".
@@ -96,9 +118,9 @@ def _cancel_pending_resume() -> None:
 
 
 def _clear_phase() -> None:
-    global _TOOLS_IN_FLIGHT, _RESPONSE_IN_FLIGHT, _RESPONSE_GENERATION
+    global _RESPONSE_IN_FLIGHT, _RESPONSE_GENERATION
     _cancel_pending_resume()
-    _TOOLS_IN_FLIGHT = 0
+    _TOOL_CALLS_IN_FLIGHT.clear()
     _RESPONSE_IN_FLIGHT = False
     _RESPONSE_GENERATION = 0
     audio_drain.reset()
@@ -178,14 +200,18 @@ def on_response_audio(sample_count: int, sample_rate: int) -> None:
         audio_drain.note_enqueued(_RESPONSE_GENERATION, sample_count, sample_rate)
 
 
-def on_tool_call_started() -> None:
-    """Record a tool call in flight, so a follow-up response is still to come."""
-    global _TOOLS_IN_FLIGHT
-    _TOOLS_IN_FLIGHT += 1
+def on_tool_call_started(call_id: str) -> None:
+    """Record a tool call in flight, so a follow-up response is still to come.
+
+    Fix round, finding 2: *call_id* is the same id the handler puts into its own
+    `_in_flight_tool_calls`, which is what lets `on_assistant_turn_ended`
+    reconcile the two and drop a call that died without reporting back.
+    """
+    _TOOL_CALLS_IN_FLIGHT.add(call_id)
     _cancel_pending_resume()
 
 
-def on_tool_call_finished(needs_response: bool) -> None:
+def on_tool_call_finished(call_id: str, needs_response: bool) -> None:
     """One tool call finished. Close the turn when nothing else will.
 
     Round 2, finding 1: when this is the **last** tool of the batch and the batch
@@ -193,9 +219,8 @@ def on_tool_call_finished(needs_response: bool) -> None:
     `response.created` / `response.done` pair, so nothing else would ever
     schedule the resume. This path closes the turn itself.
     """
-    global _TOOLS_IN_FLIGHT
-    _TOOLS_IN_FLIGHT = max(0, _TOOLS_IN_FLIGHT - 1)
-    if _TOOLS_IN_FLIGHT > 0 or needs_response:
+    _TOOL_CALLS_IN_FLIGHT.discard(call_id)
+    if _TOOL_CALLS_IN_FLIGHT or needs_response:
         return
     if _DEPS is None:
         logger.debug("music resume not scheduled: no session deps captured yet")
@@ -212,16 +237,38 @@ def on_user_speech_started(deps: Any) -> None:
     _spawn(PLAYER.pause_for_speech(deps))
 
 
-def on_assistant_turn_ended(deps: Any) -> None:
-    """Close this turn's audio generation and schedule the drain-then-resume."""
+def on_assistant_turn_ended(deps: Any, live_tool_calls: Collection[str] | None = None) -> None:
+    """Close this turn's audio generation and schedule the drain-then-resume.
+
+    Fix round, finding 2: *live_tool_calls* is the handler's own
+    `_in_flight_tool_calls` at the moment the turn ended, and it is authoritative
+    -- it is emptied on every completed user transcript, so a tool that the
+    manager cancelled without ever reporting back disappears from it. Any id we
+    are still holding that it does not list belongs to a call nothing will ever
+    finish, and keeping it would defer every later resume for the whole session.
+    The tool-completion path calls this without a set, having just maintained the
+    ids itself.
+    """
     global _RESPONSE_IN_FLIGHT, _RESUME_TASK
     _RESPONSE_IN_FLIGHT = False
+    if live_tool_calls is not None:
+        _TOOL_CALLS_IN_FLIGHT.intersection_update(live_tool_calls)
     generation = _RESPONSE_GENERATION
     if generation:
         # No more audio is coming for this response. Outstanding audio still in
         # the queue keeps `wait_drained` False until it has actually played.
         audio_drain.close_response(generation)
-    if _TOOLS_IN_FLIGHT > 0:
+        if audio_drain.was_interrupted(generation):
+            # Fix round, finding 1: this `response.done` belongs to the response
+            # the barge-in cancelled, and the same barge-in flushed the queue --
+            # so the drain wait would succeed instantly and put the track back
+            # under the user, who is still talking. The resume is not dropped,
+            # it is deferred: the turn that answers the user ends normally and
+            # schedules it then.
+            _cancel_pending_resume()
+            logger.debug("music resume deferred: this turn was interrupted by the user")
+            return
+    if _TOOL_CALLS_IN_FLIGHT:
         # A tool is still running; its result will produce another response, or
         # `on_tool_call_finished(needs_response=False)` will come back here.
         return
@@ -269,7 +316,7 @@ async def _resume_when_drained(deps: Any, generation: int, session: int) -> None
     if session != _SESSION_TOKEN:
         logger.debug("music resume skipped: the session ended while the audio drained")
         return
-    if _RESPONSE_IN_FLIGHT or _TOOLS_IN_FLIGHT > 0:
+    if _RESPONSE_IN_FLIGHT or _TOOL_CALLS_IN_FLIGHT:
         logger.debug("music resume skipped: another response or tool call started")
         return
     await PLAYER.resume_after_speech(deps)

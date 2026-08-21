@@ -279,6 +279,14 @@ class MusicPlayer:
 
             acknowledged = await daemon_stop_sound(deps)
             if not self._is_current(generation):
+                # Task 5 fix round, finding 3: the same reasoning as the play
+                # path above. This pause already silenced the track, so leaving
+                # the snapshot in place would leave the state claiming `playing`
+                # with nothing audible -- and the next pause would bank an
+                # elapsed offset spanning the silence, so the resume after it
+                # would jump forward. The transition that superseded us
+                # establishes its own state.
+                self._store(None)
                 return _superseded()
             if not acknowledged:
                 # Finding 2: do NOT mark it paused. The music is still playing,

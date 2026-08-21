@@ -323,6 +323,32 @@ async def test_a_play_superseded_during_its_pre_stop_drops_the_stale_state(daemo
 
 
 @pytest.mark.asyncio
+async def test_a_pause_superseded_during_its_stop_drops_the_stale_state(daemon, tmp_path):
+    """Task 5 fix round, finding 3: the same defect, still live on the pause path.
+
+    `pause_for_speech` stops the daemon and only then discovers it lost its
+    generation, and it used to return `superseded` without storing anything --
+    leaving state that claims `playing`, unpaused, with nothing audible. The next
+    pause then banks an elapsed offset spanning the silence and the eventual
+    resume jumps forward by that much. Task 5 makes the interleaving real: the
+    barge-in pause and the drain-then-resume are both detached tasks now, and
+    each takes its generation before it queues on the transition lock.
+    """
+    deps = _deps()
+    await PLAYER.play(deps, video_id="one", title="One", source_path=_track(tmp_path))
+
+    daemon.stop_delay = 0.05  # the pause is still inside daemon_stop_sound
+    pause = asyncio.create_task(PLAYER.pause_for_speech(deps))
+    await asyncio.sleep(0)
+    resume = asyncio.create_task(PLAYER.resume_after_speech(deps))
+    await asyncio.sleep(0)  # this bumps the generation and queues on the lock
+
+    assert (await pause)["status"] == "superseded"
+    assert (await resume)["status"] == "nothing_to_resume"
+    assert PLAYER.current() is None, "the pause silenced the daemon, so its snapshot must go"
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_transition_reports_itself(daemon, tmp_path):
     """A losing transition must say so rather than pretend it succeeded."""
     deps = _deps()

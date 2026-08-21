@@ -34,7 +34,7 @@ import time
 import asyncio
 import logging
 import threading
-from typing import Dict
+from typing import Set, Dict
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,12 @@ _GENERATION = 0
 # generation absent from this map is treated as closed, so a `wait_drained` for
 # a turn that never opened one cannot hang.
 _CLOSED: Dict[int, bool] = {}
+# Fix round, finding 1: the generations a queue flush truncated. `note_cleared()`
+# closes every generation it knows about, which is how a barge-in stops a resume
+# from waiting for audio that will never play -- but "closed because the audio is
+# gone" and "closed because the model finished speaking" mean opposite things to
+# the turn-end hook, and only this set tells them apart.
+_INTERRUPTED: Set[int] = set()
 # Seconds of audio enqueued but not yet handed to the sink.
 _OUTSTANDING_S = 0.0
 _QUEUE_EMPTY = True
@@ -65,6 +71,7 @@ def reset() -> None:
     with _LOCK:
         _GENERATION += 1
         _CLOSED.clear()
+        _INTERRUPTED.clear()
         _OUTSTANDING_S = 0.0
         _QUEUE_EMPTY = True
         _DRAINED_AT = 0.0
@@ -82,6 +89,7 @@ def begin_response() -> int:
         # Bound the bookkeeping: only the last few generations can matter.
         for stale in sorted(_CLOSED)[:-4]:
             _CLOSED.pop(stale, None)
+        _INTERRUPTED.intersection_update(_CLOSED)
         return _GENERATION
 
 
@@ -137,14 +145,29 @@ def note_cleared() -> None:
     A barge-in also ends every open turn, so every generation is closed here --
     otherwise a resume scheduled for the interrupted turn would wait out its
     whole timeout for audio that no longer exists.
+
+    Fix round, finding 1: every generation closed this way is also marked
+    **interrupted**. Closing them is what makes `wait_drained` stop waiting;
+    without the mark, that instant satisfaction is indistinguishable from a turn
+    that finished speaking, and the interrupted response's own `response.done`
+    then scheduled a resume that fired under the user's voice. Generations that
+    had already closed normally are marked too: the flush truncated their tail
+    just the same, and their `response.done` is still to come.
     """
     global _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT
     with _LOCK:
         for generation in list(_CLOSED):
             _CLOSED[generation] = True
+            _INTERRUPTED.add(generation)
         _OUTSTANDING_S = 0.0
         _QUEUE_EMPTY = True
         _DRAINED_AT = 0.0
+
+
+def was_interrupted(generation: int) -> bool:
+    """Report whether a queue flush truncated *generation* (fix round, finding 1)."""
+    with _LOCK:
+        return generation in _INTERRUPTED
 
 
 def outstanding_s() -> float:

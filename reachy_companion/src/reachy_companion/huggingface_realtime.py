@@ -716,7 +716,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             follow_up_requested = await self._deliver_tool_result(completed_tool)
         finally:
             if not completed_tool.is_idle_tool_call:
-                on_tool_call_finished(needs_response=follow_up_requested)
+                on_tool_call_finished(completed_tool.id, needs_response=follow_up_requested)
 
     async def _deliver_tool_result(self, completed_tool: ToolNotification) -> bool:
         """Send one tool result back. Returns whether a follow-up response was asked for."""
@@ -941,7 +941,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # D-018 / R7: the assistant's turn produced its last audio.
                         # This only *schedules* the resume; it fires when
                         # console.play_loop reports the audio has actually drained.
-                        on_assistant_turn_ended(self.deps)
+                        # The in-flight call ids go with it (fix round, finding 2):
+                        # they are what the hook reconciles its own phase against,
+                        # so a tool cancelled without reporting back cannot defer
+                        # every later resume.
+                        on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
                         logger.debug("response completed")
 
                     if event.type == "response.output_text.delta":
@@ -975,7 +979,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # hook is idempotent, and it refuses to schedule a resume
                         # while a tool call is still in flight -- a tool turn is
                         # always followed by a second, speaking response (finding 1).
-                        on_assistant_turn_ended(self.deps)
+                        on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
                         logger.debug("Response done")
@@ -1084,7 +1088,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # D-018 / finding 1: a tool call in flight means this turn
                         # is not over — a second, speaking response is still to
                         # come — so no resume may be scheduled until it finishes.
-                        on_tool_call_started()
+                        # It is tracked by the same call id as above, which is what
+                        # the turn-end reconciliation compares against.
+                        on_tool_call_started(call_id)
                         background_tool = await self.tool_manager.start_tool(
                             call_id=call_id,
                             tool_call_routine=ToolCallRoutine(
