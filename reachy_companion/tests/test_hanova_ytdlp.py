@@ -277,21 +277,18 @@ def test_download_audio_without_transcode_fetches_bestaudio(monkeypatch, tmp_pat
     out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
     assert out == {"ok": True, "path": str(tmp_path / "abc123.m4a"), "cached": False, "error": None}
     cmd = seen["cmd"]
-    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio"
-    assert "-x" not in cmd and "--audio-format" not in cmd and "--ffmpeg-location" not in cmd
+    # `/best` is the SABR fallback (audio-only formats can vanish per session),
+    # and `-x` without a target format copies its audio track out untouched.
+    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio/best"
+    assert "-x" in cmd and "--audio-format" not in cmd and "--audio-quality" not in cmd
 
 
-def test_download_audio_without_transcode_needs_no_ffmpeg(monkeypatch, tmp_path):
-    """The no-transcode path must not be blocked by a missing transcoder."""
+def test_download_audio_without_ffmpeg_fails_in_both_modes(monkeypatch, tmp_path):
+    """Both modes need ffmpeg: to encode mp3, or to demux a muxed fallback."""
     monkeypatch.setattr(ytdlp, "ffmpeg_exe", lambda: None)
-
-    def fake_run(cmd, timeout_s):
-        (tmp_path / "abc123.webm").write_bytes(b"WEBM")
-        return _completed("")
-
-    monkeypatch.setattr(ytdlp, "run_command", fake_run)
-    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
-    assert out["ok"] is True and out["path"].endswith("abc123.webm")
+    for transcode in (True, False):
+        out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=transcode)
+        assert out["ok"] is False and "ffmpeg" in out["error"]
 
 
 def test_a_cached_mp3_still_serves_the_no_transcode_mode(monkeypatch, tmp_path):

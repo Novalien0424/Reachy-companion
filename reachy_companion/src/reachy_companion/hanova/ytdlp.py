@@ -151,8 +151,10 @@ def download_audio(video_id: str, dest_dir: Path, *, transcode_mp3: bool = True)
     if not ytdlp_available():
         return {"ok": False, "path": None, "cached": False, "error": "yt-dlp is not installed on this robot"}
     ffmpeg = ffmpeg_exe()
-    if transcode_mp3 and not ffmpeg:
-        return {"ok": False, "path": None, "cached": False, "error": "ffmpeg is unavailable; cannot make an mp3"}
+    if not ffmpeg:
+        # Both modes need it: the mp3 mode to encode, the native mode to pull
+        # the audio track out of a muxed fallback download (a stream copy).
+        return {"ok": False, "path": None, "cached": False, "error": "ffmpeg is unavailable; cannot produce audio"}
 
     cached = _cached_audio(video_id, dest_dir)
     if cached is not None:
@@ -181,7 +183,18 @@ def download_audio(video_id: str, dest_dir: Path, *, transcode_mp3: bool = True)
             str(ffmpeg),
         ]
     else:
-        format_args = ["-f", "bestaudio[ext=m4a]/bestaudio"]
+        # `/best` matters: YouTube's SABR experiment strips the audio-only
+        # formats from some sessions entirely (observed on-robot 2026-08-22),
+        # and the muxed stream is then the only thing left. `-x` without a
+        # target format extracts its audio track as a stream copy -- never a
+        # re-encode -- so both branches land a native-container audio file.
+        format_args = [
+            "-f",
+            "bestaudio[ext=m4a]/bestaudio/best",
+            "-x",
+            "--ffmpeg-location",
+            str(ffmpeg),
+        ]
     cmd = _ytdlp_argv() + [
         f"https://www.youtube.com/watch?v={video_id}",
         *format_args,
