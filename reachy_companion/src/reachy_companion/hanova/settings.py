@@ -307,6 +307,18 @@ def ytdlp_search_n() -> int:
     return env_int("HANOVA_YTDLP_SEARCH_N", 5, minimum=1, maximum=25)
 
 
+def ytdlp_extractor_args() -> str:
+    """Read the optional ``--extractor-args`` value for every yt-dlp call.
+
+    YouTube intermittently refuses extraction without a JavaScript runtime the
+    robot does not carry (every candidate then errors "not available"), and
+    ``youtube:player_client=android`` sidesteps the challenge. Empty -- the
+    default -- adds nothing; the knob lives in configuration because the
+    working value tracks YouTube's behaviour, not this codebase.
+    """
+    return env_str("HANOVA_YTDLP_EXTRACTOR_ARGS")
+
+
 def ytdlp_timeout_s() -> int:
     """Per-attempt timeout for a yt-dlp search. Zero would abort instantly."""
     return env_int("HANOVA_YTDLP_TIMEOUT_S", 20, minimum=1, maximum=300)

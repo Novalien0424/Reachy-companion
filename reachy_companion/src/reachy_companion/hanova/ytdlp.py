@@ -62,7 +62,11 @@ def run_command(cmd: list[str], timeout_s: int) -> subprocess.CompletedProcess[s
 
 
 def _ytdlp_argv() -> list[str]:
-    return [sys.executable, "-m", "yt_dlp"]
+    argv = [sys.executable, "-m", "yt_dlp"]
+    extractor_args = settings.ytdlp_extractor_args()
+    if extractor_args:
+        argv += ["--extractor-args", extractor_args]
+    return argv
 
 
 def search(query: str, max_duration_s: int | None = None) -> Dict[str, Any]:

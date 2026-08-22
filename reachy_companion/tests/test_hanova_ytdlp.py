@@ -226,3 +226,38 @@ def test_cut_from_returns_false_on_failure(monkeypatch, tmp_path):
     source.write_bytes(b"ID3data")
     monkeypatch.setattr(ytdlp, "run_command", lambda cmd, timeout_s: _completed("", "bad", returncode=1))
     assert ytdlp.cut_from(source, 10.0, tmp_path / "out.mp3") is False
+
+
+# --- extractor args passthrough (on-robot finding, 2026-08-22) -------------
+def test_extractor_args_are_absent_by_default(monkeypatch):
+    """With the key unset, the argv carries no --extractor-args at all."""
+    seen = {}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmd"] = cmd
+        return _completed("dQw4w9WgXcQ\nA Song Title\n")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    monkeypatch.delenv("HANOVA_YTDLP_EXTRACTOR_ARGS", raising=False)
+    assert ytdlp.search("some song")["ok"] is True
+    assert "--extractor-args" not in seen["cmd"]
+
+
+def test_extractor_args_reach_search_and_download(monkeypatch, tmp_path):
+    """The configured value is forwarded to every yt-dlp invocation.
+
+    YouTube intermittently refuses extraction without a JavaScript runtime the
+    robot does not carry; the operator sets a player-client workaround here.
+    """
+    seen = {"cmds": []}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmds"].append(cmd)
+        return _completed("dQw4w9WgXcQ\nA Song Title\n")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    monkeypatch.setenv("HANOVA_YTDLP_EXTRACTOR_ARGS", "youtube:player_client=android")
+    assert ytdlp.search("some song")["ok"] is True
+    ytdlp.download_audio("dQw4w9WgXcQ", tmp_path)
+    for cmd in seen["cmds"]:
+        assert cmd[cmd.index("--extractor-args") + 1] == "youtube:player_client=android"
