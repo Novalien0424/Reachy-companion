@@ -1,5 +1,47 @@
 # Progress
 
+## HomeAssistant-Nova port landed (2026-08-21 — D-018)
+
+Twenty-two capabilities ported natively from the operator's `ha-actions` MCP
+server: no MCP hop, no vendored `server.py`, no stdio lane. Every personal
+identifier upstream hardcoded — calendar id, task-list id, Drive folder id,
+account address, HA entity ids, NAS share and credentials — is now configuration,
+and `tests/test_hanova_integration.py` fails if any of it reappears in the
+package, the profile or `.env.example`. The model now sees 39 tools, up from 17.
+
+Four cross-cutting behaviours are in code, not in the prompt: **per-tool**
+enablement aggregated into one tri-state verdict line per family (the app boots
+green with zero new configuration), a **tri-state** home-network probe that says
+`away_from_home` only on positive off-home routing evidence and
+`home_status_unknown` — doing no house work whatsoever — when Home Assistant is
+merely broken, unauthorised or reached over a tunnel, a 90-second two-step
+confirmation gate **scoped to the conversation and to an individual claim id**
+that executes the *parked* action and spends the authorisation on success or on a
+terminal failure, and metadata-only logging through one shared redaction helper
+across both the tools and the new service layer.
+
+Three new pure-wheel dependencies: `yt-dlp` 2026.8.19, `imageio-ffmpeg` 0.6.0,
+`smbprotocol` 1.17.0 — all confirmed to resolve as aarch64 wheels. Media the TV
+must fetch is served from the app's existing FastAPI server at `/hanova-media`,
+so there is no new port and no second web server.
+
+Three upstream behaviours are declared non-goals rather than quietly dropped:
+Drive restore, email BCC, and the generic confirmation summary for the
+self-destruct gag (whose in-character ritual, TTL and abort word are kept).
+
+The deploy ritual was hardened in the same pass: the robot's LAN address, SSH
+user and host-key fingerprint are out of the tracked `reachy-deploy` skill and
+into the gitignored repo-root `.env` (`REACHY_HOST`, `REACHY_SSH_USER`,
+`REACHY_SSH_PASSWORD`, `REACHY_HOSTKEY`), documented by a placeholder-only
+tracked `.env.example`; and the backup/restore step now covers the three new
+instance files (`google-workspace-mcp/<account>.json`, `google-oauth.json`,
+`nas-video-index.json`) with a per-deployment backup directory and a redacted
+manifest, so a stale copy from an earlier deploy can no longer overwrite a file
+that is legitimately absent.
+
+**Not yet run on the robot.** The on-robot deployment and wake-test checklist is
+the check that matters; until it runs, every claim here rests on the suite.
+
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
 Suite: **622 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
