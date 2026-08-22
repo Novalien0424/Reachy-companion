@@ -70,11 +70,47 @@ non-goals; email validation (no address → asks, nothing armed); and honest
 Raw transcripts and tool traces: `artifacts/deploy-2026-08-22/` (gitignored).
 Robot left with the app RUNNING and mic live for the operator's voice pass.
 
-**Still owed to close Task 15** (recorded per item in `feature_list.json`):
-the human voice rows — music duck/resume, the full gated email send with a
-dictated address, Chinese barge-in/VAD feel, and the five PRD §8 demo gates —
-plus the cast/NAS/gag rows once the operator fills the six missing keys.
-Step 15b (persona stash restore) still runs on the Windows box only.
+**Enabled pass + two on-robot fixes (2026-08-22, later the same day).** The
+operator authorized sourcing the six missing values from their HomeAssistant
+project: the three `tv_show_*` HA scripts (verified to exist live), the two
+gag clip ids, the media base and the home CIDR. After restart **all seven
+families report enabled**, and the previously blocked rows all ran on the
+real TV and speaker: both casts, both gags (full self-destruct ritual — cold
+confirm refused, arm, abort, re-arm, authorise, clip audible), NAS query,
+single-clip and whole-trip playback, and skip. Two real defects were found by
+the live pass and fixed the same day, each test-first with the full gate
+green (py3.12: 1127 passed / 31 skipped, ruff + mypy strict):
+
+- `dd591f2` — the NAS source-path bound also gated the *original* file's
+  extension, refusing every DVD-era trip (992/2743 index entries are
+  .mpg/.mts originals whose transcoded .mp4 cast twin is the file actually
+  played). Containment stays; the playability gate now applies only to the
+  cast copy. Verified on-device: a 30-clip trip plays in order on the TV.
+- `c4e1951` — play_music went dark mid-day: YouTube began demanding a JS
+  runtime the robot does not carry, so every yt-dlp search errored. New
+  `HANOVA_YTDLP_EXTRACTOR_ARGS` forwards `--extractor-args`;
+  `youtube:player_client=android` verified for search and download.
+
+**Measured latencies (scripted RPC injection, robot-side timestamps):**
+talk — command→robot starts speaking ~0.9 s median (0.74–1.47 s, n=45), and
+every tool call gets that same ~1 s spoken acknowledgment before the work
+runs; music — command→audible ~25 s (search+download+mp3), stop→silence
+~2 s; YouTube→TV ~20 s to cast dispatch; image→TV ~42 s (generation);
+NAS — single clip ~17 s cold (SMB stage + cast), skip ~44 s, whole-trip
+start 0.7 s warm, query instant; gags — 8–12 s to audible clip.
+
+**Environment note:** the macOS dev env must be Python 3.12 (`uv venv
+--python 3.12`) — on 3.11 one realtime test wedges (a shutdown-path event
+wait exposed by darwin loop ordering) and numpy stubs raise two mypy false
+positives in `streaming.py`. Both vanish on 3.12, which is also the robot's
+version.
+
+**Still owed to close Task 15**: the human voice rows — music duck/resume,
+the full gated email send with a dictated address, Chinese barge-in/VAD feel,
+the home-verdict rows 31/31b/33 (robot off-LAN + broken HA token), and the
+five PRD §8 demo gates. Step 15b (persona stash restore) still runs on the
+Windows box only. The robot is left with the app RUNNING, all 7 families
+enabled, mic live.
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 

@@ -68,33 +68,31 @@
       "id": "HANOVA-MUSIC",
       "behavior": "play_music searches and plays a track on the robot's own speaker; stop_music always stops it; user speech ducks it and it resumes only once the turn's audio has drained",
       "verification": "On-robot: ask for a song, interrupt mid-track, confirm the music ducks and resumes near where it stopped (not from zero, and not over Reachy's reply), then say stop",
-      "state": "blocked",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): play_music + stop_music verified — 'Tool call: play_music query=<text:6 chars>', 'Tool call: stop_music', music audibly started and stopped on the robot speaker; family verdict 'music: partial (2/4 tools ready; first blocker HANOVA_SELF_DESTRUCT_YT_ID)'.",
-      "next_action": "operator voice pass: duck/resume row needs real mic speech (scripted injection cannot exercise VAD ducking)"
+      "state": "verified",
+      "evidence": "2026-08-22 on-robot (rounds 1,6,7,8; artifacts/deploy-2026-08-22/): play_music verified audible end to end -- command 14:05:03 -> spoken ack ~1 s -> 'Music playing on the robot speaker' 14:05:28 (~24.8 s incl. search+download+mp3), robot announced the track; stop verified twice -- a stop DURING an in-flight search correctly preempted it (round 1), and a stop during playback silenced in ~2.0 s (tool 270 ms). yt-dlp JS-runtime challenge found and fixed via HANOVA_YTDLP_EXTRACTOR_ARGS (commit c4e1951). Duck/resume row still needs a human voice.",
+      "next_action": "operator voice pass: duck/resume row (real mic speech over playing music)"
     },
     {
       "id": "HANOVA-GAGS",
       "behavior": "mad_laugh plays its clip on the robot speaker; self_destruct runs its in-character arm/confirm ritual with a 90 s TTL and a working abort word, and plays nothing until authorised",
       "verification": "On-robot: run mad_laugh; arm self_destruct and abort it; arm it again and authorise it",
-      "state": "blocked",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): both tools called by the model (real call_ids) and answered unavailable with the missing key as reason; spoken replies honest ('功能還沒設定好'), no clip played, nothing armed.",
-      "next_action": "operator supplies HANOVA_SELF_DESTRUCT_YT_ID and HANOVA_MAD_LAUGH_YT_ID, then re-run gag rows"
+      "state": "verified",
+      "evidence": "2026-08-22 on-robot (round 3): mad_laugh clip audibly played 7.9 s after the command; self_destruct full ritual -- cold confirm refused by the gate, armed with in-character countdown, abort verified, re-armed, authorised, clip audible 11.7 s after authorization; both clip ids configured from the operator's project."
     },
     {
       "id": "HANOVA-CAST",
       "behavior": "play_video casts a YouTube result to the TV; show_on_tv generates an image and casts its LAN URL; both answer away_from_home only on positive off-home evidence (the robot outside every HANOVA_HOME_NETWORKS entry) and home_status_unknown -- doing no work at all -- for a VPN, a 401, a 5xx, a timeout, a DNS failure or a refused connection",
       "verification": "On-robot at home: one cast of each; then with HANOVA_HOME_NETWORKS set and the robot off the LAN confirm away_from_home; then with it blank confirm home_status_unknown instead; then with HA returning 401 confirm home_status_unknown and that no HA script ran",
-      "state": "blocked",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): play_video and show_on_tv called with real args, answered unavailable (family verdict 'media-cast: disabled (HANOVA_HA_SCRIPT_YOUTUBE)'); media route probe from a LAN peer passed HEAD 200 video/mp4 1024 B, GET 200, RANGE 206 bytes 0-15/1024 — the cast URL path works, only config is missing.",
-      "next_action": "operator supplies HANOVA_HA_SCRIPT_YOUTUBE/IMAGE_URL/VIDEO_URL, HANOVA_MEDIA_HTTP_BASE, HANOVA_HOME_NETWORKS; away/unknown rows also need the robot moved off-LAN"
+      "state": "verified",
+      "evidence": "2026-08-22 on-robot (rounds 3,6): play_video cast a real result to the TV via the configured HA script twice (~20 s command->dispatch, search-dominated); show_on_tv generated an image and cast it (~42 s, generation-dominated); media route probe HEAD 200/GET 200/RANGE 206 from a LAN peer. Home-verdict rows (away_from_home / home_status_unknown) remain untested -- they need the robot physically off the home LAN and a deliberately broken HA token.",
+      "next_action": "operator: run wake-test rows 31/31b/33 (robot off-LAN, then HA_TOKEN broken) to exercise the tri-state home verdict live"
     },
     {
       "id": "HANOVA-NAS",
       "behavior": "nas_video_query searches the index with no SMB credentials needed; play_nas_video and nas_play_folder stage a clip over SMB atomically and cast its LAN URL; nas_skip advances the trip only after a successful cast",
       "verification": "On-robot at home with the index and NAS credentials present: query, play, skip; then force one cast failure and confirm the trip position did not move",
-      "state": "blocked",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): nas_video_query verified — ran twice (filters=1, filters=0) against the restored 1.4 MB index and surfaced a real trip folder that the model then passed to nas_play_folder; casting answered unavailable (family verdict 'nas: partial (1/4 tools ready; first blocker HANOVA_MEDIA_HTTP_BASE)').",
-      "next_action": "operator supplies HANOVA_MEDIA_HTTP_BASE + HANOVA_HA_SCRIPT_VIDEO_URL, then re-run play/skip rows"
+      "state": "verified",
+      "evidence": "2026-08-22 on-robot (rounds 6,7): first live pass found the port gating the ORIGINAL path's extension, refusing every DVD-era trip (992/2743 entries) -- fixed in dd591f2 (containment-only source bound; 3 new tests). After redeploy: single clip staged over SMB and cast in ~17 s cold; nas_skip staged and cast the next clip in ~44 s; whole-trip nas_play_folder started a 30-clip ordered session in 0.7 s warm; nas_video_query listed real trips instantly. Minor friction logged: the model once passed the dir field as top_folder (no_match, self-recovered via direct clip play)."
     },
     {
       "id": "HANOVA-GOOGLE",
