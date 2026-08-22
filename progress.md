@@ -41,24 +41,40 @@ that is legitimately absent.
 
 Suite: **1118 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 
-**Not yet run on the robot.** The on-robot deployment and wake-test checklist is
-the check that matters; until it runs, every claim here rests on that suite.
+**DEPLOYED AND VERIFIED ON THE ROBOT — 2026-08-22, from the Mac mini** (eighth
+install; Task 15 resumed at Step 4 per `session-handoff.md`, OpenSSH instead of
+plink). Version gate passed (daemon 1.10.0rc5, git ref); wheel sha256 verified
+end to end; two-step `--no-deps` install pulled exactly the three new aarch64
+wheels and the bundled ffmpeg binary runs on-device; backup/restore ritual run
+with the new manifest (both JSON stores recorded absent — no live enrollment
+yet); the committed `persona.md` deployed byte-exact (sha match, 10/10 routing
+tokens); six missing keys appended as empty placeholders only (operator's 20
+real keys untouched, names checked, never values).
 
-**Deploy attempt 2026-08-22: robot unreachable — nothing on the robot touched.**
-Everything up to the robot boundary is done and verified: the final whole-branch
-review closed (two Important findings fixed and re-reviewed), the full gate ran
-green over the integrated tree (1123 passed / 30 skipped; ruff + mypy strict),
-the branch merged to `main` (`5601738`, persona stash intact) and pushed, the
-three new dependencies re-proved as aarch64 wheels, and exactly one wheel built
-(`reachy_companion-1.0.0`, entry point verified). The version gate then found the
-daemon silent. **Confirmed cause (operator): the Windows dev machine is on a
-different LAN than the robot** — the robot is fine; `:8000`/`:22` simply do not
-route from here, and the earlier ping response came from an unrelated device in
-this LAN's identical private range. Per the deploy skill this was a correct
-STOP with nothing touched. Resume: run Task 15 from Step 4 **on the Mac mini**,
-which shares the robot's LAN — `session-handoff.md` carries the Mac-specific
-resume notes (OpenSSH instead of plink, `.env` transported by hand, wheel
-rebuilt in place, Step 15b stays on the Windows box).
+On-robot verification: **22/22 ported tools registered within one startup
+boundary, secondary count 39**; seven family verdicts — google-workspace,
+drive, notion, email **enabled**; nas partial 1/4 (`HANOVA_MEDIA_HTTP_BASE`),
+media-cast disabled (`HANOVA_HA_SCRIPT_YOUTUBE`), music partial 2/4
+(`HANOVA_SELF_DESTRUCT_YT_ID`); `persona: instance persona.md`; D-017 VoiceFX
+chain live; zero tracebacks. Media route probed from a LAN peer: HEAD 200
+`video/mp4`, GET 200, RANGE 206.
+
+A scripted RPC wake test (31 injected turns via `conversation.say`, mic muted
+for determinism) exercised **every ported tool on the robot**: music
+play/stop audible on the speaker; the full calendar and task cycles including
+all gated deletes/completes in both directions; notion_add; drive
+list/upload/trash with both gates (camera frame captured at confirm time,
+then trashed — self-cleaned); the restore and BCC refusals per the declared
+non-goals; email validation (no address → asks, nothing armed); and honest
+`unavailable` answers from every blocked tool with the missing key as reason.
+Raw transcripts and tool traces: `artifacts/deploy-2026-08-22/` (gitignored).
+Robot left with the app RUNNING and mic live for the operator's voice pass.
+
+**Still owed to close Task 15** (recorded per item in `feature_list.json`):
+the human voice rows — music duck/resume, the full gated email send with a
+dictated address, Chinese barge-in/VAD feel, and the five PRD §8 demo gates —
+plus the cast/NAS/gag rows once the operator fills the six missing keys.
+Step 15b (persona stash restore) still runs on the Windows box only.
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
