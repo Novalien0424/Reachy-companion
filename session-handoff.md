@@ -1,50 +1,67 @@
-# Session handoff — 2026-08-22 (HA-Nova port, ready to merge)
+# Session handoff — 2026-08-22 (HA-Nova port merged; deploy blocked on robot power)
 
 ## Where things stand
 
-**HA-Nova port (22 tools) is COMPLETE on branch `feat/ha-nova-port`.** Plan:
-`docs/superpowers/plans/2026-08-21-ha-nova-port.md`. SDD ledger — THE resume
-map, with every task's commits, rulings and residual minors:
+**The HA-Nova port (22 tools) is COMPLETE and MERGED to `main` (`5601738`),
+pushed.** Plan: `docs/superpowers/plans/2026-08-21-ha-nova-port.md`. SDD
+ledger — the full record of every task's commits, rulings and residual minors:
 `.superpowers/sdd/2026-08-21-ha-nova-port/progress.md`.
 
-- Tasks 0–14 (all 15) complete and individually reviewed.
-- Final whole-branch review done: **"Ready to merge: with fixes"** — 0 Critical,
-  2 Important. Both, plus five folded-in minors, were fixed in the final fix
-  wave; report at
-  `.superpowers/sdd/2026-08-21-ha-nova-port/final-fix-wave-report.md`.
-- All other deferred minors are accepted residuals, recorded in the ledger.
-- Gates green on the branch: pytest, `ruff check src tests`, `mypy` strict.
-  (`ruff format --check` has 5 pre-existing offenders and is not a gate.)
+- Tasks 0–14 complete and individually reviewed; final whole-branch review
+  closed ("with fixes" — 0 Critical, 2 Important, all fixed and re-reviewed in
+  the final fix wave; report:
+  `.superpowers/sdd/2026-08-21-ha-nova-port/final-fix-wave-report.md`).
+- Full gate over the integrated tree: **1123 passed / 30 skipped**, ruff check
+  clean, mypy strict clean. (`ruff format --check` has 5 pre-existing
+  offenders; not a gate.)
+- Task 15 progress: Step 1b (gate) ✅, Step 1c (merge, persona stash intact) ✅,
+  Step 2 (aarch64 re-proof: yt-dlp 2026.8.19, imageio-ffmpeg 0.6.0,
+  smbprotocol 1.17.0) ✅, Step 3 (exactly one wheel,
+  `reachy_companion-1.0.0-py3-none-any.whl`, entry point verified) ✅.
+- **Step 4 STOP: the robot is unreachable.** The `REACHY_HOST` address in the
+  repo-root `.env` answers ping but `:8000` (daemon) and `:22` (SSH) are both
+  silent, no ARP entry on this segment, and the standard mDNS names answer
+  nothing — consistent with the robot powered off (or on another network) with
+  something else holding its old DHCP lease. Nothing on the robot was touched.
 
-## Next: Task 15 — merge and deploy
+## To resume the deploy
 
-Brief: `.superpowers/sdd/2026-08-21-ha-nova-port/task-15-brief.md`. In order:
-restore the operator's `persona.md` from `stash@{0}` and reconcile it with the
-port's appended Tools section, merge the branch to `main`, deploy to the robot
-with the `reachy-deploy` skill (app only — the daemon is never touched), then
-run the five PRD §8 demo gates on the device.
-
-## Robot and credentials
-
-- Robot: asleep, running the pre-port `main` build. Untouched by the port.
-- Machine access (host, SSH user, password, host key): repo-root `.env`, which
-  is gitignored. Never quote its values in a tracked file.
-- Credentials are installed on the robot and mirrored in the gitignored dev
-  `.env` — **key names only** here: `HA_TOKEN` plus the eight HANOVA / Google /
-  NAS keys documented in `reachy_companion/.env.example`. Three private files
-  live in the robot's instance directory (Google Workspace MCP account JSON,
-  Google OAuth JSON, NAS video index JSON), mode 600.
-- Task 14 extended the deploy skill's backup/restore ritual to cover those three
-  files, so no manual pre-deploy backup step is needed any more.
+1. Power the robot on; confirm its LAN address matches `REACHY_HOST` in the
+   repo-root `.env` (update the `.env` if the lease moved — never a tracked
+   file).
+2. `REACHY_HOSTKEY` is still unset in `.env`; the resume sequence captures the
+   fingerprint automatically on first contact and appends it.
+3. Rerun Task 15 from Step 4 (brief:
+   `.superpowers/sdd/2026-08-21-ha-nova-port/task-15-brief.md`) — wheel, env
+   seeding rules (append only MISSING keys; the operator's real keys are
+   already installed on the robot), persona deploy (Step 8b), and the
+   verification steps are all ready. The wake-test voice rows need a human
+   Chinese speaker; everything else is scripted.
 
 ## Git safety
 
 - The operator's `persona.md` rewrite is in `stash@{0}` ("hanova-port: user
-  persona.md baseline", patch-id `d17ac2970a8c`, patch files in the SDD
-  workspace). Task 15 restores and verifies it. **Do not drop the stash.**
-- Nothing merges to `main` until Task 15's merge-before-deploy step.
+  persona.md baseline", patch-id `d17ac2970a8c`). Step 15b restores and
+  verifies it (apply → verify → drop, never pop). **Do not drop the stash.**
+  Note: the Task 0 patch files referenced by Step 15b lived in a `$env:TEMP`
+  that predates an operator reboot — if absent, verify identity against
+  `git stash show -p` patch-id instead.
+- `feat/ha-nova-port` is merged; delete only after the operator confirms the
+  on-robot pass.
+
+## Robot and credentials
+
+- Robot last known: asleep on the pre-port build; the new wheel is built but
+  NOT yet installed.
+- Machine access (host, SSH user, password, host key): repo-root `.env`,
+  gitignored — never quote values in tracked files.
+- Robot-side credentials are installed (key names in
+  `reachy_companion/.env.example`); three private instance files (Google
+  Workspace account JSON, Google OAuth JSON, NAS video index), mode 600. The
+  deploy skill's ritual backs all three up.
 
 ## Operator-pending
 
-Live pass on the robot (voice / face / move_head per `progress.md`), the five
-demo gates, and `finishing-a-development-branch` after Task 15.
+Power/network for the robot (the deploy blocker), then the wake-test voice rows
+(Step 13's 33-row transcript), the five PRD §8 demo gates, and
+`finishing-a-development-branch` cleanup.

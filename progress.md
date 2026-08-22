@@ -44,6 +44,22 @@ Suite: **1118 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 **Not yet run on the robot.** The on-robot deployment and wake-test checklist is
 the check that matters; until it runs, every claim here rests on that suite.
 
+**Deploy attempt 2026-08-22: robot unreachable — nothing on the robot touched.**
+Everything up to the robot boundary is done and verified: the final whole-branch
+review closed (two Important findings fixed and re-reviewed), the full gate ran
+green over the integrated tree (1123 passed / 30 skipped; ruff + mypy strict),
+the branch merged to `main` (`5601738`, persona stash intact) and pushed, the
+three new dependencies re-proved as aarch64 wheels, and exactly one wheel built
+(`reachy_companion-1.0.0`, entry point verified). The version gate then found the
+daemon silent: the address in the repo-root `.env` answers ping but neither
+`:8000` (daemon) nor `:22` (SSH) responds, there is no ARP entry for it on this
+machine's segment, and the standard mDNS names answer nothing — consistent with
+the robot being powered off (or on another network) and something else holding
+its old DHCP address. Per the deploy skill this is a decisive STOP. Resume:
+power the robot on, confirm its LAN address matches `REACHY_HOST` in the
+repo-root `.env` (update it there if the lease moved), then rerun Task 15 from
+Step 4 — the wheel, the runbook, and the operator checklist are all ready.
+
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
 **Superseded by the D-018 section above** for the suite numbers and the tool
