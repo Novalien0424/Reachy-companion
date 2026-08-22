@@ -15,6 +15,7 @@ a reader, and the untracked scan in Task 14 Step 9b treats any of them appearing
 next to a real value as a failure.
 """
 
+import os
 import json
 import time
 import types
@@ -1255,6 +1256,122 @@ def test_pruning_never_deletes_a_staging_file(tmp_path):
     media_store.prune("nas", tmp_path, keep=0)
     assert staging.exists(), "a .part file is an active writer, not LRU fodder"
     assert not (nas_dir / "old.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_clip_survives_the_prune_that_follows_the_cast(monkeypatch, tmp_path):
+    """Final review, F2: the cache-hit path never refreshed the clip's mtime.
+
+    `stage_and_cast` skips the fetch when the clip is already staged and then
+    prunes the cache by mtime -- so a clip played straight from the cache is the
+    OLDEST entry in the directory, and with more than `keep` clips staged the
+    prune deleted the very file whose URL had just been handed to the TV. The
+    cast reported ok and the Chromecast fetched a 404. The music cache had the
+    identical bug and the identical fix (`ytdlp.download_audio`).
+    """
+    from reachy_companion.hanova import media_store
+
+    monkeypatch.setenv("HANOVA_NAS_CAST_KEEP", "2")
+    recorded = _stub_transfer(monkeypatch)
+
+    video = dict(INDEX["videos"][0])
+    first = await nas.stage_and_cast(video, tmp_path)
+    assert first["ok"] is True
+    staged = media_store.media_dir("nas", tmp_path) / nas.cast_filename(str(video["cast_path"]))
+    assert staged.is_file()
+
+    # Make the staged clip the oldest entry, then fill the cache past `keep`.
+    old = time.time() - 3600
+    os.utime(staged, (old, old))
+    for index in range(3):
+        staged.with_name(f"filler{index}.mp4").write_bytes(b"MP4")
+
+    again = await nas.stage_and_cast(video, tmp_path)
+    assert again["ok"] is True
+    assert recorded["fetched"] == [video["cast_path"]], "the replay must be a cache hit, not a second copy"
+    assert staged.is_file(), "the prune deleted the clip whose URL was just cast"
+
+
+def test_a_clip_found_already_staged_under_the_lock_is_touched(monkeypatch, tmp_path):
+    """Final review, F2: the other cache-hit branch, inside the single-flight lock.
+
+    "Another caller staged it while we waited" returns the same stale-mtime file
+    to the same prune, so it needs the same touch as the skip-fetch branch above.
+    """
+    destination = tmp_path / "clip.mp4"
+    destination.write_bytes(b"MP4DATA")
+    old = time.time() - 3600
+    os.utime(destination, (old, old))
+
+    opens = {"n": 0}
+
+    class _CountingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            opens["n"] += 1
+            return _WorkingSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _CountingSmbClient)
+    nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", destination)
+
+    assert opens["n"] == 0, "an already-staged clip must not be copied again"
+    assert destination.stat().st_mtime > old + 60, "the staged clip's mtime was not refreshed"
+
+
+def test_a_retry_of_a_wedged_clip_times_out_instead_of_parking_a_thread(monkeypatch, tmp_path):
+    """Final review, F3: the per-destination lock was acquired with no timeout.
+
+    The fence bounds the *caller*, not the worker, so a stuck clip's lock stays
+    held until the SMB call unblocks. Every retry used to block in an untimed
+    `Lock.acquire` inside `asyncio.to_thread`, permanently occupying one of the
+    default executor's few threads (8 on the CM4) rather than merely burning a
+    fence slot. The acquire now carries the fence as its own timeout, so a retry
+    of a wedged clip gives the user the spoken failure and gives the thread back.
+    """
+    import threading as _threading
+
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 0.05)
+    monkeypatch.setattr(nas, "_SMB_FENCE_HEADROOM_S", 0.05)
+
+    class _UnusedSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            return _WorkingSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _UnusedSmbClient)
+
+    destination = tmp_path / "wedged.mp4"
+    wedged = nas._fetch_lock(destination)
+    outcome: dict[str, Any] = {}
+
+    def retry() -> None:
+        try:
+            nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", destination)
+        except BaseException as exc:  # noqa: BLE001 - the outcome is the assertion
+            outcome["error"] = exc
+        else:
+            outcome["error"] = None
+
+    wedged.acquire()
+    try:
+        worker = _threading.Thread(target=retry, daemon=True)
+        worker.start()
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "the retry parked a thread on the wedged clip's lock"
+    finally:
+        wedged.release()
+
+    error = outcome.get("error")
+    assert isinstance(error, nas.NasError), error
+    assert nas.nas_message(error) == "the NAS copy took too long and was abandoned"
 
 
 @pytest.mark.asyncio

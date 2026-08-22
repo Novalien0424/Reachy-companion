@@ -72,10 +72,14 @@ class DriveUpload(Tool):
         pending = GATE.claim(self.name)
         if pending is None:
             return confirmation_expired()
-        filename = str(pending.payload["name"])
-        logger.info("Tool call: drive_upload confirmed as %s", redact.text(filename))
         settled = False
         try:
+            # Every payload lookup lives inside the `try` (Task 10 review ruling,
+            # and final review F5): a KeyError out here would strand the claim for
+            # the rest of the session -- this was the one settlement copy that
+            # still read the payload before the `try` opened.
+            filename = str(pending.payload["name"])
+            logger.info("Tool call: drive_upload confirmed as %s", redact.text(filename))
             frame = deps.reachy_mini.media.get_frame_jpeg()
             if not frame:
                 # The camera failing is transient; keep the authorisation so the

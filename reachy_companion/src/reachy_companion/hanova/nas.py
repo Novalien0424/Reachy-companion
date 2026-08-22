@@ -60,11 +60,13 @@ PART_SUFFIX = media_store.PART_SUFFIX
 
 # Review finding 1: nothing above this module bounds an SMB fetch. The background
 # tool manager's own cap is a day (`background_tool_manager.py:105`), and
-# `stage_and_cast` awaits the copy through `asyncio.to_thread`, which cannot be
-# cancelled -- so a stall here is a tool call that never returns, a single-flight
-# lock held forever, and a `_FETCH_LOCKS` entry pinned for the life of the
-# process. These three numbers are the only thing standing between a spun-down
-# NAS and that state, which is what upstream's `gtimeout` wrapper was for.
+# `stage_and_cast` awaits the copy through `asyncio.to_thread`, whose work cannot
+# be cancelled -- so with nothing bounding it, a stall here would be a tool call
+# that never returns, a single-flight lock held forever, and a `_FETCH_LOCKS`
+# entry pinned for the life of the process. The four numbers below are the only
+# thing standing between a spun-down NAS and that state, which is what upstream's
+# `gtimeout` wrapper was for. With the outer fence added in fix round 2 the tool
+# call itself always returns; what a stall still costs is the residual note.
 #
 # 20 s to connect: a NAS on the same LAN completes the TCP connect and SMB
 # negotiate in well under a second, and 20 s still tolerates a sleeping disk
@@ -107,10 +109,19 @@ _TIMEOUT_MESSAGE = "the NAS copy took too long and was abandoned"
 # call returns and the user hears a failure instead of the conversation hanging.
 # It does **not** kill the thread: `asyncio.to_thread` work cannot be cancelled.
 # Until the underlying call unblocks, that worker thread and that destination's
-# `_FETCH_LOCKS` entry both stay held, so every later request *for the same clip*
-# waits. Locks are keyed per destination, so every other clip is unaffected. If
-# the leaked worker does eventually finish, it stages the clip correctly and the
-# next play reuses it -- a late success, never a corrupt or partial file.
+# `_FETCH_LOCKS` entry both stay held. Locks are keyed per destination, so every
+# other clip is unaffected. If the leaked worker does eventually finish, it stages
+# the clip correctly and the next play reuses it -- a late success, never a
+# corrupt or partial file.
+#
+# Final review, F3: a *retry of the same clip* used to make that strictly worse.
+# It blocked in an untimed `Lock.acquire` on the held per-destination lock, inside
+# `asyncio.to_thread` -- so each retry permanently occupied one of the default
+# executor's threads (8 on a CM4) until the stuck SMB call unblocked, and enough
+# retries would starve every other thread-offloaded tool in the app. The acquire
+# now carries `_fetch_fence_s()` as its own timeout and raises the allow-listed
+# timeout `NasError` on expiry, so a retry of a wedged clip costs one fence slot
+# and then gives the thread back.
 
 
 def _fetch_fence_s() -> float:
@@ -345,6 +356,25 @@ def _fetch_lock(destination: Path) -> threading.Lock:
         return lock
 
 
+def _touch_staged(path: Path) -> None:
+    """Refresh a cached clip's mtime so the LRU orders by use, not by download date.
+
+    Final review, F2: `media_store.prune` sorts by mtime and `stage_and_cast`
+    prunes on **every** play, cache hit included. A clip served straight from the
+    cache is therefore the oldest entry in the directory, and with more than
+    `keep` clips staged the prune that runs right after the cast deletes the very
+    file whose URL was just handed to the TV -- the cast reports ok and the
+    Chromecast fetches a 404. Same bug, same fix as the music cache
+    (`ytdlp.download_audio`).
+    """
+    try:
+        os.utime(path, None)
+    except OSError as exc:
+        # A read-only cache must still be castable; the mtime is an
+        # optimisation, not a precondition.
+        logger.debug("Could not refresh the staged clip's mtime: %s", redact.error(exc))
+
+
 def _copy_within_budget(source: Any, target: IO[bytes], budget_s: float) -> None:
     """Stream *source* into *target* in chunks, abandoning it past *budget_s*.
 
@@ -383,7 +413,10 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
 
     The whole body runs under a per-destination single-flight lock, and re-checks
     the destination after acquiring it: the common concurrent case is "someone
-    else already staged this", and that must cost one `stat`, not a second copy.
+    else already staged this", and that must cost one `stat` and one `utime`, not
+    a second copy. Final review, F3: the lock is acquired **with the fence as its
+    timeout**, because the holder may be a worker already wedged in an SMB call --
+    waiting on it forever would park this thread too.
 
     Review finding 1: the connect gets `_SMB_CONNECT_TIMEOUT_S` and the copy
     `_SMB_COPY_BUDGET_S`; on expiry the `.part` file is removed and a `NasError`
@@ -407,9 +440,18 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
         raise NasError("smbprotocol is not installed") from exc
 
     remote = "\\\\" + host + "\\" + share + "\\" + validated.replace("/", "\\")
-    with _fetch_lock(destination):
+    # Final review, F3: bounded, because the holder may be a worker wedged in an
+    # SMB call the fence has already given up on. An untimed acquire here parked
+    # the retry's executor thread for as long as that lasted; see the residual
+    # note at the top of this module.
+    lock = _fetch_lock(destination)
+    if not lock.acquire(timeout=_fetch_fence_s()):
+        raise NasError(_TIMEOUT_MESSAGE)
+    try:
         if destination.is_file() and destination.stat().st_size > 0:
-            # Another caller staged it while we waited for the lock.
+            # Another caller staged it while we waited for the lock. F2: the
+            # prune that follows this in `stage_and_cast` orders by mtime.
+            _touch_staged(destination)
             return
         # Round 2, finding 10: a unique name per attempt. Even without the lock
         # two writers could then not collide, and a crashed attempt leaves a
@@ -440,6 +482,8 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
             # Finding 7: the SMB error text carries the full share path.
             logger.warning("NAS copy failed: %s", redact.error(exc))
             raise NasError("the video could not be copied from the NAS") from exc
+    finally:
+        lock.release()
 
 
 # --- staging + casting -----------------------------------------------------
@@ -491,6 +535,11 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
                 _fetch_fence_s(),
             )
             return {"ok": False, "url": None, "title": title, "error": _TIMEOUT_MESSAGE}
+    else:
+        # Final review, F2: a cache hit rewrites nothing, so without this the
+        # replayed clip is the OLDEST file in the directory and the prune right
+        # below deletes the one whose URL is about to be cast.
+        _touch_staged(local)
     media_store.prune("nas", instance_path, settings.nas_cast_keep())
 
     url = media_store.media_url("nas", filename)

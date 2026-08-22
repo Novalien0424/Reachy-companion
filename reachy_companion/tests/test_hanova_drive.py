@@ -319,6 +319,34 @@ async def test_drive_upload_reports_a_missing_frame(monkeypatch):
     assert out["ok"] is False and "frame" in out["error"].lower()
 
 
+@pytest.mark.asyncio
+async def test_a_malformed_upload_payload_never_strands_the_claim(monkeypatch):
+    """Final review, F5: the payload lookup sat between `claim()` and the `try`.
+
+    Every other settlement copy reads the parked payload **inside** the try, so a
+    missing key is settled by the `finally` (Task 10 review ruling). This one read
+    `pending.payload["name"]` one line too early: the `KeyError` escaped with the
+    slot claimed, and a claimed slot refuses both `claim()` and `arm()` for the
+    rest of the session -- the tool would be dead until a reconnect.
+    """
+    import reachy_companion.tools.drive_upload as drive_upload_module
+
+    monkeypatch.setattr(
+        drive_upload_module.gdrive,
+        "upload_bytes",
+        lambda data, name, mime, parent_id: {"id": "f9", "name": name, "webViewLink": "https://x.invalid/f9"},
+    )
+
+    await DriveUpload()(deps=_deps())
+    GATE._pending["drive_upload"].payload.pop("name")
+    with pytest.raises(KeyError):
+        await DriveUpload()(deps=_deps(), confirm=True)
+
+    # The slot is settled, so a fresh read-back arms and executes normally again.
+    assert (await DriveUpload()(deps=_deps()))["status"] == "needs_confirmation"
+    assert (await DriveUpload()(deps=_deps(), confirm=True))["ok"] is True
+
+
 def test_all_three_tools_reach_the_model_session():
     """The locked profile must list them, or the model never sees them."""
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")

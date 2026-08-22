@@ -361,6 +361,35 @@ async def test_email_send_sends_the_armed_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_multi_line_subject_is_collapsed_before_it_is_armed(monkeypatch):
+    """Final review, F4: a subject with an internal newline killed the send.
+
+    The subject was normalised with `strip()` only, so an internal newline --
+    which dictated or model-composed subjects produce readily -- survived all the
+    way to `message["Subject"] = subject`. That assignment is in `send_mail` but
+    **outside** its `try`, so it raised `ValueError` after the user had already
+    heard the whole envelope read back, spending the authorisation on a
+    malformed-input problem. Collapsing whitespace runs at normalisation makes
+    the subject one line in the read-back and one line on the wire.
+    """
+    fake = _FakeSmtp()
+    monkeypatch.setattr(gmail_smtp, "smtp_factory", lambda: fake)
+
+    armed = await EmailSend()(
+        deps=_deps(),
+        to="a@example.com",
+        subject="  Dinner\nat seven\r\n\ttonight  ",
+        body="See you at seven.",
+    )
+    assert armed["status"] == "needs_confirmation"
+    assert "'Dinner at seven tonight'" in armed["summary"]
+
+    out = await EmailSend()(deps=_deps(), confirm=True)
+    assert out["ok"] is True and out["status"] == "sent"
+    assert fake.messages[0]["Subject"] == "Dinner at seven tonight"
+
+
+@pytest.mark.asyncio
 async def test_email_logs_never_carry_an_address_or_a_subject(monkeypatch, caplog):
     """Finding 7: the whole envelope is personal data."""
     import logging

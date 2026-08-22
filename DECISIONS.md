@@ -72,7 +72,8 @@ retained as-is from the scaffold. Emotion clips = HF dataset
 ## D-009 — Robot deployment: app-only, daemon untouchable (2026-08-17)
 
 Operator authorization: deploy `reachy_companion` to the physical Reachy Mini
-(host in repo-root `.env`, SSH as the pollen user) **as a managed app only**.
+(host and SSH user in the repo-root `.env`: `REACHY_HOST` / `REACHY_SSH_USER`)
+**as a managed app only**.
 Hard limits: never modify/upgrade/restart the robot's daemon or its config,
 no system packages; install only into `/venvs/apps_venv`; start/stop only via
 the official apps API or dashboard. Procedure lives in the `reachy-deploy`
@@ -82,10 +83,11 @@ older than the app's SDK floor (`>=1.10.0rc2`), deployment STOPS and reports
 — upgrading the daemon is not authorized.
 
 Attempt 1 (2026-08-17, Task 15 deploy prep): **BLOCKED at Step 1, robot
-offline.** `10.0.0.96` gave ICMP "destination host unreachable" from our own
-10.0.0.34 interface, no ARP entry, no Raspberry-Pi-OUI MAC on the LAN, TCP
-22/80/8000 all timed out, and `plink` returned "Network error: Connection
-timed out". No mDNS name (`reachy-mini.local`) resolved. Nothing was
+offline.** The robot's address (see the repo-root `.env`, `REACHY_HOST`) gave
+ICMP "destination host unreachable" from our own LAN interface, no ARP entry,
+no Raspberry-Pi-OUI MAC on the LAN, TCP 22/80/8000 all timed out, and `plink`
+returned "Network error: Connection timed out". No mDNS name
+(`reachy-mini.local`) resolved. Nothing was
 transferred, installed, started, or written to the robot. Local prep that
 does not touch the robot was completed instead: wheel built
 (`reachy_companion-1.0.0-py3-none-any.whl`, pure `py3-none-any`, carrying the
@@ -131,8 +133,9 @@ and `.env` must be re-placed after every install.
 
 Attempt 2 (2026-08-17, Task 15 deploy): **BLOCKED at Step 2, version gate —
 robot daemon is 1.9.0, below the `>=1.10.0rc2` floor.** The robot was fully
-reachable this time: SSH as `pollen@10.0.0.96` returned `reachy-mini` /
-`aarch64` / Linux 6.18.33+rpt-rpi-v8, and the daemon answered on port 8000.
+reachable this time: SSH (user and host in the repo-root `.env`,
+`REACHY_SSH_USER` / `REACHY_HOST`) returned `reachy-mini` / `aarch64` /
+Linux 6.18.33+rpt-rpi-v8, and the daemon answered on port 8000.
 The corrected route from attempt 1 worked exactly as documented —
 `GET /update/install-source` → `{"version":"1.9.0","source":"pypi"}` — and the
 SSH cross-check agreed: `/venvs/apps_venv/bin/python -m pip show reachy-mini`
@@ -197,19 +200,19 @@ against stable-only PyPI (latest 1.9.0) and could have undone the update. It
 fires only if step 2's `pip check` fails. Diffing dependency tables between
 tags showed exactly one change — `huggingface-hub` floor `1.17.0 → 1.20.1`,
 already satisfied at 1.27.0 — so `pip check` was predicted to pass, and the
-live log confirmed step 3 never ran. (Also found: `uv` is absent from the
-`pollen` login PATH but `launcher.sh` exports `/opt/uv`, so the daemon used
+live log confirmed step 3 never ran. (Also found: `uv` is absent from the robot
+user's login PATH but `launcher.sh` exports `/opt/uv`, so the daemon used
 `uv`, not `pip`.)
 
 Deployment then followed the skill unchanged: two-step install (never bare
 `--force-reinstall`), **zero sdist builds**, discovery lists
 `reachy_companion`, `.env` placed at the site-packages instance path (mode
 600, no `REACHY_DAEMON_PORT` line) and assets preloaded into
-`/home/pollen/.cache/huggingface` — the same user the daemon spawns apps as
-(`User=pollen`). Start cycle reached a real conversation: session initialized
-on **gpt-realtime-2.1** (voice `cedar`), all **12 tools** registered, **VoiceFX
-active** (pitch +4.0 st, ring-mod 55 Hz @ 0.25 mix), first-audio-delta 55 ms,
-**zero tracebacks**, then a clean stop.
+`/home/<REACHY_SSH_USER>/.cache/huggingface` — the same user the daemon spawns
+apps as (the `User=` in its unit). Start cycle reached a real conversation:
+session initialized on **gpt-realtime-2.1** (voice `cedar`), all **12 tools**
+registered, **VoiceFX active** (pitch +4.0 st, ring-mod 55 Hz @ 0.25 mix),
+first-audio-delta 55 ms, **zero tracebacks**, then a clean stop.
 
 **Autostart (operator request, mid-task):** `PUT /api/apps/startup-app` with
 `{"startup_app": "reachy_companion"}` — body shape read from the `StartupApp`
@@ -276,8 +279,8 @@ Third run of the backup/restore ritual, now covering `faces.v1.json` as well:
 `.env` (1027 B) backed up and re-placed; **both** `memory.v1.json` and
 `faces.v1.json` were absent — expected, since no one has used `remember` or
 `remember_face` on this robot yet — and recorded as absent rather than treated
-as a backup failure. The preloader now warms the 37 MB SFace model as `pollen`
-(13 s), so the first wake check does not build its session off a cold cache.
+as a backup failure. The preloader now warms the 37 MB SFace model as the robot
+user (13 s), so the first wake check does not build its session off a cold cache.
 New hardware finding: the robot is a Raspberry Pi **CM4**, not a Pi 5 — see
 D-013 for what that costs. Evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/task-17-report.md`.

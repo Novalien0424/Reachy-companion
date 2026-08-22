@@ -79,7 +79,13 @@ class EmailSend(Tool):
         if bool(kwargs.get("confirm")):
             return await self._execute_confirmed()
 
-        subject = str(kwargs.get("subject", "")).strip()
+        # Final review, F4: collapse **internal** whitespace too, not just the
+        # ends. A newline inside the subject survived `strip()` all the way to
+        # `message["Subject"] = subject`, which is inside `send_mail` but outside
+        # its `try` -- so it raised `ValueError` after the user had heard the
+        # whole envelope read back, spending the authorisation on a
+        # malformed-input problem. A header is one line by definition.
+        subject = " ".join(str(kwargs.get("subject", "")).split())
         body = gmail_smtp.normalize_body(str(kwargs.get("body", "")))
         to_valid, to_rejected = gmail_smtp.normalize_recipients(str(kwargs.get("to") or ""))
         cc_valid, cc_rejected = gmail_smtp.normalize_recipients(str(kwargs.get("cc") or ""))

@@ -277,6 +277,10 @@ def _scannable_paths():
         repo_root / "DECISIONS.md",
         repo_root / "progress.md",
         repo_root / "feature_list.json",
+        # Final review, F1: this one is tracked, is rewritten at every handoff,
+        # and described machine access -- so it was the likeliest tracked file in
+        # the repository to carry a real identifier, and the scan did not read it.
+        repo_root / "session-handoff.md",
     ]
     seen: set[Path] = set()
     for root in roots:
