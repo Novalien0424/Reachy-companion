@@ -105,6 +105,42 @@ wait exposed by darwin loop ordering) and numpy stubs raise two mypy false
 positives in `streaming.py`. Both vanish on 3.12, which is also the robot's
 version.
 
+**Latency work landed (2026-08-22, evening — commits `1d1624d`, `8ac0012`,
+plus the SABR-fallback fix).** First-principles pass over the two slow media
+paths, every number measured on the robot:
+
+- **Music**: the mp3 re-encode was pure waste (the daemon plays via GStreamer
+  playbin; faad/opusdec verified installed) and each search candidate costs
+  its own metadata fetch. `play_music` now downloads the native audio stream
+  (`bestaudio…/best` with `-x` as a stream-copy demux for SABR-suppressed
+  sessions) and `HANOVA_YTDLP_SEARCH_N` defaults to 2. Measured: command →
+  audible **15.8 s** on a SABR-fallback video (the worst case; ~25–29 s
+  before), cached replay **~9 s** (search still runs; the fetch is instant),
+  stop → silence 0.16 s. Resume cuts inherit the source container; the cache
+  prune recognises them by marker.
+- **NAS video**: staging copied whole clips at the ~7 MB/s Wi-Fi ceiling
+  (bigger SMB blocks measured no gain). New `/hanova-media/nas-stream/`
+  endpoint proxies exactly the requested byte range off SMB
+  (`HANOVA_NAS_STREAM=0` restores staging). Measured through the endpoint
+  from a LAN peer: **61 ms to first byte**, 80 ms for a seek 200 MB into a
+  clip, 4.9 MB/s sustained (≈8–15× home-video bitrate). Tool times:
+  whole-trip start **0.32 s**, skip **0.27–0.30 s** (was 17–44 s). One
+  caveat: the TV was OFF (cast entity `unavailable`) during these rounds, so
+  the casts dispatched but no Chromecast fetch was observed — the endpoint
+  was verified LAN-side with exactly the request shapes a Chromecast makes
+  (HEAD, 206 ranges, mid-file seek). One TV-on replay of a trip row closes
+  that.
+
+**Prefetch and direct-NAS-serving verdicts (operator question):** next-clip
+prefetch is **rejected** — it existed to hide the copy, streaming removed the
+copy (skip is now 0.3 s), so re-introducing a background task against the
+D-018 non-goal buys nothing. Serving the TV straight from the NAS is
+**rejected** — the QNAP does run DLNA (:8200) and Plex (:32400), but DLNA
+addresses content by rescan-unstable object ids behind a UPnP browse protocol
+and Plex embeds an auth token in every URL; both couple our curated index to
+a second server to save relay headroom we measurably do not need. Revisit
+only if high-bitrate content saturates the robot's radio.
+
 **Residual observation (harmless, worth a look next session):** after a
 stop_music during live playback, the resume drain-waiter keeps logging
 "music resume still waiting … 0.04s outstanding" indefinitely — stop does
