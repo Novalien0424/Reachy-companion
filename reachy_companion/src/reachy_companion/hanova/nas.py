@@ -280,8 +280,14 @@ def video_title(video: Dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts if part).strip()
 
 
-def _validate_inside(raw_path: str, subpath: str, key_name: str) -> str:
-    """Normalise a path and prove it resolves inside *subpath*. Raises NasError."""
+def _validate_inside(raw_path: str, subpath: str, key_name: str, *, require_playable: bool = True) -> str:
+    """Normalise a path and prove it resolves inside *subpath*. Raises NasError.
+
+    `require_playable` gates the extension allowlist: it belongs only to the
+    cast copy, which is the file actually fetched and served. An *original*
+    path is bounded but never played, and DVD-era originals are legitimately
+    .mpg/.mts with a transcoded .mp4 `cast_path` beside them.
+    """
     if not subpath:
         raise NasError(f"{key_name} is not set.")
     raw = str(raw_path or "").replace("\\", "/").strip()
@@ -293,7 +299,7 @@ def _validate_inside(raw_path: str, subpath: str, key_name: str) -> str:
         raise NasError("that clip path escapes the configured folder")
     if normalised != root and not normalised.startswith(root + "/"):
         raise NasError("that clip path is outside the configured folder")
-    if posixpath.splitext(normalised)[1].lower() not in ALLOWED_EXTENSIONS:
+    if require_playable and posixpath.splitext(normalised)[1].lower() not in ALLOWED_EXTENSIONS:
         raise NasError("that clip is not one of the playable video types")
     return normalised
 
@@ -316,9 +322,13 @@ def validate_source_path(path: str) -> str:
     casting tools and **nothing read it**, so a fresh deployment could be blocked
     on a value with no behaviour attached to it -- either a dead switch or a
     missing check, and it was the second. It is the same bound as
-    `validate_cast_path`, applied to the field the index calls `path`.
+    `validate_cast_path`, applied to the field the index calls `path` --
+    containment only: the original is never fetched or served, so its
+    extension is not gated (DVD-era trips are .mpg/.mts originals with a
+    transcoded .mp4 `cast_path`, and gating them made every such trip
+    unplayable while its cast copy sat ready).
     """
-    return _validate_inside(path, settings.nas_subpath(), "HANOVA_NAS_SUBPATH")
+    return _validate_inside(path, settings.nas_subpath(), "HANOVA_NAS_SUBPATH", require_playable=False)
 
 
 def cast_filename(cast_path: str) -> str:

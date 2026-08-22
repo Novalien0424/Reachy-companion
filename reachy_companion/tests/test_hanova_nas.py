@@ -271,6 +271,37 @@ async def test_an_index_entry_outside_the_source_subpath_is_never_staged(monkeyp
     assert recorded["fetched"] == [] and recorded["cast"] == []
 
 
+# --- the original path is a bound, not a playability gate (on-robot finding, 2026-08-22) ---
+def test_a_dvd_era_original_is_not_refused_for_its_extension():
+    """The original is bounded but never played, so its extension is not gated.
+
+    Only the `cast_ready` mp4 twin is fetched and served. The operator's real
+    index holds .mpg/.mts originals for every DVD-era trip, each carrying a
+    transcoded .mp4 `cast_path`; gating the original's extension made every
+    such trip unplayable while its cast copy sat ready.
+    """
+    assert nas.validate_source_path("SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg") == (
+        "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg"
+    )
+
+
+def test_the_cast_copy_still_must_be_a_playable_type():
+    """The playability gate stays exactly where playback happens."""
+    with pytest.raises(nas.NasError):
+        nas.validate_cast_path("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg")
+
+
+@pytest.mark.asyncio
+async def test_a_clip_with_an_mpg_original_and_an_mp4_cast_copy_stages(monkeypatch, tmp_path):
+    """End to end: DVD-era entry -> staged and cast from its mp4 twin."""
+    recorded = _stub_transfer(monkeypatch)
+    dvd = dict(INDEX["videos"][0])
+    dvd["path"] = "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg"
+    out = await nas.stage_and_cast(dvd, tmp_path)
+    assert out["ok"] is True
+    assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4"]
+
+
 def test_the_copy_is_staged_privately_and_renamed(monkeypatch, tmp_path):
     """Finding 15: a Chromecast fetching mid-copy must not get a partial file."""
     seen = {}
