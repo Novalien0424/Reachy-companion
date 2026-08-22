@@ -37,7 +37,7 @@ def test_defaults_are_generic_never_operator_derived():
     assert settings.notion_title_prop() == "Name"  # Notion's own default title property
     assert settings.smtp_host() == "smtp.gmail.com"  # a vendor endpoint, not an identifier
     assert settings.smtp_port() == 465
-    assert settings.ytdlp_search_n() == 5
+    assert settings.ytdlp_search_n() == 2  # measured 13.4 s at 5 vs 8.3 s at 2 on the robot
     assert settings.ytdlp_timeout_s() == 20
     assert settings.ytdlp_download_timeout_s() == 120
     assert settings.cal_delete_window_days() == 14

@@ -39,7 +39,7 @@ def test_search_builds_the_upstream_argv(monkeypatch):
     out = ytdlp.search("some song")
     assert out == {"ok": True, "id": "dQw4w9WgXcQ", "title": "A Song Title", "error": None}
     cmd = seen["cmd"]
-    assert "--default-search" in cmd and "ytsearch5:" in cmd
+    assert "--default-search" in cmd and "ytsearch2:" in cmd
     assert cmd[cmd.index("--match-filter") + 1] == "duration > 30 & !is_live"
     assert "--no-playlist" in cmd and "--skip-download" in cmd
     assert cmd[-1] == "some song"
@@ -261,3 +261,47 @@ def test_extractor_args_reach_search_and_download(monkeypatch, tmp_path):
     ytdlp.download_audio("dQw4w9WgXcQ", tmp_path)
     for cmd in seen["cmds"]:
         assert cmd[cmd.index("--extractor-args") + 1] == "youtube:player_client=android"
+
+
+# --- native-container music downloads (latency work, 2026-08-22) -----------
+def test_download_audio_without_transcode_fetches_bestaudio(monkeypatch, tmp_path):
+    """Music skips the mp3 re-encode: bestaudio lands in its native container."""
+    seen = {}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmd"] = cmd
+        (tmp_path / "abc123.m4a").write_bytes(b"M4Adata")
+        return _completed("")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
+    assert out == {"ok": True, "path": str(tmp_path / "abc123.m4a"), "cached": False, "error": None}
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio"
+    assert "-x" not in cmd and "--audio-format" not in cmd and "--ffmpeg-location" not in cmd
+
+
+def test_download_audio_without_transcode_needs_no_ffmpeg(monkeypatch, tmp_path):
+    """The no-transcode path must not be blocked by a missing transcoder."""
+    monkeypatch.setattr(ytdlp, "ffmpeg_exe", lambda: None)
+
+    def fake_run(cmd, timeout_s):
+        (tmp_path / "abc123.webm").write_bytes(b"WEBM")
+        return _completed("")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
+    assert out["ok"] is True and out["path"].endswith("abc123.webm")
+
+
+def test_a_cached_mp3_still_serves_the_no_transcode_mode(monkeypatch, tmp_path):
+    """A track cached under the old mp3 mode keeps serving after the switch."""
+    cached = tmp_path / "abc123.mp3"
+    cached.write_bytes(b"ID3data")
+
+    def fail_run(cmd, timeout_s):
+        raise AssertionError("a cached track must not touch the network")
+
+    monkeypatch.setattr(ytdlp, "run_command", fail_run)
+    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
+    assert out == {"ok": True, "path": str(cached), "cached": True, "error": None}

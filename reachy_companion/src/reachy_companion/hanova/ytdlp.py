@@ -123,44 +123,74 @@ def search(query: str, max_duration_s: int | None = None) -> Dict[str, Any]:
     return {"ok": False, "id": None, "title": None, "error": "no playable result for that query"}
 
 
-def download_audio(video_id: str, dest_dir: Path) -> Dict[str, Any]:
-    """Download one video's audio as `<video_id>.mp3` into *dest_dir*. Never raises."""
+# Containers GStreamer's playbin decodes on the robot (faad, opusdec, mpg123
+# all verified installed 2026-08-22). The cache lookup accepts any of them so a
+# track downloaded under either mode keeps serving after the mode changes.
+_AUDIO_EXTENSIONS: tuple[str, ...] = (".m4a", ".mp3", ".webm", ".opus", ".ogg", ".aac")
+
+
+def _cached_audio(video_id: str, dest_dir: Path) -> Path | None:
+    """Return the cached audio file for *video_id* in any playable container."""
+    for extension in _AUDIO_EXTENSIONS:
+        candidate = dest_dir / f"{video_id}{extension}"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def download_audio(video_id: str, dest_dir: Path, *, transcode_mp3: bool = True) -> Dict[str, Any]:
+    """Download one video's audio into *dest_dir*. Never raises.
+
+    With ``transcode_mp3`` (the default, kept for the gag clips whose cut
+    pipeline expects mp3) the result is `<video_id>.mp3` via an ffmpeg
+    re-encode. Without it the best native audio stream lands untouched as
+    `<video_id>.<ext>` -- the daemon plays through GStreamer playbin, which
+    decodes m4a/opus/mp3 alike, and skipping the re-encode was measured at
+    15.9 s -> 4.1 s for one song on the robot (2026-08-22).
+    """
     if not ytdlp_available():
         return {"ok": False, "path": None, "cached": False, "error": "yt-dlp is not installed on this robot"}
     ffmpeg = ffmpeg_exe()
-    if not ffmpeg:
+    if transcode_mp3 and not ffmpeg:
         return {"ok": False, "path": None, "cached": False, "error": "ffmpeg is unavailable; cannot make an mp3"}
 
-    out_file = dest_dir / f"{video_id}.mp3"
-    if out_file.is_file() and out_file.stat().st_size > 0:
+    cached = _cached_audio(video_id, dest_dir)
+    if cached is not None:
         # Task 4 review: the music cache is pruned by mtime, and a cache hit
         # rewrites nothing -- so a track played straight from the cache is the
         # OLDEST entry in the directory and the prune that runs right after this
         # play would delete the file currently on the speaker. Touching it makes
         # the LRU order reflect use rather than download date.
         try:
-            os.utime(out_file, None)
+            os.utime(cached, None)
         except OSError as exc:
             # A read-only cache must still be playable; the mtime is an
             # optimisation, not a precondition.
             logger.debug("Could not refresh the cached track's mtime: %s", redact.error(exc))
-        return {"ok": True, "path": str(out_file), "cached": True, "error": None}
+        return {"ok": True, "path": str(cached), "cached": True, "error": None}
 
+    out_file = dest_dir / f"{video_id}.mp3"
+    if transcode_mp3:
+        format_args = [
+            "-x",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            "5",
+            "--ffmpeg-location",
+            str(ffmpeg),
+        ]
+    else:
+        format_args = ["-f", "bestaudio[ext=m4a]/bestaudio"]
     cmd = _ytdlp_argv() + [
         f"https://www.youtube.com/watch?v={video_id}",
-        "-x",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "5",
+        *format_args,
         "--no-playlist",
         "--force-overwrites",
         "--socket-timeout",
         "20",
         "--no-warnings",
         "--quiet",
-        "--ffmpeg-location",
-        ffmpeg,
         "-o",
         str(dest_dir / f"{video_id}.%(ext)s"),
     ]
@@ -175,7 +205,8 @@ def download_audio(video_id: str, dest_dir: Path) -> Dict[str, Any]:
         logger.warning("yt-dlp download failed: %s", redact.error(exc))
         return {"ok": False, "path": None, "cached": False, "error": "the download could not be run"}
 
-    if not out_file.is_file() or out_file.stat().st_size == 0:
+    produced = out_file if transcode_mp3 else _cached_audio(video_id, dest_dir)
+    if produced is None or not produced.is_file() or produced.stat().st_size == 0:
         # Finding 6: the tail of yt-dlp's output names the video and the path it
         # tried to write. Log the shape, return a fixed reason. Round 3,
         # finding 3: a length, never a token lifted out of the text.
@@ -185,7 +216,7 @@ def download_audio(video_id: str, dest_dir: Path) -> Dict[str, Any]:
             redact.text(proc.stderr or proc.stdout or ""),
         )
         return {"ok": False, "path": None, "cached": False, "error": "no audio could be produced for that track"}
-    return {"ok": True, "path": str(out_file), "cached": False, "error": None}
+    return {"ok": True, "path": str(produced), "cached": False, "error": None}
 
 
 def cut_from(source: Path, offset_s: float, dest: Path) -> bool:
