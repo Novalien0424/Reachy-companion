@@ -77,6 +77,50 @@ _SMB_CONNECT_TIMEOUT_S = 20.0
 _SMB_COPY_BUDGET_S = 120.0
 # One deadline check per chunk, so the budget is observed to within a chunk.
 _SMB_CHUNK_BYTES = 1024 * 1024
+# Fix round 2: added to the copy budget to form the outer fence. See
+# `_fetch_fence_s` and the residual note below for what it does and does not buy.
+_SMB_FENCE_HEADROOM_S = 15.0
+
+_TIMEOUT_MESSAGE = "the NAS copy took too long and was abandoned"
+
+# --- what is bounded here, and what is not (fix round 2) --------------------
+#
+# Bounded, and the worker thread genuinely terminates:
+#
+# * the TCP connect and SMB negotiate -- `_SMB_CONNECT_TIMEOUT_S`, enforced by
+#   the library itself;
+# * the file copy as a whole, and any stall landing at a chunk boundary --
+#   `_SMB_COPY_BUDGET_S`, enforced by `_copy_within_budget`.
+#
+# Bounded only for the *caller*, with the worker thread left running:
+#
+# * `smbclient.open_file` -- the tree-connect and create round trips. Both call
+#   `Connection.receive(request)` with no timeout (`open.py:1264`, `tree.py:250`)
+#   on a socket the library put back into blocking mode after connect
+#   (`transport.py:69`), and no argument on `open_file`, `get_smb_tree` or
+#   `register_session` reaches them: `connection_timeout` is documented as, and
+#   only used for, "the initial connection". `Session.disconnect` does pass a
+#   timeout through, so the library can -- it just does not here.
+# * a single `read()` that never returns, for the same reason.
+#
+# For those two, `_fetch_fence_s()` bounds `stage_and_cast`'s await, so the tool
+# call returns and the user hears a failure instead of the conversation hanging.
+# It does **not** kill the thread: `asyncio.to_thread` work cannot be cancelled.
+# Until the underlying call unblocks, that worker thread and that destination's
+# `_FETCH_LOCKS` entry both stay held, so every later request *for the same clip*
+# waits. Locks are keyed per destination, so every other clip is unaffected. If
+# the leaked worker does eventually finish, it stages the clip correctly and the
+# next play reuses it -- a late success, never a corrupt or partial file.
+
+
+def _fetch_fence_s() -> float:
+    """Return the wall-clock fence for one staged fetch: copy budget + headroom.
+
+    Derived rather than a separate constant so the fence can never be
+    accidentally set below the in-thread copy budget it is meant to outlive --
+    which would make the fence fire on healthy slow copies and mask the budget.
+    """
+    return _SMB_COPY_BUDGET_S + _SMB_FENCE_HEADROOM_S
 
 
 class NasError(RuntimeError):
@@ -97,7 +141,7 @@ _NAS_MESSAGES = frozenset(
         "that clip is not one of the playable video types",
         "the clip copied off the NAS was empty",
         "the video could not be copied from the NAS",
-        "the NAS copy took too long and was abandoned",
+        _TIMEOUT_MESSAGE,
         "smbprotocol is not installed",
         "HANOVA_NAS_SUBPATH is not set.",
         "HANOVA_NAS_CAST_SUBPATH is not set.",
@@ -311,20 +355,18 @@ def _copy_within_budget(source: Any, target: IO[bytes], budget_s: float) -> None
     stall the copy thread forever -- taking the destination's single-flight lock
     and the tool call with it.
 
-    **Known limit, stated plainly:** the deadline is checked between chunks, so
-    this bounds the copy as a whole and any stall that lands at a chunk boundary.
-    A single `read()` that never returns is still not interruptible from here,
-    because the library exposes no per-read timeout to pass down. Bounding that
-    case would mean either reaching into `smbprotocol`'s cached connection to set
-    a socket timeout -- which would affect every other user of that connection --
-    or handing the read to yet another thread we equally cannot kill. The budget
-    is what makes the overwhelmingly common failures (a slow link, a disk
-    spinning up, a NAS that trickles) terminate instead of wedging.
+    The deadline is checked between chunks, so this bounds the copy as a whole
+    and any stall that lands at a chunk boundary -- which is what makes the
+    ordinary failures (a slow link, a disk spinning up, a NAS that trickles)
+    terminate this thread instead of wedging it. A single `read()` that never
+    returns is not interruptible from here; that case, and the equally unbounded
+    `open_file`, are covered by `_fetch_fence_s()` at the caller and are set out
+    in full in the residual note at the top of this module.
     """
     deadline = time.monotonic() + budget_s
     while True:
         if time.monotonic() >= deadline:
-            raise NasError("the NAS copy took too long and was abandoned")
+            raise NasError(_TIMEOUT_MESSAGE)
         chunk = source.read(_SMB_CHUNK_BYTES)
         if not chunk:
             return
@@ -343,10 +385,12 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
     the destination after acquiring it: the common concurrent case is "someone
     else already staged this", and that must cost one `stat`, not a second copy.
 
-    Review finding 1: both halves are bounded. The connect gets
-    `_SMB_CONNECT_TIMEOUT_S` and the copy `_SMB_COPY_BUDGET_S`; on expiry the
-    `.part` file is removed and a `NasError` propagates, which releases the lock
-    rather than pinning it -- and the caller's tool call actually returns.
+    Review finding 1: the connect gets `_SMB_CONNECT_TIMEOUT_S` and the copy
+    `_SMB_COPY_BUDGET_S`; on expiry the `.part` file is removed and a `NasError`
+    propagates, which releases the lock rather than pinning it. The `open_file`
+    call between them cannot be bounded from inside this thread at all --
+    `stage_and_cast` fences it instead, and the module's residual note says what
+    that does and does not buy.
     """
     host = settings.nas_host()
     user = settings.nas_user()
@@ -426,9 +470,27 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
 
     if not local.is_file() or local.stat().st_size == 0:
         try:
-            await asyncio.to_thread(fetch_cast_file, cast_path, local)
+            # Fix round 2: the outer fence. `fetch_cast_file` bounds its own
+            # connect and copy, but `smbclient.open_file` sits between them with
+            # no timeout available at any layer, so a NAS that authenticates and
+            # then stops answering used to hang this await forever -- and with
+            # it the tool call and the whole conversation. This converts that
+            # into a spoken failure. It does not kill the worker thread; see the
+            # residual note at the top of this module for exactly what leaks.
+            await asyncio.wait_for(
+                asyncio.to_thread(fetch_cast_file, cast_path, local),
+                timeout=_fetch_fence_s(),
+            )
         except NasError as exc:
             return {"ok": False, "url": None, "title": title, "error": nas_message(exc)}
+        except asyncio.TimeoutError:
+            # Metadata only (finding 7): which clip is not ours to log.
+            logger.warning(
+                "NAS fetch exceeded its %.0fs fence; abandoning the wait. The worker thread and "
+                "this clip's staging lock stay held until the NAS call unblocks.",
+                _fetch_fence_s(),
+            )
+            return {"ok": False, "url": None, "title": title, "error": _TIMEOUT_MESSAGE}
     media_store.prune("nas", instance_path, settings.nas_cast_keep())
 
     url = media_store.media_url("nas", filename)

@@ -446,6 +446,109 @@ def test_a_stalled_copy_releases_the_single_flight_lock(monkeypatch, tmp_path):
     assert destination.read_bytes() == b"MP4DATA", "the lock outlived the stall"
 
 
+class _WorkingSmbFile:
+    """A cooperative SMB handle that yields one payload and then EOF."""
+
+    def __init__(self, payload: bytes = b"MP4DATA") -> None:
+        self._data = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self, size=-1):
+        data, self._data = self._data, b""
+        return data
+
+
+@pytest.mark.asyncio
+async def test_a_hung_smb_open_fails_the_tool_call_instead_of_wedging_it(monkeypatch, tmp_path):
+    """Fix round 2: `open_file` sits between the two bounded halves, unbounded.
+
+    `smbclient.open_file` performs the tree-connect and create round trips, and
+    both call `Connection.receive(request)` with **no timeout**
+    (`open.py:1264`, `tree.py:250`) against a socket that was put back into
+    blocking mode after connect (`transport.py:69`). A NAS that completes TCP
+    connect and session auth but then never answers the open therefore wedged
+    the thread between `_SMB_CONNECT_TIMEOUT_S` and `_SMB_COPY_BUDGET_S`, where
+    neither could see it. The outer fence turns that into a spoken failure.
+    """
+    import threading as _threading
+
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 0.05)
+    monkeypatch.setattr(nas, "_SMB_FENCE_HEADROOM_S", 0.05)
+    release = _threading.Event()
+
+    class _HangingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            release.wait(timeout=10)  # the create/tree-connect answer never comes
+            return _WorkingSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _HangingSmbClient)
+
+    try:
+        started = time.monotonic()
+        out = await nas.stage_and_cast(dict(INDEX["videos"][0]), tmp_path)
+        elapsed = time.monotonic() - started
+
+        assert out["ok"] is False
+        assert out["error"] == "the NAS copy took too long and was abandoned"
+        assert elapsed < 2.0, "the fence must answer promptly, not wait the hang out"
+        nas_dir = tmp_path / "hanova_media" / "nas"
+        assert list(nas_dir.glob("*.mp4")) == [], "a fenced fetch may promote nothing"
+    finally:
+        # Let the leaked worker finish so the suite does not wait on it at teardown.
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_fetch_does_not_block_a_different_clip(monkeypatch, tmp_path):
+    """Rung 2's documented leak is per-destination, and no worse than stated.
+
+    The fence does not kill the worker, so the hung clip's `_FETCH_LOCKS` entry
+    stays held until the open unblocks. That is survivable only because the locks
+    are keyed by destination: every *other* clip must still stage and play.
+    """
+    import threading as _threading
+
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 0.05)
+    monkeypatch.setattr(nas, "_SMB_FENCE_HEADROOM_S", 0.05)
+    release = _threading.Event()
+
+    class _PartlyHangingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            if "clip01" in path:
+                release.wait(timeout=10)
+            return _WorkingSmbFile()
+
+    async def ok_cast(script_name, data, timeout_s=60.0):
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(nas, "ha_run_script", ok_cast)
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _PartlyHangingSmbClient)
+
+    try:
+        stuck = await nas.stage_and_cast(dict(INDEX["videos"][0]), tmp_path)
+        assert stuck["ok"] is False and stuck["error"] == "the NAS copy took too long and was abandoned"
+
+        other = await nas.stage_and_cast(dict(INDEX["videos"][1]), tmp_path)
+        assert other["ok"] is True, "locks are per-destination; a different clip must still play"
+    finally:
+        release.set()
+
+
 def test_a_failed_copy_leaves_nothing_behind(monkeypatch, tmp_path):
     """A half-written clip is worse than no clip."""
 
