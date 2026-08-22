@@ -301,10 +301,31 @@ def nas_index_path() -> Path | None:
     return env_path("HANOVA_NAS_INDEX_PATH")
 
 
+def nas_stream_enabled() -> bool:
+    """Return whether a NAS clip is streamed to the TV instead of staged first.
+
+    On by default (latency work, 2026-08-22): the share measured ~7 MB/s over
+    the robot's Wi-Fi, so copying a 300 MB clip cost ~44 s of silence before the
+    TV saw its first byte. Streaming hands the TV a Range-capable URL that
+    proxies the share per request, so playback starts in about a second.
+
+    The kill switch is `HANOVA_NAS_STREAM=0` (`false`/`no` also count), which
+    falls back to the stage-then-serve path: the whole clip is copied into the
+    LAN media cache and the TV fetches a static file. That path survives a NAS
+    that drops connections mid-playback, which streaming does not.
+    """
+    return env_str("HANOVA_NAS_STREAM", "1").lower() not in {"0", "false", "no"}
+
+
 # --- yt-dlp ----------------------------------------------------------------
 def ytdlp_search_n() -> int:
-    """How many YouTube search results yt-dlp considers."""
-    return env_int("HANOVA_YTDLP_SEARCH_N", 5, minimum=1, maximum=25)
+    """How many YouTube search results yt-dlp considers.
+
+    Each candidate costs its own metadata fetch: on the robot a five-candidate
+    search measured 13.4 s against 8.3 s for two (2026-08-22), so the default
+    buys one fallback candidate rather than four.
+    """
+    return env_int("HANOVA_YTDLP_SEARCH_N", 2, minimum=1, maximum=25)
 
 
 def ytdlp_extractor_args() -> str:

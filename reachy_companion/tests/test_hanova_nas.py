@@ -114,6 +114,12 @@ def configured(monkeypatch, tmp_path):
     monkeypatch.setenv("HANOVA_NAS_SUBPATH", "SENTINEL_SRC_DIR_q4")
     monkeypatch.setenv("HANOVA_NAS_CAST_SUBPATH", "SENTINEL_CAST_DIR_q4")
     monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(index_path))
+    # Latency work, 2026-08-22: streaming is the default now, and this file is
+    # the contract for the *staged* path -- single-flight locking, `.part`
+    # renaming, the copy budget, the fence and the LRU all belong to it. The
+    # streaming route and the switch itself are covered in
+    # `test_hanova_nas_stream.py`, which pins both settings of the switch.
+    monkeypatch.setenv("HANOVA_NAS_STREAM", "0")
     monkeypatch.setenv("HA_URL", "http://ha.example.invalid:8123")
     monkeypatch.setenv("HA_TOKEN", "tok")
     monkeypatch.setenv("HANOVA_HA_SCRIPT_VIDEO_URL", "tv_show_video_url")
@@ -1013,7 +1019,7 @@ def _stub_play_music(monkeypatch, tmp_path, *, played_ok: bool):
     monkeypatch.setattr(
         module.ytdlp,
         "download_audio",
-        lambda video_id, dest_dir: {"ok": True, "path": str(track), "cached": True, "error": None},
+        lambda video_id, dest_dir, transcode_mp3=True: {"ok": True, "path": str(track), "cached": True, "error": None},
     )
 
     async def fake_play(deps, *, video_id, title, source_path):
