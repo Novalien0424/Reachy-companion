@@ -30,9 +30,19 @@ ledger — the full record of every task's commits, rulings and residual minors:
    box — the **Task 15 procedure is the plan's own Task 15 section** in
    `docs/superpowers/plans/2026-08-21-ha-nova-port.md` (identical content), and
    the deploy procedure of record is `.claude/skills/reachy-deploy/SKILL.md`.
-2. Copy the repo-root `.env` to the Mac **by hand** (it is gitignored by
-   design; `cp .env.example .env` and fill the four `REACHY_*` keys). Values
-   never travel through git.
+2. Create the repo-root `.env` on the Mac (`cp .env.example .env`). Two of the
+   four values are recorded HERE by explicit operator authorization (D-020,
+   2026-08-22) so this checkout is self-sufficient:
+
+   ```
+   REACHY_HOST=10.0.0.96
+   REACHY_SSH_USER=pollen
+   ```
+
+   `REACHY_SSH_PASSWORD` is NOT in git (a real secret): macOS `ssh`/`scp`
+   prompt for it interactively, or set up a one-time SSH key. `REACHY_HOSTKEY`
+   is PuTTY-specific and unused on macOS — first `ssh` contact prompts to
+   accept the host key into `known_hosts`.
 3. Platform notes — the Task 15 runbook's LOCAL wrappers are Windows-flavored;
    the REMOTE `sh` blocks (everything inside the here-strings) run on the robot
    and are portable as-is:

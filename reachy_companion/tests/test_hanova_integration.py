@@ -371,6 +371,16 @@ _SCRUBBED_RELATIVE_PATHS = (
 
 _ALLOWED_SHAPE_TOKENS = ("example.com", "example.invalid", "example_tv")
 
+# D-020 (operator-authorized, 2026-08-22): the robot's LAN address and SSH user
+# are deliberately recorded in `session-handoff.md` so a fresh checkout on the
+# operator's second machine can reach the robot without hand-carrying files.
+# This is an ABSOLUTE cap per (path, label) -- not additive with the HEAD
+# grandfather -- so a second address in that file, or one anywhere else, still
+# fails. The SSH password and host-key fingerprint remain forbidden everywhere.
+_OPERATOR_AUTHORIZED_DISCLOSURES: dict[str, dict[str, int]] = {
+    "session-handoff.md": {"private-ipv4": 1},
+}
+
 
 def _git_head_available() -> bool:
     """Report whether there is a HEAD to compare against (a tarball has none)."""
@@ -454,10 +464,11 @@ def test_no_personal_identifier_shape_is_committed_anywhere_this_port_writes():
         was = {} if scrubbed else _shape_counts(_head_text(relative))
         for label, count in sorted(now.items()):
             before = was.get(label, 0)
-            if count > before:
+            allowed = _OPERATOR_AUTHORIZED_DISCLOSURES.get(relative, {}).get(label, 0)
+            if count > max(before, allowed):
                 failures.append(f"{relative}: {label} x{count} (HEAD had {before})")
             else:
-                tolerated.append(f"{relative}: {label} x{count} (unchanged from HEAD)")
+                tolerated.append(f"{relative}: {label} x{count} (within HEAD or D-020 cap)")
 
     assert failures == [], (
         "identifier-shaped tokens introduced by this port (paths and counts only, "

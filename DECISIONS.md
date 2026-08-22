@@ -961,3 +961,61 @@ Task 15 deployment and wake test say otherwise.
 Verified: 1118 passed / 30 skipped (31 new tests in
 `tests/test_hanova_integration.py`, on top of the per-family suites added by
 Tasks 1–13), ruff and mypy strict green.
+
+## D-019 — Keep the static 39-tool array on gpt-realtime-2.1; no lazy schema loading on the Realtime endpoint (2026-08-22)
+
+A first-principles review (operator-requested) of whether the port's tool and
+prompt growth hurts the latency-first realtime model, and whether "compact
+descriptions up front, full schema loaded on invocation" is the right design.
+Full sourced findings: `docs/research-realtime-tool-payload.md`.
+
+**Measured (our code, o200k_base):** tools and instructions are sent exactly
+once per connection (`session.update`; the only other `session.update` call
+sites change voice or instructions, never tools). The 39-tool array is
+~4,350 tokens (18.7 KB compact UTF-8); instructions ~1,060; session-open total
+~5,400 — about 2x the pre-port payload. The 22 ported tools are *more* compact
+than the 17 pre-existing ones (2,050 vs 2,300 tokens; the R10 ≤120-char rule
+worked). The single largest tool is pre-port `dance` at 2.4 KB — 13% of the
+whole array.
+
+**Researched:** the Realtime API resends the whole conversation per response
+but KV-caches the prefix (best-effort; cached input $0.40/1M vs $32/1M audio),
+and OpenAI attributes gpt-realtime-2.1's headline 25% p95 latency win to
+caching. Instructions+tools live at the cached prefix; changing them
+mid-session is documented to reduce the cache rate for the rest of the session.
+A ~16k-token instructions+tools ceiling with silent truncation is documented
+for the GA model and community-reported to persist on gpt-realtime-2
+(unconfirmed for 2.1) — we sit at ~1/3 of it. OpenAI's deferred tool loading
+(`tool_search`/`defer_loading`) is Responses-only; nothing equivalent exists on
+the Realtime endpoint. The documented risk axis at 39 tools is selection
+ACCURACY (OpenAI: "fewer than 20 functions at the start of a turn" as a soft
+bar; Anthropic: degradation at 30–50 tools), not latency.
+
+**Decision:** the static 39-tool array stands. Hand-rolling two-stage schema
+loading on Realtime is rejected: every mid-session tool injection would bust
+the cached prefix (converting a one-time prefill cost into a recurring
+per-turn one) and add an audible extra round trip — the inverse of what makes
+the vendors' deferral designs work (they append discovered schemas at the END
+of context precisely to protect the prefix). Follow-ups, in order: instrument
+`cached_tokens` per turn and verify no silent truncation during the Task 15
+on-robot pass; treat the 33-row wake test as the tool-selection accuracy
+benchmark; trim the `dance` schema as a free win. If — and only if — the wake
+test shows real misrouting, the documented escalation is the realtime handoff
+pattern (specialist toolsets swapped at intent boundaries) or a per-turn
+`response.tools` experiment, not lazy schemas.
+
+## D-020 — Robot LAN address and SSH user recorded in the tracked handoff (operator-authorized) (2026-08-22)
+
+The operator works across two machines (Windows dev box on a different LAN;
+Mac mini on the robot's LAN) and authorized recording `REACHY_HOST` and
+`REACHY_SSH_USER` values in the tracked `session-handoff.md`, so a fresh
+checkout on the Mac mini reaches the robot without hand-carrying files. This
+deliberately reverses the review-round finding-6 scrub for exactly these two
+values, in a private repository. The identifier scan in
+`tests/test_hanova_integration.py` gains an explicit ABSOLUTE cap
+(`_OPERATOR_AUTHORIZED_DISCLOSURES`: one private-IPv4 occurrence in
+`session-handoff.md`); a second address there, or any address anywhere else,
+still fails the scan. `REACHY_SSH_PASSWORD` and the host-key fingerprint
+remain forbidden in every tracked file, permanently. Reverting this decision
+means removing the handoff block and the scan cap — the value stays in git
+history either way; a history rewrite is a separate operator call.
