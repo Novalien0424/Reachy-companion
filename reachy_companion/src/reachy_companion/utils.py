@@ -63,6 +63,18 @@ def setup_logger(debug: bool) -> logging.Logger:
     warnings.filterwarnings("ignore", message=".*AVCaptureDeviceTypeExternal.*")
     warnings.filterwarnings("ignore", category=UserWarning, module="aiortc")
 
+    # D-018 review, finding 1: httpx logs `HTTP Request: POST <full url> "..."` at
+    # INFO from inside its own client code, which would put the house's Home
+    # Assistant address -- and the operator's scripts.yaml entry name, which is
+    # the last path segment -- into every log line the hanova HA seam produces.
+    # `hanova/redact.py` can only govern the messages *we* format, so this one is
+    # silenced at the source, in DEBUG too: a URL is not more publishable because
+    # the operator asked for verbose logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Same leak one layer down: httpcore logs `connect_tcp.started host='<ha
+    # host>' port=8123` at DEBUG, so the address survives httpx being silenced.
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Tame third-party noise (looser in DEBUG)
     if log_level == "DEBUG":
         logging.getLogger("aiortc").setLevel(logging.INFO)

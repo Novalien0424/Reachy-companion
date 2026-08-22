@@ -544,6 +544,20 @@ The POC must deliver the following. Requirements are grouped by subsystem.
 | F-L4  | Configuration is read from environment settings on the robot; no secrets in source |
 | F-L5  | The same application runs unchanged against a simulated daemon on a development machine |
 
+### 7.7 Ported home-and-cloud capabilities (D-018)
+
+| ID    | Requirement                                                              |
+| ----- | ------------------------------------------------------------------------ |
+| F-P1  | Twenty-two Skills ported natively from the operator's `ha-actions` MCP server: music on the robot's own speaker (`play_music`, `stop_music`), TV casting (`play_video`, `show_on_tv`), the NAS home-video library (`nas_video_query`, `play_nas_video`, `nas_play_folder`, `nas_skip`), Google Calendar (`calendar_add`, `calendar_list`, `calendar_delete`), Google Tasks (`task_add`, `task_list`, `task_complete`, `task_delete`), Notion (`notion_add`), Google Drive (`drive_list`, `drive_trash`, `drive_upload`), email (`email_send`), and two audio gags (`self_destruct`, `mad_laugh`) |
+| F-P2  | Every **tool** declares its own prerequisites and returns `{"status": "unavailable", "reason": "<the missing config key>"}` when they are not met; families report a tri-state `enabled` / `partial` / `disabled` verdict at startup, and the app boots green with none of it present |
+| F-P3  | House-bound capabilities answer `{"status": "away_from_home"}` **only on positive evidence that the robot is on some other network** — declared via `HANOVA_HOME_NETWORKS`; an unreachable, unauthorised or tunnelled Home Assistant is `home_status_unknown`, which performs no house action at all |
+| F-P4  | Every destructive capability is gated in code by a two-step read-back with a 90-second window, scoped to the conversation and to an individual claim id, and the confirmed call executes the parked action, not the arguments of the second call; `email_send` reads the **whole** message body back verbatim and refuses one too long to read |
+| F-P5  | No ported tool's description, default, log line or error string carries a personal identifier: every calendar id, account address, folder id, entity id, share name and path is configuration, and the suite fails if one reappears |
+| F-P6  | Three upstream behaviours are declared non-goals: Drive restore (the Drive UI does it), email BCC (a recipient the read-back cannot surface), and the generic confirmation summary for `self_destruct` (which would spoil the gag it gates — its in-character ritual, TTL and abort word are kept instead) |
+
+This whole group is additive to the five §8 demos and is not on their critical
+path.
+
 ---
 
 ## 8. POC Success Criteria
@@ -768,11 +782,26 @@ destroying a few percent of every loud vowel. The rebuilt chain measures louder,
 smoother and quieter in the roughness band than the one it replaces, at no added
 delay. See DECISIONS.md D-017.
 
-**Tool layer.** Seventeen tools are offered to the model: robot expression and
+**Tool layer.** Thirty-nine tools are offered to the model: robot expression and
 motion, camera capture, web search, home control, fact memory, face memory,
-sleep, and two housekeeping tools for tracking long-running work. Tools run
+sleep, two housekeeping tools for tracking long-running work, and the
+twenty-two ported home-and-cloud capabilities of §7.7. Tools run
 asynchronously alongside the conversation and are contractually forbidden to
 crash the app — a failure returns an error the model can talk about.
+
+**Ported home-and-cloud service layer (`hanova/`).** The service modules behind
+the D-018 capabilities: `settings.py` (the whole `HANOVA_*` config surface,
+per-tool prerequisites and per-family enablement), `redact.py` (the one helper
+every ported tool logs and errors through), `confirm.py` (the session-scoped
+confirmation gate), `ha_client.py` (async Home Assistant REST), `media_store.py`
+(the LAN-served media cache mounted on the existing web server), `ytdlp.py` /
+`music_player.py` / `audio_drain.py` / `music_hooks.py` / `sfx.py`
+(robot-speaker audio, its barge-in lifecycle and the realtime-loop call sites),
+`images.py` (OpenAI Images for `show_on_tv`), `gauth.py` / `gcal.py` /
+`gtasks.py` / `gdrive.py` / `notion_client.py` / `gmail_smtp.py` (cloud APIs
+over one shared blocking-HTTP seam in `sync_http.py`), and `nas.py` (index
+queries, validated SMB staging and the trip session). `home_net.py` at package
+root holds the tri-state home-network probe.
 
 **MCP seam.** Remote MCP servers are discovered at startup and their tools
 merged into the same registry the model sees, under a namespaced prefix.

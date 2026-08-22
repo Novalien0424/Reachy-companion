@@ -72,7 +72,8 @@ retained as-is from the scaffold. Emotion clips = HF dataset
 ## D-009 — Robot deployment: app-only, daemon untouchable (2026-08-17)
 
 Operator authorization: deploy `reachy_companion` to the physical Reachy Mini
-(host in repo-root `.env`, SSH as the pollen user) **as a managed app only**.
+(host and SSH user in the repo-root `.env`: `REACHY_HOST` / `REACHY_SSH_USER`)
+**as a managed app only**.
 Hard limits: never modify/upgrade/restart the robot's daemon or its config,
 no system packages; install only into `/venvs/apps_venv`; start/stop only via
 the official apps API or dashboard. Procedure lives in the `reachy-deploy`
@@ -82,10 +83,11 @@ older than the app's SDK floor (`>=1.10.0rc2`), deployment STOPS and reports
 — upgrading the daemon is not authorized.
 
 Attempt 1 (2026-08-17, Task 15 deploy prep): **BLOCKED at Step 1, robot
-offline.** `10.0.0.96` gave ICMP "destination host unreachable" from our own
-10.0.0.34 interface, no ARP entry, no Raspberry-Pi-OUI MAC on the LAN, TCP
-22/80/8000 all timed out, and `plink` returned "Network error: Connection
-timed out". No mDNS name (`reachy-mini.local`) resolved. Nothing was
+offline.** The robot's address (see the repo-root `.env`, `REACHY_HOST`) gave
+ICMP "destination host unreachable" from our own LAN interface, no ARP entry,
+no Raspberry-Pi-OUI MAC on the LAN, TCP 22/80/8000 all timed out, and `plink`
+returned "Network error: Connection timed out". No mDNS name
+(`reachy-mini.local`) resolved. Nothing was
 transferred, installed, started, or written to the robot. Local prep that
 does not touch the robot was completed instead: wheel built
 (`reachy_companion-1.0.0-py3-none-any.whl`, pure `py3-none-any`, carrying the
@@ -131,8 +133,9 @@ and `.env` must be re-placed after every install.
 
 Attempt 2 (2026-08-17, Task 15 deploy): **BLOCKED at Step 2, version gate —
 robot daemon is 1.9.0, below the `>=1.10.0rc2` floor.** The robot was fully
-reachable this time: SSH as `pollen@10.0.0.96` returned `reachy-mini` /
-`aarch64` / Linux 6.18.33+rpt-rpi-v8, and the daemon answered on port 8000.
+reachable this time: SSH (user and host in the repo-root `.env`,
+`REACHY_SSH_USER` / `REACHY_HOST`) returned `reachy-mini` / `aarch64` /
+Linux 6.18.33+rpt-rpi-v8, and the daemon answered on port 8000.
 The corrected route from attempt 1 worked exactly as documented —
 `GET /update/install-source` → `{"version":"1.9.0","source":"pypi"}` — and the
 SSH cross-check agreed: `/venvs/apps_venv/bin/python -m pip show reachy-mini`
@@ -197,19 +200,19 @@ against stable-only PyPI (latest 1.9.0) and could have undone the update. It
 fires only if step 2's `pip check` fails. Diffing dependency tables between
 tags showed exactly one change — `huggingface-hub` floor `1.17.0 → 1.20.1`,
 already satisfied at 1.27.0 — so `pip check` was predicted to pass, and the
-live log confirmed step 3 never ran. (Also found: `uv` is absent from the
-`pollen` login PATH but `launcher.sh` exports `/opt/uv`, so the daemon used
+live log confirmed step 3 never ran. (Also found: `uv` is absent from the robot
+user's login PATH but `launcher.sh` exports `/opt/uv`, so the daemon used
 `uv`, not `pip`.)
 
 Deployment then followed the skill unchanged: two-step install (never bare
 `--force-reinstall`), **zero sdist builds**, discovery lists
 `reachy_companion`, `.env` placed at the site-packages instance path (mode
 600, no `REACHY_DAEMON_PORT` line) and assets preloaded into
-`/home/pollen/.cache/huggingface` — the same user the daemon spawns apps as
-(`User=pollen`). Start cycle reached a real conversation: session initialized
-on **gpt-realtime-2.1** (voice `cedar`), all **12 tools** registered, **VoiceFX
-active** (pitch +4.0 st, ring-mod 55 Hz @ 0.25 mix), first-audio-delta 55 ms,
-**zero tracebacks**, then a clean stop.
+`/home/<REACHY_SSH_USER>/.cache/huggingface` — the same user the daemon spawns
+apps as (the `User=` in its unit). Start cycle reached a real conversation:
+session initialized on **gpt-realtime-2.1** (voice `cedar`), all **12 tools**
+registered, **VoiceFX active** (pitch +4.0 st, ring-mod 55 Hz @ 0.25 mix),
+first-audio-delta 55 ms, **zero tracebacks**, then a clean stop.
 
 **Autostart (operator request, mid-task):** `PUT /api/apps/startup-app` with
 `{"startup_app": "reachy_companion"}` — body shape read from the `StartupApp`
@@ -276,8 +279,8 @@ Third run of the backup/restore ritual, now covering `faces.v1.json` as well:
 `.env` (1027 B) backed up and re-placed; **both** `memory.v1.json` and
 `faces.v1.json` were absent — expected, since no one has used `remember` or
 `remember_face` on this robot yet — and recorded as absent rather than treated
-as a backup failure. The preloader now warms the 37 MB SFace model as `pollen`
-(13 s), so the first wake check does not build its session off a cold cache.
+as a backup failure. The preloader now warms the 37 MB SFace model as the robot
+user (13 s), so the first wake check does not build its session off a cold cache.
 New hardware finding: the robot is a Raspberry Pi **CM4**, not a Pi 5 — see
 D-013 for what that costs. Evidence:
 `.superpowers/sdd/2026-08-16-reachy-mini-poc/task-17-report.md`.
@@ -742,3 +745,219 @@ The on-robot listening pass is still owed.
 
 Verified: 622 passed / 30 skipped (56 new tests in `tests/test_voicefx.py` and
 `tests/test_streaming.py`), ruff and mypy strict green.
+
+## D-018 — HomeAssistant-Nova ported natively, not consumed over MCP (2026-08-21)
+
+The operator's `ha-actions` server exposes 23 tools we wanted. It is a
+single-file, stdio-only, hand-rolled JSON-RPC server pinned to one Mac
+(`reference/HomeAssistant-Nova/bin/ha-actions-mcp/server.py`). Three
+alternatives were weighed and the port won on four independent counts.
+
+**Identifiers.** Thirteen of its 23 tool descriptions embed the operator's real
+calendar address, Drive folder id, Gmail address, task-list names and family
+trip place names, and ~60 code sites carry the same. Consuming it verbatim would
+push all of that into the realtime model prompt on every session, and therefore
+into transcripts and logs. Porting externalises every identifier to configuration
+once. `tests/test_hanova_integration.py` now fails if any of it comes back.
+
+**Concurrency.** Upstream's handlers are synchronous inside a single-threaded
+stdin loop (`server.py:2364`, `:2390`), so one 200-second `play_music_here` or
+one 600-second `drive_upload` makes `stop_music` unanswerable. On a voice robot
+that is a safety defect: a robot that cannot be stopped by voice. Our realtime
+loop already dispatches every tool as its own asyncio task
+(`huggingface_realtime.py:1011`), so a native port gets a fast stop lane for
+free — and upstream itself hand-rolls daemon threads to dodge its own loop,
+which is the argument that the concurrency model belongs to the host app.
+
+**Prompt budget.** 32.5 KB of tool descriptions, ~8–9 K tokens, written as
+routing rules for a *different* agent with sibling tools we do not have. Rewritten
+fresh at ≤120 characters each, the whole catalogue is roughly 2 KB.
+
+**Transport.** Our MCP client speaks Streamable HTTP only
+(`mcp_client.py:133-141`); stdio would need a new transport lane *plus* a way to
+reach another machine's process, and the tools would still need `yt-dlp`,
+`ffmpeg`, an SMB client and the credential files on the robot regardless.
+
+### What the port changed on purpose
+
+- **`play_music` always plays on the robot's own speaker.** The Voice-PE and
+  TV-cast music paths are not ported and `play_music_here` is merged away: a desk
+  robot asked for music is asked for *its* music, and that path needs no Home
+  Assistant, no LAN URL and no home network.
+- **Pause is synthesised.** The daemon media API is exactly `play_sound(file)`
+  and `stop_sound()` (`daemon/app/routers/media.py:77-115`) — no pause, no seek,
+  no per-stream volume; `/api/volume/set` is system-wide and plays a test beep.
+  So barge-in stops the sound and banks the offset, and the turn's end re-cuts
+  the cached mp3 from that offset with the bundled ffmpeg.
+- **`show_on_tv` generates its own image.** Upstream's version depended on the
+  operator's Hermes gateway and a read-only mount of its image cache. We call the
+  OpenAI Images API with the key the app already has, serve the PNG from the
+  app's own web server, and cast that URL.
+- **`drive_upload` uploads a camera frame.** Upstream took an absolute path on
+  the operator's Mac. The only file a robot can meaningfully offer is one it just
+  produced, so it captures one frame — at confirm time, not at arm time — and
+  uploads that. Never anyone-with-link readable, reversing upstream's default.
+- **NAS auto-advance is not ported.** Upstream ran an unbounded 1 Hz daemon
+  polling Home Assistant and prefetching (`server.py:1976-2058`). The session
+  keeps the trip playlist and its position; `nas_skip` advances it on request.
+  Same user-visible capability, no background task to own, cancel or leak.
+- **Media is served from the app's own web server.** `console.py` already mounts
+  `StaticFiles` on a FastAPI app bound to `0.0.0.0:7860`; a second mount at
+  `/hanova-media` was enough. No new port, no stdlib server.
+- **Notion's `Owner` property is dropped.** Its select options are real people's
+  names, which have no place in a schema that enters the model prompt.
+- **`email_send` is included but gated.** It was recommended for exclusion. The
+  operator kept it; the mitigation is that the read-back names **every**
+  recipient (To and CC), the subject and the **entire message body, verbatim** —
+  bounded at 500 characters, with a longer body refused as `body_too_long`
+  rather than condensed — and the send executes the parked envelope, never the
+  second call's args. The digest appended after the body is an integrity token
+  only, never a stand-in for reading the body out.
+
+### Approved non-goals (external review round 1, 2026-08-21)
+
+Three upstream behaviours are deliberately **not** ported. Each was raised by the
+external reviewer as an undeclared scope change; the controller accepted them as
+scope decisions and they are recorded here so they cannot be mistaken later for
+oversights.
+
+- **Drive restore.** Upstream could untrash. `drive_trash` already leaves the
+  item recoverable from the Drive UI for about thirty days, on any device,
+  without the robot. A voice-driven restore would add a second fuzzy match over
+  the *trash* namespace — precisely where duplicate names accumulate — for a
+  capability the user already has. `gdrive.set_trashed` keeps its boolean because
+  it is one API call either way, but no tool may expose `trashed=False`.
+- **Email BCC.** Upstream accepted a blind-carbon list. This port supports To and
+  CC only, and `send_mail` has no `bcc` parameter at all. A blind recipient is by
+  definition one the confirmation read-back cannot surface, which contradicts the
+  reason the gate exists. The persona explains this rather than failing silently.
+- **The self-destruct gag keeps its in-character ritual.** It uses the shared
+  `ConfirmationGate` for its TTL, its claim/complete lifecycle and its explicit
+  abort path, but **not** the generic read-back summary: spelling out what the
+  tool is about to do destroys the only thing the tool does. Nothing destructive
+  is at stake — it is audio. The arm text is the countdown ritual, the
+  confirmation phrase is thematic, and `abort` is enforced in code. The persona
+  is instructed not to pre-explain the ritual, and
+  `test_the_self_destruct_ritual_is_not_explained_away` fails if it starts to.
+
+### What review round 1 changed in the design
+
+- **Availability is per tool, not per family** (finding 10). `settings.TOOL_PREREQS`
+  maps all 22 names to their own prerequisites; families aggregate into a
+  tri-state startup verdict. `nas_video_query` needs only the index file;
+  `play_video` needs neither a LAN base nor a live media mount; `stop_music`
+  needs nothing at all, by design.
+- **The home verdict is tri-state** (finding 12). `away_from_home` now requires
+  routing-level absence proven by a socket-level LAN signal. An expired HA token,
+  an HA outage and a VPN connection are all `home_status_unknown`.
+- **The confirmation gate is session-scoped, and spends authorisation on success**
+  (findings 3 and 4), so a confirmation cannot survive a backend reconnect and a
+  transient 503 does not cost the user their approval.
+- **Music is a serialized state machine with acknowledged daemon commands**
+  (finding 2), and the resume waits for a real audio-drain signal from
+  `console.play_loop` rather than for `response.done` (finding 1).
+- **Ported tools log metadata only** (finding 7), through `hanova/redact.py`.
+- **No default in `settings.py` is derived from the operator's own setup**
+  (finding 6): the NAS share and subpaths and the three HA script names all
+  default to empty and are real prerequisites.
+
+### What review round 2 changed in the design
+
+- **`away_from_home` now requires positive off-home evidence** (finding 3). The
+  robot's own address must sit outside every network declared in
+  `HANOVA_HOME_NETWORKS`; a failed connection to Home Assistant is an outage, not
+  an absence, and produces `home_status_unknown`. Every house-bound tool branches
+  all three verdicts and does **no work at all** on `unknown` — round 1 tested
+  only `AWAY`, so a VPN, a 401 or a timeout still fired real house actions. The
+  boolean `is_home()` is deleted, because it could not express the third state.
+- **Every armed action carries an immutable claim id** (finding 2).
+  `complete()`, `release()` and the claim-bound `abort()` require it and compare
+  epoch *and* id inside the mutating lock, so an operation in flight from an
+  older session can no longer spend or re-arm an authorisation that belongs to a
+  newer one, and a slot whose action is executing cannot be re-armed at all.
+- **Transient and terminal failures are different outcomes** (finding 9).
+  `release()` — a bare "try again" — is reserved for connection, disconnection
+  and timeout faults. Authentication, refused-recipient, refused-sender and
+  validation failures **spend** the authorisation, because the approved action
+  cannot succeed as approved and the user must hear a corrected one.
+- **The email read-back carries the entire message body** (finding 4), capped at
+  500 characters. A first-line preview plus a hex digest is not something a
+  person can verify by ear: two bodies with the same opening line produced
+  indistinguishable confirmations while the sent mail differed. Longer bodies are
+  refused with `body_too_long` rather than summarised.
+- **The music resume waits on real, per-response audio accounting** (finding 1).
+  `audio_drain` marks a response pending the moment it is created — before any
+  audio exists — counts samples at **enqueue** time, and only reports drained
+  once the response is closed, nothing is outstanding, the queue is empty and the
+  device-buffer estimate has expired. A final tool batch with
+  `needs_response=False` now closes the turn itself, which is the path that used
+  to leave music paused for the rest of the conversation.
+- **Session boundaries invalidate rather than forget** (finding 8).
+  `PLAYER.invalidate()` advances the generation under the state lock and the
+  boundary also stops the daemon; cleanup runs from the realtime connection's own
+  `finally`, so a dropped connection cleans up even when the handler never shuts
+  down.
+- **Staging is single-flight, and the cursor advances by token** (findings 10
+  and 11). Per-destination locks plus uniquely named `.part` files that pruning
+  skips; `peek_next()` returns a `CursorToken` and `commit_next(token)` is a
+  compare-and-swap, so two concurrent skips consume one clip and a late cast
+  cannot advance a new playlist.
+- **`HANOVA_NAS_SUBPATH` is consumed** (finding 12): it bounds the subtree an
+  index entry's original path may resolve inside, so a mandatory prerequisite
+  finally changes behaviour instead of merely blocking deployments.
+- **Identifier hygiene reaches tests, docs and the deploy skill** (finding 5).
+  Every NAS fixture is an obvious synthetic sentinel, the shape scan covers
+  tests/docs/skills with a private-address pattern that actually matches private
+  addresses, and the staged-content scan compares literally against an untracked
+  value list and reports counts and paths only — never a prefix of a value.
+- **Service-layer logging goes through `redact` too** (finding 6). `settings.py`,
+  `home_net.py`, `media_store.py`, `ytdlp.py`, `images.py`, `nas.py` and
+  `ha_client.py` no longer log raw paths, URLs, stderr tails or tracebacks, and
+  each has a `caplog` sentinel test. A module whose only log line is a fixed
+  string or a count — `stop_music`, `mad_laugh`, `self_destruct`,
+  `nas_video_query`, the gate, the music state machine — is exempt only as a
+  named entry with a written reason in `_REDACT_EXEMPT`, and a second test
+  re-reads each exempt module's log lines to keep the claim honest.
+
+### New dependencies (operator-approved)
+
+`yt-dlp`, `imageio-ffmpeg`, `smbprotocol` — three pure-wheel additions, no system
+packages. `imageio-ffmpeg` over `static-ffmpeg` because it ships the ffmpeg
+binary *inside* a `manylinux2014_aarch64` wheel and exposes `get_ffmpeg_exe()`,
+where `static-ffmpeg` downloads its binaries at first use.
+
+### New instance-directory state (deploy ritual)
+
+`google-workspace-mcp/<account>.json` (rewritten on every token refresh),
+`google-oauth.json`, `nas-video-index.json`. All three are added to the
+backup/restore steps in `.claude/skills/reachy-deploy/SKILL.md`. The
+`hanova_media/` cache is deliberately **not** backed up: it is regenerable, and
+keeping it would carry hundreds of megabytes of home video through every deploy.
+
+The robot's connection details leave the tracked deploy skill in the same move:
+`REACHY_HOST`, `REACHY_SSH_USER`, `REACHY_SSH_PASSWORD` and the new
+`REACHY_HOSTKEY` (the SSH host-key fingerprint `plink -batch` needs, previously
+a literal in the skill file) all live in the gitignored repo-root `.env`. A
+placeholder-only `.env.example` documents the four keys and is tracked on
+purpose — which needed a `!/.env.example` negation placed **after** every
+`.env`-matching rule in `.gitignore`, because git honours the last matching
+pattern and the file's later `.env.*` rule was silently re-ignoring it.
+
+### One deployment assumption the code cannot enforce
+
+NAS path containment (`nas.validate_cast_path`, `HANOVA_NAS_SUBPATH` /
+`HANOVA_NAS_CAST_SUBPATH`) is a **client-side check over the normalized path
+string** — it refuses `..`, absolute paths and anything resolving outside the
+configured subtree — while `smbprotocol` follows symlinks and reparse points
+wherever the SMB **server** resolves them. So the two configured subpaths must
+contain no symlink or reparse point leading out of the subtree; otherwise a path
+the check accepts can still open a file elsewhere on the share. That is a
+property of the operator's NAS layout, verified when the share is configured,
+and it is recorded here because nothing in the app can detect it.
+
+**Not yet run on the robot.** Everything above rests on the suite until the
+Task 15 deployment and wake test say otherwise.
+
+Verified: 1118 passed / 30 skipped (31 new tests in
+`tests/test_hanova_integration.py`, on top of the per-family suites added by
+Tasks 1–13), ruff and mypy strict green.

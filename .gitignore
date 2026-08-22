@@ -20,3 +20,7 @@ venv/
 # OS / editor noise
 Thumbs.db
 .DS_Store
+
+# D-018: the deployment template is tracked on purpose. This negation must stay
+# BELOW every `.env` / `.env.*` rule above it -- the last matching pattern wins.
+!/.env.example

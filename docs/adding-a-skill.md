@@ -147,3 +147,107 @@ namespaced by alias (`notion__search_pages`). Discovery is bounded and never rai
 an unreachable or unauthorized server is logged and skipped, and the app starts with
 its local tools. Adding another server is a new tuple in `_SERVER_ENV` plus two env vars
 — still no change to the conversational core.
+
+## The ported HomeAssistant-Nova families (D-018)
+
+Twenty-two of the app's Skills are ports of the operator's `ha-actions` MCP
+server, and they follow three extra conventions on top of everything above.
+No single file demonstrates all three, and none can: the destructive tools are
+all cloud tools, and a cloud tool is forbidden to touch the home-network probe
+(convention 2 below, enforced in both directions by
+`tests/test_hanova_integration.py`). Read two worked examples instead —
+`src/reachy_companion/tools/calendar_delete.py` for conventions 1 and 3
+(per-tool gating, then the full arm/claim/complete lifecycle), and
+`src/reachy_companion/tools/play_video.py` for convention 2 (per-tool gating,
+then the three-way home verdict).
+
+**1. Per-tool gating, per-family reporting.** Every ported tool declares its own
+prerequisites in `settings.TOOL_PREREQS` and starts with
+`settings.tool_status(self.name)`; a tool that is not configured returns
+`settings.unavailable(reason)`, where *reason* is the name of the first missing
+**config key** — never its value. Families aggregate their tools into one
+tri-state startup line: `hanova family notion: disabled
+(HANOVA_NOTION_TOKEN)` / `partial (2/4 tools ready; ...)` / `enabled`. The app
+boots green with none of this configured. `stop_music` is the one documented
+exemption: it has no prerequisites, because a robot that cannot be silenced by
+voice is a safety defect.
+
+**2. House-bound tools check the network, and the verdict is tri-state.**
+Anything that needs Home Assistant or the NAS calls `await home_state()` from
+`home_net.py` first and branches **all three** verdicts:
+
+```python
+verdict = await home_state()
+if verdict == AWAY:
+    return away_from_home()
+if verdict != HOME:
+    return home_unknown()      # status: home_status_unknown -- and do NO work
+```
+
+`AWAY` requires **positive off-home routing evidence**: the robot's own address
+outside every network in `HANOVA_HOME_NETWORKS`. A failed connection to Home
+Assistant is not that — it is what an outage looks like from inside the house —
+and neither is a 401, a 5xx, an HTTP timeout or a VPN-shaped route. All of those
+are `UNKNOWN`, which returns `home_status_unknown` and performs nothing: telling
+the user they are out of their own house on that evidence is a lie, and doing the
+house action anyway is worse. Cloud tools and music must **not** call it; a
+needless probe is pure latency. `tests/test_hanova_integration.py` enforces both
+directions and the exact three-way shape.
+
+**3. Destructive tools are gated in code, and the authorisation is spent on
+success.** A gated tool called without `confirm: true` resolves the action,
+parks it in `hanova/confirm.py`'s `GATE` with a 90 s TTL **stamped with the
+current session epoch**, and returns
+`{"status": "needs_confirmation", "summary": "<the exact action, in full>"}`.
+The confirming call carries only `confirm: true` — the action fields are
+optional in the schema so the model cannot mis-hear them a second time — and it
+executes the **parked** payload. `GATE.claim()` takes it in flight and returns a
+`PendingAction` carrying an opaque **`claim_id`**; every mutator requires that
+id, so a call can only spend, retry or cancel *the authorisation it actually
+holds*. Then: `GATE.complete(name, claim_id)` on success **and on a terminal
+failure** (an auth error, a refused recipient, a validation error — the approved
+action cannot succeed as approved, so it must be read back afresh),
+`GATE.release(name, claim_id)` only on a **transient** failure so the user can
+say "try again", and `GATE.abort()` when they say no. Re-arming a slot whose
+action is mid-execution is refused with `action_in_flight`. A new realtime
+session mints a new epoch, so nothing armed in one conversation can be confirmed
+in another. The gate is never a prompt instruction alone.
+
+`email_send` is the strictest case. Its `summary` carries every recipient (To
+and CC), the subject and the **entire normalized body, verbatim** — not a
+preview, not a digest of one. The digest that follows the body is only an
+integrity token appended after it, never a substitute for reading it: two
+messages sharing an opening line produced indistinguishable confirmations while
+the sent mail differed. A body longer than `gmail_smtp.MAX_BODY_CHARS` (500) is
+refused with `body_too_long` rather than summarised, and the persona is
+instructed to read the body out in full rather than condense it.
+
+**4. Nothing personal reaches a log line or an error string.** Ported tools log
+through `hanova/redact.py`: counts, lengths, salted digests, HTTP statuses,
+durations. Never a query, title, subject, recipient, id, path or URL, and never
+a raw API error body — Google, Notion, Drive and SMTP all echo the request back
+inside theirs. A tool's user-facing `error` is a fixed, speakable sentence, not
+the upstream message. A module that logs nothing but fixed strings and counts
+may skip the helper, but only as a named entry with its reason in
+`_REDACT_EXEMPT` in `tests/test_hanova_integration.py` — the exemption list is a
+deliberate act someone has to write down, and a second test re-reads every
+exempt module's log lines to keep the claim honest. (Scope note: this covers the
+ported tool surface. The framework's own model-visible tool-result logging is
+unchanged by D-018.)
+
+Adding a tool to one of these families is still one file plus one profile line;
+it just also needs an entry in `TOOL_PREREQS`, possibly a home check, redacted
+logging, and — if it destroys anything — a `confirm` parameter and the
+claim/complete two-branch body.
+
+### One deployment assumption the code cannot check
+
+NAS path containment (`nas.validate_cast_path`, `HANOVA_NAS_SUBPATH` /
+`HANOVA_NAS_CAST_SUBPATH`) is a **client-side check on the normalized path
+string**: it refuses `..`, absolute paths and anything that does not resolve
+inside the configured subtree. It cannot see the server side, and `smbprotocol`
+follows symlinks and reparse points wherever the SMB server resolves them. So
+the two configured subpaths must contain **no symlink or reparse point that
+leads out of the subtree** — otherwise a path this check accepts can still open
+a file elsewhere on the share. Treat that as a property of the operator's NAS
+layout, verified when the share is set up, not as something the robot enforces.

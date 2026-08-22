@@ -16,13 +16,28 @@ infrastructure.
 
 ## Access
 
-Read robot credentials from the repo-root `.env` (gitignored, never commit):
-`REACHY_HOST` (10.0.0.96), `REACHY_SSH_USER` (pollen), `REACHY_SSH_PASSWORD`.
+The robot's address and login are in the gitignored repo-root `.env` as
+`REACHY_HOST` / `REACHY_SSH_USER` / `REACHY_SSH_PASSWORD`; **never write their
+values into this file** — it is tracked, and a committed LAN address or username
+is a permanent disclosure. Read them at run time
+(`Get-Content .env | …`, or `$env:REACHY_HOST` once loaded) and refer to them by
+key name in notes, transcripts and reports.
+
+A fourth key, `REACHY_HOSTKEY`, holds the robot's SSH host-key fingerprint in
+the exact form `plink` prints it. Every `plink`/`pscp` call here runs with
+`-batch` and therefore cannot answer the host-key prompt, so they need
+`-hostkey $env:REACHY_HOSTKEY`. Obtain it once from an interactive `plink`
+session, put it in the repo-root `.env`, and never disable host-key checking or
+paste the fingerprint back into a tracked file.
+
+`.env.example` at the repo root is the tracked, placeholder-only template for
+all four keys — copy it to `.env` and fill it in.
+
 Windows OpenSSH prompts for the password interactively; for non-interactive
 automation prefer PuTTY's `plink`/`pscp -pw` if installed, or offer the
 operator one-time SSH key setup (append a public key to
-`~/.ssh/authorized_keys` for the pollen user — optional convenience, ask
-first).
+`~/.ssh/authorized_keys` for the `REACHY_SSH_USER` account — optional
+convenience, ask first).
 
 ## Deployment procedure (matches plan Task 15 / D-009)
 
@@ -48,8 +63,8 @@ first).
    IS the installed package directory
    (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
    `app.py:169` + `main.py:448`), so it sits *inside* site-packages and every
-   reinstall wipes it. Four files there are user state, not build output, and
-   losing any of them is a visible regression:
+   reinstall wipes it. Six files and one directory there are user state, not
+   build output, and losing any of them is a visible regression:
    - `.env` — runtime secrets (API keys, home-control config).
    - `persona.md` — the operator's edited personality / system prompt
      (`persona.py`, `PERSONA_FILENAME`, D-016). Externalizing the persona is
@@ -59,7 +74,7 @@ first).
      profile` where it should read `persona: instance persona.md`.
      A git-tracked **local working copy lives at repo-root `persona.md`**;
      after editing it, sync it to the robot with
-     `pscp … persona.md pollen@$REACHY_HOST:$INST/persona.md` and antenna-wake
+     `pscp … persona.md ${REACHY_SSH_USER}@${REACHY_HOST}:$INST/persona.md` and antenna-wake
      (or restart the app) to load it — no wheel rebuild. Keep the two copies in
      step: whichever side was edited last wins, and this repo copy is the one
      under version control.
@@ -71,20 +86,71 @@ first).
      (`faces.py:33`, `FACES_FILENAME`, D-013). Same rule, higher cost to lose:
      re-enrolling means asking every person to stand in front of the camera
      again, and the wake-time greeting silently stops using anyone's name.
+   - `google-workspace-mcp/<account>.json` — the Google Calendar/Tasks OAuth
+     credentials (D-018). **This file is rewritten by the app** every time the
+     access token is refreshed, so the robot's copy is authoritative for its own
+     expiry and must survive a redeploy. Losing it means re-running the OAuth
+     bootstrap by hand; both calendar and task tools answer
+     `unavailable`/`not_configured` until it is back.
+   - `google-oauth.json` — the Drive OAuth secret (D-018), a **separate** grant
+     carrying full `https://www.googleapis.com/auth/drive` scope. Losing it
+     disables `drive_list`, `drive_trash` and `drive_upload`.
+   - `nas-video-index.json` — the operator-supplied home-video index (D-018).
+     Not a credential, but personal data and not reproducible on the robot: it is
+     built on the operator's own machine. Losing it disables all four `nas_*`
+     tools.
+
+   Deliberately **not** backed up: `hanova_media/` (the downloaded music, staged
+   NAS clips and generated images). It is a regenerable cache with keep-N caps,
+   and copying it would carry hundreds of megabytes through every deploy. Record
+   that it was intentionally skipped rather than treating it as a missed file.
+
+   Backup — a **unique, verified, empty** directory per deployment, plus a
+   redacted manifest that the restore reads. Review round 1, finding 19: the old
+   ritual reused one fixed `/tmp/reachy_companion_backup` directory, so a file
+   absent *today* could be restored from a **stale copy left by a previous
+   deployment**; and its recursive listing printed credential filenames, which
+   are account addresses, into the deploy transcript.
 
    ```sh
    INST=$(/venvs/apps_venv/bin/python -c \
      "import reachy_companion, pathlib; print(pathlib.Path(reachy_companion.__file__).parent)")
-   mkdir -p /tmp/reachy_companion_backup
-   cp -a "$INST/.env" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no .env yet"
-   cp -a "$INST/persona.md" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no persona.md yet"
-   cp -a "$INST/memory.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no memory yet"
-   cp -a "$INST/faces.v1.json" /tmp/reachy_companion_backup/ 2>/dev/null || echo "no faces yet"
-   ls -l /tmp/reachy_companion_backup
+
+   STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+   BACKUP="/tmp/reachy_companion_backup/$STAMP"
+   mkdir -p "$BACKUP" && chmod 700 "$BACKUP"
+   # Finding 19: a fresh directory every time. A stale file from a previous deploy
+   # must never be able to overwrite a file that is legitimately absent now.
+   [ -z "$(ls -A "$BACKUP")" ] || { echo "FATAL: backup dir not empty"; exit 1; }
+
+   : > "$BACKUP/manifest.txt"
+   for NAME in .env persona.md memory.v1.json faces.v1.json google-oauth.json nas-video-index.json; do
+     if [ -e "$INST/$NAME" ]; then
+       cp -a "$INST/$NAME" "$BACKUP/$NAME"
+       echo "file $NAME $(stat -c '%a %s' "$INST/$NAME")" >> "$BACKUP/manifest.txt"
+     else
+       echo "absent $NAME" >> "$BACKUP/manifest.txt"
+     fi
+   done
+   if [ -d "$INST/google-workspace-mcp" ]; then
+     # Safe in THIS direction only: $BACKUP was just created and verified empty
+     # above, so the destination cannot exist and `cp -a SRC DST` copies rather
+     # than nests. The restore below is the direction where that matters.
+     cp -a "$INST/google-workspace-mcp" "$BACKUP/google-workspace-mcp"
+     # Finding 19: a COUNT, not a listing. The filenames are account addresses.
+     echo "dir google-workspace-mcp $(find "$INST/google-workspace-mcp" -type f | wc -l) files" >> "$BACKUP/manifest.txt"
+   else
+     echo "absent google-workspace-mcp" >> "$BACKUP/manifest.txt"
+   fi
+   echo "$BACKUP"
+   cat "$BACKUP/manifest.txt"
    ```
 
-   On a first deploy all four are absent — record that explicitly in the deploy
-   notes rather than treating a missing file as a failed backup.
+   The manifest is the record the Verification Gate wants: every `absent` line is
+   an explicitly recorded absence rather than a missed file, and it names no
+   credential. Copy `$BACKUP` into the deploy notes — the restore needs it. On a
+   first deploy every entry is `absent`; record that explicitly rather than
+   treating a missing file as a failed backup.
 5. **Install into the shared apps venv** (an app-level action, allowed) —
    NEVER bare `--force-reinstall` (it reinstalls `reachy-mini` too, whose
    linux `PyGObject>=3.42.2,<=3.46.0` pin has NO wheels → forbidden source
@@ -97,15 +163,54 @@ first).
 6. **Restore instance state immediately after installing, before starting.**
    Same `$INST` (recompute it — the python minor version in the path can move):
 
+   Restore — **conditional, driven by the manifest, with permissions
+   reasserted** (finding 19: the old restore block was unconditional even though
+   the backup block tolerated missing files):
+
    ```sh
-   cp -a /tmp/reachy_companion_backup/.env "$INST/.env"
-   cp -a /tmp/reachy_companion_backup/persona.md "$INST/persona.md"
-   cp -a /tmp/reachy_companion_backup/memory.v1.json "$INST/memory.v1.json"
-   cp -a /tmp/reachy_companion_backup/faces.v1.json "$INST/faces.v1.json"
-   ls -l "$INST/.env" "$INST/persona.md" "$INST/memory.v1.json" "$INST/faces.v1.json"
+   # $BACKUP is the exact directory printed by the backup step. Never a glob.
+   [ -f "$BACKUP/manifest.txt" ] || { echo "FATAL: no manifest; refusing to restore"; exit 1; }
+
+   while read -r KIND NAME REST; do
+     case "$KIND" in
+       file)
+         # Finding 19: only what the manifest recorded, and only if it is still there.
+         [ -e "$BACKUP/$NAME" ] && cp -a "$BACKUP/$NAME" "$INST/$NAME" || echo "MISSING in backup: $NAME"
+         ;;
+       dir)
+         # `cp -a SRC DST` NESTS SRC inside DST when DST already exists, and it
+         # does exist here: google-workspace-mcp is created by the app at run
+         # time, so it is not in pip's RECORD and --force-reinstall leaves it in
+         # place. The naive form silently produces
+         # $INST/google-workspace-mcp/google-workspace-mcp/ and restores nothing.
+         # Copy the CONTENTS instead, into a destination we ensure exists.
+         if [ -d "$BACKUP/$NAME" ]; then
+           mkdir -p "$INST/$NAME"
+           cp -a "$BACKUP/$NAME/." "$INST/$NAME/"
+         else
+           echo "MISSING in backup: $NAME"
+         fi
+         ;;
+       absent)
+         echo "was absent before this deploy, not restored: $NAME"
+         ;;
+     esac
+   done < "$BACKUP/manifest.txt"
+
+   # Finding 19: restrictive modes reasserted every time, on the directory too.
+   [ -d "$INST/google-workspace-mcp" ] && chmod 700 "$INST/google-workspace-mcp"
+   [ -d "$INST/google-workspace-mcp" ] && find "$INST/google-workspace-mcp" -type f -exec chmod 600 {} +
+   for NAME in .env google-oauth.json nas-video-index.json; do
+     [ -f "$INST/$NAME" ] && chmod 600 "$INST/$NAME"
+   done
+
+   # Names and modes of the instance directory only -- never a recursive listing of
+   # the credentials directory (finding 19).
+   ls -l "$INST" | grep -v '^total'
    ```
 
-   Skip whichever file the backup step reported as absent. Verify by reading
+   The manifest decides what comes back, so a file the backup recorded as
+   `absent` stays absent. Verify by reading
    **both** JSON stores back — record counts, not just file presence:
 
    ```sh
@@ -191,4 +296,5 @@ Two pitfalls this deploy confirmed: Git Bash mangles a remote command whose
 first token is a POSIX path (`/venvs/...` became `C:/Program Files/...` and the
 force-reinstall silently didn't run — the plain install then reports "already
 installed" because the wheel version never changes); run plink/pscp from
-PowerShell. And plink needs `-hostkey <SHA256 fingerprint>` in batch mode.
+PowerShell. And plink in batch mode needs `-hostkey $env:REACHY_HOSTKEY` (see
+**Access** above — the fingerprint lives in the repo-root `.env`, never here).

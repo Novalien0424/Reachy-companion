@@ -49,6 +49,16 @@ from reachy_companion.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
 )
+from reachy_companion.hanova.music_hooks import (
+    on_response_audio,
+    on_session_started,
+    on_response_created,
+    on_session_shutdown,
+    on_tool_call_started,
+    on_tool_call_finished,
+    on_user_speech_started,
+    on_assistant_turn_ended,
+)
 from reachy_companion.conversation_handler import ConversationHandler
 from reachy_companion.tools.background_tool_manager import (
     ToolCallRoutine,
@@ -178,6 +188,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._startup_greeting_sent = False
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
+        # D-018 / round 3 finding 2: the token of the realtime session this
+        # handler currently owns. 0 means "no session open". It is what stops a
+        # late cleanup from a replaced connection tearing down its successor.
+        self._hanova_session: int = 0
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -687,7 +701,25 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 sent = True
 
     async def _handle_tool_result(self, completed_tool: ToolNotification) -> None:
-        """Process the result of a tool call."""
+        """Process the result of a tool call and close its music-ducking phase.
+
+        D-018 / round 2 finding 1: `needs_response` decides whether anything else
+        will ever end this turn. When the last tool of a batch wants no reply
+        there is no further `response.created`, so the hook has to close the turn
+        and schedule the music resume itself — otherwise the track stays paused
+        for the rest of the conversation. The notification is in a `finally` so
+        the failure and connection-closed paths end the phase too; a tool whose
+        phase never ends blocks every later resume.
+        """
+        follow_up_requested = False
+        try:
+            follow_up_requested = await self._deliver_tool_result(completed_tool)
+        finally:
+            if not completed_tool.is_idle_tool_call:
+                on_tool_call_finished(completed_tool.id, needs_response=follow_up_requested)
+
+    async def _deliver_tool_result(self, completed_tool: ToolNotification) -> bool:
+        """Send one tool result back. Returns whether a follow-up response was asked for."""
         if completed_tool.error is not None:
             logger.error(
                 "Tool '%s' (id=%s) failed with error: %s",
@@ -724,7 +756,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 completed_tool.tool_name,
                 completed_tool.id,
             )
-            return
+            return False
 
         try:
             send_result_to_model = not completed_tool.is_idle_tool_call
@@ -746,7 +778,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         completed_tool.tool_name,
                         completed_tool.id,
                     )
-                    return
+                    return False
                 else:
                     await self.connection.conversation.item.create(
                         item={
@@ -819,11 +851,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             if self._tool_batch_needs_response and not self._in_flight_tool_calls:
                 self._tool_batch_needs_response = False
                 await self._safe_response_create()
+                return True
 
         except ConnectionClosedError:
             logger.warning("Connection closed while sending tool result")
             self.connection = None
             self._response_done_event.set()
+        # No follow-up response was asked for on this path, so nothing else will
+        # end the turn (D-018, round 2 finding 1).
+        return False
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
@@ -860,6 +896,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             except Exception:
                 pass
 
+            # D-018 / R7 + finding 3: a new realtime session gets a new
+            # confirmation epoch, so nothing armed in the previous conversation
+            # can be confirmed in this one, and starts with clean audio-drain
+            # bookkeeping. Round 3, finding 2: keep the token this session was
+            # minted with — the `finally` below closes *this* session, never
+            # whichever one happens to be live by the time it runs.
+            session_token = await on_session_started(self.deps)
+            self._hanova_session = session_token
+
             response_sender_task: asyncio.Task[None] | None = None
             try:
                 # Start the background tool manager
@@ -879,6 +924,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if self._clear_queue:
                             self._clear_queue()
                         self.deps.movement_manager.set_listening(True)
+                        # D-018 / R7: duck robot-speaker music the instant the user
+                        # starts talking. NOT awaited (finding 1): the pause carries a
+                        # five-second daemon timeout, and awaiting it here would stall
+                        # every event queued behind it in this receiver.
+                        on_user_speech_started(self.deps)
                         logger.debug("User speech started")
 
                     if event.type == "input_audio_buffer.speech_stopped":
@@ -888,6 +938,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     if event.type == "response.output_audio.done":
                         self.deps.movement_manager.set_speaking(False)
+                        # D-018 / R7: the assistant's turn produced its last audio.
+                        # This only *schedules* the resume; it fires when
+                        # console.play_loop reports the audio has actually drained.
+                        # The in-flight call ids go with it (fix round, finding 2):
+                        # they are what the hook reconciles its own phase against,
+                        # so a tool cancelled without reporting back cannot defer
+                        # every later resume.
+                        on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
                         logger.debug("response completed")
 
                     if event.type == "response.output_text.delta":
@@ -897,6 +955,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         logger.debug("response text done: %s", event.text)
 
                     if event.type == "response.created":
+                        # D-018 / finding 1: a new response means any resume that is
+                        # waiting on the previous turn's drain signal is now wrong.
+                        # It also opens the drain generation, which is PENDING from
+                        # this moment on -- before any audio exists (round 2).
+                        on_response_created()
                         self._mark_activity("response_created")
                         self.deps.movement_manager.set_speaking(True)
                         self._response_done_event.clear()
@@ -911,6 +974,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # Doesn't mean the audio is done playing
                         # Resume tracking for responses that emit no audio (text-only / tool-only).
                         self.deps.movement_manager.set_speaking(False)
+                        # D-018 / R7: a text-only or tool-only response never emits
+                        # response.output_audio.done, so end the turn here too. The
+                        # hook is idempotent, and it refuses to schedule a resume
+                        # while a tool call is still in flight -- a tool turn is
+                        # always followed by a second, speaking response (finding 1).
+                        on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
                         logger.debug("Response done")
@@ -972,6 +1041,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")
+                        # D-018 / round 2 finding 1: the drain tracker has to know
+                        # the audio exists BEFORE it enters the queue. Counting it
+                        # only when play_loop dequeues is what let response.done
+                        # look "drained" with the whole reply still buffered.
+                        on_response_audio(
+                            sample_count=len(decoded_pcm_bytes) // 2,  # 16-bit mono frames
+                            sample_rate=self.SAMPLE_RATE,
+                        )
                         if self._turn_user_done_at is not None and self._turn_first_audio_at is None:
                             self._turn_first_audio_at = time.perf_counter()
                             delta_ms = (self._turn_first_audio_at - self._turn_user_done_at) * 1000
@@ -1008,6 +1085,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             continue
 
                         self._in_flight_tool_calls.add(call_id)
+                        # D-018 / finding 1: a tool call in flight means this turn
+                        # is not over — a second, speaking response is still to
+                        # come — so no resume may be scheduled until it finishes.
+                        # It is tracked by the same call id as above, which is what
+                        # the turn-end reconciliation compares against.
+                        on_tool_call_started(call_id)
                         background_tool = await self.tool_manager.start_tool(
                             call_id=call_id,
                             tool_call_routine=ToolCallRoutine(
@@ -1073,6 +1156,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 # Stop background tool manager tasks (listener + cleanup) in all paths.
                 await self.tool_manager.shutdown()
 
+                # Round 2, finding 8: this connection is over however it ended —
+                # clean exit, exception, or cancellation. Stop the daemon audio
+                # and close the confirmation gate here rather than hoping
+                # shutdown() runs; a connection that drops on its own is the
+                # common case. Round 3, finding 2: with the LOCAL token, so a
+                # replacement connection that already opened cannot be torn
+                # down by the one it replaced.
+                await on_session_shutdown(self.deps, session_token)
+
     # Microphone receive
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
         """Receive audio frame from the microphone and send it to the realtime server.
@@ -1113,6 +1205,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def shutdown(self) -> None:
         """Shutdown the handler."""
+        # D-018 / R7 + finding 3: the daemon keeps playing a sound file after our
+        # session dies, so a shutdown that leaves music running is a bug the user
+        # hears -- and a confirmation left armed is one the next conversation
+        # could consume. Round 2, finding 8: this is now the *second* line of
+        # defence; `_run_realtime_session()`'s finally is the first. Round 3,
+        # finding 2: presenting the handler's own token makes "running it twice"
+        # a no-op by construction, and makes a shutdown() that arrives after a
+        # reconnect unable to close the reconnected session.
+        await on_session_shutdown(self.deps, self._hanova_session)
+
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()
 

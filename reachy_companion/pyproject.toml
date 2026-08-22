@@ -8,13 +8,17 @@ version = "1.0.0"
 description = ""
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [ "scipy>=1.11", "soxr>=1.0", "huggingface-hub>=1.17.0", "httpx>=0.28.1", "python-dotenv", "openai==2.28.0", "reachy_mini_dances_library", "reachy-mini>=1.10.0rc2", "mcp>=1.27.1,<2",]
+dependencies = [ "scipy>=1.11", "soxr>=1.0", "huggingface-hub>=1.17.0", "httpx>=0.28.1", "python-dotenv", "openai==2.28.0", "reachy_mini_dances_library", "reachy-mini>=1.10.0rc2", "mcp>=1.27.1,<2", "yt-dlp>=2026.8.19", "imageio-ffmpeg>=0.6.0", "smbprotocol>=1.17.0",]
 [[project.authors]]
 name = "Pollen Robotics"
 email = "contact@pollen-robotics.com"
 
 [dependency-groups]
-dev = [ "allure-pytest==2.16.0", "pytest", "pytest-asyncio", "pytest-cov==7.1.0", "ruff==0.15.20", "mypy==2.2.0", "pre-commit",]
+# `tzdata` is dev-only on purpose (D-018): the robot runs Linux and reads
+# /usr/share/zoneinfo, but Windows ships no tz database at all, so without it
+# every zoneinfo.ZoneInfo() lookup fails and the HANOVA_TZ validation in
+# hanova/settings.py cannot be exercised by the test suite.
+dev = [ "allure-pytest==2.16.0", "pytest", "pytest-asyncio", "pytest-cov==7.1.0", "ruff==0.15.20", "mypy==2.2.0", "pre-commit", "tzdata",]
 
 [project.scripts]
 reachy-companion = "reachy_companion.main:main"
