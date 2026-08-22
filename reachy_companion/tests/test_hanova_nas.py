@@ -290,7 +290,7 @@ def test_the_copy_is_staged_privately_and_renamed(monkeypatch, tmp_path):
 
     class _FakeSmbClient:
         @staticmethod
-        def register_session(host, username=None, password=None):
+        def register_session(host, username=None, password=None, connection_timeout=None):
             seen["host"] = host
 
         @staticmethod
@@ -312,12 +312,146 @@ def test_the_copy_is_staged_privately_and_renamed(monkeypatch, tmp_path):
     assert seen["remote"].startswith("\\\\nas.example.invalid\\SENTINEL_SHARE_q4\\")
 
 
+def test_the_smb_connect_is_bounded(monkeypatch, tmp_path):
+    """Finding 1: the library's own default is 60 s of a held single-flight lock."""
+    seen = {}
+
+    class _FakeSmbFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size=-1):
+            return b""
+
+    class _FakeSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            seen["connection_timeout"] = connection_timeout
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            return _FakeSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _FakeSmbClient)
+    # An empty read means an empty clip, which is its own refusal -- all this
+    # test cares about is what reached `register_session` on the way there.
+    with pytest.raises(nas.NasError):
+        nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", tmp_path / "out.mp4")
+
+    assert seen["connection_timeout"] == nas._SMB_CONNECT_TIMEOUT_S
+    assert 0 < nas._SMB_CONNECT_TIMEOUT_S <= 60, "a connect budget above the library default buys nothing"
+
+
+def test_a_stalled_nas_copy_is_abandoned_rather_than_blocking_forever(monkeypatch, tmp_path):
+    """Finding 1: an unbounded read wedged the clip, the lock and the tool call.
+
+    `smbclient` sets its socket back to blocking after connect
+    (`transport.py:69`) and neither `open_file` nor `Open.read` takes a timeout,
+    so a spun-down NAS or a half-open TCP connection used to stall the copy with
+    no deadline at all. The whole copy now runs against a wall-clock budget.
+    """
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 0.05)
+
+    class _NeverEndingSmbFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size=-1):
+            time.sleep(0.01)  # a NAS that trickles and never reaches the end
+            return b"x" * 1024
+
+    class _StallingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            return _NeverEndingSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _StallingSmbClient)
+    destination = tmp_path / "out.mp4"
+
+    with pytest.raises(nas.NasError) as excinfo:
+        nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", destination)
+
+    assert "too long" in str(excinfo.value)
+    assert not destination.exists(), "a timed-out copy must never be promoted"
+    assert list(tmp_path.glob(f"*{nas.PART_SUFFIX}")) == [], "the staging file must be cleaned up"
+
+
+def test_a_stalled_copy_releases_the_single_flight_lock(monkeypatch, tmp_path):
+    """Finding 1: the lock was held for the whole copy, so a stall pinned it forever."""
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 0.05)
+    destination = tmp_path / "out.mp4"
+
+    class _NeverEndingSmbFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size=-1):
+            time.sleep(0.01)
+            return b"x" * 1024
+
+    class _StallingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            return _NeverEndingSmbFile()
+
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _StallingSmbClient)
+    with pytest.raises(nas.NasError):
+        nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", destination)
+
+    # The NAS comes back. A second attempt for the SAME clip must be able to run,
+    # which it can only do if the first attempt released the destination's lock.
+    class _WorkingSmbFile:
+        def __init__(self) -> None:
+            self._data = b"MP4DATA"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, size=-1):
+            data, self._data = self._data, b""
+            return data
+
+    class _WorkingSmbClient:
+        @staticmethod
+        def register_session(host, username=None, password=None, connection_timeout=None):
+            return None
+
+        @staticmethod
+        def open_file(path, mode="rb"):
+            return _WorkingSmbFile()
+
+    monkeypatch.setattr(nas, "_SMB_COPY_BUDGET_S", 30.0)
+    monkeypatch.setitem(__import__("sys").modules, "smbclient", _WorkingSmbClient)
+    nas.fetch_cast_file("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4", destination)
+    assert destination.read_bytes() == b"MP4DATA", "the lock outlived the stall"
+
+
 def test_a_failed_copy_leaves_nothing_behind(monkeypatch, tmp_path):
     """A half-written clip is worse than no clip."""
 
     class _Boom:
         @staticmethod
-        def register_session(host, username=None, password=None):
+        def register_session(host, username=None, password=None, connection_timeout=None):
             return None
 
         @staticmethod
@@ -338,7 +472,7 @@ def test_the_smb_error_text_never_reaches_the_caller(monkeypatch, tmp_path):
 
     class _Boom:
         @staticmethod
-        def register_session(host, username=None, password=None):
+        def register_session(host, username=None, password=None, connection_timeout=None):
             return None
 
         @staticmethod
@@ -649,19 +783,48 @@ async def test_a_session_replacement_during_an_in_flight_cast_is_refused(monkeyp
     assert nas.remaining() == 1, "the new trip's cursor was not advanced by the old cast"
 
 
+def _three_clip_playlist():
+    """Build a trip long enough that one advance and two advances look different.
+
+    Review finding 2: with the two-clip `INDEX` starting at index 0,
+    `remaining()` is 0 whether the cursor ends on 1 (the CAS working) or on 2
+    (the double-advance bug) -- `max(0, 2 - 1 - 1)` and `max(0, 2 - 2 - 1)` are
+    both 0 -- so the assertion was identical under bug and fix. A third clip
+    separates them: 1 versus 0.
+    """
+    third = dict(INDEX["videos"][1])
+    third.update(
+        {
+            "path": "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip03.mp4",
+            "cast_path": "SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip03.mp4",
+            "label": "night",
+            "name": "clip03",
+            "seq": 3,
+        }
+    )
+    return [dict(INDEX["videos"][0]), dict(INDEX["videos"][1]), third]
+
+
 @pytest.mark.asyncio
 async def test_two_concurrent_skips_advance_the_trip_by_exactly_one(monkeypatch, tmp_path):
-    """Round 2, finding 11, stated as the user-visible loss: a skipped clip."""
+    """Round 2, finding 11, stated as the user-visible loss: a skipped clip.
+
+    Review finding 2: this used the two-clip playlist, where the old assertion
+    (`remaining() == 0`) held just as well when both skips advanced. It now runs
+    on three clips and checks the cursor itself, so consuming two clips for one
+    user request is a failure rather than an indistinguishable pass.
+    """
     import asyncio as _asyncio
 
     _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    nas.start_session(_three_clip_playlist(), 0)
 
     await _asyncio.gather(
         NasSkip()(deps=_deps(tmp_path)),
         NasSkip()(deps=_deps(tmp_path)),
     )
-    assert nas.remaining() == 0, "two concurrent skips must not consume two clips"
+    assert nas._SESSION["index"] == 1, "two concurrent skips must not consume two clips"
+    assert nas.remaining() == 1, "one clip was watched, so two of the three remain"
 
 
 @pytest.mark.asyncio
@@ -928,7 +1091,7 @@ async def test_two_real_concurrent_fetches_release_together_do_not_corrupt_each_
 
     class _SlowSmbClient:
         @staticmethod
-        def register_session(host, username=None, password=None):
+        def register_session(host, username=None, password=None, connection_timeout=None):
             return None
 
         @staticmethod

@@ -20,14 +20,14 @@ capability with no background task to own or leak.
 from __future__ import annotations
 import os
 import json
+import time
 import uuid
-import shutil
 import asyncio
 import hashlib
 import logging
 import posixpath
 import threading
-from typing import Any, Dict, List
+from typing import IO, Any, Dict, List
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -58,6 +58,26 @@ ALLOWED_EXTENSIONS = frozenset({".mp4", ".m4v", ".mov"})
 # therefore cannot delete a staging file out from under an active copy.
 PART_SUFFIX = media_store.PART_SUFFIX
 
+# Review finding 1: nothing above this module bounds an SMB fetch. The background
+# tool manager's own cap is a day (`background_tool_manager.py:105`), and
+# `stage_and_cast` awaits the copy through `asyncio.to_thread`, which cannot be
+# cancelled -- so a stall here is a tool call that never returns, a single-flight
+# lock held forever, and a `_FETCH_LOCKS` entry pinned for the life of the
+# process. These three numbers are the only thing standing between a spun-down
+# NAS and that state, which is what upstream's `gtimeout` wrapper was for.
+#
+# 20 s to connect: a NAS on the same LAN completes the TCP connect and SMB
+# negotiate in well under a second, and 20 s still tolerates a sleeping disk
+# spinning up. The library's own default is 60 s, which is 60 s of held lock.
+_SMB_CONNECT_TIMEOUT_S = 20.0
+# 2 minutes for the whole copy: these are pre-transcoded, cast-ready clips, so
+# on a home LAN a copy is seconds and this is pure headroom for a slow WiFi link
+# on a CM4. It is deliberately not generous -- a user who asked to watch a home
+# video will not wait two minutes either, and nothing else will ever stop this.
+_SMB_COPY_BUDGET_S = 120.0
+# One deadline check per chunk, so the budget is observed to within a chunk.
+_SMB_CHUNK_BYTES = 1024 * 1024
+
 
 class NasError(RuntimeError):
     """The NAS could not be reached, or the file could not be copied."""
@@ -77,6 +97,7 @@ _NAS_MESSAGES = frozenset(
         "that clip is not one of the playable video types",
         "the clip copied off the NAS was empty",
         "the video could not be copied from the NAS",
+        "the NAS copy took too long and was abandoned",
         "smbprotocol is not installed",
         "HANOVA_NAS_SUBPATH is not set.",
         "HANOVA_NAS_CAST_SUBPATH is not set.",
@@ -280,6 +301,36 @@ def _fetch_lock(destination: Path) -> threading.Lock:
         return lock
 
 
+def _copy_within_budget(source: Any, target: IO[bytes], budget_s: float) -> None:
+    """Stream *source* into *target* in chunks, abandoning it past *budget_s*.
+
+    Review finding 1: this replaces `shutil.copyfileobj`, which reads until EOF
+    with no deadline of any kind. `smbclient` puts its socket back into blocking
+    mode once connected (`transport.py:69`) and neither `open_file` nor
+    `Open.read` accepts a timeout, so a NAS that stops answering mid-file used to
+    stall the copy thread forever -- taking the destination's single-flight lock
+    and the tool call with it.
+
+    **Known limit, stated plainly:** the deadline is checked between chunks, so
+    this bounds the copy as a whole and any stall that lands at a chunk boundary.
+    A single `read()` that never returns is still not interruptible from here,
+    because the library exposes no per-read timeout to pass down. Bounding that
+    case would mean either reaching into `smbprotocol`'s cached connection to set
+    a socket timeout -- which would affect every other user of that connection --
+    or handing the read to yet another thread we equally cannot kill. The budget
+    is what makes the overwhelmingly common failures (a slow link, a disk
+    spinning up, a NAS that trickles) terminate instead of wedging.
+    """
+    deadline = time.monotonic() + budget_s
+    while True:
+        if time.monotonic() >= deadline:
+            raise NasError("the NAS copy took too long and was abandoned")
+        chunk = source.read(_SMB_CHUNK_BYTES)
+        if not chunk:
+            return
+        target.write(chunk)
+
+
 def fetch_cast_file(cast_path: str, destination: Path) -> None:
     """Copy one pre-transcoded MP4 off the NAS. Synchronous; raises NasError.
 
@@ -291,6 +342,11 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
     The whole body runs under a per-destination single-flight lock, and re-checks
     the destination after acquiring it: the common concurrent case is "someone
     else already staged this", and that must cost one `stat`, not a second copy.
+
+    Review finding 1: both halves are bounded. The connect gets
+    `_SMB_CONNECT_TIMEOUT_S` and the copy `_SMB_COPY_BUDGET_S`; on expiry the
+    `.part` file is removed and a `NasError` propagates, which releases the lock
+    rather than pinning it -- and the caller's tool call actually returns.
     """
     host = settings.nas_host()
     user = settings.nas_user()
@@ -316,10 +372,17 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
         # file that pruning skips and the next success does not depend on.
         partial = destination.with_name(f"{destination.name}.{uuid.uuid4().hex[:8]}{PART_SUFFIX}")
         try:
-            smbclient.register_session(host, username=user, password=password)
+            # Finding 1: the library default is 60 s; ours is the one the held
+            # single-flight lock can actually afford.
+            smbclient.register_session(
+                host,
+                username=user,
+                password=password,
+                connection_timeout=_SMB_CONNECT_TIMEOUT_S,
+            )
             with smbclient.open_file(remote, mode="rb") as source:
                 with open(partial, "wb") as target:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                    _copy_within_budget(source, target, _SMB_COPY_BUDGET_S)
                     target.flush()
                     os.fsync(target.fileno())
             if partial.stat().st_size == 0:
