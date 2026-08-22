@@ -105,6 +105,15 @@ wait exposed by darwin loop ordering) and numpy stubs raise two mypy false
 positives in `streaming.py`. Both vanish on 3.12, which is also the robot's
 version.
 
+**Residual observation (harmless, worth a look next session):** after a
+stop_music during live playback, the resume drain-waiter keeps logging
+"music resume still waiting … 0.04s outstanding" indefinitely — stop does
+not cancel the waiter and `audio_drain.outstanding_s()` never reaches zero
+(the device-buffer estimate appears to expire only during playback). No
+audible effect: `resume_after_speech` refuses a non-paused player
+(`nothing_to_resume`), so it is log noise plus one idle task per stopped
+turn, not a resurrection path.
+
 **Still owed to close Task 15**: the human voice rows — music duck/resume,
 the full gated email send with a dictated address, Chinese barge-in/VAD feel,
 the home-verdict rows 31/31b/33 (robot off-LAN + broken HA token), and the
