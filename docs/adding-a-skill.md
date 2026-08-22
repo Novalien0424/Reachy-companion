@@ -152,8 +152,14 @@ its local tools. Adding another server is a new tuple in `_SERVER_ENV` plus two 
 
 Twenty-two of the app's Skills are ports of the operator's `ha-actions` MCP
 server, and they follow three extra conventions on top of everything above.
-Read `src/reachy_companion/tools/calendar_delete.py` for a worked example of all
-three at once.
+No single file demonstrates all three, and none can: the destructive tools are
+all cloud tools, and a cloud tool is forbidden to touch the home-network probe
+(convention 2 below, enforced in both directions by
+`tests/test_hanova_integration.py`). Read two worked examples instead —
+`src/reachy_companion/tools/calendar_delete.py` for conventions 1 and 3
+(per-tool gating, then the full arm/claim/complete lifecycle), and
+`src/reachy_companion/tools/play_video.py` for convention 2 (per-tool gating,
+then the three-way home verdict).
 
 **1. Per-tool gating, per-family reporting.** Every ported tool declares its own
 prerequisites in `settings.TOOL_PREREQS` and starts with

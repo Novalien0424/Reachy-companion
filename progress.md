@@ -39,12 +39,18 @@ instance files (`google-workspace-mcp/<account>.json`, `google-oauth.json`,
 manifest, so a stale copy from an earlier deploy can no longer overwrite a file
 that is legitimately absent.
 
+Suite: **1118 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+
 **Not yet run on the robot.** The on-robot deployment and wake-test checklist is
-the check that matters; until it runs, every claim here rests on the suite.
+the check that matters; until it runs, every claim here rests on that suite.
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 
-Suite: **622 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
+**Superseded by the D-018 section above** for the suite numbers and the tool
+count; kept for the VoiceFX, persona and face-pipeline history it records.
+
+Suite at the time of writing: **622 passed / 30 skipped / 0 failed**; ruff +
+mypy strict green.
 SDD ledger: `.superpowers/sdd/2026-08-16-reachy-mini-poc/progress.md`.
 
 VoiceFX rebuilt (2026-08-20, **D-017**): the operator's "full of static noise"

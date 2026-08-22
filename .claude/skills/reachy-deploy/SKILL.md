@@ -133,6 +133,9 @@ convenience, ask first).
      fi
    done
    if [ -d "$INST/google-workspace-mcp" ]; then
+     # Safe in THIS direction only: $BACKUP was just created and verified empty
+     # above, so the destination cannot exist and `cp -a SRC DST` copies rather
+     # than nests. The restore below is the direction where that matters.
      cp -a "$INST/google-workspace-mcp" "$BACKUP/google-workspace-mcp"
      # Finding 19: a COUNT, not a listing. The filenames are account addresses.
      echo "dir google-workspace-mcp $(find "$INST/google-workspace-mcp" -type f | wc -l) files" >> "$BACKUP/manifest.txt"
@@ -175,7 +178,18 @@ convenience, ask first).
          [ -e "$BACKUP/$NAME" ] && cp -a "$BACKUP/$NAME" "$INST/$NAME" || echo "MISSING in backup: $NAME"
          ;;
        dir)
-         [ -d "$BACKUP/$NAME" ] && cp -a "$BACKUP/$NAME" "$INST/$NAME" || echo "MISSING in backup: $NAME"
+         # `cp -a SRC DST` NESTS SRC inside DST when DST already exists, and it
+         # does exist here: google-workspace-mcp is created by the app at run
+         # time, so it is not in pip's RECORD and --force-reinstall leaves it in
+         # place. The naive form silently produces
+         # $INST/google-workspace-mcp/google-workspace-mcp/ and restores nothing.
+         # Copy the CONTENTS instead, into a destination we ensure exists.
+         if [ -d "$BACKUP/$NAME" ]; then
+           mkdir -p "$INST/$NAME"
+           cp -a "$BACKUP/$NAME/." "$INST/$NAME/"
+         else
+           echo "MISSING in backup: $NAME"
+         fi
          ;;
        absent)
          echo "was absent before this deploy, not restored: $NAME"

@@ -954,3 +954,7 @@ and it is recorded here because nothing in the app can detect it.
 
 **Not yet run on the robot.** Everything above rests on the suite until the
 Task 15 deployment and wake test say otherwise.
+
+Verified: 1118 passed / 30 skipped (31 new tests in
+`tests/test_hanova_integration.py`, on top of the per-family suites added by
+Tasks 1–13), ruff and mypy strict green.
