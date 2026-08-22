@@ -51,14 +51,14 @@ green over the integrated tree (1123 passed / 30 skipped; ruff + mypy strict),
 the branch merged to `main` (`5601738`, persona stash intact) and pushed, the
 three new dependencies re-proved as aarch64 wheels, and exactly one wheel built
 (`reachy_companion-1.0.0`, entry point verified). The version gate then found the
-daemon silent: the address in the repo-root `.env` answers ping but neither
-`:8000` (daemon) nor `:22` (SSH) responds, there is no ARP entry for it on this
-machine's segment, and the standard mDNS names answer nothing — consistent with
-the robot being powered off (or on another network) and something else holding
-its old DHCP address. Per the deploy skill this is a decisive STOP. Resume:
-power the robot on, confirm its LAN address matches `REACHY_HOST` in the
-repo-root `.env` (update it there if the lease moved), then rerun Task 15 from
-Step 4 — the wheel, the runbook, and the operator checklist are all ready.
+daemon silent. **Confirmed cause (operator): the Windows dev machine is on a
+different LAN than the robot** — the robot is fine; `:8000`/`:22` simply do not
+route from here, and the earlier ping response came from an unrelated device in
+this LAN's identical private range. Per the deploy skill this was a correct
+STOP with nothing touched. Resume: run Task 15 from Step 4 **on the Mac mini**,
+which shares the robot's LAN — `session-handoff.md` carries the Mac-specific
+resume notes (OpenSSH instead of plink, `.env` transported by hand, wheel
+rebuilt in place, Step 15b stays on the Windows box).
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 

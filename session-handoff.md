@@ -18,25 +18,47 @@ ledger — the full record of every task's commits, rulings and residual minors:
   Step 2 (aarch64 re-proof: yt-dlp 2026.8.19, imageio-ffmpeg 0.6.0,
   smbprotocol 1.17.0) ✅, Step 3 (exactly one wheel,
   `reachy_companion-1.0.0-py3-none-any.whl`, entry point verified) ✅.
-- **Step 4 STOP: the robot is unreachable.** The `REACHY_HOST` address in the
-  repo-root `.env` answers ping but `:8000` (daemon) and `:22` (SSH) are both
-  silent, no ARP entry on this segment, and the standard mDNS names answer
-  nothing — consistent with the robot powered off (or on another network) with
-  something else holding its old DHCP lease. Nothing on the robot was touched.
+- **Step 4 STOP: the robot did not route from the dev machine — confirmed
+  cause: the Windows dev box is on a DIFFERENT LAN than the robot.** The robot
+  is fine; nothing on it was touched. Verification continues from the
+  **Mac mini**, which shares the robot's LAN.
 
-## To resume the deploy
+## Resuming on the Mac mini (same LAN as the robot)
 
-1. Power the robot on; confirm its LAN address matches `REACHY_HOST` in the
-   repo-root `.env` (update the `.env` if the lease moved — never a tracked
-   file).
-2. `REACHY_HOSTKEY` is still unset in `.env`; the resume sequence captures the
-   fingerprint automatically on first contact and appends it.
-3. Rerun Task 15 from Step 4 (brief:
-   `.superpowers/sdd/2026-08-21-ha-nova-port/task-15-brief.md`) — wheel, env
-   seeding rules (append only MISSING keys; the operator's real keys are
-   already installed on the robot), persona deploy (Step 8b), and the
-   verification steps are all ready. The wake-test voice rows need a human
-   Chinese speaker; everything else is scripted.
+1. Clone the repo (`main` at the merge + evidence commits; everything needed is
+   tracked). The SDD scratch workspace is gitignored and stays on the Windows
+   box — the **Task 15 procedure is the plan's own Task 15 section** in
+   `docs/superpowers/plans/2026-08-21-ha-nova-port.md` (identical content), and
+   the deploy procedure of record is `.claude/skills/reachy-deploy/SKILL.md`.
+2. Copy the repo-root `.env` to the Mac **by hand** (it is gitignored by
+   design; `cp .env.example .env` and fill the four `REACHY_*` keys). Values
+   never travel through git.
+3. Platform notes — the Task 15 runbook's LOCAL wrappers are Windows-flavored;
+   the REMOTE `sh` blocks (everything inside the here-strings) run on the robot
+   and are portable as-is:
+   - `plink`/`pscp` → `ssh`/`scp` (macOS OpenSSH). First contact prompts to
+     accept the host key into `known_hosts` — interactive accept replaces the
+     `REACHY_HOSTKEY`/`-hostkey` mechanism, which is PuTTY-specific. Password
+     auth is interactive, or set up a one-time SSH key (ask the operator).
+   - PowerShell steps → bash equivalents; the `Invoke-RestMethod` calls are
+     `curl` one-liners.
+4. Rebuild the wheel on the Mac (`uv build ./reachy_companion`, or
+   `python -m build`); the wheel is pure-Python and platform-independent.
+   Verify exactly ONE wheel in `dist/` before transfer (Step 3's rule).
+5. Resume at Task 15 Step 4 (version gate: `GET http://$REACHY_HOST:8000/update/install-source`,
+   no `/api` prefix). Then Steps 5–14 in order. Two standing rulings:
+   - **Step 9 amendment (controller ruling):** the operator's real keys are
+     already installed in the robot's instance `.env` — append ONLY missing
+     keys as empty placeholders, never the full 26-key block (dotenv last-wins
+     would blank real values). Check key NAMES only, never print values.
+   - Wake-test voice rows (Step 13's 33-row table) need a human Chinese
+     speaker; every other verification is scripted. Blocked rows are recorded
+     as blocked with the missing key, never passed.
+6. **Step 15b (persona stash restore) CANNOT run on the Mac** — git stashes do
+   not push. `stash@{0}` ("hanova-port: user persona.md baseline", patch-id
+   `d17ac2970a8c`) lives on the Windows dev box only; restore it there
+   afterwards. Deploying the committed persona (Step 8b) is unaffected — it
+   materializes from `git show HEAD:persona.md`.
 
 ## Git safety
 
