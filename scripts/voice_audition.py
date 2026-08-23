@@ -63,6 +63,16 @@ VERSIONS: dict[int, dict] = {
     9: {"label": "coral tin — coral base, shipped chain", "voice": "coral", "fx": {}},
     10: {"label": "sage soft — sage, +4.5 st, gentle comb", "voice": "sage",
          "fx": {"VOICEFX_PITCH_SEMITONES": "4.5", "VOICEFX_COMB_FEEDBACK": "0.40", "VOICEFX_COMB_MIX": "0.25"}},
+    # Round 2: V9 picked, pushed more robotic in three steps (comb tighter/louder,
+    # then ring-mod on top). Pitch stays +5.0 — the cute feel V9 already has.
+    11: {"label": "coral robot-1 — tighter, louder comb", "voice": "coral",
+         "fx": {"VOICEFX_COMB_MS": "3.0", "VOICEFX_COMB_FEEDBACK": "0.55", "VOICEFX_COMB_MIX": "0.45"}},
+    12: {"label": "coral robot-2 — tight comb + 300 Hz ring-mod", "voice": "coral",
+         "fx": {"VOICEFX_COMB_MS": "2.0", "VOICEFX_COMB_FEEDBACK": "0.55", "VOICEFX_COMB_MIX": "0.50",
+                "VOICEFX_RINGMOD_HZ": "300.0", "VOICEFX_RINGMOD_MIX": "0.10"}},
+    13: {"label": "coral robot-3 — max metal, stronger ring-mod", "voice": "coral",
+         "fx": {"VOICEFX_COMB_MS": "2.0", "VOICEFX_COMB_FEEDBACK": "0.62", "VOICEFX_COMB_MIX": "0.55",
+                "VOICEFX_RINGMOD_HZ": "250.0", "VOICEFX_RINGMOD_MIX": "0.16"}},
 }
 
 BUILTIN_VOICE = "cedar"  # locked profile voice; front matter is dropped for it

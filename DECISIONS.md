@@ -1019,3 +1019,24 @@ still fails the scan. `REACHY_SSH_PASSWORD` and the host-key fingerprint
 remain forbidden in every tracked file, permanently. Reverting this decision
 means removing the handoff block and the scan cap — the value stays in git
 history either way; a history rewrite is a separate operator call.
+
+## D-021 — Reachy's voice: coral + V13 "robot-3" VoiceFX; volume 90; persistent journald (operator-picked, 2026-08-23)
+
+A 13-version live audition on the robot (scripts/voice_audition.py — base voice
+via persona.md front matter, FX via VOICEFX_* env, one spoken test line per
+version) ended with the operator picking **V13**: base voice **coral**, pitch
++5.0 st, comb 2.0 ms / feedback 0.62 / mix 0.55, ring-mod 250 Hz at 0.16 mix,
+into the D-017 soft-knee ceiling. Baked in permanently: `voice = "coral"` in
+the tracked `persona.md` front matter (deployed sha-exact), the six VOICEFX
+lines written into the instance `.env` proper (audition markers removed), and
+verified live from the startup log (`voice='coral'`, full chain line). Speaker
+volume set to 90 via the daemon's `/api/volume/set` and force-saved with
+`alsactl store`; it survived a hard power loss, so it is genuinely persistent.
+
+Same day, the robot dropped off the LAN hard mid-audition (upstream
+pollen-robotics/reachy_mini#1115 matches the symptom; closed upstream without
+a documented fix). Because the RAM journal made the incident undiagnosable,
+journald is now **persistent and capped** on the robot
+(`/etc/systemd/journald.conf.d/90-persistent-capped.conf`, Storage=persistent,
+SystemMaxUse=100M, plus /var/log/journal). This touches systemd only — not the
+Reachy daemon — and reverts by deleting that file and directory.

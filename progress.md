@@ -1,5 +1,29 @@
 # Progress
 
+## Voice picked and baked in: coral V13 (2026-08-23, evening — D-021)
+
+The 13-version live audition ran end to end on the robot; the operator picked
+**V13 "coral robot-3"** (coral, pitch +5 st, comb 2.0 ms/0.62/0.55, ring-mod
+250 Hz/0.16). Baked in: `voice = "coral"` front matter in the tracked
+`persona.md` (deployed sha-exact, effective profile verified coral/37 tools),
+VOICEFX lines written permanently into the instance `.env` (audition markers
+removed), startup log confirms the exact chain. Volume 90 via the daemon API +
+`alsactl store` — survived a real hard power loss, so persistent. Robot left
+ASLEEP on the baked config; next wake speaks as picked.
+
+Two incidents during the audition, both diagnosed: (1) a daemon stop wedge —
+app process exited cleanly but `stop_current_app` hung in its return-to-zero
+step, state stuck at "stopping", every apps route 400; power-cycle cleared it
+(daemon bug, not ours; single occurrence in ~16 restarts). (2) A hard LAN
+drop at ~14:26 BST — clock-file evidence points to full power/system death,
+not just Wi-Fi; matches upstream reachy_mini#1115 (closed, no fix). The RAM
+journal destroyed the evidence, so journald on the robot is now persistent
+and capped (100 M) — next occurrence will carry its final moments across the
+power cycle. Suspects, unranked: battery BMS cutoff (no battery-status API
+exists — watch the low-battery LED, keep it plugged), PSU brownout under
+speaker-at-90 + motor load, BCM4345 Wi-Fi + watchdog. `vcgencmd
+get_throttled` read 0x0 after reboot (flags do not survive one).
+
 ## Persona v2 deployed + voice audition harness (2026-08-23)
 
 The operator's rewritten `persona.md` (Taiwan-Mandarin character, c2e8900) was
