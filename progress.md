@@ -1,5 +1,30 @@
 # Progress
 
+## Persona v2 deployed + voice audition harness (2026-08-23)
+
+The operator's rewritten `persona.md` (Taiwan-Mandarin character, c2e8900) was
+audited against the code — every referenced tool maps to a registered tool in
+the locked profile's 37-tool set; fixes in `6cced3b`: duplicate `## Tools`
+sections merged, the fake `search` tool heading renamed to the real
+`search_web`, Core Rule moved to the end. Deployed to the robot byte-exact
+(sha `fa2536fe…` match, 15/15 routing tokens) after backing up the robot copy
+(`/tmp/reachy_companion_backup/20260823T122700Z-persona`, which matched the
+prior commit exactly — no robot-side edits lost). Verified through the app's
+own code path on-device (`set_instance_path` + `read_profile`): persona body
+active, 3225 chars, voice cedar, 37 tools. App is currently stopped with
+`startup_app=reachy_companion`, so the **next wake starts fresh on this
+persona**. Deploys from this Mac now use OpenSSH driven by `expect`
+(no sshpass; creds from repo-root `.env`).
+
+`scripts/voice_audition.py` (commit after) is the cute-voice audition
+harness: 10 candidate configs (base voice via persona front-matter `voice`,
+D-016 × VOICEFX chain via marker-scoped instance `.env` block, D-017), one
+command per audition — apply, sanctioned daemon restart, fixed Taiwan-Mandarin
+test line via `/rpc conversation.say`. `restore` returns the robot to the
+shipped config byte-identically (dry-run proven locally). Awaiting the
+operator's "go" per version; the winner gets baked into the repo `persona.md`
+front matter and the instance `.env` proper.
+
 ## HomeAssistant-Nova port landed (2026-08-21 — D-018)
 
 Twenty-two capabilities ported natively from the operator's `ha-actions` MCP
