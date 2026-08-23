@@ -39,7 +39,7 @@ ENV_MARK_END = "# <<< VOICE_AUDITION <<<"
 APP_NAME = "reachy_companion"
 RPC_PORT = 7860
 
-TEST_SENTENCE = "嗨嗨，我是 Reachy！今天天氣超好的，欸，要不要放首歌來聽？順便考考我最新的新聞嘛！"
+TEST_SENTENCE = "嗨，我是 Reachy！今天天氣真不錯，要不要聽首歌？"
 SAY_TEXT = f"請完全照念下面這句話，一個字都不要多、不要少：「{TEST_SENTENCE}」"
 
 # D-017 defaults (applied when a key is absent): PITCH 5.0, COMB 4.0/0.45/0.35,
@@ -83,12 +83,18 @@ def load_env() -> dict[str, str]:
 
 def rssh(env: dict[str, str], command: str, stdin_text: str | None = None) -> str:
     """Run a remote command over ssh, driving the password prompt with expect."""
+    # The command travels in an env var: `expect -c SCRIPT ARG` would read ARG
+    # as a script *file*, not as $argv.
     expect_script = (
         'set timeout 90\n'
         'set pw $env(REACHY_SSH_PASSWORD)\n'
         'spawn ssh -o StrictHostKeyChecking=accept-new '
-        '$env(REACHY_SSH_USER)@$env(REACHY_HOST) [lindex $argv 0]\n'
-        'expect { -re "(?i)password:" { send "$pw\\r"; exp_continue } eof }\n'
+        '$env(REACHY_SSH_USER)@$env(REACHY_HOST) $env(REACHY_REMOTE_CMD)\n'
+        'expect {\n'
+        '  -re "assword:" { send "$pw\\r"; exp_continue }\n'
+        '  timeout { puts "EXPECT_TIMEOUT"; exit 97 }\n'
+        '  eof\n'
+        '}\n'
         'catch wait result\n'
         'exit [lindex $result 3]\n'
     )
@@ -99,9 +105,9 @@ def rssh(env: dict[str, str], command: str, stdin_text: str | None = None) -> st
         command = f"echo {encoded} | base64 -d | {command}"
     import os
     proc = subprocess.run(
-        ["expect", "-c", expect_script, command],
+        ["expect", "-c", expect_script],
         capture_output=True, text=True,
-        env={**os.environ, **env},
+        env={**os.environ, **env, "REACHY_REMOTE_CMD": command},
     )
     if proc.returncode != 0:
         raise RuntimeError(f"remote command failed ({proc.returncode}):\n{proc.stdout[-2000:]}")
@@ -165,9 +171,11 @@ async def main():
                    "no active session" in str(reply.get("error")):
                     raise RuntimeError("session not up yet")
                 raise SystemExit("rpc error: %s" % reply.get("error"))
-        except (OSError, RuntimeError, asyncio.TimeoutError):
+        except SystemExit:
+            raise
+        except Exception as exc:  # 403 until the route mounts, refused until uvicorn is up, not_running until the session connects
             if asyncio.get_event_loop().time() > deadline:
-                raise SystemExit("timed out waiting for the app session")
+                raise SystemExit("timed out waiting for the app session (last: %r)" % exc)
             await asyncio.sleep(3)
 
 asyncio.run(main())
@@ -184,14 +192,39 @@ def apply_version_2step(env: dict[str, str], voice_override: str | None, fx: dic
     print([l for l in out.splitlines() if l.startswith("applied")][-1])
 
 
-def restart_app(env: dict[str, str]) -> None:
+def app_state(env: dict[str, str]) -> str:
     try:
-        daemon(env, "POST", "/api/apps/stop-current-app")
+        status = json.loads(daemon(env, "GET", "/api/apps/current-app-status", timeout=10))
     except Exception:
-        pass  # nothing running is fine
-    time.sleep(2)
-    daemon(env, "POST", f"/api/apps/start-app/{APP_NAME}", timeout=60)
-    print("app restart requested")
+        return "unknown"
+    if not status:
+        return "stopped"
+    return str(status.get("state") or "unknown")
+
+
+def restart_app(env: dict[str, str]) -> None:
+    state = app_state(env)
+    if state in ("running", "starting"):
+        try:
+            daemon(env, "POST", "/api/apps/stop-current-app")
+        except Exception:
+            pass
+    # Wait out "stopping" (and the stop above) before asking for a start:
+    # the daemon answers 400 to start-app while a transition is in flight.
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if app_state(env) in ("stopped", "unknown"):
+            break
+        time.sleep(2)
+    for attempt in range(5):
+        try:
+            daemon(env, "POST", f"/api/apps/start-app/{APP_NAME}", timeout=60)
+            print("app restart requested")
+            return
+        except Exception as exc:
+            if attempt == 4:
+                raise
+            time.sleep(4)
 
 
 def say_test_line(env: dict[str, str]) -> None:
