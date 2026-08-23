@@ -9,6 +9,7 @@ URL and no home network at all.
 from __future__ import annotations
 import asyncio
 import logging
+import functools
 from typing import Any, Dict
 from pathlib import Path
 
@@ -62,7 +63,11 @@ class PlayMusic(Tool):
             return {"ok": False, "error": "no playable result for that request"}
 
         music_dir = media_store.media_dir("music", deps.instance_path)
-        downloaded = await asyncio.to_thread(ytdlp.download_audio, found["id"], music_dir)
+        # No mp3 re-encode for music: the daemon's playbin decodes the native
+        # stream, and skipping ffmpeg was measured at 15.9 s -> 4.1 s per song.
+        downloaded = await asyncio.to_thread(
+            functools.partial(ytdlp.download_audio, found["id"], music_dir, transcode_mp3=False)
+        )
         if not downloaded["ok"]:
             logger.info("play_music download failed: %s", redact.text(downloaded["error"] or ""))
             return {"ok": False, "error": "the audio could not be fetched right now"}

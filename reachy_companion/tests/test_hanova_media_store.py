@@ -359,3 +359,26 @@ def test_the_media_store_logs_no_path(monkeypatch, caplog, tmp_path):
     media_store.mount_media_routes(_NoMount(), sentinel_root)
     media_store.prune("music", sentinel_root, 0)
     assert "SENTINEL_PRIVATE_x7" not in caplog.text
+
+
+def test_prune_treats_native_container_resume_cuts_like_mp3_ones(tmp_path):
+    """The resume cut inherits the source container (latency work, 2026-08-22).
+
+    An `.resume.m4a` beside its `.m4a` parent must neither spend the keep
+    budget nor outlive the track it was cut from, exactly like the mp3 pair.
+    """
+    music = tmp_path / "hanova_media" / "music"
+    music.mkdir(parents=True)
+    old = music / "song0.m4a"
+    old.write_bytes(b"x")
+    orphan = music / "song0.resume.m4a"
+    orphan.write_bytes(b"x")
+    live = music / "song1.m4a"
+    live.write_bytes(b"x")
+    cut = music / "song1.resume.m4a"
+    cut.write_bytes(b"x")
+    os.utime(old, (1, 1))
+    os.utime(orphan, (1, 1))
+    removed = media_store.prune("music", tmp_path, keep=1)
+    assert removed == 2, "the evicted track and its orphaned cut, nothing else"
+    assert sorted(p.name for p in music.iterdir()) == ["song1.m4a", "song1.resume.m4a"]

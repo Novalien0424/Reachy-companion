@@ -321,7 +321,9 @@ class MusicPlayer:
             if offset <= _MIN_RESUME_OFFSET_S:
                 playback_path = source
             else:
-                playback_path = source.with_suffix(".resume.mp3")
+                # The cut inherits the source container: ffmpeg stream-copies
+                # (`-c copy`), and an AAC stream cannot live in an mp3 shell.
+                playback_path = source.with_suffix(f".resume{source.suffix}")
                 trimmed = await asyncio.to_thread(ytdlp.cut_from, source, offset, playback_path)
                 if not self._is_current(generation):
                     return _superseded()

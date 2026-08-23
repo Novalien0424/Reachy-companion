@@ -406,7 +406,7 @@ async def test_play_music_happy_path(daemon, monkeypatch, tmp_path):
     monkeypatch.setattr(
         play_music_module.ytdlp,
         "download_audio",
-        lambda video_id, dest_dir: {"ok": True, "path": str(track), "cached": True, "error": None},
+        lambda video_id, dest_dir, transcode_mp3=True: {"ok": True, "path": str(track), "cached": True, "error": None},
     )
     out = await PlayMusic()(deps=_deps(tmp_path), query="a song")
     assert out["ok"] is True and out["title"] == "A Song"
@@ -445,7 +445,7 @@ async def test_music_logs_never_carry_the_query_or_the_title(daemon, monkeypatch
     monkeypatch.setattr(
         play_music_module.ytdlp,
         "download_audio",
-        lambda video_id, dest_dir: {"ok": True, "path": str(track), "cached": True, "error": None},
+        lambda video_id, dest_dir, transcode_mp3=True: {"ok": True, "path": str(track), "cached": True, "error": None},
     )
     caplog.set_level(logging.DEBUG)
     await PlayMusic()(deps=_deps(tmp_path), query=f"a song about {sentinel}")

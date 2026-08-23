@@ -280,8 +280,14 @@ def video_title(video: Dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts if part).strip()
 
 
-def _validate_inside(raw_path: str, subpath: str, key_name: str) -> str:
-    """Normalise a path and prove it resolves inside *subpath*. Raises NasError."""
+def _validate_inside(raw_path: str, subpath: str, key_name: str, *, require_playable: bool = True) -> str:
+    """Normalise a path and prove it resolves inside *subpath*. Raises NasError.
+
+    `require_playable` gates the extension allowlist: it belongs only to the
+    cast copy, which is the file actually fetched and served. An *original*
+    path is bounded but never played, and DVD-era originals are legitimately
+    .mpg/.mts with a transcoded .mp4 `cast_path` beside them.
+    """
     if not subpath:
         raise NasError(f"{key_name} is not set.")
     raw = str(raw_path or "").replace("\\", "/").strip()
@@ -293,7 +299,7 @@ def _validate_inside(raw_path: str, subpath: str, key_name: str) -> str:
         raise NasError("that clip path escapes the configured folder")
     if normalised != root and not normalised.startswith(root + "/"):
         raise NasError("that clip path is outside the configured folder")
-    if posixpath.splitext(normalised)[1].lower() not in ALLOWED_EXTENSIONS:
+    if require_playable and posixpath.splitext(normalised)[1].lower() not in ALLOWED_EXTENSIONS:
         raise NasError("that clip is not one of the playable video types")
     return normalised
 
@@ -316,9 +322,13 @@ def validate_source_path(path: str) -> str:
     casting tools and **nothing read it**, so a fresh deployment could be blocked
     on a value with no behaviour attached to it -- either a dead switch or a
     missing check, and it was the second. It is the same bound as
-    `validate_cast_path`, applied to the field the index calls `path`.
+    `validate_cast_path`, applied to the field the index calls `path` --
+    containment only: the original is never fetched or served, so its
+    extension is not gated (DVD-era trips are .mpg/.mts originals with a
+    transcoded .mp4 `cast_path`, and gating them made every such trip
+    unplayable while its cast copy sat ready).
     """
-    return _validate_inside(path, settings.nas_subpath(), "HANOVA_NAS_SUBPATH")
+    return _validate_inside(path, settings.nas_subpath(), "HANOVA_NAS_SUBPATH", require_playable=False)
 
 
 def cast_filename(cast_path: str) -> str:
@@ -487,20 +497,59 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
 
 
 # --- staging + casting -----------------------------------------------------
+async def _cast_prepared_url(url: str | None, title: str) -> Dict[str, Any]:
+    """Hand one LAN URL to the TV script and shape the tool result.
+
+    Shared by both routes below so the streamed clip and the staged clip cast
+    through the same fields and report the same result shape; the only thing
+    the route decides is which URL the TV is given.
+    """
+    if url is None:
+        return {
+            "ok": False,
+            "url": None,
+            "title": title,
+            "error": "HANOVA_MEDIA_HTTP_BASE is not set; the TV has no URL to fetch.",
+        }
+    fields: Dict[str, Any] = {"url": url, "title": title}
+    entity = settings.cast_entity()
+    if entity:
+        fields["entity_id"] = entity
+    cast = await ha_run_script(settings.ha_script_video_url(), fields)
+    if not cast["ok"]:
+        logger.info("NAS cast failed: %s", redact.error(cast.get("error") or ""))
+        return {"ok": False, "url": url, "title": title, "error": "the TV did not accept the video"}
+    return {"ok": True, "url": url, "title": title, "error": None}
+
+
 async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None) -> Dict[str, Any]:
-    """Copy a clip into the LAN media cache (if needed) and cast its URL."""
+    """Cast a clip, streaming it off the NAS or staging it first (D-018, R6).
+
+    Latency work, 2026-08-22: with `HANOVA_NAS_STREAM` on -- the default -- the
+    TV is handed a Range-capable URL and pulls the clip off the share as it
+    plays, instead of waiting out a full copy at the ~7 MB/s the link measures.
+    Turning the switch off restores the copy-then-serve path below unchanged.
+    """
+    # Imported here rather than at module scope: `nas_stream` imports this module
+    # for path validation, so a module-level import in both directions is a cycle.
+    from reachy_companion.hanova import nas_stream
+
     title = video_title(video)
     cast_path = str(video.get("cast_path") or "")
     if not cast_path:
         return {"ok": False, "url": None, "title": title, "error": "not_ready"}
 
+    streaming = settings.nas_stream_enabled()
     try:
         # Round 2, finding 12: `HANOVA_NAS_SUBPATH` is a prerequisite of this
         # tool, so it must bound something. It bounds the subtree an index
         # entry's original path may name -- the same guarantee `cast_path` has
         # had since finding 15, applied to the field that had none.
         validate_source_path(str(video.get("path") or ""))
-        filename = cast_filename(cast_path)
+        # `register` validates the cast path and derives the served name exactly
+        # as `cast_filename` does -- it only also records the mapping the stream
+        # endpoint resolves the name back through.
+        filename = nas_stream.register(cast_path) if streaming else cast_filename(cast_path)
     except NasError as exc:
         # A bad index entry is a configuration fault, not a user fault. Round 2,
         # finding 6: forwarding the exception's own text verbatim relied on every
@@ -508,6 +557,12 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
         # enforced. `nas_message` allow-lists the fixed sentences instead.
         logger.warning("NAS index entry rejected: %s", redact.error(exc))
         return {"ok": False, "url": None, "title": title, "error": nas_message(exc)}
+
+    if streaming:
+        # Nothing is copied and nothing is pruned: the served URL resolves back
+        # to the share on every request. `media_url` is the same join over
+        # `HANOVA_MEDIA_HTTP_BASE`, so an unset base is still the same failure.
+        return await _cast_prepared_url(media_store.media_url(nas_stream.URL_SEGMENT, filename), title)
 
     nas_dir = media_store.media_dir("nas", instance_path)
     local = nas_dir / filename
@@ -542,24 +597,7 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
         _touch_staged(local)
     media_store.prune("nas", instance_path, settings.nas_cast_keep())
 
-    url = media_store.media_url("nas", filename)
-    if url is None:
-        return {
-            "ok": False,
-            "url": None,
-            "title": title,
-            "error": "HANOVA_MEDIA_HTTP_BASE is not set; the TV has no URL to fetch.",
-        }
-
-    fields: Dict[str, Any] = {"url": url, "title": title}
-    entity = settings.cast_entity()
-    if entity:
-        fields["entity_id"] = entity
-    cast = await ha_run_script(settings.ha_script_video_url(), fields)
-    if not cast["ok"]:
-        logger.info("NAS cast failed: %s", redact.error(cast.get("error") or ""))
-        return {"ok": False, "url": url, "title": title, "error": "the TV did not accept the video"}
-    return {"ok": True, "url": url, "title": title, "error": None}
+    return await _cast_prepared_url(media_store.media_url("nas", filename), title)
 
 
 # --- session (conversation-scoped, review finding 16; token per round 2 #11) -

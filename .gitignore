@@ -24,3 +24,7 @@ Thumbs.db
 # D-018: the deployment template is tracked on purpose. This negation must stay
 # BELOW every `.env` / `.env.*` rule above it -- the last matching pattern wins.
 !/.env.example
+
+# Task 15 deployment evidence: raw logs and transcripts carry personal
+# identifiers and never enter the repository (plan review finding 7).
+artifacts/

@@ -41,24 +41,121 @@ that is legitimately absent.
 
 Suite: **1118 passed / 30 skipped / 0 failed**; ruff + mypy strict green.
 
-**Not yet run on the robot.** The on-robot deployment and wake-test checklist is
-the check that matters; until it runs, every claim here rests on that suite.
+**DEPLOYED AND VERIFIED ON THE ROBOT — 2026-08-22, from the Mac mini** (eighth
+install; Task 15 resumed at Step 4 per `session-handoff.md`, OpenSSH instead of
+plink). Version gate passed (daemon 1.10.0rc5, git ref); wheel sha256 verified
+end to end; two-step `--no-deps` install pulled exactly the three new aarch64
+wheels and the bundled ffmpeg binary runs on-device; backup/restore ritual run
+with the new manifest (both JSON stores recorded absent — no live enrollment
+yet); the committed `persona.md` deployed byte-exact (sha match, 10/10 routing
+tokens); six missing keys appended as empty placeholders only (operator's 20
+real keys untouched, names checked, never values).
 
-**Deploy attempt 2026-08-22: robot unreachable — nothing on the robot touched.**
-Everything up to the robot boundary is done and verified: the final whole-branch
-review closed (two Important findings fixed and re-reviewed), the full gate ran
-green over the integrated tree (1123 passed / 30 skipped; ruff + mypy strict),
-the branch merged to `main` (`5601738`, persona stash intact) and pushed, the
-three new dependencies re-proved as aarch64 wheels, and exactly one wheel built
-(`reachy_companion-1.0.0`, entry point verified). The version gate then found the
-daemon silent. **Confirmed cause (operator): the Windows dev machine is on a
-different LAN than the robot** — the robot is fine; `:8000`/`:22` simply do not
-route from here, and the earlier ping response came from an unrelated device in
-this LAN's identical private range. Per the deploy skill this was a correct
-STOP with nothing touched. Resume: run Task 15 from Step 4 **on the Mac mini**,
-which shares the robot's LAN — `session-handoff.md` carries the Mac-specific
-resume notes (OpenSSH instead of plink, `.env` transported by hand, wheel
-rebuilt in place, Step 15b stays on the Windows box).
+On-robot verification: **22/22 ported tools registered within one startup
+boundary, secondary count 39**; seven family verdicts — google-workspace,
+drive, notion, email **enabled**; nas partial 1/4 (`HANOVA_MEDIA_HTTP_BASE`),
+media-cast disabled (`HANOVA_HA_SCRIPT_YOUTUBE`), music partial 2/4
+(`HANOVA_SELF_DESTRUCT_YT_ID`); `persona: instance persona.md`; D-017 VoiceFX
+chain live; zero tracebacks. Media route probed from a LAN peer: HEAD 200
+`video/mp4`, GET 200, RANGE 206.
+
+A scripted RPC wake test (31 injected turns via `conversation.say`, mic muted
+for determinism) exercised **every ported tool on the robot**: music
+play/stop audible on the speaker; the full calendar and task cycles including
+all gated deletes/completes in both directions; notion_add; drive
+list/upload/trash with both gates (camera frame captured at confirm time,
+then trashed — self-cleaned); the restore and BCC refusals per the declared
+non-goals; email validation (no address → asks, nothing armed); and honest
+`unavailable` answers from every blocked tool with the missing key as reason.
+Raw transcripts and tool traces: `artifacts/deploy-2026-08-22/` (gitignored).
+Robot left with the app RUNNING and mic live for the operator's voice pass.
+
+**Enabled pass + two on-robot fixes (2026-08-22, later the same day).** The
+operator authorized sourcing the six missing values from their HomeAssistant
+project: the three `tv_show_*` HA scripts (verified to exist live), the two
+gag clip ids, the media base and the home CIDR. After restart **all seven
+families report enabled**, and the previously blocked rows all ran on the
+real TV and speaker: both casts, both gags (full self-destruct ritual — cold
+confirm refused, arm, abort, re-arm, authorise, clip audible), NAS query,
+single-clip and whole-trip playback, and skip. Two real defects were found by
+the live pass and fixed the same day, each test-first with the full gate
+green (py3.12: 1127 passed / 31 skipped, ruff + mypy strict):
+
+- `dd591f2` — the NAS source-path bound also gated the *original* file's
+  extension, refusing every DVD-era trip (992/2743 index entries are
+  .mpg/.mts originals whose transcoded .mp4 cast twin is the file actually
+  played). Containment stays; the playability gate now applies only to the
+  cast copy. Verified on-device: a 30-clip trip plays in order on the TV.
+- `c4e1951` — play_music went dark mid-day: YouTube began demanding a JS
+  runtime the robot does not carry, so every yt-dlp search errored. New
+  `HANOVA_YTDLP_EXTRACTOR_ARGS` forwards `--extractor-args`;
+  `youtube:player_client=android` verified for search and download.
+
+**Measured latencies (scripted RPC injection, robot-side timestamps):**
+talk — command→robot starts speaking ~0.9 s median (0.74–1.47 s, n=45), and
+every tool call gets that same ~1 s spoken acknowledgment before the work
+runs; music — command→audible ~25 s (search+download+mp3), stop→silence
+~2 s; YouTube→TV ~20 s to cast dispatch; image→TV ~42 s (generation);
+NAS — single clip ~17 s cold (SMB stage + cast), skip ~44 s, whole-trip
+start 0.7 s warm, query instant; gags — 8–12 s to audible clip.
+
+**Environment note:** the macOS dev env must be Python 3.12 (`uv venv
+--python 3.12`) — on 3.11 one realtime test wedges (a shutdown-path event
+wait exposed by darwin loop ordering) and numpy stubs raise two mypy false
+positives in `streaming.py`. Both vanish on 3.12, which is also the robot's
+version.
+
+**Latency work landed (2026-08-22, evening — commits `1d1624d`, `8ac0012`,
+plus the SABR-fallback fix).** First-principles pass over the two slow media
+paths, every number measured on the robot:
+
+- **Music**: the mp3 re-encode was pure waste (the daemon plays via GStreamer
+  playbin; faad/opusdec verified installed) and each search candidate costs
+  its own metadata fetch. `play_music` now downloads the native audio stream
+  (`bestaudio…/best` with `-x` as a stream-copy demux for SABR-suppressed
+  sessions) and `HANOVA_YTDLP_SEARCH_N` defaults to 2. Measured: command →
+  audible **15.8 s** on a SABR-fallback video (the worst case; ~25–29 s
+  before), cached replay **~9 s** (search still runs; the fetch is instant),
+  stop → silence 0.16 s. Resume cuts inherit the source container; the cache
+  prune recognises them by marker.
+- **NAS video**: staging copied whole clips at the ~7 MB/s Wi-Fi ceiling
+  (bigger SMB blocks measured no gain). New `/hanova-media/nas-stream/`
+  endpoint proxies exactly the requested byte range off SMB
+  (`HANOVA_NAS_STREAM=0` restores staging). Measured through the endpoint
+  from a LAN peer: **61 ms to first byte**, 80 ms for a seek 200 MB into a
+  clip, 4.9 MB/s sustained (≈8–15× home-video bitrate). Tool times:
+  whole-trip start **0.32 s**, skip **0.27–0.30 s** (was 17–44 s). One
+  caveat: the TV was OFF (cast entity `unavailable`) during these rounds, so
+  the casts dispatched but no Chromecast fetch was observed — the endpoint
+  was verified LAN-side with exactly the request shapes a Chromecast makes
+  (HEAD, 206 ranges, mid-file seek). One TV-on replay of a trip row closes
+  that.
+
+**Prefetch and direct-NAS-serving verdicts (operator question):** next-clip
+prefetch is **rejected** — it existed to hide the copy, streaming removed the
+copy (skip is now 0.3 s), so re-introducing a background task against the
+D-018 non-goal buys nothing. Serving the TV straight from the NAS is
+**rejected** — the QNAP does run DLNA (:8200) and Plex (:32400), but DLNA
+addresses content by rescan-unstable object ids behind a UPnP browse protocol
+and Plex embeds an auth token in every URL; both couple our curated index to
+a second server to save relay headroom we measurably do not need. Revisit
+only if high-bitrate content saturates the robot's radio.
+
+**Residual observation (harmless, worth a look next session):** after a
+stop_music during live playback, the resume drain-waiter keeps logging
+"music resume still waiting … 0.04s outstanding" indefinitely — stop does
+not cancel the waiter and `audio_drain.outstanding_s()` never reaches zero
+(the device-buffer estimate appears to expire only during playback). No
+audible effect: `resume_after_speech` refuses a non-paused player
+(`nothing_to_resume`), so it is log noise plus one idle task per stopped
+turn, not a resurrection path.
+
+**Still owed to close Task 15**: the human voice rows — music duck/resume,
+the full gated email send with a dictated address, Chinese barge-in/VAD feel,
+the home-verdict rows 31/31b/33 (robot off-LAN + broken HA token), and the
+five PRD §8 demo gates. Step 15b (persona stash restore) still runs on the
+Windows box only. The robot is left with the app RUNNING, all 7 families
+enabled, mic live.
 
 ## Current verified state (2026-08-19 — PRD-vs-code audit closed, fixes landed)
 

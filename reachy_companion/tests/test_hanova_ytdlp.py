@@ -39,7 +39,7 @@ def test_search_builds_the_upstream_argv(monkeypatch):
     out = ytdlp.search("some song")
     assert out == {"ok": True, "id": "dQw4w9WgXcQ", "title": "A Song Title", "error": None}
     cmd = seen["cmd"]
-    assert "--default-search" in cmd and "ytsearch5:" in cmd
+    assert "--default-search" in cmd and "ytsearch2:" in cmd
     assert cmd[cmd.index("--match-filter") + 1] == "duration > 30 & !is_live"
     assert "--no-playlist" in cmd and "--skip-download" in cmd
     assert cmd[-1] == "some song"
@@ -226,3 +226,79 @@ def test_cut_from_returns_false_on_failure(monkeypatch, tmp_path):
     source.write_bytes(b"ID3data")
     monkeypatch.setattr(ytdlp, "run_command", lambda cmd, timeout_s: _completed("", "bad", returncode=1))
     assert ytdlp.cut_from(source, 10.0, tmp_path / "out.mp3") is False
+
+
+# --- extractor args passthrough (on-robot finding, 2026-08-22) -------------
+def test_extractor_args_are_absent_by_default(monkeypatch):
+    """With the key unset, the argv carries no --extractor-args at all."""
+    seen = {}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmd"] = cmd
+        return _completed("dQw4w9WgXcQ\nA Song Title\n")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    monkeypatch.delenv("HANOVA_YTDLP_EXTRACTOR_ARGS", raising=False)
+    assert ytdlp.search("some song")["ok"] is True
+    assert "--extractor-args" not in seen["cmd"]
+
+
+def test_extractor_args_reach_search_and_download(monkeypatch, tmp_path):
+    """The configured value is forwarded to every yt-dlp invocation.
+
+    YouTube intermittently refuses extraction without a JavaScript runtime the
+    robot does not carry; the operator sets a player-client workaround here.
+    """
+    seen = {"cmds": []}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmds"].append(cmd)
+        return _completed("dQw4w9WgXcQ\nA Song Title\n")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    monkeypatch.setenv("HANOVA_YTDLP_EXTRACTOR_ARGS", "youtube:player_client=android")
+    assert ytdlp.search("some song")["ok"] is True
+    ytdlp.download_audio("dQw4w9WgXcQ", tmp_path)
+    for cmd in seen["cmds"]:
+        assert cmd[cmd.index("--extractor-args") + 1] == "youtube:player_client=android"
+
+
+# --- native-container music downloads (latency work, 2026-08-22) -----------
+def test_download_audio_without_transcode_fetches_bestaudio(monkeypatch, tmp_path):
+    """Music skips the mp3 re-encode: bestaudio lands in its native container."""
+    seen = {}
+
+    def fake_run(cmd, timeout_s):
+        seen["cmd"] = cmd
+        (tmp_path / "abc123.m4a").write_bytes(b"M4Adata")
+        return _completed("")
+
+    monkeypatch.setattr(ytdlp, "run_command", fake_run)
+    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
+    assert out == {"ok": True, "path": str(tmp_path / "abc123.m4a"), "cached": False, "error": None}
+    cmd = seen["cmd"]
+    # `/best` is the SABR fallback (audio-only formats can vanish per session),
+    # and `-x` without a target format copies its audio track out untouched.
+    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio/best"
+    assert "-x" in cmd and "--audio-format" not in cmd and "--audio-quality" not in cmd
+
+
+def test_download_audio_without_ffmpeg_fails_in_both_modes(monkeypatch, tmp_path):
+    """Both modes need ffmpeg: to encode mp3, or to demux a muxed fallback."""
+    monkeypatch.setattr(ytdlp, "ffmpeg_exe", lambda: None)
+    for transcode in (True, False):
+        out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=transcode)
+        assert out["ok"] is False and "ffmpeg" in out["error"]
+
+
+def test_a_cached_mp3_still_serves_the_no_transcode_mode(monkeypatch, tmp_path):
+    """A track cached under the old mp3 mode keeps serving after the switch."""
+    cached = tmp_path / "abc123.mp3"
+    cached.write_bytes(b"ID3data")
+
+    def fail_run(cmd, timeout_s):
+        raise AssertionError("a cached track must not touch the network")
+
+    monkeypatch.setattr(ytdlp, "run_command", fail_run)
+    out = ytdlp.download_audio("abc123", tmp_path, transcode_mp3=False)
+    assert out == {"ok": True, "path": str(cached), "cached": True, "error": None}

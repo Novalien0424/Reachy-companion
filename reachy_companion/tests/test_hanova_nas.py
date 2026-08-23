@@ -114,6 +114,12 @@ def configured(monkeypatch, tmp_path):
     monkeypatch.setenv("HANOVA_NAS_SUBPATH", "SENTINEL_SRC_DIR_q4")
     monkeypatch.setenv("HANOVA_NAS_CAST_SUBPATH", "SENTINEL_CAST_DIR_q4")
     monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(index_path))
+    # Latency work, 2026-08-22: streaming is the default now, and this file is
+    # the contract for the *staged* path -- single-flight locking, `.part`
+    # renaming, the copy budget, the fence and the LRU all belong to it. The
+    # streaming route and the switch itself are covered in
+    # `test_hanova_nas_stream.py`, which pins both settings of the switch.
+    monkeypatch.setenv("HANOVA_NAS_STREAM", "0")
     monkeypatch.setenv("HA_URL", "http://ha.example.invalid:8123")
     monkeypatch.setenv("HA_TOKEN", "tok")
     monkeypatch.setenv("HANOVA_HA_SCRIPT_VIDEO_URL", "tv_show_video_url")
@@ -269,6 +275,37 @@ async def test_an_index_entry_outside_the_source_subpath_is_never_staged(monkeyp
     out = await nas.stage_and_cast(stray, tmp_path)
     assert out["ok"] is False
     assert recorded["fetched"] == [] and recorded["cast"] == []
+
+
+# --- the original path is a bound, not a playability gate (on-robot finding, 2026-08-22) ---
+def test_a_dvd_era_original_is_not_refused_for_its_extension():
+    """The original is bounded but never played, so its extension is not gated.
+
+    Only the `cast_ready` mp4 twin is fetched and served. The operator's real
+    index holds .mpg/.mts originals for every DVD-era trip, each carrying a
+    transcoded .mp4 `cast_path`; gating the original's extension made every
+    such trip unplayable while its cast copy sat ready.
+    """
+    assert nas.validate_source_path("SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg") == (
+        "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg"
+    )
+
+
+def test_the_cast_copy_still_must_be_a_playable_type():
+    """The playability gate stays exactly where playback happens."""
+    with pytest.raises(nas.NasError):
+        nas.validate_cast_path("SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg")
+
+
+@pytest.mark.asyncio
+async def test_a_clip_with_an_mpg_original_and_an_mp4_cast_copy_stages(monkeypatch, tmp_path):
+    """End to end: DVD-era entry -> staged and cast from its mp4 twin."""
+    recorded = _stub_transfer(monkeypatch)
+    dvd = dict(INDEX["videos"][0])
+    dvd["path"] = "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/clip01.mpg"
+    out = await nas.stage_and_cast(dvd, tmp_path)
+    assert out["ok"] is True
+    assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4"]
 
 
 def test_the_copy_is_staged_privately_and_renamed(monkeypatch, tmp_path):
@@ -982,7 +1019,7 @@ def _stub_play_music(monkeypatch, tmp_path, *, played_ok: bool):
     monkeypatch.setattr(
         module.ytdlp,
         "download_audio",
-        lambda video_id, dest_dir: {"ok": True, "path": str(track), "cached": True, "error": None},
+        lambda video_id, dest_dir, transcode_mp3=True: {"ok": True, "path": str(track), "cached": True, "error": None},
     )
 
     async def fake_play(deps, *, video_id, title, source_path):

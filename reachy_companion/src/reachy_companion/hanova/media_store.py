@@ -39,6 +39,21 @@ PART_SUFFIX = ".part"
 # one ducked song would otherwise halve the cache -- and it must not outlive the
 # track it was cut from.
 RESUME_SUFFIX = ".resume.mp3"
+# The container now follows the cached source (mp3 stays mp3, an m4a cut is
+# `<id>.resume.m4a`), so resume cuts are recognised by the marker, not one
+# fixed suffix. Cache ids are YouTube ids and hex digests -- never dotted --
+# so the marker cannot appear inside an id.
+RESUME_MARKER = ".resume."
+
+
+def is_resume_cut(name: str) -> bool:
+    """Return whether *name* is a resume cut derived from a cached track."""
+    return RESUME_MARKER in name
+
+
+def resume_parent(name: str) -> str:
+    """Return the cached-track filename a resume cut was derived from."""
+    return name.replace(RESUME_MARKER, ".", 1)
 
 
 def media_root(instance_path: str | Path | None) -> Path:
@@ -87,14 +102,10 @@ def prune(kind: str, instance_path: str | Path | None, keep: int) -> int:
         # Round 2, finding 6: an OSError renders the full path it failed on.
         logger.warning("Could not list the %s media cache: %s", kind, redact.error(exc))
         return 0
-    files = [path for path in entries if not path.name.endswith(RESUME_SUFFIX)]
+    files = [path for path in entries if not is_resume_cut(path.name)]
     kept = {path.name for path in files[: max(0, keep)]}
     doomed = list(files[max(0, keep) :])
-    doomed += [
-        path
-        for path in entries
-        if path.name.endswith(RESUME_SUFFIX) and f"{path.name[: -len(RESUME_SUFFIX)]}.mp3" not in kept
-    ]
+    doomed += [path for path in entries if is_resume_cut(path.name) and resume_parent(path.name) not in kept]
     removed = 0
     for stale in doomed:
         try:
@@ -147,6 +158,15 @@ def mount_media_routes(app: Any, instance_path: str | Path | None) -> bool:
         return False
     try:
         from starlette.staticfiles import StaticFiles
+
+        # Imported here, not at module scope: `nas_stream` reaches `nas` for path
+        # validation and `nas` imports this module, so a module-level import
+        # would close a cycle. Registered **before** the static mounts (latency
+        # work, 2026-08-22): Starlette matches in registration order, so the
+        # dynamic NAS stream route cannot be shadowed by a mount at this prefix.
+        from reachy_companion.hanova import nas_stream
+
+        nas_stream.mount_stream_route(app)
 
         root = media_root(instance_path)
         for kind in KINDS:
