@@ -1,5 +1,5 @@
-# Macro for all binary files that should use Git LFS.
-[attr]lfs -text filter=lfs diff=lfs merge=lfs
+# The `lfs` macro these patterns use is defined in the repo-root
+# .gitattributes — git ignores [attr] macro definitions anywhere else.
 
 # Image
 *.jpg lfs

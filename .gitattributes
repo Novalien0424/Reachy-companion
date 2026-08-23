@@ -1,0 +1,4 @@
+# Macro for all binary files that should use Git LFS.
+# Git only honors [attr] macro definitions in the top-level .gitattributes;
+# the patterns that use it live in reachy_companion/.gitattributes.
+[attr]lfs -text filter=lfs diff=lfs merge=lfs
