@@ -1,5 +1,45 @@
 # Progress
 
+## Music loudness + resume unparked; ninth/tenth install (2026-08-24)
+
+Operator report: YouTube music much quieter than the voice, "volume small
+afterward". Root-caused with the new persistent journal, three real defects,
+each fixed test-first (suite 1178/31, ruff+mypy green, deployed and verified
+live on the robot):
+
+- **Music ~12 dB down**: the test track peaked at −12.1 dBFS vs the voice's
+  −1 dBFS ceiling (YouTube loudness normalization). `ytdlp.normalize_loudness`
+  now rewrites fresh native downloads *and* pre-existing cache hits once as a
+  gain-matched mono WAV peaking at −1 dBFS (decode-only, ~150× realtime on the
+  CM4, ~2 s/song — the removed mp3 encode cost ~10 s). Gag mp3 mode untouched;
+  resume cuts inherit `.wav`; prune already marker-based. On-robot: the
+  operator's track measured max −1.0 dB after upgrade and played audibly loud.
+- **Resume parked forever** (the "still waiting … 0.08s outstanding" residual,
+  now user-visible): TWO stacked causes. (a) `wait_for_item` answers an idle
+  output queue with None after 0.1 s, so play_loop's 0.5 s timeout branch —
+  the only site calling `note_queue_empty` — was unreachable during a live
+  session; `_QUEUE_EMPTY` stayed False from the first audio frame on. The None
+  emission now records the queue-empty fact itself (console.py). (b) The play
+  loop holds the final partial sink chunk back, leaving a 0.03–0.08 s
+  enqueue-vs-sink residue; `_is_drained` now tolerates ≤ 0.25 s when the
+  queue is empty. On-robot after the fix: zero waiter lines over a full
+  play/chat/stop session (was 5+/min, forever).
+- **"Volume small afterward"**: no code path changes volume; system volume
+  stayed 90 through the operator's whole test (journal-verified). Most likely
+  the loudness contrast with the then-quiet music and/or the model speaking
+  softly at 1:40 AM. Watch after the music fix; VOICEFX_GAIN_DB is the lever
+  if the voice itself ever reads quiet.
+
+Deploy notes: bulk scp to the robot stalled repeatedly (same flaky radio as
+the #1115 incident) — wheels now transfer robot-pull over HTTP from the Mac
+(python3 -m http.server + curl on the robot, sha-verified; ~1 s). Full ritual
+both installs: manifest backup/restore, two-step --no-deps install, persona
+sha + 7 VOICEFX lines verified after restore. A start-app without stop is
+silently a no-op ("already running") — the first verify round ran old code
+because of it; stop→poll null→start is the sequence. Robot left ASLEEP,
+startup_app set, volume 90. Human rows still owed: duck→resume with a real
+voice (the machinery now demonstrably drains), plus the PRD §8 gates.
+
 ## Voice picked and baked in: coral V13 (2026-08-23, evening — D-021)
 
 The 13-version live audition ran end to end on the robot; the operator picked
