@@ -778,3 +778,30 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert 'REALTIME_TRANSCRIPTION_LANGUAGE="zh"' in text
     assert "OPENAI_API_KEY" in text
     assert "REALTIME_VAD_SILENCE_DURATION_MS" in text
+
+
+def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:
+    """T1: far-field noise reduction is on by default for this robot.
+
+    It runs server-side before VAD and cuts false speech triggers.
+    """
+    cfg = handler._get_session_config(tool_specs=[])
+    assert cfg["audio"]["input"]["noise_reduction"] == {"type": "far_field"}
+
+
+def test_noise_reduction_off_restores_the_bare_input(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REALTIME_NOISE_REDUCTION=off restores the pre-hardening input config."""
+    monkeypatch.setenv("REALTIME_NOISE_REDUCTION", "off")
+    cfg = handler._get_session_config(tool_specs=[])
+    assert "noise_reduction" not in cfg["audio"]["input"]
+
+
+def test_noise_reduction_rejects_garbage(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid mode degrades to far_field with a warning, never a crash."""
+    monkeypatch.setenv("REALTIME_NOISE_REDUCTION", "sideways_field")
+    cfg = handler._get_session_config(tool_specs=[])
+    assert cfg["audio"]["input"]["noise_reduction"] == {"type": "far_field"}

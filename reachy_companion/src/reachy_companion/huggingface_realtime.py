@@ -1,3 +1,5 @@
+import os
+import re
 import json
 import time
 import uuid
@@ -6,6 +8,7 @@ import random
 import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final, Tuple, Optional
+from collections import deque
 
 import httpx
 import numpy as np
@@ -37,6 +40,7 @@ from reachy_companion.config import (
     parse_hf_realtime_url,
     get_hf_connection_selection,
 )
+from reachy_companion.hanova import audio_drain
 from reachy_companion.prompts import (
     get_session_voice,
     get_session_instructions,
@@ -58,6 +62,8 @@ from reachy_companion.hanova.music_hooks import (
     on_tool_call_finished,
     on_user_speech_started,
     on_assistant_turn_ended,
+    on_turn_without_response,
+    on_user_speech_candidate,
 )
 from reachy_companion.conversation_handler import ConversationHandler
 from reachy_companion.tools.background_tool_manager import (
@@ -75,6 +81,34 @@ logger = logging.getLogger(__name__)
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
+
+# --- party mode (multi-person hardening, 2026-08-24) -------------------------
+# docs/plans/party-mode-plan.md + docs/multi-person-investigation.md. In a
+# group, most speech is not for the robot: party mode debounces barge-in and
+# answers only turns that address it. Solo mode is byte-identical to before.
+_PARTY_NAMES_DEFAULT = "reachy,richie,ritchie,瑞奇,里奇,小瑞,瑞曲"
+# Stop-style commands always pass the gate: a robot you cannot silence because
+# it decided you were not talking to it is worse than any false positive.
+_PARTY_CONTROL_RE = re.compile(r"停|閉嘴|闭嘴|安靜|安静|睡覺|睡觉|別唱|别唱|stop|quiet|shut\s*up", re.IGNORECASE)
+
+
+def _party_default_on() -> bool:
+    return (os.getenv("REALTIME_PARTY_DEFAULT") or "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _party_confirm_s() -> float:
+    """How long speech must persist while Reachy is audible to count as a barge."""
+    return env_int("REALTIME_PARTY_BARGE_CONFIRM_MS", 400, lo=0) / 1000.0
+
+
+def _party_followup_s() -> float:
+    """How long after an accepted turn unaddressed speech still gets answered."""
+    return float(env_int("REALTIME_PARTY_FOLLOWUP_S", 20, lo=0))
+
+
+def _party_names() -> list[str]:
+    raw = os.getenv("REALTIME_PARTY_ADDRESS_NAMES") or _PARTY_NAMES_DEFAULT
+    return [name.strip().casefold() for name in raw.split(",") if name.strip()]
 
 # Face memory at wake time (D-013). One monotonic deadline bounds the whole
 # check — model readiness, frame capture and identification together — because
@@ -192,6 +226,109 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # handler currently owns. 0 means "no session open". It is what stops a
         # late cleanup from a replaced connection tearing down its successor.
         self._hanova_session: int = 0
+        # --- party mode (multi-person hardening, 2026-08-24) -----------------
+        self._party_mode: bool = _party_default_on()
+        # monotonic() of the last gate-ACCEPTED user turn; the only thing that
+        # opens the follow-up window (Codex round 1, finding 3 — greeting and
+        # tool-follow-up responses must not).
+        self._party_last_accept_at: float | None = None
+        self._party_speech_open: bool = False
+        # Bumped per speech_started and per mode flip so a sleeping barge timer
+        # can tell it belongs to a superseded utterance (finding 8).
+        self._party_utterance_seq: int = 0
+        self._party_barge_task: asyncio.Task[None] | None = None
+        self._active_response_id: str | None = None
+        # Late audio deltas from a cancelled response must not reach the
+        # speaker (finding 8). Tiny bound: only very recent ids can race.
+        self._cancelled_response_ids: deque[str] = deque(maxlen=8)
+
+    # --- party mode ---------------------------------------------------------
+    def set_party_mode(self, enabled: bool) -> dict[str, Any]:
+        """Flip party mode and push the matching turn-detection to the server.
+
+        Injected into `ToolDependencies` (same seam as `go_to_sleep`) so the
+        `party_mode` tool can flip it mid-conversation. Synchronous by design:
+        tools run on the handler's own loop, so the session update is scheduled
+        rather than awaited.
+        """
+        enabled = bool(enabled)
+        if enabled == self._party_mode:
+            return {"ok": True, "status": "unchanged", "party_mode": enabled}
+        self._party_mode = enabled
+        self._party_speech_open = False
+        self._party_utterance_seq += 1  # any sleeping barge timer is now stale
+        # Whoever just toggled the mode is clearly engaged with the robot:
+        # entering party opens the follow-up window so the conversation that
+        # asked for it can continue without re-addressing by name.
+        self._party_last_accept_at = time.monotonic() if enabled else None
+        if self.connection is not None:
+            asyncio.ensure_future(self._push_turn_detection_update())
+        logger.info("party mode %s", "ON" if enabled else "OFF")
+        return {"ok": True, "status": "party_on" if enabled else "party_off", "party_mode": enabled}
+
+    async def _push_turn_detection_update(self) -> None:
+        """Send the mode's turn-detection to the live session. Base: no-op.
+
+        The Hugging Face backend has no session.update semantics we control;
+        the OpenAI subclass overrides this with a narrow update (Codex round 1,
+        finding 2).
+        """
+        return None
+
+    def _robot_audible(self) -> bool:
+        """Whether Reachy is speaking or still has queued/buffered speech.
+
+        Response lifecycle alone is not enough — queued PCM outlives
+        `response.done` (Codex round 1, finding 6).
+        """
+        return (not self._response_done_event.is_set()) or audio_drain.is_audible()
+
+    def _party_gate_accepts(self, transcript: str) -> bool:
+        """Decide whether a committed turn was addressed to the robot."""
+        text = transcript.casefold()
+        if any(name in text for name in _party_names()):
+            return True
+        if _PARTY_CONTROL_RE.search(text):
+            return True
+        last = self._party_last_accept_at
+        return last is not None and (time.monotonic() - last) <= _party_followup_s()
+
+    def _start_party_barge_timer(self) -> None:
+        """Arm the debounce: sustained speech while audible = real interruption."""
+        if self._party_barge_task is not None and not self._party_barge_task.done():
+            self._party_barge_task.cancel()
+        self._party_barge_task = asyncio.create_task(
+            self._party_barge_confirm(self._party_utterance_seq), name="party-barge-confirm"
+        )
+
+    async def _party_barge_confirm(self, seq: int) -> None:
+        """After the confirm delay, cancel the reply iff the speech persisted."""
+        try:
+            await asyncio.sleep(_party_confirm_s())
+        except asyncio.CancelledError:
+            return
+        # Finding 8: re-verify everything — the mode may have flipped, a newer
+        # utterance may own the floor, the blip may have ended, or the robot
+        # may have finished talking on its own.
+        if not self._party_mode or seq != self._party_utterance_seq:
+            return
+        if not self._party_speech_open or not self._robot_audible():
+            return
+        logger.info("party barge-in confirmed; cancelling the active reply")
+        await self._cancel_active_response()
+        if self._clear_queue:
+            self._clear_queue()
+
+    async def _cancel_active_response(self) -> None:
+        """Cancel the in-flight response, remembering its id to drop late deltas."""
+        response_id = self._active_response_id
+        if response_id is None or self._response_done_event.is_set() or self.connection is None:
+            return
+        self._cancelled_response_ids.append(response_id)
+        try:
+            await self.connection.response.cancel()
+        except Exception as exc:  # noqa: BLE001 - "no active response" is a benign race
+            logger.debug("response.cancel refused (likely already done): %s", exc)
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -921,18 +1058,30 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
-                        if self._clear_queue:
-                            self._clear_queue()
+                        if self._party_mode:
+                            # Party: a voice in the room is a candidate, not an
+                            # interruption. Duck the music only; the reply keeps
+                            # playing unless the speech outlasts the debounce
+                            # while Reachy is audible (plan T2).
+                            self._party_speech_open = True
+                            self._party_utterance_seq += 1
+                            on_user_speech_candidate(self.deps)
+                            if self._robot_audible():
+                                self._start_party_barge_timer()
+                        else:
+                            if self._clear_queue:
+                                self._clear_queue()
+                            # D-018 / R7: duck robot-speaker music the instant the
+                            # user starts talking. NOT awaited (finding 1): the pause
+                            # carries a five-second daemon timeout, and awaiting it
+                            # here would stall every event queued behind it.
+                            on_user_speech_started(self.deps)
                         self.deps.movement_manager.set_listening(True)
-                        # D-018 / R7: duck robot-speaker music the instant the user
-                        # starts talking. NOT awaited (finding 1): the pause carries a
-                        # five-second daemon timeout, and awaiting it here would stall
-                        # every event queued behind it in this receiver.
-                        on_user_speech_started(self.deps)
                         logger.debug("User speech started")
 
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._mark_activity("user_speech_stopped")
+                        self._party_speech_open = False
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
@@ -961,6 +1110,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # this moment on -- before any audio exists (round 2).
                         on_response_created()
                         self._mark_activity("response_created")
+                        self._active_response_id = getattr(getattr(event, "response", None), "id", None)
                         self.deps.movement_manager.set_speaking(True)
                         self._response_done_event.clear()
                         self._response_started_or_rejected_event.set()
@@ -980,6 +1130,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # while a tool call is still in flight -- a tool turn is
                         # always followed by a second, speaking response (finding 1).
                         on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
+                        self._active_response_id = None
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
                         logger.debug("Response done")
@@ -1018,6 +1169,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             logger.debug("Ignoring empty user transcript")
                             continue
 
+                        if self._party_mode and not self._party_gate_accepts(transcript):
+                            # Ambient chatter: keep it as context (it is already
+                            # in the conversation), close the turn for the music
+                            # hooks (finding 4), and touch nothing else — the
+                            # tool-batch state belongs to an accepted turn that
+                            # may still be running (finding 7).
+                            logger.info("party gate: denied ambient turn (%d chars)", len(transcript))
+                            on_turn_without_response(self.deps)
+                            await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
+                            self._emit_transcript("user", transcript, True)
+                            continue
+
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
@@ -1026,6 +1189,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                         self._emit_transcript("user", transcript, True)
+
+                        if self._party_mode:
+                            # create_response is off in party mode: this turn was
+                            # addressed to us, so answer it — through the sender
+                            # queue, never the raw connection (finding 1).
+                            self._party_last_accept_at = time.monotonic()
+                            await self._safe_response_create()
+
+                    if event.type == "conversation.item.input_audio_transcription.failed":
+                        self._mark_activity("user_transcription_failed")
+                        if self._party_mode:
+                            # No transcript will ever arrive for this turn, so no
+                            # gate decision and no response: close it for the
+                            # music hooks (finding 4).
+                            on_turn_without_response(self.deps)
+                        logger.debug("User transcription failed")
 
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.done":
@@ -1038,6 +1217,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
+                        if getattr(event, "response_id", None) in self._cancelled_response_ids:
+                            # Finding 8: response.cancel is asynchronous; audio
+                            # already in flight from the cancelled reply must not
+                            # reach the speaker after the local flush.
+                            logger.debug("Dropping audio delta from a cancelled response")
+                            continue
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")

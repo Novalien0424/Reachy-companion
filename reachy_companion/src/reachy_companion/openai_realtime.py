@@ -24,7 +24,9 @@ from openai import AsyncOpenAI
 from numpy.typing import NDArray
 from typing_extensions import Literal
 from openai.types.realtime import RealtimeSessionCreateRequestParam
+from openai.types.realtime.noise_reduction_type import NoiseReductionType
 from openai.types.realtime.realtime_audio_formats_param import AudioPCM
+from openai.types.realtime.realtime_audio_config_input_param import NoiseReduction
 from openai.types.realtime.realtime_audio_input_turn_detection_param import (
     ServerVad,
     SemanticVad,
@@ -57,28 +59,59 @@ def _eagerness() -> Literal["low", "medium", "high", "auto"]:
     return cast(Literal["low", "medium", "high", "auto"], raw)
 
 
-def _turn_detection() -> RealtimeAudioInputTurnDetectionParam:
+def _noise_reduction() -> NoiseReduction | None:
+    """Read `REALTIME_NOISE_REDUCTION`; far_field is the default for this robot.
+
+    2026-08-24 (multi-person investigation): the session previously configured
+    no input noise reduction at all, and the robot is the textbook far-field
+    device the API's `far_field` mode exists for — it filters the audio before
+    VAD, which is documented to reduce false speech triggers. `off` restores
+    the old behavior; `near_field` exists for bench tests with a headset mic.
+    """
+    raw = os.getenv("REALTIME_NOISE_REDUCTION", "far_field").strip().lower() or "far_field"
+    if raw == "off":
+        return None
+    if raw not in ("far_field", "near_field"):
+        logger.warning("Ignoring invalid REALTIME_NOISE_REDUCTION=%r; using far_field.", raw)
+        raw = "far_field"
+    reduction_type: NoiseReductionType = "near_field" if raw == "near_field" else "far_field"
+    return NoiseReduction(type=reduction_type)
+
+
+def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam:
     """Server-side VAD, tunable via env for Chinese mid-sentence pauses (D-003).
 
     Every knob degrades to its default with a warning rather than raising, so one
     bad line in a robot's `.env` cannot abort the whole realtime session.
+
+    With ``party`` (multi-person hardening, 2026-08-24) the same VAD keeps
+    committing and transcribing turns, but the server neither interrupts the
+    in-flight reply nor auto-answers: the client's debounced barge-in decides
+    what counts as an interruption, and the address gate decides which turns
+    deserve a response. Solo mode is byte-identical to the pre-party config.
     """
     vad_type = os.getenv("REALTIME_VAD_TYPE", "server_vad").strip().lower() or "server_vad"
     if vad_type == "semantic_vad":
-        return SemanticVad(
+        semantic = SemanticVad(
             type="semantic_vad",
             eagerness=_eagerness(),
-            interrupt_response=True,
+            interrupt_response=not party,
         )
+        if party:
+            semantic["create_response"] = False
+        return semantic
     if vad_type != "server_vad":
         logger.warning("Ignoring invalid REALTIME_VAD_TYPE=%r; using server_vad.", vad_type)
-    return ServerVad(
+    server = ServerVad(
         type="server_vad",
-        interrupt_response=True,
+        interrupt_response=not party,
         threshold=env_float("REALTIME_VAD_THRESHOLD", 0.5, lo=0.0, hi=1.0),
         prefix_padding_ms=env_int("REALTIME_VAD_PREFIX_PADDING_MS", 300, lo=0),
         silence_duration_ms=env_int("REALTIME_VAD_SILENCE_DURATION_MS", 800, lo=0),
     )
+    if party:
+        server["create_response"] = False
+    return server
 
 
 class _StreamingResampler:
@@ -253,8 +286,33 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         cfg["model"] = MODEL
         cfg["audio"]["output"]["format"] = AudioPCM(type="audio/pcm", rate=24000)
         cfg["audio"]["input"]["format"] = AudioPCM(type="audio/pcm", rate=24000)
-        cfg["audio"]["input"]["turn_detection"] = _turn_detection()
+        # getattr: config emission must also work on partially-built handlers
+        # (tests construct via __new__), where party state defaults to solo.
+        cfg["audio"]["input"]["turn_detection"] = _turn_detection(getattr(self, "_party_mode", False))
+        noise_reduction = _noise_reduction()
+        if noise_reduction is not None:
+            cfg["audio"]["input"]["noise_reduction"] = noise_reduction
         return cfg
+
+    async def _push_turn_detection_update(self) -> None:
+        """Apply the current mode's turn detection to the live session.
+
+        Codex round 1, finding 2: this must be a NARROW update — never `model`
+        (immutable) or `voice` (rejected once audio has been produced). The
+        whole `audio.input` block is sent rather than `turn_detection` alone so
+        a server treating the nested object as a replacement cannot strip the
+        format, transcription or noise-reduction settings.
+        """
+        if not self.connection:
+            return
+        audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
+        try:
+            await self.connection.session.update(
+                session={"type": "realtime", "audio": {"input": audio_input}}
+            )
+            logger.info("session turn_detection updated: party=%s", self._party_mode)
+        except Exception as exc:  # noqa: BLE001 - a failed update must not kill the receive loop
+            logger.warning("Failed to update session turn_detection: %s", exc)
 
     # Microphone receive — adapted from huggingface_realtime.py:947-982,
     # added: upsample the robot's 16 kHz mic to the model's 24 kHz.

@@ -181,6 +181,20 @@ def outstanding_s() -> float:
         return _OUTSTANDING_S
 
 
+def is_audible() -> bool:
+    """Whether queued or device-buffered assistant audio may still be heard.
+
+    Party mode's debounced barge-in keys on this rather than on response
+    lifecycle: queued PCM outlives `response.done` (Codex round 1, finding 6).
+    """
+    with _LOCK:
+        if not _QUEUE_EMPTY:
+            return True
+        if _OUTSTANDING_S > _RESIDUE_SLACK_S:
+            return True
+        return time.monotonic() < _DRAINED_AT
+
+
 def _is_drained(generation: int) -> bool:
     with _LOCK:
         if not _CLOSED.get(generation, True):

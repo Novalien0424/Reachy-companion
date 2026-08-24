@@ -258,11 +258,16 @@ def run(
         from reachy_companion.openai_realtime import MODEL, OpenAIRealtimeHandler
 
         logger.info("Using OpenAI realtime handler (model %s)", MODEL)
-        return OpenAIRealtimeHandler(
+        handler = OpenAIRealtimeHandler(
             deps,
             instance_path=instance_path,
             startup_voice=startup_voice,
         )
+        # Party mode's voice switch reaches the live handler through deps; the
+        # rewire here (not at deps construction) is what keeps the seam correct
+        # across handler rebuilds by the settings UI (voice changes).
+        deps.set_party_mode = handler.set_party_mode
+        return handler
 
     handler = build_handler(startup_settings.voice)
 

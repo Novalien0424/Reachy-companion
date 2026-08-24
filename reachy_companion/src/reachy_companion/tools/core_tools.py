@@ -48,6 +48,10 @@ class ToolDependencies:
     # construction site — tests, the settings UI, older deployments — must keep
     # working with face memory simply absent.
     face_recognizer: Any = None
+    # Party mode (multi-person hardening, 2026-08-24): flips the handler's
+    # group-conversation policy. Injected per handler build, same seam and same
+    # optionality rationale as go_to_sleep.
+    set_party_mode: Callable[[bool], dict[str, Any]] | None = None
 
 
 class ToolSpec(TypedDict):

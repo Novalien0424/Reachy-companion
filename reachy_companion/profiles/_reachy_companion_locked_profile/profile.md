@@ -33,6 +33,7 @@ default_tools = [
   "nas_play_folder",
   "nas_skip",
   "go_to_sleep",
+  "party_mode",
   "remember",
   "forget",
   "remember_face",

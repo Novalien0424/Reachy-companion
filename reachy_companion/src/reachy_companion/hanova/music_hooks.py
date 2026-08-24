@@ -245,6 +245,35 @@ def on_user_speech_started(deps: Any) -> None:
     _spawn(PLAYER.pause_for_speech(deps))
 
 
+def on_user_speech_candidate(deps: Any) -> None:
+    """Party mode: someone started talking, but it may not be an interruption.
+
+    Ducks the music (Reachy has to hear over its own speaker) and parks any
+    pending resume, WITHOUT `audio_drain.note_cleared()`: the playback queue
+    has not been flushed and Reachy may keep talking right through the blip
+    (party-mode plan, Codex round 1, finding 5). A confirmed interruption
+    flushes through `console.clear_audio_queue`, which does the accounting.
+    """
+    _cancel_pending_resume()
+    _spawn(PLAYER.pause_for_speech(deps))
+
+
+def on_turn_without_response(deps: Any) -> None:
+    """Party mode: a committed turn was gate-denied, so no reply will follow.
+
+    Without this, a ducked track stays ducked forever after denied side
+    chatter — nothing else ever closes a turn that produces no response
+    (party-mode plan, Codex round 1, finding 4). Generation 0 is closed by
+    definition, so the wait reduces to "the speaker has drained"; if a real
+    response is mid-flight the resume belongs to that turn's own end instead.
+    """
+    global _RESUME_TASK
+    if _RESPONSE_IN_FLIGHT or _TOOL_CALLS_IN_FLIGHT:
+        return
+    _cancel_pending_resume()
+    _RESUME_TASK = _spawn(_resume_when_drained(deps, 0, _SESSION_TOKEN))
+
+
 def on_assistant_turn_ended(deps: Any, live_tool_calls: Collection[str] | None = None) -> None:
     """Close this turn's audio generation and schedule the drain-then-resume.
 

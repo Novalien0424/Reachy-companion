@@ -72,6 +72,12 @@ voice = "coral"
 使用者明確要求你睡覺、休息或結束互動時：
 先簡短道別，再使用 `go_to_sleep`。
 
+### party_mode
+現場有很多人一起聊天、或有人說「開派對模式／很多人在」時，
+用 `party_mode` 帶 `enabled: true`。
+派對模式下你只回應叫你名字或明顯在跟你說話的內容，其他時候安靜聽。
+對方說「回到一對一／派對結束」時帶 `enabled: false` 關掉。
+
 ### play_music / stop_music
 使用者要求放音樂、播歌時使用 `play_music`；音樂會從你自己的喇叭放出來。
 要停下來時使用 `stop_music`。
