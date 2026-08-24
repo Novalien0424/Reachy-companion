@@ -2,6 +2,27 @@
 
 ## Flaky-connection + shutdown investigation closed (2026-08-24, operator-directed)
 
+**CLOSED (operator confirmed plugged in): the shutdown is upstream's known
+GPIO23 EMI defect.** pollen-robotics/reachy_mini#492 (fixed by PR #505's
+200 ms debounce — the code our daemon runs) and #1109 (open, May 2026): the
+power board's shutdown line is EMI-susceptible during rapid motor commands,
+the 200 ms debounce is documented as insufficient under sustained motor
+activity, and wall-powered units are affected. Our event matches to the
+minute: it fired at the tail of the voice audition's tenth rapid app
+restart — each restart drives the wake choreography plus a return-to-zero
+head move, i.e. exactly the motor-burst profile #1109 describes. On-robot
+electricals are clean (throttled=0x0, rpi_volt alarm 0, no PD errors), same
+as #1109's reporter. Mitigations: the persistent journal (already enabled)
+will print the gpio daemon's "Shutdown button released, shutting down..."
+line on the next occurrence — definitive proof; heavy back-to-back restart
+cycles are the risk window, normal conversation is much lighter (one event in
+two days of hard use). #1109's `systemctl mask gpio-shutdown-daemon` 
+workaround is **recommended against and not applied**: it is a daemon-service
+change (unauthorized) and it trades rare spurious *clean* shutdowns for
+routine *hard* power cuts via the switch, which is the venv-corruption path
+(#599). Upstream "me too" with our data point is drafted below for the
+operator to post if they wish.
+
 **The "sudden shutdown" was an orderly shutdown, not a crash.** The operator
 saw the robot fold into its sleep pose — that is the clean-shutdown
 choreography (a power cut goes limp mid-pose). Mechanism found in the SDK:
