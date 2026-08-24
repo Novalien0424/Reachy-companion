@@ -1,5 +1,30 @@
 # Progress
 
+## Cast honesty + language pinning; eleventh install (2026-08-24, afternoon)
+
+Two operator reports, both journal-diagnosed and fixed test-first (suite 1185
+passed / 31 skipped, ruff+mypy green; deployed and verified live):
+
+- **play_video said "casting" at a dark TV**: HA accepts a script run
+  regardless of the cast target's state, so dispatch was reported as display.
+  New `ha_client.confirm_cast_started` polls the cast entity after dispatch
+  (`HANOVA_CAST_CONFIRM_S`, default 12 s; needs `HANOVA_CAST_ENTITY`; 0
+  disables) on every session-starting cast — play_video, show_on_tv,
+  play_nas_video, nas_play_folder — returning the new `tv_not_responding`
+  contract when the target stays off/unavailable; `nas_skip` keeps its 0.3 s
+  mid-trip path untouched. Persona carries the matching convention. Live
+  on-robot: with the TV off, Reachy now answers 「指令送出去了，但電視好像沒
+  反應，可能沒開機」 instead of claiming success.
+- **Occasional English replies**: one instance found — after a `camera` call
+  the model described the image in English (vision content pulls gpt-realtime
+  toward English). `persona.md` now pins the language explicitly: never
+  self-switch; tool data, titles and camera content stay answered in Taiwan
+  Mandarin. Live re-test of the same camera scenario came back fully in
+  Chinese. One data point, so watch it — the rule is mitigation, not proof.
+
+Robot left ASLEEP on the new build (persona sha 765cbd59…, all prior fixes
+included), startup_app set, volume 90.
+
 ## Flaky-connection + shutdown investigation closed (2026-08-24, operator-directed)
 
 **CLOSED (operator confirmed plugged in): the shutdown is upstream's known
