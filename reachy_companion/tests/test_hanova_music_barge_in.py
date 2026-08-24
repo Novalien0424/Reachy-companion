@@ -844,3 +844,31 @@ def test_no_production_code_calls_player_reset():
         if path.name == "music_player.py":
             continue  # this is where it is defined
         assert "PLAYER.reset(" not in source, f"{path.name} resets instead of invalidating"
+
+
+@pytest.mark.asyncio
+async def test_a_small_sink_residue_does_not_park_the_resume():
+    """A held-back partial sink chunk must not block the drain verdict.
+
+    2026-08-24, on-robot: the play loop holds the final partial chunk back, so
+    a ~0.05 s enqueue-vs-sink residue survived every real drain and the resume
+    waiter looped forever ("still waiting ... 0.08s outstanding").
+    """
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 0.5 s
+    audio_drain.note_chunk(sample_count=11000, sample_rate=24000)  # sink got 0.458 s
+    audio_drain.note_queue_empty()
+    audio_drain.close_response(generation)
+    assert audio_drain.outstanding_s() > 0.0, "the held-back tail is the premise"
+    assert await audio_drain.wait_drained(generation, timeout_s=2.0) is True
+
+
+@pytest.mark.asyncio
+async def test_a_real_pending_reply_still_blocks_the_resume():
+    """Residue above one sink chunk is unplayed speech, not a measurement artifact."""
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=24000, sample_rate=24000)  # 1.0 s
+    audio_drain.note_chunk(sample_count=9600, sample_rate=24000)  # only 0.4 s reached the sink
+    audio_drain.note_queue_empty()
+    audio_drain.close_response(generation)
+    assert await audio_drain.wait_drained(generation, timeout_s=0.6) is False

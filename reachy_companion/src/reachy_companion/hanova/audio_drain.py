@@ -44,8 +44,13 @@ logger = logging.getLogger(__name__)
 # parking a resume for minutes.
 _MAX_PENDING_S = 10.0
 _POLL_S = 0.02
-# Floating-point slack: 0.02 s is far below anything audible.
-_EPSILON_S = 0.02
+# 2026-08-24, observed on-robot: the playback loop hands the sink fixed-size
+# chunks and keeps the final partial one buffered until later audio pushes it
+# out, so a 0.04-0.08 s enqueue-vs-sink residue survives every real drain and
+# parked the music resume forever ("still waiting ... 0.08s outstanding"). With
+# the local queue empty, a residue below one sink chunk is that measurement
+# artifact, not speech still to play; anything larger is real pending audio.
+_RESIDUE_SLACK_S = 0.25
 
 _LOCK = threading.Lock()
 _GENERATION = 0
@@ -180,9 +185,11 @@ def _is_drained(generation: int) -> bool:
     with _LOCK:
         if not _CLOSED.get(generation, True):
             return False
-        if _OUTSTANDING_S > _EPSILON_S:
+        if not _QUEUE_EMPTY:
             return False
-        return _QUEUE_EMPTY and time.monotonic() >= _DRAINED_AT
+        if _OUTSTANDING_S > _RESIDUE_SLACK_S:
+            return False
+        return time.monotonic() >= _DRAINED_AT
 
 
 async def wait_drained(generation: int, timeout_s: float) -> bool:

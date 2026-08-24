@@ -14,6 +14,7 @@ Everything here is synchronous and must be called from `asyncio.to_thread`.
 
 from __future__ import annotations
 import os
+import re
 import sys
 import logging
 import subprocess
@@ -126,7 +127,99 @@ def search(query: str, max_duration_s: int | None = None) -> Dict[str, Any]:
 # Containers GStreamer's playbin decodes on the robot (faad, opusdec, mpg123
 # all verified installed 2026-08-22). The cache lookup accepts any of them so a
 # track downloaded under either mode keeps serving after the mode changes.
-_AUDIO_EXTENSIONS: tuple[str, ...] = (".m4a", ".mp3", ".webm", ".opus", ".ogg", ".aac")
+# `.wav` first: it is the loudness-normalized rewrite this module produces, and
+# when both it and a leftover original exist the normalized one must win.
+_AUDIO_EXTENSIONS: tuple[str, ...] = (".wav", ".m4a", ".mp3", ".webm", ".opus", ".ogg", ".aac")
+
+# The voice chain peaks at -1 dBFS (D-017's soft-knee ceiling); YouTube tracks
+# are loudness-normalized well below that (-12 dBFS peak measured on-robot,
+# 2026-08-24), which the operator hears as "music much quieter than Reachy".
+# Fresh music downloads are therefore gain-matched to the same peak. The rewrite
+# is decode-only (measured ~150x realtime on the CM4), so it costs ~2 s per song
+# where the removed mp3 re-encode cost ~10 s.
+_NORMALIZE_TARGET_PEAK_DBFS = -1.0
+# Below this the rewrite would be inaudible and is not worth a decode pass.
+_NORMALIZE_MIN_GAIN_DB = 0.5
+# A file this far down is noise or silence; amplifying it further helps nobody.
+_NORMALIZE_MAX_GAIN_DB = 24.0
+_VOLUMEDETECT_TIMEOUT_S = 60
+_NORMALIZE_TIMEOUT_S = 120
+_MAX_VOLUME_RE = re.compile(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB")
+
+
+def measure_peak_dbfs(path: Path) -> float | None:
+    """Return the file's peak level in dBFS via one decode pass, or None."""
+    ffmpeg = ffmpeg_exe()
+    if not ffmpeg or not Path(path).is_file():
+        return None
+    cmd = [ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"]
+    try:
+        proc = run_command(cmd, _VOLUMEDETECT_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("volumedetect failed: %s", redact.error(exc))
+        return None
+    match = _MAX_VOLUME_RE.search(proc.stderr or "")
+    if proc.returncode != 0 or match is None:
+        logger.warning("volumedetect reported no peak (rc=%s)", proc.returncode)
+        return None
+    return float(match.group(1))
+
+
+def normalize_loudness(source: Path) -> Path:
+    """Rewrite *source* as a gain-matched mono WAV peaking at -1 dBFS.
+
+    Returns the WAV's path on success (the original is deleted) and *source*
+    unchanged on any failure or when the track is already loud enough — a
+    quiet track must still play. WAV keeps the rewrite decode-only; mono
+    halves the file for a robot with one speaker; pure gain (no dynamics
+    processing) preserves the mix. A `.wav` input is one of our own rewrites
+    and is returned as-is: ffmpeg reading and writing the same path corrupts it.
+    """
+    source = Path(source)
+    if source.suffix == ".wav":
+        return source
+    peak_dbfs = measure_peak_dbfs(source)
+    if peak_dbfs is None:
+        return source
+    gain_db = _NORMALIZE_TARGET_PEAK_DBFS - peak_dbfs
+    if gain_db < _NORMALIZE_MIN_GAIN_DB:
+        return source
+    gain_db = min(gain_db, _NORMALIZE_MAX_GAIN_DB)
+    ffmpeg = ffmpeg_exe()
+    if not ffmpeg:
+        return source
+    dest = source.with_suffix(".wav")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-af",
+        f"volume={gain_db:.2f}dB",
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        str(dest),
+    ]
+    try:
+        proc = run_command(cmd, _NORMALIZE_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("loudness normalize failed: %s", redact.error(exc))
+        return source
+    if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size == 0:
+        logger.warning("loudness normalize produced nothing (rc=%s)", proc.returncode)
+        dest.unlink(missing_ok=True)
+        return source
+    try:
+        source.unlink()
+    except OSError as exc:
+        # The wav still wins the cache lookup; the leftover ages out via LRU.
+        logger.debug("could not remove the pre-normalize original: %s", redact.error(exc))
+    logger.info("music normalized: peak %.1f dBFS -> %.1f (%+.1f dB gain)", peak_dbfs, _NORMALIZE_TARGET_PEAK_DBFS, gain_db)
+    return dest
 
 
 def _cached_audio(video_id: str, dest_dir: Path) -> Path | None:
@@ -158,6 +251,11 @@ def download_audio(video_id: str, dest_dir: Path, *, transcode_mp3: bool = True)
 
     cached = _cached_audio(video_id, dest_dir)
     if cached is not None:
+        if not transcode_mp3:
+            # A cache entry from before loudness normalization existed plays
+            # quiet forever unless upgraded; a no-op for `.wav` entries. Gags
+            # (the mp3 mode) keep their original level.
+            cached = normalize_loudness(cached)
         # Task 4 review: the music cache is pruned by mtime, and a cache hit
         # rewrites nothing -- so a track played straight from the cache is the
         # OLDEST entry in the directory and the prune that runs right after this
@@ -229,6 +327,8 @@ def download_audio(video_id: str, dest_dir: Path, *, transcode_mp3: bool = True)
             redact.text(proc.stderr or proc.stdout or ""),
         )
         return {"ok": False, "path": None, "cached": False, "error": "no audio could be produced for that track"}
+    if not transcode_mp3:
+        produced = normalize_loudness(produced)
     return {"ok": True, "path": str(produced), "cached": False, "error": None}
 
 
