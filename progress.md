@@ -1,5 +1,22 @@
 # Progress
 
+## TV casting actually fixed: HA entity churn (2026-08-24, evening — D-022)
+
+The operator's "cast FAILED, TV shows nothing" was **not** a Chromecast or
+YouTube protocol change (researched and ruled out — the canonical HA YouTube
+cast pattern reached `playing` in 3 s once pointed at a live entity). The
+living-room device had re-registered in HA over time, leaving four entities;
+the robot's `HANOVA_CAST_ENTITY` and the hardcoded targets inside all three
+`tv_show_*` HA scripts pointed at the dead original (`unavailable`). This also
+explains why the new tv_not_responding honesty fired on every cast — it was
+correctly reporting a corpse. Fixed per D-022: seven refs retargeted to the
+live `…_3` entity via the HA script config API, robot `.env` updated, confirm
+window raised to 45 s after a measured >25 s cold YouTube-app launch produced
+one false negative. Verified end-to-end: voice request → honest
+`{"ok": true, "status": "casting"}` → operator saw the video on the TV.
+Persistence: `.env` is backed-up instance state; script edits live in HA's own
+storage; recurrence announces itself via tv_not_responding, runbook in D-022.
+
 ## Cast honesty + language pinning; eleventh install (2026-08-24, afternoon)
 
 Two operator reports, both journal-diagnosed and fixed test-first (suite 1185

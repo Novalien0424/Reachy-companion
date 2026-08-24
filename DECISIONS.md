@@ -1040,3 +1040,32 @@ journald is now **persistent and capped** on the robot
 (`/etc/systemd/journald.conf.d/90-persistent-capped.conf`, Storage=persistent,
 SystemMaxUse=100M, plus /var/log/journal). This touches systemd only — not the
 Reachy daemon — and reverts by deleting that file and directory.
+
+## D-022 — TV cast fixed: HA cast-entity churn, scripts retargeted, honest-failure runbook (2026-08-24)
+
+The "cast succeeds but TV shows nothing" failure was **entity churn in Home
+Assistant**, not a Chromecast/YouTube protocol change: the living-room device
+had re-registered over time, leaving four `media_player` entities for one
+physical TV. The robot's `HANOVA_CAST_ENTITY` *and* the hardcoded `target:` in
+all three `tv_show_*` HA scripts pointed at the dead original
+(`…an_he_ke_ting`, state `unavailable`). The live video-cast entity is
+`…an_he_ke_ting_3`; `…_4` is a Music Assistant *speaker* proxy for the same
+device and must never receive video. Fix applied: all seven entity references
+across `tv_show_youtube` / `tv_show_video_url` / `tv_show_image_url` were
+retargeted to `_3` via the HA script config API (operator's HA modified —
+recorded here), and the robot instance `.env` now carries the live entity plus
+`HANOVA_CAST_CONFIRM_S=45` (a cold YouTube-app launch measured >25 s; the
+first 25 s window produced a false "tv_not_responding" while the TV was still
+coming up). Verified live: direct script run reached `playing`/YouTube in 3 s;
+the robot's own voice-requested cast confirmed honestly and displayed.
+
+**Why this survives:** the robot-side values live in the instance `.env`
+(on-disk, covered by the deploy skill's backup/restore ritual); the script
+changes live in HA's own storage, independent of robot deploys. **If it ever
+recurs** (the TV re-registers again as `_5`): Reachy now *says* the TV is not
+responding instead of claiming success — that sentence is the alarm. Runbook:
+list HA's `media_player` entities, find the live 安和客廳 entry that is not
+`unavailable` and not the `device_class: speaker` Music Assistant proxy, then
+point `HANOVA_CAST_ENTITY` (robot `.env`) and the three scripts' `target:` at
+it. The stale registry corpses (`an_he_ke_ting`, `…_2`, duplicate ScreenCast
+entries) are the operator's to clean up in HA when convenient.
