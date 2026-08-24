@@ -59,6 +59,9 @@ def configured(monkeypatch, tmp_path):
     monkeypatch.setenv("HANOVA_MEDIA_HTTP_BASE", "http://robot.example.invalid:7860")
     monkeypatch.setenv("HANOVA_HA_SCRIPT_VIDEO_URL", "tv_show_video_url")
     monkeypatch.setenv("HANOVA_CAST_ENTITY", "media_player.example_tv")
+    # Cast confirmation off by default: these are dispatch-contract tests.
+    # The confirmation behavior has its own tests (2026-08-24).
+    monkeypatch.setenv("HANOVA_CAST_CONFIRM_S", "0")
     monkeypatch.delenv("HANOVA_MEDIA_DIR", raising=False)
     monkeypatch.delenv("HANOVA_NAS_STREAM", raising=False)
     settings.set_media_mount_ready(True)

@@ -140,6 +140,16 @@ def cast_entity() -> str:
     return env_str("HANOVA_CAST_ENTITY")
 
 
+def cast_confirm_timeout_s() -> float:
+    """How long a session-starting cast may wait for the TV to show playback.
+
+    2026-08-24: confirmation needs `HANOVA_CAST_ENTITY` to be set; 0 disables
+    it, restoring dispatch-equals-success. The default covers a YouTube-app
+    cold launch on the TV (~5-10 s observed).
+    """
+    return env_float("HANOVA_CAST_CONFIRM_S", 12.0, minimum=0.0, maximum=60.0)
+
+
 # --- Home Assistant script names (no defaults -- review finding 6) ---------
 def ha_script_youtube() -> str:
     """Name of the HA script that launches a YouTube id on the TV."""

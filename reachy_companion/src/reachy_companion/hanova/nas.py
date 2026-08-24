@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 from reachy_companion.hanova import redact, settings, media_store
 from reachy_companion.hanova.confirm import GATE
-from reachy_companion.hanova.ha_client import ha_run_script
+from reachy_companion.hanova.ha_client import ha_run_script, tv_not_responding, confirm_cast_started
 
 
 logger = logging.getLogger(__name__)
@@ -497,7 +497,7 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
 
 
 # --- staging + casting -----------------------------------------------------
-async def _cast_prepared_url(url: str | None, title: str) -> Dict[str, Any]:
+async def _cast_prepared_url(url: str | None, title: str, *, confirm_cast: bool = True) -> Dict[str, Any]:
     """Hand one LAN URL to the TV script and shape the tool result.
 
     Shared by both routes below so the streamed clip and the staged clip cast
@@ -519,10 +519,22 @@ async def _cast_prepared_url(url: str | None, title: str) -> Dict[str, Any]:
     if not cast["ok"]:
         logger.info("NAS cast failed: %s", redact.error(cast.get("error") or ""))
         return {"ok": False, "url": url, "title": title, "error": "the TV did not accept the video"}
+    if confirm_cast:
+        # 2026-08-24: dispatch is not display (operator saw "success" on a dark
+        # TV). Session-starting casts verify the target; a mid-trip skip keeps
+        # its 0.3 s path — the TV is already playing when a skip makes sense.
+        check = await confirm_cast_started(entity, timeout_s=settings.cast_confirm_timeout_s())
+        if check["confirmed"] is False:
+            return {**tv_not_responding(check["state"]), "url": url, "title": title}
     return {"ok": True, "url": url, "title": title, "error": None}
 
 
-async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None) -> Dict[str, Any]:
+async def stage_and_cast(
+    video: Dict[str, Any],
+    instance_path: str | Path | None,
+    *,
+    confirm_cast: bool = True,
+) -> Dict[str, Any]:
     """Cast a clip, streaming it off the NAS or staging it first (D-018, R6).
 
     Latency work, 2026-08-22: with `HANOVA_NAS_STREAM` on -- the default -- the
@@ -562,7 +574,9 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
         # Nothing is copied and nothing is pruned: the served URL resolves back
         # to the share on every request. `media_url` is the same join over
         # `HANOVA_MEDIA_HTTP_BASE`, so an unset base is still the same failure.
-        return await _cast_prepared_url(media_store.media_url(nas_stream.URL_SEGMENT, filename), title)
+        return await _cast_prepared_url(
+            media_store.media_url(nas_stream.URL_SEGMENT, filename), title, confirm_cast=confirm_cast
+        )
 
     nas_dir = media_store.media_dir("nas", instance_path)
     local = nas_dir / filename
@@ -597,7 +611,7 @@ async def stage_and_cast(video: Dict[str, Any], instance_path: str | Path | None
         _touch_staged(local)
     media_store.prune("nas", instance_path, settings.nas_cast_keep())
 
-    return await _cast_prepared_url(media_store.media_url("nas", filename), title)
+    return await _cast_prepared_url(media_store.media_url("nas", filename), title, confirm_cast=confirm_cast)
 
 
 # --- session (conversation-scoped, review finding 16; token per round 2 #11) -

@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 from reachy_companion.hanova import nas, ytdlp, redact, settings
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
-from reachy_companion.hanova.ha_client import ha_run_script
+from reachy_companion.hanova.ha_client import ha_run_script, tv_not_responding, confirm_cast_started
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
 
@@ -76,4 +76,9 @@ class PlayVideo(Tool):
         # D-018 / finding 16: this supersedes whatever trip was on the TV, so the
         # nas_skip playlist must not silently continue afterwards.
         nas.clear_session()
+        # 2026-08-24, operator report: HA accepts the script run even when the
+        # TV is off, so "casting" here was a lie whenever nothing appeared.
+        check = await confirm_cast_started(entity, timeout_s=settings.cast_confirm_timeout_s())
+        if check["confirmed"] is False:
+            return {**tv_not_responding(check["state"]), "title": found["title"], "video_id": found["id"]}
         return {"ok": True, "status": "casting", "title": found["title"], "video_id": found["id"]}

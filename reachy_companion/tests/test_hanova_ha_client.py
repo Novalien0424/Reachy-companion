@@ -372,3 +372,73 @@ async def test_the_ha_client_logs_no_script_name_url_or_error_body(monkeypatch, 
     assert "SENTINEL_PRIVATE_x7" not in refused["error"]
 
     assert "SENTINEL_PRIVATE_x7" not in caplog.text
+
+
+# --- cast confirmation (2026-08-24: "success" on a dark TV) ------------------
+
+
+def _state_result(state):
+    return {"ok": True, "result": {"state": state}}
+
+
+@pytest.mark.asyncio
+async def test_confirm_cast_is_unverifiable_without_an_entity(monkeypatch):
+    """No entity or a zero timeout means None — callers keep legacy behavior."""
+    async def must_not_call(*a, **k):
+        raise AssertionError("no state read may happen")
+
+    monkeypatch.setattr(ha_client, "ha_get_state", must_not_call)
+    assert await ha_client.confirm_cast_started("", timeout_s=12.0) == {"confirmed": None, "state": None}
+    assert await ha_client.confirm_cast_started("media_player.example_tv", timeout_s=0.0) == {
+        "confirmed": None,
+        "state": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_confirm_cast_returns_on_the_first_active_state(monkeypatch):
+    """An entity already playing confirms immediately, without waiting out the poll."""
+    calls = []
+
+    async def fake_state(entity_id, timeout_s=10.0):
+        calls.append(entity_id)
+        return _state_result("playing")
+
+    monkeypatch.setattr(ha_client, "ha_get_state", fake_state)
+    out = await ha_client.confirm_cast_started("media_player.example_tv", timeout_s=12.0)
+    assert out == {"confirmed": True, "state": "playing"}
+    assert calls == ["media_player.example_tv"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_cast_reports_a_tv_that_stays_off(monkeypatch):
+    """A target stuck in off/unavailable comes back confirmed=False with its state."""
+    monkeypatch.setattr(ha_client, "_CAST_POLL_S", 0.01)
+
+    async def fake_state(entity_id, timeout_s=10.0):
+        return _state_result("off")
+
+    monkeypatch.setattr(ha_client, "ha_get_state", fake_state)
+    out = await ha_client.confirm_cast_started("media_player.example_tv", timeout_s=0.05)
+    assert out == {"confirmed": False, "state": "off"}
+
+
+@pytest.mark.asyncio
+async def test_confirm_cast_survives_unreadable_state_answers(monkeypatch):
+    """HA errors or shapeless payloads never raise; the verdict is honest False."""
+    monkeypatch.setattr(ha_client, "_CAST_POLL_S", 0.01)
+    answers = [{"ok": False, "error": "x"}, {"ok": True, "result": "weird"}]
+
+    async def fake_state(entity_id, timeout_s=10.0):
+        return answers.pop(0) if answers else {"ok": False, "error": "x"}
+
+    monkeypatch.setattr(ha_client, "ha_get_state", fake_state)
+    out = await ha_client.confirm_cast_started("media_player.example_tv", timeout_s=0.05)
+    assert out["confirmed"] is False
+
+
+def test_tv_not_responding_shape():
+    """The result the persona's tv_not_responding convention is written against."""
+    out = ha_client.tv_not_responding("off")
+    assert out["ok"] is False and out["status"] == "tv_not_responding" and out["tv_state"] == "off"
+    assert ha_client.tv_not_responding(None)["tv_state"] == "unknown"

@@ -49,7 +49,9 @@ class NasSkip(Tool):
 
         assert video is not None and token is not None
         logger.info("Tool call: nas_skip -> %s", redact.ident(video.get("path")))
-        result = await nas.stage_and_cast(video, deps.instance_path)
+        # confirm_cast off: a skip only makes sense mid-trip with the TV already
+        # playing, and the 12 s confirmation poll would destroy its 0.3 s path.
+        result = await nas.stage_and_cast(video, deps.instance_path, confirm_cast=False)
         if not result["ok"]:
             return {"ok": False, "error": result["error"]}
         if not nas.commit_next(token):

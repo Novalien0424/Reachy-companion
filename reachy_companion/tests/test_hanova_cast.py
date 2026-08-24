@@ -77,6 +77,9 @@ def configured(monkeypatch):
     monkeypatch.setenv("HANOVA_HA_SCRIPT_YOUTUBE", "tv_show_youtube")
     monkeypatch.setenv("HANOVA_HA_SCRIPT_IMAGE_URL", "tv_show_image_url")
     monkeypatch.setenv("HANOVA_CAST_ENTITY", "media_player.example_tv")
+    # Cast confirmation off by default: these are dispatch-contract tests.
+    # The confirmation behavior has its own tests (2026-08-24).
+    monkeypatch.setenv("HANOVA_CAST_CONFIRM_S", "0")
     monkeypatch.setenv("HANOVA_MEDIA_HTTP_BASE", "http://robot.example.invalid:7860")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     settings.set_media_mount_ready(True)
@@ -589,3 +592,50 @@ def test_both_tools_reach_the_model_session():
         assert {"play_video", "show_on_tv"} <= names
     finally:
         core_tools._TOOLS_SIGNATURE = None
+
+
+# --- cast confirmation at the tool level (2026-08-24) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_play_video_reports_a_dark_tv_instead_of_success(monkeypatch, tmp_path):
+    """The operator's report: HA accepted the script, the TV showed nothing."""
+    monkeypatch.setenv("HANOVA_CAST_CONFIRM_S", "5")
+    monkeypatch.setattr(
+        f"{_PLAY_VIDEO}.ytdlp.search",
+        lambda query, cap: {"ok": True, "id": "vid123", "title": "A Video", "error": None},
+    )
+
+    async def script_ok(name, fields, **kwargs):
+        return {"ok": True, "result": None}
+
+    async def stays_off(entity_id, *, timeout_s):
+        assert entity_id == "media_player.example_tv" and timeout_s == 5.0
+        return {"confirmed": False, "state": "off"}
+
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.ha_run_script", script_ok)
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.confirm_cast_started", stays_off)
+    out = await PlayVideo()(_deps(tmp_path), query="anything")
+    assert out["ok"] is False and out["status"] == "tv_not_responding"
+    assert out["tv_state"] == "off" and out["title"] == "A Video" and out["video_id"] == "vid123"
+
+
+@pytest.mark.asyncio
+async def test_play_video_still_succeeds_when_the_tv_confirms(monkeypatch, tmp_path):
+    """A confirming TV keeps the exact legacy success shape."""
+    monkeypatch.setenv("HANOVA_CAST_CONFIRM_S", "5")
+    monkeypatch.setattr(
+        f"{_PLAY_VIDEO}.ytdlp.search",
+        lambda query, cap: {"ok": True, "id": "vid123", "title": "A Video", "error": None},
+    )
+
+    async def script_ok(name, fields, **kwargs):
+        return {"ok": True, "result": None}
+
+    async def confirms(entity_id, *, timeout_s):
+        return {"confirmed": True, "state": "playing"}
+
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.ha_run_script", script_ok)
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.confirm_cast_started", confirms)
+    out = await PlayVideo()(_deps(tmp_path), query="anything")
+    assert out == {"ok": True, "status": "casting", "title": "A Video", "video_id": "vid123"}

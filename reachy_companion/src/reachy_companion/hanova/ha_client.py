@@ -10,6 +10,8 @@ the model as tool output, exactly like `tools/home_control.py:111-113` does.
 """
 
 from __future__ import annotations
+import time
+import asyncio
 import logging
 from typing import Any, Dict
 from urllib.parse import quote
@@ -20,6 +22,11 @@ from reachy_companion.hanova import redact, settings
 
 
 logger = logging.getLogger(__name__)
+
+# States a media_player reports once a cast has actually landed. "on" covers
+# androidtv-style entities that never report "playing" for an app launch.
+_CAST_ACTIVE_STATES = frozenset({"playing", "buffering", "paused", "on", "casting"})
+_CAST_POLL_S = 2.0
 
 
 def _segment(value: str) -> str:
@@ -104,3 +111,44 @@ async def ha_run_script(script_name: str, data: Dict[str, Any], timeout_s: float
 async def ha_get_state(entity_id: str, timeout_s: float = 15.0) -> Dict[str, Any]:
     """Read one entity's current state object."""
     return await _request("GET", f"/api/states/{_segment(entity_id)}", None, timeout_s)
+
+
+async def confirm_cast_started(entity_id: str, *, timeout_s: float) -> Dict[str, Any]:
+    """Poll the cast target until it shows playback, or report what it showed.
+
+    2026-08-24, operator report: every cast tool answered "casting" the moment
+    Home Assistant accepted the *script call*, so a TV that was off produced a
+    confident success while showing nothing. HA accepts a script run regardless
+    of whether the cast target exists, is on, or ever starts the app — the only
+    honest signal is the media_player entity's state afterwards.
+
+    Returns ``{"confirmed": True | False | None, "state": <last seen or None>}``.
+    ``None`` means unverifiable (no cast entity configured, or verification
+    disabled with a non-positive timeout) — callers keep the legacy behavior.
+    """
+    if not entity_id or timeout_s <= 0:
+        return {"confirmed": None, "state": None}
+    deadline = time.monotonic() + timeout_s
+    last_state: str | None = None
+    while True:
+        result = await ha_get_state(entity_id, timeout_s=10.0)
+        if result.get("ok"):
+            payload = result.get("result")
+            state = payload.get("state") if isinstance(payload, dict) else None
+            last_state = str(state) if state else "unknown"
+            if last_state in _CAST_ACTIVE_STATES:
+                return {"confirmed": True, "state": last_state}
+        if time.monotonic() >= deadline:
+            logger.info("cast unconfirmed: target state stayed %s", redact.ident(last_state or "unreadable"))
+            return {"confirmed": False, "state": last_state}
+        await asyncio.sleep(_CAST_POLL_S)
+
+
+def tv_not_responding(state: str | None) -> Dict[str, Any]:
+    """Return the honest tool result for a dispatched cast the TV never picked up."""
+    return {
+        "ok": False,
+        "status": "tv_not_responding",
+        "tv_state": state or "unknown",
+        "error": "the cast was sent, but the TV shows no playback; it may be off or offline",
+    }
