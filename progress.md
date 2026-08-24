@@ -1,5 +1,31 @@
 # Progress
 
+## Multi-person hardening shipped: T1+T2+T3, twelfth install (2026-08-24, night)
+
+All three tiers from docs/multi-person-investigation.md implemented, reviewed
+(Codex round 1: 8 findings, all accepted — review log in
+docs/plans/party-mode-plan.md; round 2 hung and was killed), tested (suite
+1211/31, ruff+mypy green) and deployed (wheel 1244a91f…, persona 8d3d01e8…):
+
+- **T1 (all modes)**: `input_audio_noise_reduction: far_field` on every
+  session (was: none at all); robot `.env` `REALTIME_VAD_THRESHOLD=0.7`.
+- **T2+T3 (party mode, 38th tool `party_mode`, voice-toggled)**: narrow
+  session.update flips to interrupt_response=false + create_response=false;
+  client-side debounced barge-in (400 ms sustained-while-audible, late deltas
+  from cancelled responses dropped by id) and an address gate (names /
+  control phrases / 20 s follow-up window opened only by accepted turns).
+  Denied turns stay in context, close the turn for the music hooks, and never
+  touch tool-batch state. Solo mode is byte-identical to before.
+
+On-robot smoke test: 「開派對模式」/「回到一對一」 both flipped the mode and
+pushed `session turn_detection updated` into a LIVE session with zero app
+errors. Honest verification boundary: the RPC say path injects text, so the
+audio-path gate and debounce are unit-tested but their first real exercise is
+the operator's next actual multi-person session — watch for "party gate:
+denied ambient turn" lines in the journal. The party-session evidence that
+motivated all this is preserved locally in artifacts/party-session-2026-08-24/
+(gitignored). Robot left ASLEEP on the new build.
+
 ## TV casting actually fixed: HA entity churn (2026-08-24, evening — D-022)
 
 The operator's "cast FAILED, TV shows nothing" was **not** a Chromecast or
