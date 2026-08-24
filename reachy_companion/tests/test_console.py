@@ -852,3 +852,36 @@ def test_rpc_settings_methods() -> None:
     assert isinstance(r2["result"], list)
     assert "spaces" in r3["result"]
     assert "enabled_tools" in r4["result"]
+
+
+@pytest.mark.asyncio
+async def test_a_none_emission_marks_the_playback_queue_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A None emission must itself record the queue-empty fact.
+
+    `emit()` answers an idle queue with None every ~0.1 s, so the 0.5 s
+    timeout branch can never fire during a live session -- without this, a
+    ducked track never resumes (2026-08-24).
+    """
+    from reachy_companion.hanova import audio_drain
+
+    audio_drain.reset()
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=2400, sample_rate=24000)
+    audio_drain.note_chunk(sample_count=2400, sample_rate=24000)  # flag now False
+    audio_drain.close_response(generation)
+
+    handler = MagicMock()
+    emissions: list[Any] = [None]
+
+    async def emit() -> Any:
+        if emissions:
+            return emissions.pop()
+        raise asyncio.CancelledError  # stop the loop after the None
+
+    handler.emit = emit
+    robot = SimpleNamespace(media=SimpleNamespace(push_audio_sample=MagicMock()))
+    stream = LocalStream(handler, robot)
+    with pytest.raises(asyncio.CancelledError):
+        await stream.play_loop()
+
+    assert await audio_drain.wait_drained(generation, timeout_s=0.5) is True

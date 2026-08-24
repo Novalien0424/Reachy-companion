@@ -958,6 +958,15 @@ class LocalStream:
                 )
                 self._emit_level("assistant", audio_frame)
 
+            elif handler_output is None:
+                # 2026-08-24, root cause of the permanently parked music
+                # resume: `wait_for_item` answers an empty output queue with
+                # None after 0.1 s, so the 0.5 s timeout branch above -- the
+                # only place that used to mark the queue empty -- could never
+                # fire once a session was emitting. A None IS the queue-empty
+                # verdict; record it as one.
+                audio_drain.note_queue_empty()
+
             else:
                 logger.debug("Ignoring output type=%s", type(handler_output).__name__)
 
