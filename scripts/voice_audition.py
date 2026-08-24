@@ -92,7 +92,32 @@ def load_env() -> dict[str, str]:
 
 
 def rssh(env: dict[str, str], command: str, stdin_text: str | None = None) -> str:
-    """Run a remote command over ssh, driving the password prompt with expect."""
+    """Run a remote command over ssh: key auth first, expect as the fallback.
+
+    2026-08-24: bulk data through an ssh/scp running under expect's pty stalls
+    indefinitely (the whole "flaky connection" investigation), while plain
+    key-authenticated ssh moves the same bytes in under a second. A key is
+    installed on the robot; expect survives only for the no-key bootstrap.
+    """
+    import os
+    proc = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+         f"{env['REACHY_SSH_USER']}@{env['REACHY_HOST']}", command],
+        capture_output=True, text=True, input=stdin_text,
+        env={**os.environ, **env}, timeout=180,
+    )
+    if proc.returncode == 0:
+        return proc.stdout
+    if "Permission denied" not in (proc.stderr or ""):
+        raise RuntimeError(f"remote command failed ({proc.returncode}):\n{(proc.stderr or '')[-500:]}\n{proc.stdout[-1500:]}")
+    return _rssh_expect(env, command, stdin_text)
+
+
+def _rssh_expect(env: dict[str, str], command: str, stdin_text: str | None = None) -> str:
+    """Password-driven fallback for a robot that has no authorized key yet.
+
+    Never route bulk data through this path — the pty stalls on it (see rssh).
+    """
     # The command travels in an env var: `expect -c SCRIPT ARG` would read ARG
     # as a script *file*, not as $argv.
     expect_script = (

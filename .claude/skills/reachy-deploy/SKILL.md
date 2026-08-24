@@ -39,6 +39,16 @@ operator one-time SSH key setup (append a public key to
 `~/.ssh/authorized_keys` for the `REACHY_SSH_USER` account — optional
 convenience, ask first).
 
+**Mac mini (2026-08-24): its ed25519 key is authorized on the robot** — use
+plain `ssh -o BatchMode=yes` / `scp` and nothing else. **Never wrap a bulk
+transfer (wheel, media) in `expect`**: data through an scp running under
+expect's pty stalls indefinitely, which masqueraded as a flaky robot radio for
+two days (plain scp of the same wheel: 0.66 s). The password-driven expect
+lane remains only for a robot whose `authorized_keys` was wiped (e.g. a system
+reflash); re-add the key first, then deploy. Robot-pull over HTTP
+(`python3 -m http.server` on the dev box + `curl` on the robot, sha-verified)
+is the proven alternative when ssh is unavailable.
+
 ## Deployment procedure (matches plan Task 15 / D-009)
 
 1. **Build on dev machine:** `uv build ./reachy_companion` → wheel in

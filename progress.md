@@ -1,5 +1,36 @@
 # Progress
 
+## Flaky-connection + shutdown investigation closed (2026-08-24, operator-directed)
+
+**The "sudden shutdown" was an orderly shutdown, not a crash.** The operator
+saw the robot fold into its sleep pose — that is the clean-shutdown
+choreography (a power cut goes limp mid-pose). Mechanism found in the SDK:
+`gpio-shutdown-daemon` watches **GPIO23 from the power board** and runs
+`sudo shutdown -h now` when the line drops for 200 ms. So the power board
+itself requested shutdown — battery cutoff (was it on battery? the design has
+no battery-status API, only the low-battery LED), a supply sag under the
+audition's load (ten restarts + speaker at 90), or a switch glitch. My earlier
+"hard power loss" read was wrong: the stale-clock evidence is identical for
+both, and wtmp turned out to hold only boot-time getty records. journald is
+persistent now, and the gpio daemon prints "Shutdown button released,
+shutting down..." — the next occurrence names its cause in the log.
+
+**The "flaky connection" was the Mac-side expect wrapper, not the robot.**
+Verdict matrix, all measured 2026-08-24: scp under expect stalls indefinitely
+(5 reproductions, two days, Wi-Fi power save on and off); the same wheel via
+plain key-authenticated scp: **0.66 s**; raw TCP 2 MB Mac→robot via Apple nc:
+**0.31 s**; robot-pull HTTP: ~1 s. Full-MTU DF pings clean; zero
+wpa_supplicant/NM events during every stall; no firewall (empty nft ruleset).
+Two red herrings ruled out and documented: wlan0 power save was ON (now off,
+persisted via `nmcli … 802-11-wireless.powersave 2` on connection "Noma" —
+kept as a latency improvement, but it was not the cause), and homebrew
+python's raw-socket EHOSTUNREACH is macOS Local Network privacy, per-binary.
+Fixes: the Mac's ed25519 key is authorized on the robot (operator may remove:
+`~/.ssh/authorized_keys` line 1), `scripts/voice_audition.py` rssh is now
+key-first with expect only as a no-key bootstrap fallback, and the deploy
+skill forbids wrapping bulk transfers in expect. Yesterday's radio
+attribution in the deploy notes below is retracted accordingly.
+
 ## Music loudness + resume unparked; ninth/tenth install (2026-08-24)
 
 Operator report: YouTube music much quieter than the voice, "volume small
@@ -30,8 +61,10 @@ live on the robot):
   softly at 1:40 AM. Watch after the music fix; VOICEFX_GAIN_DB is the lever
   if the voice itself ever reads quiet.
 
-Deploy notes: bulk scp to the robot stalled repeatedly (same flaky radio as
-the #1115 incident) — wheels now transfer robot-pull over HTTP from the Mac
+Deploy notes: bulk scp to the robot stalled repeatedly — attributed at the
+time to the flaky radio, **corrected same day by the flaky-connection
+investigation below: it was the Mac-side expect wrapper, not the robot** —
+wheels transferred robot-pull over HTTP from the Mac
 (python3 -m http.server + curl on the robot, sha-verified; ~1 s). Full ritual
 both installs: manifest backup/restore, two-step --no-deps install, persona
 sha + 7 VOICEFX lines verified after restore. A start-app without stop is
