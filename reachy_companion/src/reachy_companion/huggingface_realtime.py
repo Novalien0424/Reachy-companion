@@ -53,6 +53,7 @@ from reachy_companion.tools.core_tools import (
     ToolDependencies,
     get_tool_specs,
 )
+from reachy_companion.audio.backchannel import is_backchannel, is_substantive
 from reachy_companion.hanova.music_hooks import (
     on_response_audio,
     on_session_started,
@@ -109,6 +110,22 @@ def _party_followup_s() -> float:
 def _party_names() -> list[str]:
     raw = os.getenv("REALTIME_PARTY_ADDRESS_NAMES") or _PARTY_NAMES_DEFAULT
     return [name.strip().casefold() for name in raw.split(",") if name.strip()]
+
+
+# --- party gate: face-engagement signal (Task 7) ----------------------------
+def _party_face_gate_enabled() -> bool:
+    """Whether a centered, engaged face alone may pass the address gate."""
+    return env_bool("REALTIME_PARTY_FACE_GATE", True)
+
+
+def _party_face_fresh_s() -> float:
+    """How old a cached face reading may be and still count as "right now"."""
+    return env_float("REALTIME_PARTY_FACE_FRESH_S", 3.0, lo=0.0)
+
+
+def _party_face_center() -> float:
+    """Max |x| (normalized to [-1, 1]) for a face to count as facing the robot."""
+    return env_float("REALTIME_PARTY_FACE_CENTER", 0.4, lo=0.0, hi=1.0)
 
 # Face memory at wake time (D-013). One monotonic deadline bounds the whole
 # check — model readiness, frame capture and identification together — because
@@ -284,6 +301,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         logger.info("party mode %s", "ON" if enabled else "OFF")
         return {"ok": True, "status": "party_on" if enabled else "party_off", "party_mode": enabled}
 
+    def _party_reset_for_new_session(self) -> None:
+        """Clear party-mode turn state at the start of every (re)connect.
+
+        A follow-up window, an open-speech flag, or a barge timer's utterance
+        id from a previous session must never leak into a new one (the
+        research doc's SAS carry-over hazard): someone who was inside the
+        follow-up window when a reconnect happened must not be silently
+        treated as still addressing the robot in the session that replaces it.
+        Called once near the top of `_run_realtime_session`, for both the
+        first session and every reconnect/restart after it.
+        """
+        self._party_last_accept_at = None
+        self._party_speech_open = False
+        self._party_utterance_seq += 1  # any sleeping barge timer is now stale
+
     async def _push_turn_detection_update(self) -> None:
         """Send the mode's turn-detection to the live session. Base: no-op.
 
@@ -368,14 +400,60 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         return (not self._response_done_event.is_set()) or audio_drain.is_audible()
 
     def _party_gate_accepts(self, transcript: str) -> bool:
-        """Decide whether a committed turn was addressed to the robot."""
+        """Decide whether a committed turn was addressed to the robot.
+
+        Gate order is deliberate and binding: control phrases beat everything
+        (「停」 must never be suppressed by any content filter below it); the
+        backchannel filter then beats even a live follow-up window (agreement
+        noise inside a real conversation must not be treated as re-addressing
+        the robot); only after both does a name, the follow-up window, or an
+        engaged/substantive face get to accept.
+        """
         text = transcript.casefold()
-        if any(name in text for name in _party_names()):
-            return True
         if _PARTY_CONTROL_RE.search(text):
             return True
+        if is_backchannel(transcript):
+            return False
+        if any(name in text for name in _party_names()):
+            return True
         last = self._party_last_accept_at
-        return last is not None and (time.monotonic() - last) <= _party_followup_s()
+        if last is not None and (time.monotonic() - last) <= _party_followup_s():
+            return True
+        if _party_face_gate_enabled() and self._face_engaged() and is_substantive(transcript):
+            logger.info("party gate: accepted via engaged face (%d chars)", len(transcript))
+            return True
+        return False
+
+    def _face_engaged(self) -> bool:
+        """Whether a person is currently facing the robot, as an address signal.
+
+        Reads the daemon's already-computed tracking state through
+        `get_tracked_face(wait=False)` -- a non-blocking cached read, never new
+        vision work (reuse-first: this app owns no camera/detection code of its
+        own). The daemon's YuNet detector only fires on near-frontal faces, so
+        `detected` is already a coarse orientation proxy; requiring the face to
+        also be roughly centered (`abs(x) <= REALTIME_PARTY_FACE_CENTER`)
+        tightens that toward "actually facing the robot" rather than glimpsed
+        at the edge of frame. `FaceTarget.ts` is stamped with `time.monotonic()`
+        on the daemon side (confirmed against `reachy_mini/vision/
+        face_tracking.py` and `daemon/backend/abstract.py` in the installed
+        SDK), and the app and daemon run on the same host and hence share one
+        system monotonic clock, so freshness is checked against
+        `time.monotonic()` here too, never the wall clock. Any failure -- a
+        torn-down daemon, a mid-init state, an unexpected shape -- is a quiet
+        False, never a crash of the gate.
+        """
+        try:
+            face = self.deps.reachy_mini.get_tracked_face(wait=False)
+        except Exception:
+            return False
+        if not face.detected or face.ts is None or face.x is None:
+            return False
+        if (time.monotonic() - face.ts) > _party_face_fresh_s():
+            return False
+        # The SDK ships no py.typed marker, so `face.x` type-checks as Any;
+        # bool() gives mypy strict a concrete return type back.
+        return bool(abs(face.x) <= _party_face_center())
 
     def _start_party_barge_timer(self) -> None:
         """Arm the debounce: sustained speech while audible = real interruption."""
@@ -1104,6 +1182,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # itself, so it is correct wherever the config is built.
         if self._startup_greeting_sent:
             self._boot_gate_active = False
+        # Party session-boundary reset (Task 7): stale follow-up windows must
+        # not carry into a new session, first or reconnected alike.
+        self._party_reset_for_new_session()
         tool_specs = get_tool_specs()
         logger.info(
             "Tools to be used in conversation: %s",

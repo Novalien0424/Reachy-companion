@@ -34,6 +34,14 @@ def _party_handler() -> OpenAIRealtimeHandler:
     # lands in `_clear_queue_callback` and that is what the asserts read.
     h._clear_queue = MagicMock()
     h.connection = SimpleNamespace(response=SimpleNamespace(cancel=AsyncMock()))
+    # No face in frame by default: the face-engagement gate path (Task 7) is
+    # opt-in per test via `h.deps.reachy_mini.get_tracked_face`.
+    h.deps = SimpleNamespace(
+        reachy_mini=SimpleNamespace(
+            get_tracked_face=lambda wait: SimpleNamespace(detected=False, x=None, y=None, roll=None, ts=None)
+        ),
+        movement_manager=MagicMock(),
+    )
     return h
 
 
@@ -128,6 +136,81 @@ def test_gate_names_are_configurable(monkeypatch: pytest.MonkeyPatch):
     h = _party_handler()
     assert h._party_gate_accepts("小白你好")
     assert not h._party_gate_accepts("Reachy 你好")
+
+
+def test_gate_denies_backchannel_even_in_followup_window():
+    """Agreement noise inside a live follow-up window must not restart the robot."""
+    h = _party_handler()
+    h._party_last_accept_at = time.monotonic()
+    assert h._party_gate_accepts("嗯嗯") is False
+    assert h._party_gate_accepts("哈哈哈") is False
+
+
+def test_gate_control_phrase_beats_backchannel_filter():
+    """A robot you cannot silence is worse than any false positive.
+
+    The control check must run before any content filter gets a chance to
+    suppress it.
+    """
+    h = _party_handler()
+    assert h._party_gate_accepts("停") is True
+
+
+def test_gate_accepts_substantive_speech_from_engaged_face():
+    """A centered, fresh face plus real content accepts without a name or window."""
+    h = _party_handler()
+    face = SimpleNamespace(detected=True, x=0.1, y=0.0, roll=0.0, ts=time.monotonic())
+    h.deps.reachy_mini.get_tracked_face = lambda wait: face
+    assert h._party_gate_accepts("可以幫我開燈嗎") is True
+    assert h._party_gate_accepts("嗯嗯") is False  # backchannel still denied
+
+
+def test_gate_face_signal_ignores_stale_or_offcenter():
+    """A face reading must be both recent and centered to count as engaged."""
+    h = _party_handler()
+    stale = SimpleNamespace(detected=True, x=0.1, y=0.0, roll=0.0, ts=time.monotonic() - 60)
+    h.deps.reachy_mini.get_tracked_face = lambda wait: stale
+    assert h._party_gate_accepts("可以幫我開燈嗎") is False
+    off = SimpleNamespace(detected=True, x=0.9, y=0.0, roll=0.0, ts=time.monotonic())
+    h.deps.reachy_mini.get_tracked_face = lambda wait: off
+    assert h._party_gate_accepts("可以幫我開燈嗎") is False
+
+
+def test_gate_face_signal_env_off(monkeypatch: pytest.MonkeyPatch):
+    """REALTIME_PARTY_FACE_GATE=0 disables the face-engagement path entirely."""
+    monkeypatch.setenv("REALTIME_PARTY_FACE_GATE", "0")
+    h = _party_handler()
+    face = SimpleNamespace(detected=True, x=0.0, y=0.0, roll=0.0, ts=time.monotonic())
+    h.deps.reachy_mini.get_tracked_face = lambda wait: face
+    assert h._party_gate_accepts("可以幫我開燈嗎") is False
+
+
+def test_face_query_failure_is_a_quiet_no():
+    """A daemon-side error while reading the tracked face must never raise."""
+    h = _party_handler()
+
+    def boom(wait: bool) -> SimpleNamespace:
+        raise RuntimeError("daemon gone")
+
+    h.deps.reachy_mini.get_tracked_face = boom
+    assert h._face_engaged() is False
+
+
+def test_session_start_resets_party_state():
+    """A reconnect must not carry a stale follow-up window into the new session.
+
+    `_run_realtime_session` calls this reset seam at session start; exercised
+    directly here rather than through the full fake-connection harness because
+    it is a plain state reset with no I/O of its own.
+    """
+    h = _party_handler()
+    h._party_last_accept_at = time.monotonic()
+    h._party_speech_open = True
+    seq_before = h._party_utterance_seq
+    h._party_reset_for_new_session()
+    assert h._party_last_accept_at is None
+    assert h._party_speech_open is False
+    assert h._party_utterance_seq == seq_before + 1
 
 
 # --------------------------------------------------------------------------
