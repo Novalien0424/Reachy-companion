@@ -53,11 +53,17 @@ def active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
 
 
+def with_hardening(base: str) -> str:
+    """Append the (env-gated) prompt-hardening block the way get_session_instructions does."""
+    block = prompts_mod.hardening_block()
+    return f"{base}\n\n{block}" if block else base
+
+
 def test_instance_persona_replaces_the_builtin_persona_text(tmp_path: Path) -> None:
     """A body-only persona.md supplies the system prompt used by the realtime session."""
     write_persona(tmp_path, PERSONA_BODY)
 
-    assert prompts_mod.get_session_instructions(instance_path=tmp_path) == PERSONA_BODY
+    assert prompts_mod.get_session_instructions(instance_path=tmp_path) == with_hardening(PERSONA_BODY)
     assert builtin_profile().instructions != PERSONA_BODY
 
 
@@ -132,7 +138,7 @@ def test_missing_persona_file_keeps_the_builtin_profile(tmp_path: Path) -> None:
     active = active_profile()
 
     assert active == builtin
-    assert prompts_mod.get_session_instructions(instance_path=tmp_path) == builtin.instructions
+    assert prompts_mod.get_session_instructions(instance_path=tmp_path) == with_hardening(builtin.instructions)
 
 
 def test_malformed_persona_front_matter_warns_and_falls_back(

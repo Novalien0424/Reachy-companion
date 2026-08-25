@@ -38,6 +38,7 @@ default_tools = [
   "forget",
   "remember_face",
   "who_is_this",
+  "wait_for_user",
   "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
