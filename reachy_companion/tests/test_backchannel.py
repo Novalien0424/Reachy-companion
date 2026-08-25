@@ -14,6 +14,7 @@ from reachy_companion.audio.backchannel import is_backchannel, is_substantive
     "嗯", "嗯嗯", "嗯嗯嗯", "對", "對對", "好", "好的", "是", "是喔", "喔",
     "欸", "哦", "唔", "呵", "哈哈", "哈哈哈", "yeah", "ok", "okay",
     "uh-huh", "mm", "hmm", "嗯 嗯", "哈哈！", "好~",
+    "嗯哼", "好喔", "這樣喔",  # unspaced multi-syllable fillers (ASR rarely spaces these)
 ])
 def test_backchannels_detected(text):
     """Acknowledgement/laughter tokens in EN and ZH must classify as backchannel."""
