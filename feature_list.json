@@ -131,6 +131,70 @@
       "verification": "On-robot: start with the new keys blank and read the seven hanova family lines in the startup log; then ask for a calendar event and confirm the tool answered unavailable with the missing key as the reason",
       "state": "verified",
       "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): all seven family verdict lines read within one startup boundary — 4x enabled (google-workspace, drive, notion, email), nas partial 1/4 (HANOVA_MEDIA_HTTP_BASE), media-cast disabled (HANOVA_HA_SCRIPT_YOUTUBE), music partial 2/4 (HANOVA_SELF_DESTRUCT_YT_ID); every disabled/partial tool answered unavailable with its missing key as the reason (R5); app booted green with six keys blank; 22/22 ported tools registered, secondary count 39; zero tracebacks."
+    },
+    {
+      "id": "VOICE-MINI-MODEL",
+      "behavior": "REALTIME_MODEL defaults to gpt-realtime-2.1-mini ($10/$20 vs $32/$64 per 1M audio tokens for gpt-realtime-2.1); tool-calling selection quality across all 39 tools must hold up on the smaller model, since a large tool array is exactly the axis D-019 flagged as the real risk of tool-array growth",
+      "verification": "On-robot: run a session covering a spread of the 39 tools (home control, memory, face, HANOVA families, party_mode, wait_for_user) and confirm the mini model selects the correct tool as reliably as gpt-realtime-2.1 did before this round, with no malformed/wrong tool_call args in the log. Fallback if selection degrades: set REALTIME_MODEL=gpt-realtime-2.1 in the instance .env, no code change.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot A/B: mini vs full model tool-selection accuracy across a representative tool sample"
+    },
+    {
+      "id": "VOICE-BOOT-GATE",
+      "behavior": "The first session of a handler opens with turn_detection=None; VAD is switched back on only after the greeting's audio has fully drained (audio_drain.is_audible() clears, 100 ms poll / 3 s cap) following the first response.done, or after the REALTIME_BOOT_GATE_TIMEOUT_S=8s backstop — so the robot cannot commit a turn against hearing its own greeting",
+      "verification": "On-robot: wake the robot into a noisy/talking room and read the journal for `boot gate released (greeting played)` (or `(no greeting configured)` / `(timeout)` on the backstop path), with zero committed user turns logged before that line appears.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator wake test in a noisy room; confirm no self-heard turn commits before the boot-gate-release journal line"
+    },
+    {
+      "id": "VOICE-SOLO-BARGE",
+      "behavior": "Solo mode pauses (never flushes) playback on speech onset while audible, confirms a real interruption at REALTIME_BARGE_CONFIRM_MS=250ms of sustained speech, and rolls back — resuming the paused reply with the onset ramp re-armed — on a backchannel/empty/failed transcript or the REALTIME_BARGE_ROLLBACK_TIMEOUT_S=2.0s timeout; a 1.5s watchdog repairs the auto-response the server's one-active-response rule would otherwise reject after a confirmed barge-in. That rejection mechanism itself is UNVERIFIED against the live API.",
+      "verification": "On-robot: (1) a real interruption still lands under roughly 1 s perceived stop latency and the reply is genuinely cancelled; (2) a cough or a 「嗯」 mid-reply produces `barge-in rolled back; resuming reply` or `solo barge rolled back (<reason>)` in the journal and the sentence finishes rather than cutting off. Also watch whether the watchdog's premise holds at all — does the server actually reject a concurrent response after a real barge-in, or auto-respond fine on its own.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: real-interruption timing + cough/嗯 rollback-and-resume behavior; confirm or refute the server one-active-response rejection premise"
+    },
+    {
+      "id": "VOICE-WAIT-FOR-USER",
+      "behavior": "The wait_for_user tool (39th tool) lets the model end a turn silently on silence, background noise, TV audio, or side conversation instead of speaking into it, paired with prompt-hardening rules appended after the (possibly operator-edited) persona body",
+      "verification": "On-robot in solo mode: play TV audio / hold a side conversation near the robot and count `wait_for_user: model chose not to respond` journal lines against how many turns should have been suppressed; confirm no spoken reply follows each one.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: TV/side-talk session, count wait_for_user journal lines against turns that should have been suppressed"
+    },
+    {
+      "id": "VOICE-PARTY-FACE-GATE",
+      "behavior": "Party mode's address gate accepts an unaddressed but substantive turn when reachy_mini.get_tracked_face(wait=False) reports a face that is detected, fresh (REALTIME_PARTY_FACE_FRESH_S, default 3.0s) and centered (REALTIME_PARTY_FACE_CENTER, default 0.4 normalized x); a stale or off-center reading does not pass the gate, and presence/centering is only an orientation proxy (YuNet's near-frontal bias), not true gaze",
+      "verification": "On-robot in party mode: (1) face the robot directly and speak a substantive unaddressed sentence — expect `party gate: accepted via engaged face (<n> chars)`; (2) turn away or step out of frame and repeat — expect `party gate: denied ambient turn (<n> chars)`; (3) let the cached face reading go stale (>3.0 s) and confirm denial too.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot party-mode session with faces: engaged-face accept vs. stale/off-center deny"
+    },
+    {
+      "id": "VOICE-NOISE-REDUCTION-AB",
+      "behavior": "REALTIME_NOISE_REDUCTION selects OpenAI's server-side pre-VAD noise-reduction mode (off / near_field / far_field, default far_field), stacked downstream of the robot's own XVF3800 hardware DSP — an interaction no source has measured",
+      "verification": "On-robot A/B in the same noisy room across REALTIME_NOISE_REDUCTION=off, near_field, far_field: measure false speech_started rate and Mandarin transcription WER for each. They can move in opposite directions per docs/research-realtime-voice-best-practices.md §6 item 6, so both must be checked, not just one.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot A/B: off vs. near_field vs. far_field — false-VAD rate and WER downstream of the XVF3800"
+    },
+    {
+      "id": "VOICE-TRANSCRIBE-MODEL",
+      "behavior": "Input transcription defaults to REALTIME_TRANSCRIPTION_MODEL=gpt-transcribe with keyword biasing (defaults to the party address names) and a style prompt; a one-shot fallback to the legacy gpt-4o-transcribe shape fires if the API rejects the upgraded session config mid-startup",
+      "verification": "On-robot: read the startup log for whether the gpt-transcribe session.update was accepted. If it was rejected, the journal shows `session.update rejected; retrying with legacy transcription shape` and the session proceeds on gpt-4o-transcribe with no keywords/prompt sent. Absence of that warning line across a full session is the positive-accept signal.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: confirm gpt-transcribe is actually accepted by the live API (watch for the legacy-fallback warning line)"
+    },
+    {
+      "id": "VOICE-SEMANTIC-VAD-AB",
+      "behavior": "REALTIME_VAD_TYPE=semantic_vad with REALTIME_VAD_EAGERNESS=low (env already existed pre-round, D-003) is an alternative turn-detection mode to the default server_vad, intended to reduce fragment/backchannel commits at the cost of end-of-turn latency; semantic_vad reportedly misses 「對」/「好」 per the research doc",
+      "verification": "On-robot A/B, same room and script: REALTIME_VAD_TYPE=server_vad (current default) vs. REALTIME_VAD_TYPE=semantic_vad + REALTIME_VAD_EAGERNESS=low. Measure false-commit rate on backchannel utterances (嗯/對/好) against response latency for each.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot A/B: server_vad vs. semantic_vad(eagerness=low) on Mandarin backchannel handling and latency"
     }
   ]
 }

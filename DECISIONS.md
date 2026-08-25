@@ -1069,3 +1069,152 @@ list HA's `media_player` entities, find the live 安和客廳 entry that is not
 point `HANOVA_CAST_ENTITY` (robot `.env`) and the three scripts' `target:` at
 it. The stale registry corpses (`an_he_ke_ting`, `…_2`, duplicate ScreenCast
 entries) are the operator's to clean up in HA when convenient.
+
+## D-023 — Voice robustness round: mini model, prompt hardening, transcription upgrade, onset ramp, boot gate, face-gated party mode, client-owned solo barge-in (2026-08-25)
+
+Eight tasks against `docs/research-realtime-voice-best-practices.md`, on top
+of the 2026-08-24 multi-person hardening (D-022's neighbour, T1-T3 in
+`docs/multi-person-investigation.md`). Reviewed by Codex in three rounds (18
+findings, 18 accepted, 0 rejected — full log in
+`.superpowers/sdd/2026-08-25-voice-robustness-plan/task-9-brief.md`). Suite
+went 1211/31 → 1309/31, ruff + mypy clean. **Every item below is verified only
+against unit tests and a fake connection — none has run on the live API or on
+the robot yet**; the on-robot checks are recorded as `implemented-unverified`
+rows in `feature_list.json` rather than claimed here.
+
+**Model default → `gpt-realtime-2.1-mini`.** `openai_realtime.realtime_model()`
+returns `REALTIME_MODEL` if set, else `gpt-realtime-2.1-mini`. Why: the mini
+model is $10/$20 per 1M audio tokens (text-equiv) against $32/$64 for the full
+`gpt-realtime-2.1` — a 3.2x cost cut on the dominant cost driver of an
+always-listening companion. Risk: mini's tool-calling quality across the 39
+tools is unverified — a smaller model choosing correctly among that many
+functions is exactly the axis D-019 flagged as the real risk of a large tool
+array, not latency. Revert: set `REALTIME_MODEL=gpt-realtime-2.1` in the
+instance `.env`, no code change, no redeploy of anything but the env file.
+
+**Backchannel/substantive-turn classifier (`audio/backchannel.py`).**
+`is_backchannel`/`is_substantive` — a lexicon+length heuristic (Mandarin
+backchannels are monosyllabic and tonally ambiguous; no shipped classifier
+handles them reliably per the research doc) with CJK atom segmentation so runs
+like 嗯哼/好喔 decompose into known atoms instead of slipping through as
+"unknown, therefore real". `REALTIME_MIN_TURN_CHARS` (default 2) sets the
+content-length floor on top of the lexicon. Consumed by Task 7 (party gate)
+and Task 8 (solo barge-in rollback) to distinguish a real interruption from a
+cough or an acknowledgement. Why: this was the mechanism the 2026-08-24 party
+journal evidence directly called for — every committed turn in that log was
+either backchannel or noise. No standalone revert lever (it is a pure
+function); its only callers are gated by `REALTIME_PARTY_FACE_GATE` and
+`REALTIME_SOLO_CLIENT_BARGE` respectively.
+
+**`wait_for_user` no-op tool + prompt hardening.** A 39th tool
+(`tools/wait_for_user.py`, `needs_response=False`) the model calls to end a
+turn silently instead of speaking into silence, background noise, TV audio or
+side conversation — OpenAI's own realtime-prompting guide ships this exact
+pattern because an affirmative action is more reliable than asking a model to
+do nothing. `prompts._HARDENING_BLOCK` adds three rule sections (call
+`wait_for_user` on non-addressed audio; ask once for a repeat on unclear
+audio rather than guessing; pin replies to Taiwan Mandarin unless the user
+explicitly switches) and is appended in `prompts.get_session_instructions`
+*after* the profile body is resolved — including an operator's `persona.md`
+override (D-016) — so a from-scratch persona rewrite cannot silently drop it.
+Why: D-016 made the persona fully operator-editable, which is exactly the
+surface that could regress prompt-hardening rules the operator never sees.
+Revert: `REALTIME_PROMPT_HARDENING=0` drops the appended block entirely; the
+tool itself stays registered either way (harmless if never called).
+
+**Transcription: `gpt-transcribe` + keywords + prompt, with a legacy
+fallback.** `OpenAIRealtimeHandler`'s transcription config now defaults to
+`gpt-transcribe` (OpenAI's retirement notice for `gpt-4o-transcribe` was the
+trigger) and adds `keywords` (defaults to the party-mode address names,
+`REALTIME_PARTY_ADDRESS_NAMES`, so the robot's own name is biased correctly)
+and a free-text `REALTIME_TRANSCRIPTION_PROMPT`. If the session-config carrying
+these is rejected by the API mid-startup, the handler retries once with the
+legacy `gpt-4o-transcribe` shape (no `keywords`/prompt) and logs `retrying
+with legacy transcription shape` — a one-shot fallback, not a permanent
+downgrade of that process. Why: unverified against the live API in this
+round — whether `gpt-transcribe` is actually accepted, or the fallback fires
+every session, is exactly feature_list row (g). Revert:
+`REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe` (or `whisper-1`) restores the
+pre-upgrade shape outright.
+
+**Per-response onset amplitude ramp (`REALTIME_ONSET_RAMP_MS`, default
+120 ms).** Each spoken reply fades in linearly from silence instead of
+starting at full amplitude, giving the robot's hardware AEC time to converge
+on the new reply before the mic can self-trigger on a hard onset. Applied in
+the emit chokepoint ahead of VoiceFX, re-armed on every barge-in rollback
+resume (Task 8) so a resumed reply gets the same convergence protection a
+fresh one does. Why: a documented AEC-convergence failure mode for hardware
+echo cancellers on a sudden onset, and this robot's chain (D-010/D-011/D-017)
+already sits at that chokepoint. Revert: `REALTIME_ONSET_RAMP_MS=0` is
+byte-identical to the pre-Task-5 path.
+
+**Boot gate.** The first session of a handler opens with
+`turn_detection=None` — VAD off — so the greeting cannot commit as a "user"
+turn by the robot hearing its own speaker. Release fires on the first
+`response.done` while gated, then waits for `audio_drain.is_audible()` to
+clear (100 ms poll, 3 s cap) before flipping VAD back on and clearing the
+input buffer; `REALTIME_BOOT_GATE_TIMEOUT_S` (default 8 s) is the hard
+backstop if no `response.done` ever arrives. Journal line: `boot gate
+released (<reason>)`. Why: this was a live-observed failure mode (the app's
+own greeting answering itself) and the exact one D-002's `interrupt_response`
+default could not prevent, since it has no representation of "haven't started
+listening yet". Honest limitation carried into feature_list row (b): the
+effective release ceiling is `response.done` + the 3 s drain cap, which can
+exceed the configured timeout — this is by design (audio actually draining is
+the correctness condition; the timeout is only the backstop for a greeting
+that never produces a response), but it means the timeout env is not a hard
+upper bound on gate duration. Revert: `REALTIME_BOOT_GATE=0` restores the
+pre-gate startup exactly.
+
+**Party gate hardening + face signal.** The party-mode address gate now
+evaluates, in order: control phrases (always pass) → backchannel/substantive
+filter (always deny non-substantive) → name match → open follow-up window →
+face signal. The face signal accepts an unaddressed but substantive turn when
+`reachy_mini.get_tracked_face(wait=False)` (the SDK's non-blocking cached
+read — verified against SDK source, never a new capture) reports a face that
+is detected, fresh (`REALTIME_PARTY_FACE_FRESH_S`, default 3.0 s — and the
+freshness check is confirmed to use `time.monotonic()`, matching
+`FaceTarget.ts`, not wall-clock) and centered
+(`REALTIME_PARTY_FACE_CENTER`, default 0.4 normalized x). Journal lines:
+`party gate: accepted via engaged face (<n> chars)` / `party gate: denied
+ambient turn (<n> chars)`. Session start resets the follow-up window so a
+carried-over window from a previous session cannot leak an accept. Stated
+limitation, not fixed by this task: "detected and centered" is a presence
+proxy for orientation, not a true gaze/attention signal — the SDK's YuNet
+detector only fires on near-frontal faces, which gives a coarse bias toward
+"facing the robot" but does not distinguish a person looking at the robot
+from one merely facing its general direction. Revert:
+`REALTIME_PARTY_FACE_GATE=0` drops the face branch entirely, leaving name and
+follow-up window as the only accept paths (party mode's pre-Task-7 gate).
+
+**Solo pause-then-decide barge-in.** In solo mode (party mode is untouched),
+`interrupt_response` is now `false` by default — the server no longer cancels
+a reply on the first VAD blip. On `input_audio_buffer.speech_started` while a
+reply is audible, the handler pauses playback (holds emitted audio in a FIFO
+buffer, sets the drain-pause flag) rather than flushing it, and starts a
+confirm timer: sustained speech for `REALTIME_BARGE_CONFIRM_MS` (default
+250 ms) confirms a real interruption on its own, without waiting for a
+transcript. A confirmed barge-in cancels the response, flushes the held
+audio, opens a `REALTIME_BARGE_COOLDOWN_MS` (default 800 ms) window against
+re-triggering on the cancelled reply's own tail/echo, and arms a
+1.5 s watchdog (`_BARGE_RESPONSE_WATCHDOG_S`, not env-tunable) to repair the
+auto-response the server's one-active-response rule would otherwise have
+rejected — **this rejection
+mechanism is UNVERIFIED against the live API** and is exactly feature_list row
+(c)'s subject. A pause rolls back — resuming the paused reply with the onset
+ramp re-armed — on backchannel transcript, empty transcript, failed
+transcription, or a `REALTIME_BARGE_ROLLBACK_TIMEOUT_S` (default 2.0 s)
+timeout with no transcript at all. Journal lines: `barge-in rolled back;
+resuming reply` (general) and `solo barge rolled back (<reason>)`
+(backchannel/empty/transcription failed). Why: the D-002 default
+(`interrupt_response=true`) is what let a cough or a 「嗯」 mid-reply silence
+Reachy outright — the same class of failure the party-mode gate exists to
+prevent, now handled for the 1:1 case without party mode's cost (party mode
+adds a transcription round-trip to every turn; solo's fast path is unchanged
+— only the barge-in decision itself adds latency, bounded by the 250 ms
+confirm). One parked, non-blocking finding from review: a held-audio drop
+without the matching `note_cleared()` call when `_clear_queue` is `None` — the
+callback is unreachable in production (the console always installs it) and is
+recorded here rather than fixed as dead-code hardening. Revert:
+`REALTIME_SOLO_CLIENT_BARGE=0` restores the pre-Task-8 path exactly
+(immediate flush, server-side `interrupt_response=true`).

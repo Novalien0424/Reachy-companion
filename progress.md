@@ -1,5 +1,88 @@
 # Progress
 
+## Voice-robustness round shipped: 8 tasks, D-023 (2026-08-25)
+
+Eight tasks against `docs/research-realtime-voice-best-practices.md` (a
+follow-up research pass on top of the 2026-08-24 multi-person hardening
+below), reviewed by Codex in three rounds (18 findings, 18 accepted, 0
+rejected — log in
+`.superpowers/sdd/2026-08-25-voice-robustness-plan/task-9-brief.md`),
+implemented commit-by-commit (`40acd1f..5eb4588`), and recorded in full in
+`DECISIONS.md` **D-023**:
+
+1. **Model default → `gpt-realtime-2.1-mini`** (`REALTIME_MODEL` overrides;
+   cost $10/$20 vs $32/$64 per 1M audio tokens).
+2. **Backchannel/substantive-turn classifier** (`audio/backchannel.py`) —
+   CJK atom segmentation, `REALTIME_MIN_TURN_CHARS`.
+3. **`wait_for_user` no-op tool** (39th tool) + prompt-hardening blocks
+   (silence/TV/side-talk → wait_for_user; unclear-audio rules; Taiwan-Mandarin
+   language pin) appended after the persona body so an operator's
+   `persona.md` (D-016) cannot silently drop them. Kill switch
+   `REALTIME_PROMPT_HARDENING=0`.
+4. **Transcription upgrade** — `gpt-transcribe` (OpenAI's retirement notice
+   was the trigger) + `keywords` (defaults to party address names) + a style
+   prompt, with a one-shot fallback to the legacy `gpt-4o-transcribe` shape
+   if the API rejects the new session config.
+5. **Per-response onset amplitude ramp** (`REALTIME_ONSET_RAMP_MS`, 120 ms
+   default) — an AEC-convergence aid, re-armed on every barge-in rollback
+   resume.
+6. **Boot gate** — first session opens with `turn_detection=None`; released
+   on the first `response.done` plus an audio-drain wait (100 ms poll, 3 s
+   cap), or the `REALTIME_BOOT_GATE_TIMEOUT_S` (8 s) backstop.
+7. **Party gate hardening + face signal** — control → backchannel-deny →
+   name → follow-up → face, gated on the SDK's non-blocking
+   `get_tracked_face(wait=False)` (verified monotonic-clock-based), with the
+   presence-as-orientation-proxy limitation stated rather than hidden.
+8. **Solo pause-then-decide barge-in** — `interrupt_response=false` in solo
+   mode; playback pauses (not flushes) on speech onset, confirms at 250 ms
+   sustained speech, rolls back on backchannel/empty/failed/timeout with a
+   watchdog repairing the (unverified-live) server one-active-response
+   rejection. Full revert: `REALTIME_SOLO_CLIENT_BARGE=0`.
+
+**Gate:** 1211 passed / 31 skipped (pre-round baseline) → **1309 passed / 31
+skipped**, ruff clean, mypy clean (105 source files) — re-run at the end of
+this documentation pass to confirm nothing drifted.
+
+**Honest verification boundary: every item above is verified only against
+unit tests and a fake connection.** None of it has run against the live
+OpenAI Realtime API or on the physical robot yet. The eight on-robot checks
+this unlocks are tracked as `implemented-unverified` rows in
+`feature_list.json` (`VOICE-MINI-MODEL`, `VOICE-BOOT-GATE`,
+`VOICE-SOLO-BARGE`, `VOICE-WAIT-FOR-USER`, `VOICE-PARTY-FACE-GATE`,
+`VOICE-NOISE-REDUCTION-AB`, `VOICE-TRANSCRIBE-MODEL`,
+`VOICE-SEMANTIC-VAD-AB`), each naming the exact journal line or on-robot A/B
+to run. **Operator's next on-robot checklist**, in the order most likely to
+surface a real problem first:
+
+1. Deploy the build and wake the robot into a noisy room — read the journal
+   for `boot gate released (greeting played)` with zero committed turns
+   before it (`VOICE-BOOT-GATE`).
+2. Run a normal multi-turn conversation, deliberately coughing / saying 「嗯」
+   mid-reply at least once — confirm the sentence finishes
+   (`barge-in rolled back; resuming reply`) and that a real interruption
+   still lands in under ~1 s (`VOICE-SOLO-BARGE`).
+3. Leave the TV on or hold a side conversation nearby — count
+   `wait_for_user: model chose not to respond` lines against how many turns
+   should have been suppressed (`VOICE-WAIT-FOR-USER`).
+4. Check the startup log for the `session.update rejected; retrying with
+   legacy transcription shape` warning — its absence is the positive signal
+   that `gpt-transcribe` was actually accepted (`VOICE-TRANSCRIBE-MODEL`).
+5. Enter party mode with at least two people; test an engaged-face accept
+   and a turned-away/stale-face deny (`VOICE-PARTY-FACE-GATE`).
+6. A/B `REALTIME_NOISE_REDUCTION=off/near_field/far_field` in the same noisy
+   room, same script (`VOICE-NOISE-REDUCTION-AB`).
+7. A/B `REALTIME_VAD_TYPE=server_vad` vs. `semantic_vad`+`REALTIME_VAD_EAGERNESS=low`
+   on Mandarin backchannel handling (`VOICE-SEMANTIC-VAD-AB`).
+8. Exercise a spread of the 39 tools on the mini model and watch for
+   misrouted/malformed tool calls; `REALTIME_MODEL=gpt-realtime-2.1` is the
+   one-line revert if selection quality is not holding up
+   (`VOICE-MINI-MODEL`).
+
+See `docs/multi-person-investigation.md`'s 2026-08-25 addendum for how this
+round's eight tasks map onto the ranked recommendations in
+`docs/research-realtime-voice-best-practices.md` §8, and which recommendation
+(item 7, a richer interaction-state gate) is deliberately still open.
+
 ## Multi-person hardening shipped: T1+T2+T3, twelfth install (2026-08-24, night)
 
 All three tiers from docs/multi-person-investigation.md implemented, reviewed
