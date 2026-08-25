@@ -792,6 +792,7 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "OPENAI_API_KEY" in text
     assert "REALTIME_VAD_SILENCE_DURATION_MS" in text
     assert "REALTIME_MODEL" in text
+    assert "REALTIME_MIN_TURN_CHARS" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:
