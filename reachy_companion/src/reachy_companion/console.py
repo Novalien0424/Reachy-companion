@@ -868,6 +868,14 @@ class LocalStream:
         deprecated ``clear_output_buffer()`` only for older SDKs.
         """
         logger.info("User intervention: flushing player queue")
+        # Task 8: tell the handler BEFORE anything is flushed. A solo barge-in
+        # pause holds part of the reply outside the queues this flushes, and an
+        # operator RPC (`conversation.interrupt` / `conversation.say`) landing
+        # mid-pause would otherwise leave that audio for a later rollback to
+        # resurrect on top of whatever the interrupt started.
+        on_external_interrupt = getattr(self.handler, "on_external_interrupt", None)
+        if callable(on_external_interrupt):
+            on_external_interrupt()
         audio = getattr(self._robot.media, "audio", None)
         if audio is not None:
             if hasattr(audio, "clear_player") and callable(audio.clear_player):

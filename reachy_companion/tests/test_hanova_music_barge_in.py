@@ -523,16 +523,64 @@ async def test_speech_started_hook_returns_without_awaiting_the_daemon(monkeypat
 
 @pytest.mark.asyncio
 async def test_user_speech_pauses_the_music(monkeypatch: Any) -> None:
-    """Barge-in must duck the speaker, not talk over it."""
+    """Barge-in must duck the speaker, not talk over it.
+
+    Since Task 8 solo speech-start is a *candidate*, not a confirmed
+    interruption, so the duck comes from `on_user_speech_candidate` — which
+    ducks without `audio_drain.note_cleared()`, the accounting a rollback
+    depends on. `REALTIME_SOLO_CLIENT_BARGE=0` restores the old hook.
+    """
     calls: list[str] = []
 
     monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: calls.append("pause"))
+    monkeypatch.setattr(hf_mod, "on_user_speech_candidate", lambda _deps: calls.append("candidate"))
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
+    monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
+
+    handler = _handler_with((_FakeEvent("input_audio_buffer.speech_started"),))
+    await handler._run_realtime_session()
+    assert calls == ["candidate"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_solo_barge_still_ducks_through_the_old_hook(monkeypatch: Any) -> None:
+    """REALTIME_SOLO_CLIENT_BARGE=0 must reproduce the pre-Task-8 wiring exactly."""
+    monkeypatch.setenv("REALTIME_SOLO_CLIENT_BARGE", "0")
+    calls: list[str] = []
+
+    monkeypatch.setattr(hf_mod, "on_user_speech_started", lambda _deps: calls.append("pause"))
+    monkeypatch.setattr(hf_mod, "on_user_speech_candidate", lambda _deps: calls.append("candidate"))
     monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
 
     handler = _handler_with((_FakeEvent("input_audio_buffer.speech_started"),))
     await handler._run_realtime_session()
     assert calls == ["pause"]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_routes_solo_speech_through_the_barge_hooks(monkeypatch: Any) -> None:
+    """Task 8's decision points have to be reached from the real event loop.
+
+    The pause/rollback machinery is unit-tested in `tests/test_solo_barge.py`;
+    this is the wiring: solo speech start and stop must go through the hooks
+    that own the decision, not the old inline flush.
+    """
+    calls: list[str] = []
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", lambda self: calls.append("started"))
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_stopped", lambda self: calls.append("stopped"))
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
+    monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
+
+    handler = _handler_with(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            _FakeEvent("input_audio_buffer.speech_stopped"),
+        )
+    )
+    await handler._run_realtime_session()
+    assert calls == ["started", "stopped"]
 
 
 @pytest.mark.asyncio

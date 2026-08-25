@@ -40,7 +40,11 @@ from reachy_companion.audio.voicefx import VoiceFX
 from reachy_companion.audio.envparse import env_int, env_float
 from reachy_companion.tools.core_tools import ToolSpec
 from reachy_companion.conversation_handler import HandlerOutput
-from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler, _party_names
+from reachy_companion.huggingface_realtime import (
+    HuggingFaceRealtimeHandler,
+    _party_names,
+    _solo_client_barge,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -129,14 +133,22 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
     committing and transcribing turns, but the server neither interrupts the
     in-flight reply nor auto-answers: the client's debounced barge-in decides
     what counts as an interruption, and the address gate decides which turns
-    deserve a response. Solo mode is byte-identical to the pre-party config.
+    deserve a response.
+
+    Solo mode now does the same for interruption alone (Task 8): with
+    `REALTIME_SOLO_CLIENT_BARGE` on — the default — the server must not cancel
+    the reply on the first syllable, because the handler pauses it and decides
+    for itself. `create_response` stays absent in solo, so the server still
+    auto-answers committed turns. `REALTIME_SOLO_CLIENT_BARGE=0` restores the
+    pre-Task-8 config byte for byte.
     """
+    server_interrupts = not party and not _solo_client_barge()
     vad_type = os.getenv("REALTIME_VAD_TYPE", "server_vad").strip().lower() or "server_vad"
     if vad_type == "semantic_vad":
         semantic = SemanticVad(
             type="semantic_vad",
             eagerness=_eagerness(),
-            interrupt_response=not party,
+            interrupt_response=server_interrupts,
         )
         if party:
             semantic["create_response"] = False
@@ -145,7 +157,7 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
         logger.warning("Ignoring invalid REALTIME_VAD_TYPE=%r; using server_vad.", vad_type)
     server = ServerVad(
         type="server_vad",
-        interrupt_response=not party,
+        interrupt_response=server_interrupts,
         threshold=env_float("REALTIME_VAD_THRESHOLD", 0.5, lo=0.0, hi=1.0),
         prefix_padding_ms=env_int("REALTIME_VAD_PREFIX_PADDING_MS", 300, lo=0),
         silence_duration_ms=env_int("REALTIME_VAD_SILENCE_DURATION_MS", 800, lo=0),

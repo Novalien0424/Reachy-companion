@@ -68,11 +68,18 @@ _INTERRUPTED: Set[int] = set()
 _OUTSTANDING_S = 0.0
 _QUEUE_EMPTY = True
 _DRAINED_AT = 0.0
+# Task 8: a solo barge-in pause is in progress. The playback queue has been
+# starved deliberately -- the handler is holding the reply's audio back while it
+# decides whether the voice it heard was a real interruption -- so every
+# queue-empty mark the idling play loop generates during that window is a lie.
+# While this is set the tracker answers as if the reply were still playing,
+# which it is about to be again if the barge rolls back.
+_PAUSED = False
 
 
 def reset() -> None:
     """Forget every generation and all pending audio. Session start and tests."""
-    global _GENERATION, _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT
+    global _GENERATION, _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT, _PAUSED
     with _LOCK:
         _GENERATION += 1
         _CLOSED.clear()
@@ -80,6 +87,7 @@ def reset() -> None:
         _OUTSTANDING_S = 0.0
         _QUEUE_EMPTY = True
         _DRAINED_AT = 0.0
+        _PAUSED = False
 
 
 def begin_response() -> int:
@@ -131,10 +139,29 @@ def note_chunk(sample_count: int, sample_rate: int) -> None:
 
 
 def note_queue_empty() -> None:
-    """Record that the local playback queue has nothing left in it."""
+    """Record that the local playback queue has nothing left in it.
+
+    A no-op during a barge-in pause (Task 8): the queue is empty because the
+    handler is withholding the reply's audio, not because the speaker has
+    finished with it.
+    """
     global _QUEUE_EMPTY
     with _LOCK:
+        if _PAUSED:
+            return
         _QUEUE_EMPTY = True
+
+
+def note_paused(paused: bool) -> None:
+    """Hold the drain accounting still while a solo barge decision is pending.
+
+    Task 8. `_pause_playback()` sets this, and every exit from the pause --
+    rollback, confirmed barge, external interrupt, session restart, shutdown --
+    clears it, so the flag can never be left stuck on.
+    """
+    global _PAUSED
+    with _LOCK:
+        _PAUSED = bool(paused)
 
 
 def close_response(generation: int) -> None:
@@ -186,8 +213,13 @@ def is_audible() -> bool:
 
     Party mode's debounced barge-in keys on this rather than on response
     lifecycle: queued PCM outlives `response.done` (Codex round 1, finding 6).
+
+    Task 8: a paused reply is still "audible" — it is queued in the handler
+    rather than in the player, and a rollback puts it straight back.
     """
     with _LOCK:
+        if _PAUSED:
+            return True
         if not _QUEUE_EMPTY:
             return True
         if _OUTSTANDING_S > _RESIDUE_SLACK_S:
@@ -197,6 +229,12 @@ def is_audible() -> bool:
 
 def _is_drained(generation: int) -> bool:
     with _LOCK:
+        if _PAUSED:
+            # Task 8 (Codex round 2, finding 3): music_hooks' `_resume_when_drained`
+            # waits here and never consults `is_audible()`, so without this a
+            # barge-in pause would look exactly like a finished reply and put
+            # the track back on top of the paused one.
+            return False
         if not _CLOSED.get(generation, True):
             return False
         if not _QUEUE_EMPTY:

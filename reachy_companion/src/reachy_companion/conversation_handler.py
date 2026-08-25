@@ -4,6 +4,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar, TypeAlias
+from collections import deque
 from collections.abc import Callable
 
 import numpy as np
@@ -35,6 +36,11 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     last_idle_behavior_time: float
     _activity_observer: Callable[[str], None] | None = None
     _transcript_observer: Callable[[str, str, bool], None] | None = None
+    # --- solo pause-then-decide barge-in (Task 8) ---------------------------
+    # Class-level defaults, because backends build partial handlers (`__new__`)
+    # and `emit()` must behave exactly as it did before Task 8 on those.
+    _barge_paused: bool = False
+    _held_audio: "deque[QueueItem] | None" = None
 
     def __init__(self) -> None:
         """Initialize the stream handler and shared idle/activity tracking."""
@@ -74,7 +80,18 @@ class ConversationHandler(AsyncStreamHandler, ABC):
         return True
 
     async def emit(self) -> HandlerOutput:
-        """Emit the next queued output, triggering local idle behavior when due."""
+        """Emit the next queued output, triggering local idle behavior when due.
+
+        Task 8: while a solo barge-in decision is pending, the reply's audio is
+        withheld rather than played — but the output queue is *mixed*, so the
+        pause dequeues as normal and only diverts audio frames into
+        `_held_audio`. Starving the queue instead would stall every transcript
+        and tool notification behind the pause. A rollback replays what was
+        held, in order, ahead of anything queued since.
+        """
+        held = self._held_audio
+        if held and not self._barge_paused:
+            return held.popleft()
         now = time.monotonic()
         idle_duration = now - self.last_activity_time
         idle_behavior_duration = now - self.last_idle_behavior_time
@@ -91,6 +108,11 @@ class ConversationHandler(AsyncStreamHandler, ABC):
                 return None
             self.last_idle_behavior_time = now
         handler_output = await wait_for_item(self.output_queue)
+        if self._barge_paused and isinstance(handler_output, tuple):
+            if held is None:
+                held = self._held_audio = deque()
+            held.append(handler_output)
+            return None
         return handler_output
 
     async def send_idle_signal(self, idle_duration: float) -> None:

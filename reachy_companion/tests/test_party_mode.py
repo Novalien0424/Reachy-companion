@@ -11,6 +11,7 @@ from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_solo_barge import _install_barge_state
 
 from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler, _turn_detection
@@ -30,6 +31,9 @@ def _party_handler() -> OpenAIRealtimeHandler:
     h._cancelled_response_ids = deque(maxlen=8)
     h._response_done_event = asyncio.Event()
     h._response_done_event.set()
+    # Task 8 state: `set_party_mode` has to resolve a solo pause that is live
+    # when the mode flips, so even a party-only handler needs these fields.
+    _install_barge_state(h)
     # On the OpenAI handler `_clear_queue` is a wrapping property; the mock
     # lands in `_clear_queue_callback` and that is what the asserts read.
     h._clear_queue = MagicMock()
@@ -53,6 +57,7 @@ def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_PARTY_FOLLOWUP_S",
         "REALTIME_PARTY_ADDRESS_NAMES",
         "REALTIME_VAD_TYPE",
+        "REALTIME_SOLO_CLIENT_BARGE",
     ):
         monkeypatch.delenv(name, raising=False)
     audio_drain.reset()
@@ -65,11 +70,21 @@ def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
 # --------------------------------------------------------------------------
 
 
-def test_solo_turn_detection_is_unchanged():
-    """Solo mode keeps the pre-party config byte for byte."""
+def test_solo_turn_detection_keeps_the_server_answering(monkeypatch: pytest.MonkeyPatch):
+    """Solo differs from party in exactly one way: the server still auto-answers.
+
+    Since Task 8 the interrupt decision is the client's in both modes (see
+    `tests/test_solo_barge.py`); `REALTIME_SOLO_CLIENT_BARGE=0` is what restores
+    the pre-party config byte for byte.
+    """
     td = _turn_detection(party=False)
-    assert td["interrupt_response"] is True
+    assert td["interrupt_response"] is False
     assert "create_response" not in td
+
+    monkeypatch.setenv("REALTIME_SOLO_CLIENT_BARGE", "0")
+    legacy = _turn_detection(party=False)
+    assert legacy["interrupt_response"] is True
+    assert "create_response" not in legacy
 
 
 def test_party_turn_detection_disables_server_autonomy():

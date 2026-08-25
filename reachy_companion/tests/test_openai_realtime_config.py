@@ -192,7 +192,9 @@ def test_vad_tuning_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRea
     td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
 
     assert td["type"] == "server_vad"
-    assert td["interrupt_response"] is True
+    # False since Task 8: the client owns the interrupt decision in solo mode
+    # too (tests/test_solo_barge.py covers the flag itself).
+    assert td["interrupt_response"] is False
     # All three differ from the built-in defaults (800 / 0.5 / 300).
     assert td["silence_duration_ms"] == 1200
     assert td["threshold"] == pytest.approx(0.72)
@@ -264,7 +266,8 @@ def test_semantic_vad_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIR
 
     assert td["type"] == "semantic_vad"
     assert td["eagerness"] == "low"
-    assert td["interrupt_response"] is True
+    # Task 8: semantic VAD gets the same client-owned interrupt flag as server VAD.
+    assert td["interrupt_response"] is False
 
 
 def test_invalid_eagerness_warns_and_falls_back_to_auto(
@@ -1048,6 +1051,10 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "REALTIME_PARTY_FACE_GATE" in text
     assert "REALTIME_PARTY_FACE_FRESH_S" in text
     assert "REALTIME_PARTY_FACE_CENTER" in text
+    assert "REALTIME_SOLO_CLIENT_BARGE" in text
+    assert "REALTIME_BARGE_CONFIRM_MS" in text
+    assert "REALTIME_BARGE_ROLLBACK_TIMEOUT_S" in text
+    assert "REALTIME_BARGE_COOLDOWN_MS" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:
