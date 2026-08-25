@@ -21,9 +21,9 @@ from reachy_companion.config import (  # noqa: E402
 )
 from reachy_companion.streaming import AdditionalOutputs  # noqa: E402
 from reachy_companion.openai_realtime import (  # noqa: E402
-    MODEL,
     ROBOT_RATE,
     OpenAIRealtimeHandler,
+    realtime_model,
     _StreamingResampler,
 )
 
@@ -78,10 +78,23 @@ def test_sample_rate_is_24k() -> None:
     assert OpenAIRealtimeHandler.SAMPLE_RATE == 24000
 
 
-def test_session_config_targets_gpt_realtime_21(handler: OpenAIRealtimeHandler) -> None:
-    """The session must name gpt-realtime-2.1 and use 24 kHz PCM plus zh transcription."""
+def test_default_model_is_mini(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default realtime model must be gpt-realtime-2.1-mini."""
+    monkeypatch.delenv("REALTIME_MODEL", raising=False)
+    assert realtime_model() == "gpt-realtime-2.1-mini"
+
+
+def test_model_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REALTIME_MODEL environment variable overrides the default model."""
+    monkeypatch.setenv("REALTIME_MODEL", "gpt-realtime-2.1")
+    assert realtime_model() == "gpt-realtime-2.1"
+
+
+def test_session_config_targets_configured_model(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session must use the configured model (default mini) and 24 kHz PCM plus zh transcription."""
+    monkeypatch.delenv("REALTIME_MODEL", raising=False)
     cfg = handler._get_session_config(tool_specs=[])
-    assert cfg["model"] == "gpt-realtime-2.1"
+    assert cfg["model"] == "gpt-realtime-2.1-mini"
     assert cfg["audio"]["output"]["format"]["rate"] == 24000
     assert cfg["audio"]["input"]["format"]["rate"] == 24000
     # Applied by the base from config.REALTIME_TRANSCRIPTION_LANGUAGE
@@ -208,7 +221,7 @@ async def test_build_client_puts_model_in_the_connect_query(handler: OpenAIRealt
     """The model id must reach `realtime.connect` via the base's connect_kwargs seam."""
     client = await handler._build_realtime_client()
     assert client.api_key == os.environ["OPENAI_API_KEY"]
-    assert handler._realtime_connect_query == {"model": MODEL}
+    assert handler._realtime_connect_query == {"model": realtime_model()}
 
 
 @pytest.mark.asyncio
@@ -778,6 +791,7 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert 'REALTIME_TRANSCRIPTION_LANGUAGE="zh"' in text
     assert "OPENAI_API_KEY" in text
     assert "REALTIME_VAD_SILENCE_DURATION_MS" in text
+    assert "REALTIME_MODEL" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:

@@ -43,8 +43,13 @@ from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gpt-realtime-2.1"
+_DEFAULT_MODEL = "gpt-realtime-2.1-mini"
 ROBOT_RATE = 16000
+
+
+def realtime_model() -> str:
+    """Realtime model id; REALTIME_MODEL overrides for on-robot A/B (D-023)."""
+    return (os.getenv("REALTIME_MODEL") or "").strip() or _DEFAULT_MODEL
 
 _RESAMPLER_QUALITY = "HQ"
 _EAGERNESS_VALUES = ("low", "medium", "high", "auto")
@@ -274,7 +279,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         374, 415`), which makes it the session-start seam for the resamplers too.
         """
         self._reset_resamplers()
-        self._realtime_connect_query = {"model": MODEL}
+        self._realtime_connect_query = {"model": realtime_model()}
         api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY must be set to use the OpenAI realtime backend")
@@ -283,7 +288,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
     def _get_session_config(self, tool_specs: list[ToolSpec]) -> RealtimeSessionCreateRequestParam:
         """Return the Hugging Face session config retargeted at gpt-realtime-2.1."""
         cfg = super()._get_session_config(tool_specs)
-        cfg["model"] = MODEL
+        cfg["model"] = realtime_model()
         cfg["audio"]["output"]["format"] = AudioPCM(type="audio/pcm", rate=24000)
         cfg["audio"]["input"]["format"] = AudioPCM(type="audio/pcm", rate=24000)
         # getattr: config emission must also work on partially-built handlers

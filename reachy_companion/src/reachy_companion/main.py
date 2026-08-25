@@ -255,9 +255,9 @@ def run(
         rebuilds handlers through this same factory, so the settings UI cannot
         resurrect the Hugging Face backend behind our back.
         """
-        from reachy_companion.openai_realtime import MODEL, OpenAIRealtimeHandler
+        from reachy_companion.openai_realtime import OpenAIRealtimeHandler, realtime_model
 
-        logger.info("Using OpenAI realtime handler (model %s)", MODEL)
+        logger.info("Using OpenAI realtime handler (model %s)", realtime_model())
         handler = OpenAIRealtimeHandler(
             deps,
             instance_path=instance_path,
