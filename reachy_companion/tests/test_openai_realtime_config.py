@@ -1043,6 +1043,8 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "REALTIME_TRANSCRIPTION_KEYWORDS" in text
     assert "REALTIME_TRANSCRIPTION_PROMPT" in text
     assert "REALTIME_ONSET_RAMP_MS" in text
+    assert "REALTIME_BOOT_GATE" in text
+    assert "REALTIME_BOOT_GATE_TIMEOUT_S" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:

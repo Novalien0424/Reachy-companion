@@ -330,7 +330,18 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         cfg["audio"]["input"]["format"] = AudioPCM(type="audio/pcm", rate=24000)
         # getattr: config emission must also work on partially-built handlers
         # (tests construct via __new__), where party state defaults to solo.
-        cfg["audio"]["input"]["turn_detection"] = _turn_detection(getattr(self, "_party_mode", False))
+        if getattr(self, "_boot_gate_active", False) and not getattr(self, "_startup_greeting_sent", True):
+            # Boot gate (Task 6): this handler's first session comes up deaf.
+            # The greeting is about to play out of a speaker sitting next to the
+            # microphone, so anything committed before it drains is the robot
+            # hearing itself. `null` is the SDK's documented "no turn detection"
+            # (RealtimeAudioInputTurnDetectionParam is Optional).
+            # The condition lives HERE rather than at the call site so it holds
+            # wherever the config is built — including the legacy-transcription
+            # retry and `_push_turn_detection_update` (Codex round 1, finding 1).
+            cfg["audio"]["input"]["turn_detection"] = None
+        else:
+            cfg["audio"]["input"]["turn_detection"] = _turn_detection(getattr(self, "_party_mode", False))
         noise_reduction = _noise_reduction()
         if noise_reduction is not None:
             cfg["audio"]["input"]["noise_reduction"] = noise_reduction
@@ -369,6 +380,15 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         format, transcription or noise-reduction settings.
         """
         if not self.connection:
+            return
+        if getattr(self, "_boot_gate_active", False):
+            # Boot gate (Task 6): the gate owns turn detection until it opens.
+            # By the time it is holding the greeting, `_startup_greeting_sent` is
+            # already True, so the config builder alone would emit normal VAD —
+            # a party-mode flip mid-greeting would defeat the gate. Nothing is
+            # lost by waiting: `_finish_boot_gate` clears the flag before it
+            # calls this, so the release rebuilds and sends the current mode.
+            logger.debug("boot gate is closed; deferring the turn-detection push to its release")
             return
         audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
         try:

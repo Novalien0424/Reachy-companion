@@ -47,7 +47,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
-from reachy_companion.audio.envparse import env_int, env_bool
+from reachy_companion.audio.envparse import env_int, env_bool, env_float
 from reachy_companion.tools.core_tools import (
     ToolSpec,
     ToolDependencies,
@@ -123,6 +123,17 @@ _FACE_WAKE_RETRY_PAUSE_S: Final[float] = 0.15
 _FACE_GREETING_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
 )
+
+# Boot gate (Task 6). The first session of a handler comes up with turn
+# detection OFF: the greeting is about to play out of a speaker sitting next to
+# the microphone, and until it has finished, anything the server commits is the
+# robot hearing itself. `response.done` is NOT that moment -- queued PCM outlives
+# it (see `audio_drain`) -- so the release waits for the audio to stop being
+# audible, bounded by this cap, with the timeout below as the hard backstop.
+_BOOT_GATE_DRAIN_POLL_S: Final[float] = 0.1
+_BOOT_GATE_DRAIN_CAP_S: Final[float] = 3.0
+_BOOT_GATE_TIMEOUT_S_DEFAULT: Final[float] = 8.0
+_BOOT_GATE_DRAIN_TASK: Final[str] = "boot-gate-drain"
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -220,6 +231,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
         self._startup_greeting_sent = False
+        # --- boot gate (Task 6) ---------------------------------------------
+        # Active for this handler's FIRST session only: no turn can be committed
+        # until the greeting has finished coming out of the speaker. Released by
+        # the drain waiter after the greeting's `response.done`, by the backstop
+        # timer, or immediately when no greeting is configured.
+        self._boot_gate_active: bool = env_bool("REALTIME_BOOT_GATE", True)
+        self._boot_gate_task: asyncio.Task[None] | None = None
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
         # D-018 / round 3 finding 2: the token of the realtime session this
@@ -274,6 +292,60 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         finding 2).
         """
         return None
+
+    # --- boot gate (Task 6) -------------------------------------------------
+    async def _finish_boot_gate(self, reason: str, conn: Any | None = None) -> None:
+        """Re-enable turn detection once the greeting can no longer be heard.
+
+        Idempotent, and safe to call from anything that might be stale:
+
+        * *conn* is the connection the caller was born with. If it is no longer
+          the live one, a backstop from a session that already ended is trying
+          to open the gate of the session that replaced it — refuse (Codex
+          round 1, finding 4).
+        * the pending gate task is cancelled unless it is the caller itself; a
+          task that cancels itself never reaches its own release (finding 3).
+
+        The input buffer is dropped *before* turn detection comes back, so the
+        greeting's own audio (and its echo) cannot be committed as the first
+        user turn the instant VAD wakes up (round 3, finding 1).
+        """
+        if not self._boot_gate_active:
+            return
+        if conn is not None and self.connection is not conn:
+            return
+        self._boot_gate_active = False
+        task, self._boot_gate_task = self._boot_gate_task, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        if self.connection is not None:
+            try:
+                await self.connection.input_audio_buffer.clear()
+            except Exception as exc:  # noqa: BLE001 - clearing is best-effort
+                logger.debug("boot gate: input buffer clear failed: %s", exc)
+        # Base `_push_turn_detection_update` is a no-op: the Hugging Face
+        # backend has no session.update semantics we control, so the gate is
+        # effective only on the OpenAI backend — which is the locked backend
+        # (D-002).
+        await self._push_turn_detection_update()
+        logger.info("boot gate released (%s)", reason)
+
+    async def _boot_gate_release_after_drain(self, conn: Any) -> None:
+        """Wait for the greeting to stop being audible, then open the gate.
+
+        `response.done` means the model finished emitting, not that the speaker
+        finished playing: enabling VAD at that instant hands the greeting's own
+        tail audio straight to the turn detector, which is the exact failure the
+        gate exists to prevent (Codex round 2, finding 1). The cap keeps a stuck
+        drain estimate from holding the microphone shut.
+        """
+        deadline = time.monotonic() + _BOOT_GATE_DRAIN_CAP_S
+        try:
+            while audio_drain.is_audible() and time.monotonic() < deadline:
+                await asyncio.sleep(_BOOT_GATE_DRAIN_POLL_S)
+        except asyncio.CancelledError:
+            return
+        await self._finish_boot_gate("greeting played", conn)
 
     def _notify_response_started(self) -> None:
         """Notify that a new spoken response has started. Base: no-op.
@@ -754,6 +826,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         greeting_prompt = get_session_greeting_prompt().strip()
         if not greeting_prompt:
             self._startup_greeting_sent = True
+            # No greeting means no response will ever complete, so nothing would
+            # ever release the boot gate but its backstop timer. Open it now
+            # rather than starting the conversation deaf for eight seconds.
+            await self._finish_boot_gate("no greeting configured")
             return
 
         greeting_prompt = await self._recognized_face_prefix() + greeting_prompt
@@ -1022,6 +1098,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""
+        # Boot gate (Task 6): a reconnect drops into an ongoing conversation
+        # whose greeting played long ago, so there is nothing left to gate.
+        # Belt and braces — the session-config builder tests the same condition
+        # itself, so it is correct wherever the config is built.
+        if self._startup_greeting_sent:
+            self._boot_gate_active = False
         tool_specs = get_tool_specs()
         logger.info(
             "Tools to be used in conversation: %s",
@@ -1080,6 +1162,26 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 # Start the response sender worker
                 response_sender_task = asyncio.create_task(self._response_sender_loop(), name="response-sender")
                 await self._send_startup_greeting_prompt()
+
+                # Boot-gate backstop: a greeting that never produces a
+                # `response.done` (rejected, dropped, or a model that stays
+                # silent) must not leave the microphone gated forever. Bound to
+                # THIS connection, and cancelled in the `finally` below, so it
+                # cannot open the gate of a session it does not belong to.
+                if self._boot_gate_active:
+
+                    async def _boot_gate_timeout(bound_conn: Any) -> None:
+                        try:
+                            await asyncio.sleep(
+                                env_float("REALTIME_BOOT_GATE_TIMEOUT_S", _BOOT_GATE_TIMEOUT_S_DEFAULT, lo=0.0)
+                            )
+                        except asyncio.CancelledError:
+                            return
+                        await self._finish_boot_gate("timeout", bound_conn)
+
+                    self._boot_gate_task = asyncio.create_task(
+                        _boot_gate_timeout(conn), name="boot-gate-timeout"
+                    )
 
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
@@ -1164,6 +1266,25 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._active_response_id = None
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
+                        # Boot gate (Task 6): while gated, VAD is off, so the
+                        # only response that can exist is the greeting or an
+                        # operator `say` — either is a correct release point.
+                        # The release itself waits for the audio to drain
+                        # (Codex round 3, finding 1): opening the gate here
+                        # would hand the greeting's own tail to the turn
+                        # detector. Swap the timeout backstop for the drain
+                        # waiter; a drain waiter already running is left alone
+                        # so repeated `response.done`s cannot keep restarting
+                        # its cap.
+                        if (
+                            self._boot_gate_active
+                            and self._boot_gate_task is not None
+                            and self._boot_gate_task.get_name() != _BOOT_GATE_DRAIN_TASK
+                        ):
+                            self._boot_gate_task.cancel()
+                            self._boot_gate_task = asyncio.create_task(
+                                self._boot_gate_release_after_drain(conn), name=_BOOT_GATE_DRAIN_TASK
+                            )
                         logger.debug("Response done")
 
                     if event.type == "conversation.item.input_audio_transcription.delta":
@@ -1361,6 +1482,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 AdditionalOutputs({"role": "assistant", "content": f"[error] {msg}"})
                             )
             finally:
+                # Boot gate (Task 6): whatever is still pending — the backstop
+                # timer or the drain waiter — belongs to THIS session and must
+                # not outlive it. A survivor would either release a gate that
+                # the next session legitimately re-armed, or send a session
+                # update down a connection that is already gone.
+                if self._boot_gate_task is not None:
+                    boot_gate_task, self._boot_gate_task = self._boot_gate_task, None
+                    boot_gate_task.cancel()
+                    try:
+                        await boot_gate_task
+                    except asyncio.CancelledError:
+                        pass
+
                 # Stop the response sender worker.
                 if response_sender_task is not None:
                     response_sender_task.cancel()
