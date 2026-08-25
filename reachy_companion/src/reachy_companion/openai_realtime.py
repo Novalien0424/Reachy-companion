@@ -13,9 +13,10 @@ peak error at the chunk seams (about -40 dB SNR) plus length drift. See
 """
 
 import os
+import copy
 import base64
 import logging
-from typing import Tuple, cast
+from typing import Any, Tuple, cast
 from collections.abc import Callable
 
 import soxr
@@ -33,12 +34,13 @@ from openai.types.realtime.realtime_audio_input_turn_detection_param import (
     RealtimeAudioInputTurnDetectionParam,
 )
 
+from reachy_companion.config import config
 from reachy_companion.streaming import audio_to_int16
 from reachy_companion.audio.voicefx import VoiceFX
 from reachy_companion.audio.envparse import env_int, env_float
 from reachy_companion.tools.core_tools import ToolSpec
 from reachy_companion.conversation_handler import HandlerOutput
-from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
+from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler, _party_names
 
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,40 @@ def _noise_reduction() -> NoiseReduction | None:
         raw = "far_field"
     reduction_type: NoiseReductionType = "near_field" if raw == "near_field" else "far_field"
     return NoiseReduction(type=reduction_type)
+
+
+_LEGACY_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
+_DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
+_DEFAULT_TRANSCRIBE_PROMPT = "與家用陪伴機器人的台灣中文對話"
+
+
+def _transcription() -> dict[str, Any]:
+    """Input-transcription config; new-model extras only on new models.
+
+    `gpt-transcribe` (Task 4) supports keyword biasing and a free-text prompt
+    that the legacy `gpt-4o-transcribe`/`whisper-1` shape does not, so those
+    two extras are only attached when the configured model is not one of the
+    legacy ones — sending them to a legacy model would be a malformed request.
+    Keywords default to the party mode address names (`_party_names()`,
+    `huggingface_realtime.py:109`) so a name the robot listens for is also a
+    name the transcriber is biased toward hearing correctly.
+    """
+    model = (os.getenv("REALTIME_TRANSCRIPTION_MODEL") or "").strip() or _DEFAULT_TRANSCRIBE_MODEL
+    params: dict[str, Any] = {"model": model, "language": config.REALTIME_TRANSCRIPTION_LANGUAGE}
+    if model in _LEGACY_TRANSCRIBE_MODELS:
+        return params
+    raw_keywords = os.getenv("REALTIME_TRANSCRIPTION_KEYWORDS")
+    if raw_keywords is None:
+        keywords = list(_party_names())
+    else:
+        keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+    if keywords:
+        params["keywords"] = keywords
+    prompt = os.getenv("REALTIME_TRANSCRIPTION_PROMPT")
+    prompt = _DEFAULT_TRANSCRIBE_PROMPT if prompt is None else prompt.strip()
+    if prompt:
+        params["prompt"] = prompt
+    return params
 
 
 def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam:
@@ -297,7 +333,30 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         noise_reduction = _noise_reduction()
         if noise_reduction is not None:
             cfg["audio"]["input"]["noise_reduction"] = noise_reduction
+        # The SDK's AudioTranscriptionParam TypedDict predates `keywords`
+        # (openai.types.realtime.audio_transcription_param), same precedent as
+        # `_native_rate_audio_pcm()` above (huggingface_realtime.py:397).
+        cfg["audio"]["input"]["transcription"] = cast(Any, _transcription())
         return cfg
+
+    def _session_config_fallback(
+        self, cfg: RealtimeSessionCreateRequestParam
+    ) -> RealtimeSessionCreateRequestParam | None:
+        """Retry once with legacy `gpt-4o-transcribe` if the upgraded shape is rejected.
+
+        Returns None (no retry) when the config already used a legacy model —
+        a legacy config being rejected is a real failure, not something this
+        fallback can fix.
+        """
+        current_model = cfg["audio"]["input"]["transcription"].get("model")
+        if current_model in _LEGACY_TRANSCRIBE_MODELS:
+            return None
+        fallback = copy.deepcopy(cfg)
+        fallback["audio"]["input"]["transcription"] = cast(
+            Any,
+            {"model": "gpt-4o-transcribe", "language": config.REALTIME_TRANSCRIPTION_LANGUAGE},
+        )
+        return fallback
 
     async def _push_turn_detection_update(self) -> None:
         """Apply the current mode's turn detection to the live session.

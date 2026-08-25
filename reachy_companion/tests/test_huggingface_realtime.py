@@ -31,15 +31,29 @@ def _make_fake_realtime_client(
     events: tuple[_FakeEvent, ...] = (),
     captured_update: dict[str, Any] | None = None,
     captured_connect: dict[str, Any] | None = None,
+    update_calls: list[dict[str, Any]] | None = None,
+    reject_updates: int = 0,
 ) -> Any:
     """Build a fake AsyncOpenAI-shaped client whose realtime session yields `events`.
 
     When given, `captured_update`/`captured_connect` record the kwargs passed to
-    `session.update(...)` / `realtime.connect(...)`.
+    `session.update(...)` / `realtime.connect(...)`. `update_calls`, unlike
+    `captured_update`, appends every call rather than overwriting, so a test can
+    inspect a retried update as well as the original. `reject_updates` makes
+    that many leading `update()` calls raise before any of them succeed — used
+    to exercise the legacy-transcription fallback retry.
     """
 
     class FakeSession:
+        def __init__(self) -> None:
+            self._remaining_rejections = reject_updates
+
         async def update(self, **kwargs: Any) -> None:
+            if update_calls is not None:
+                update_calls.append(kwargs)
+            if self._remaining_rejections > 0:
+                self._remaining_rejections -= 1
+                raise RuntimeError("session.update rejected (fake)")
             if captured_update is not None:
                 captured_update.update(kwargs)
 

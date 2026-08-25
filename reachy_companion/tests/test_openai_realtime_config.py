@@ -5,6 +5,7 @@ import base64
 import asyncio
 import logging
 from time import monotonic
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -13,6 +14,8 @@ from scipy.signal import resample_poly
 
 
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-not-real")
+
+from test_huggingface_realtime import _make_fake_realtime_client  # noqa: E402
 
 from reachy_companion.config import (  # noqa: E402
     get_default_voice,
@@ -26,6 +29,7 @@ from reachy_companion.openai_realtime import (  # noqa: E402
     realtime_model,
     _StreamingResampler,
 )
+from reachy_companion.tools.core_tools import ToolDependencies  # noqa: E402
 
 
 MODEL_RATE = 24000
@@ -106,6 +110,72 @@ def test_session_config_keeps_selected_voice(handler: OpenAIRealtimeHandler) -> 
     """The inherited voice selection must survive the override."""
     cfg = handler._get_session_config(tool_specs=[])
     assert cfg["audio"]["output"]["voice"] == "cedar"
+
+
+# --------------------------------------------------------------------------
+# Transcription upgrade (Task 4): gpt-transcribe, keyword biasing, fallback
+# --------------------------------------------------------------------------
+
+
+def test_transcription_upgraded_with_keywords(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OpenAI subclass upgrades to gpt-transcribe with party-name keyword biasing."""
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_KEYWORDS", raising=False)
+    cfg = handler._get_session_config(tool_specs=[])
+    tr = cfg["audio"]["input"]["transcription"]
+    assert tr["model"] == "gpt-transcribe"
+    assert tr["language"] == "zh"
+    assert "瑞奇" in tr["keywords"] and "reachy" in tr["keywords"]
+    assert tr["prompt"]
+
+
+def test_transcription_keywords_env_override(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
+    """REALTIME_TRANSCRIPTION_KEYWORDS overrides the default party-name keyword list."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_KEYWORDS", "客廳, 冷氣")
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert tr["keywords"] == ["客廳", "冷氣"]
+
+
+def test_transcription_model_env_override_drops_new_fields_for_legacy(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forcing a legacy model must not send keywords/prompt the legacy shape does not expect."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert tr["model"] == "gpt-4o-transcribe"
+    assert "keywords" not in tr and "prompt" not in tr  # legacy model, legacy shape
+
+
+@pytest.mark.asyncio
+async def test_session_update_falls_back_to_legacy_transcription_on_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected upgraded session.update must retry once with the legacy transcription shape."""
+    import reachy_companion.huggingface_realtime as hf_mod
+
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
+
+    update_calls: list[dict[str, Any]] = []
+    handler = OpenAIRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.get_current_voice = MagicMock(return_value="cedar")  # type: ignore[method-assign]
+    handler.client = _make_fake_realtime_client(update_calls=update_calls, reject_updates=1)
+
+    await handler._run_realtime_session()
+
+    assert len(update_calls) == 2
+    first_transcription = update_calls[0]["session"]["audio"]["input"]["transcription"]
+    assert first_transcription["model"] == "gpt-transcribe"
+
+    second_transcription = update_calls[1]["session"]["audio"]["input"]["transcription"]
+    assert second_transcription["model"] == "gpt-4o-transcribe"
+    assert second_transcription["language"] == "zh"
+    assert "keywords" not in second_transcription and "prompt" not in second_transcription
+
+    # Startup proceeded past the retried update rather than aborting.
+    assert handler.connection is not None
 
 
 # --------------------------------------------------------------------------
@@ -794,6 +864,9 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "REALTIME_MODEL" in text
     assert "REALTIME_MIN_TURN_CHARS" in text
     assert "REALTIME_PROMPT_HARDENING" in text
+    assert "REALTIME_TRANSCRIPTION_MODEL" in text
+    assert "REALTIME_TRANSCRIPTION_KEYWORDS" in text
+    assert "REALTIME_TRANSCRIPTION_PROMPT" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:

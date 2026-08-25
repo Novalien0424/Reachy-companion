@@ -410,6 +410,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             tool_choice="auto",
         )
 
+    def _session_config_fallback(
+        self, cfg: RealtimeSessionCreateRequestParam
+    ) -> RealtimeSessionCreateRequestParam | None:
+        """Return a downgraded config for a subclass to retry a rejected update.
+
+        The base HF-compatible backend has nothing to downgrade to, so a
+        rejected `session.update` here is a real failure (Task 4).
+        """
+        return None
+
     def _is_connected(self) -> bool:
         """Return whether the realtime connection is open."""
         return self.connection is not None
@@ -1011,7 +1021,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         async with self.client.realtime.connect(**connect_kwargs) as conn:
             try:
                 session_config = self._get_session_config(tool_specs)
-                await conn.session.update(session=session_config)
+                try:
+                    await conn.session.update(session=session_config)
+                except Exception:
+                    fallback = self._session_config_fallback(session_config)
+                    if fallback is None:
+                        logger.exception("Realtime session.update failed; aborting startup")
+                        raise
+                    logger.warning("session.update rejected; retrying with legacy transcription shape")
+                    await conn.session.update(session=fallback)
                 logger.info(
                     "Realtime session initialized with profile=%r voice=%r",
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
