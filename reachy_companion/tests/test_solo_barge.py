@@ -138,6 +138,115 @@ async def test_sustained_speech_confirms_and_cancels(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_confirm_keeps_speech_open_through_the_real_console_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Our own flush must not wipe the speech state the watchdog reads.
+
+    Fix round, finding 1. In production `_clear_queue` is the real
+    `console.clear_audio_queue`, which calls `on_external_interrupt()` — a full
+    barge-state reset. At confirm time the user is by definition still
+    mid-sentence, so letting that reset clear `_barge_speech_open` made the
+    watchdog's "never answer over a talking user" guard inert: any interrupting
+    utterance longer than the watchdog delay got a response fired at it
+    mid-sentence. Wired through the REAL console here, not a bare mock.
+    """
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "30")
+    monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
+    h = _solo_handler()
+    audio = SimpleNamespace(clear_player=MagicMock())
+    robot = SimpleNamespace(media=SimpleNamespace(audio=audio))
+    LocalStream(h, robot)  # installs the real clear_audio_queue as _clear_queue
+    _make_audible()
+    h._response_done_event.clear()
+
+    h._solo_speech_started()
+    await asyncio.sleep(0.1)
+
+    audio.clear_player.assert_called_once()  # the real console flush really ran
+    assert h._barge_speech_open is True, "the user is still mid-sentence"
+
+    # ... and the watchdog therefore stands down instead of talking over them.
+    h._response_done_event.set()
+    h._barge_response_seen = False
+    await h._barge_response_watchdog(h._party_utterance_seq)
+    assert h._pending_responses.qsize() == 0
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_the_watchdog_answers_once_the_user_has_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard is about a *talking* user, not a permanent veto."""
+    monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
+    h = _solo_handler()
+    h._barge_speech_open = True
+    h._barge_response_seen = False
+
+    await h._barge_response_watchdog(h._party_utterance_seq)
+    assert h._pending_responses.qsize() == 0
+
+    h._solo_speech_stopped()
+    await h._barge_response_watchdog(h._party_utterance_seq)
+    assert h._pending_responses.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pause_is_resolved_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transcript landing inside the cancel round trip must not commit twice.
+
+    Fix round, finding 2: `_barge_pending` used to survive the whole
+    `response.cancel` await, and the event loop runs inside that await.
+    """
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    gate = asyncio.Event()
+
+    async def slow_cancel() -> None:
+        await gate.wait()
+
+    h.connection.response.cancel = AsyncMock(side_effect=slow_cancel)
+
+    h._solo_speech_started()
+    await asyncio.sleep(0.05)  # the confirm timer is now parked in response.cancel
+
+    assert h._barge_pending is False, "the pause is claimed on entry, not after the round trip"
+    # This is exactly the guard the event loop uses before calling _resolve_solo_barge.
+    gate.set()
+    await asyncio.sleep(0.02)
+    assert h.connection.response.cancel.await_count == 1
+    assert h._clear_queue_callback.call_count == 1
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_commit_cannot_strand_the_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A commit cancelled mid-round-trip must still end the pause it claimed."""
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    gate = asyncio.Event()
+
+    async def slow_cancel() -> None:
+        await gate.wait()
+
+    h.connection.response.cancel = AsyncMock(side_effect=slow_cancel)
+    h._solo_speech_started()
+    h._held_audio.append((ROBOT_RATE, np.zeros((1, 160), dtype=np.int16)))
+    await asyncio.sleep(0.05)
+
+    h._barge_confirm_task.cancel()
+    await asyncio.sleep(0.02)
+
+    assert h._barge_paused is False and h._barge_pending is False
+    assert not h._held_audio
+    audio_drain.note_cleared()
+    assert audio_drain.is_audible() is False, "audio_drain must not be left paused"
+
+
+@pytest.mark.asyncio
 async def test_short_blip_rolls_back_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """A blip with no transcript at all resumes the reply and re-arms the onset ramp."""
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "300")
@@ -431,6 +540,10 @@ async def test_party_mode_flip_mid_pause_resumes_the_reply() -> None:
     h.set_party_mode(True)
 
     assert h._barge_paused is False and h._barge_pending is False
+    # Fix round, finding 3: the solo speech flag is maintained by a branch that
+    # stops running the moment the mode flips, so the flip must clear it — a
+    # stale True would keep the watchdog standing down for the whole session.
+    assert h._barge_speech_open is False
     audio_drain.note_cleared()
     assert audio_drain.is_audible() is False
 

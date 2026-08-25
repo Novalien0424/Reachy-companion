@@ -354,6 +354,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return {"ok": True, "status": "unchanged", "party_mode": enabled}
         self._party_mode = enabled
         self._party_speech_open = False
+        # Task 8, fix round finding 3: the solo speech flag is maintained by the
+        # solo branch of `speech_stopped`, which stops running the moment the
+        # mode flips. Left stale True by a flip mid-utterance, it would keep the
+        # response watchdog standing down for the rest of the session.
+        self._barge_speech_open = False
         self._party_utterance_seq += 1  # any sleeping barge timer is now stale
         if self._barge_paused or self._barge_pending:
             # Task 8: the solo pause has just lost every timer that could
@@ -795,11 +800,36 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             task.cancel()
 
     async def _commit_solo_barge(self) -> None:
-        """Turn a pending pause into a real interruption: cancel, flush, cool down."""
-        await self._cancel_active_response()
-        if self._clear_queue:
-            self._clear_queue()
-        self._resume_playback(rolled_back=False)
+        """Turn a pending pause into a real interruption: cancel, flush, cool down.
+
+        Resolving the pause is claimed **before** the `response.cancel` round
+        trip (fix round, finding 2). That await is a window the event loop runs
+        in: a `transcription.completed` landing inside it would otherwise find
+        `_barge_pending` still True and commit the same pause a second time
+        (double cancel, double flush, cooldown re-armed), and a `speech_stopped`
+        would cancel this very task mid-await.
+
+        The flush and the resume live in a `finally` for the other half of that
+        finding: a `CancelledError` raised inside the round trip must not leave
+        `_barge_paused` True with the reply already cancelled — that pause would
+        have no timer left to resolve it, and `audio_drain` would stay paused
+        for the rest of the session.
+        """
+        self._barge_pending = False
+        # In production `_clear_queue` IS `console.clear_audio_queue`, which
+        # calls `on_external_interrupt()` — a full barge-state reset, including
+        # `_barge_speech_open` (fix round, finding 1). Here the flush is our
+        # own and the user is by definition still mid-sentence (that is what
+        # confirmed the barge), so the flag has to survive it: it is what stops
+        # the response watchdog from injecting a reply over a talking user.
+        speech_open = self._barge_speech_open
+        try:
+            await self._cancel_active_response()
+        finally:
+            if self._clear_queue:
+                self._clear_queue()
+            self._resume_playback(rolled_back=False)
+            self._barge_speech_open = speech_open
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
         self._barge_response_seen = False
         self._arm_barge_watchdog()
