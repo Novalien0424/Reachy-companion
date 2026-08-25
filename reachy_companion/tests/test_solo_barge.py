@@ -26,7 +26,11 @@ from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.console import LocalStream
 from reachy_companion.streaming import AdditionalOutputs
 from reachy_companion.openai_realtime import ROBOT_RATE, OpenAIRealtimeHandler, _turn_detection
-from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
+from reachy_companion.huggingface_realtime import (
+    HuggingFaceRealtimeHandler,
+    _barge_confirm_s,
+    _vad_silence_duration_ms,
+)
 
 
 def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
@@ -39,7 +43,13 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_watchdog_task = None
     handler._barge_cooldown_until = 0.0
     handler._barge_response_seen = False
+    handler._barge_paused_response_id = None
     handler._held_audio = deque()
+    # `_pause_playback` captures the live response id; a handler built for the
+    # emit path alone has no party state, so fill it in without clobbering a
+    # caller that set a real id.
+    if not hasattr(handler, "_active_response_id"):
+        handler._active_response_id = None
 
 
 def _solo_handler() -> OpenAIRealtimeHandler:
@@ -84,6 +94,7 @@ def _clean_barge_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_MIN_TURN_CHARS",
         "REALTIME_ONSET_RAMP_MS",
         "REALTIME_VAD_TYPE",
+        "REALTIME_VAD_SILENCE_DURATION_MS",
     ):
         monkeypatch.delenv(name, raising=False)
     audio_drain.reset()
@@ -135,6 +146,216 @@ async def test_sustained_speech_confirms_and_cancels(monkeypatch: pytest.MonkeyP
     assert h._barge_cooldown_until > time.monotonic()
     assert h._barge_watchdog_task is not None
     h.on_external_interrupt()
+
+
+def test_the_confirm_window_outlasts_the_vad_silence_window() -> None:
+    """The rollback path is only reachable if the confirm timer can lose the race.
+
+    Review round, finding 1. `_confirm_solo_barge` confirms iff
+    `_barge_speech_open` is still True when it fires, and only `speech_stopped`
+    clears that flag — which the server cannot send until its whole silence
+    window has elapsed. A confirm window at or below the silence window
+    therefore confirms EVERY onset, including a 100 ms cough, and the rollback,
+    backchannel and timeout branches become dead code. This pins the
+    relationship, not the number.
+    """
+    assert _barge_confirm_s() * 1000 > _vad_silence_duration_ms()
+
+
+def test_a_confirm_window_inside_the_vad_window_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A confirm window that can never lose the race is a silent misconfiguration."""
+    monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "250")
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert "REALTIME_BARGE_CONFIRM_MS" in caplog.text
+    assert "rollback can never run" in caplog.text
+
+    # Warned once, not once per session update.
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert caplog.text == ""
+
+
+def test_the_shipped_defaults_do_not_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The defaults we ship must be a configuration we would not warn about."""
+    monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_a_cough_rolls_back_with_the_real_event_ordering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live API's ordering — not a test-only one — must reach the rollback.
+
+    Review round, finding 1: `speech_stopped` trails the cough by the VAD's
+    silence window, so the confirm timer has to still be pending when it lands.
+    Timings are scaled down but keep the real relationship
+    (confirm > silence > blip).
+    """
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "140")
+    monkeypatch.setenv("REALTIME_VAD_SILENCE_DURATION_MS", "80")
+    monkeypatch.setenv("REALTIME_BARGE_ROLLBACK_TIMEOUT_S", "0.05")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+
+    h._solo_speech_started()  # the cough
+    await asyncio.sleep(0.09)  # the blip plus the VAD silence window
+    assert h._barge_paused is True, "the confirm timer must not have fired yet"
+    h._solo_speech_stopped()  # what the server sends after its silence window
+    await asyncio.sleep(0.09)
+
+    assert h._barge_paused is False and h._barge_pending is False
+    h.connection.response.cancel.assert_not_awaited()
+    h._clear_queue_callback.assert_not_called()
+    assert audio_drain.is_audible() is True
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_control_phrase_confirms_even_though_it_is_too_short() -> None:
+    """A robot you cannot silence is worse than any false positive.
+
+    Review round, finding 2: 「停」 is one character, so `is_substantive` rejects
+    it against REALTIME_MIN_TURN_CHARS=2 and the reply would have rolled back
+    and kept talking over the person telling it to stop.
+    """
+    for phrase in ("停", "閉嘴", "stop"):
+        h = _solo_handler()
+        _make_audible()
+        h._response_done_event.clear()
+        h._solo_speech_started()
+        h._solo_speech_stopped()
+
+        handled = await h._resolve_solo_barge(phrase)
+
+        assert handled is False, f"{phrase} must be a real interruption"
+        h.connection.response.cancel.assert_awaited_once()
+        h._clear_queue_callback.assert_called_once()
+        assert h._barge_paused is False
+        h.on_external_interrupt()
+        audio_drain.reset()
+
+
+@pytest.mark.asyncio
+async def test_a_commit_never_cancels_the_answer_to_the_barged_turn() -> None:
+    """The reply the barge asked for must survive the barge that asked for it.
+
+    Review round, finding 4: when the paused reply ends and the server accepts
+    the barged turn's own auto-response before the transcript reaches us,
+    `_active_response_id` is the ANSWER, not the reply being interrupted.
+    """
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert h._barge_paused_response_id == "resp_123"
+    h._solo_speech_stopped()
+    # The paused reply finished and the answer to this very turn started.
+    h._active_response_id = "resp_answer"
+
+    handled = await h._resolve_solo_barge("幫我開燈")
+
+    assert handled is False
+    h.connection.response.cancel.assert_not_awaited(), "that id is the answer, not the old reply"
+    assert "resp_answer" not in h._cancelled_response_ids
+    h._clear_queue_callback.assert_called_once()  # the old reply's audio still goes
+    assert not h._held_audio
+    assert h._barge_watchdog_task is None, "the answer exists; asking again would duplicate it"
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_silent_floor_still_arms_the_watchdog() -> None:
+    """No response live at all is not "the answer already started".
+
+    The paused reply may have ended without the turn's auto-response being
+    accepted — the exact silence the watchdog exists to repair — so the `None`
+    case must not be mistaken for finding 4's keep-the-answer case.
+    """
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._solo_speech_stopped()
+    h._active_response_id = None  # the paused reply ended; nothing replaced it
+
+    await h._resolve_solo_barge("幫我開燈")
+
+    h.connection.response.cancel.assert_not_awaited()  # nothing to cancel
+    assert h._barge_watchdog_task is not None
+    assert h._barge_response_seen is False
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_commit_still_cancels_the_reply_it_paused() -> None:
+    """The other side of finding 4: the paused reply is still cancelled normally."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._solo_speech_stopped()
+
+    await h._resolve_solo_barge("幫我開燈")
+
+    h.connection.response.cancel.assert_awaited_once()
+    assert "resp_123" in h._cancelled_response_ids
+    h.on_external_interrupt()
+
+
+def test_off_loop_cancellation_is_marshalled_onto_the_task_loop() -> None:
+    """`Task.cancel()` off-loop is delayed and raises under debug mode.
+
+    Review round, finding 3: `on_external_interrupt()` is reached from the
+    JSON-RPC thread, so the cancel has to go through the task's own loop.
+    """
+    marshalled: list[object] = []
+
+    class _FakeLoop:
+        def call_soon_threadsafe(self, callback: object) -> None:
+            marshalled.append(callback)
+
+    class _FakeTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def done(self) -> bool:
+            return False
+
+        def get_loop(self) -> _FakeLoop:
+            return _FakeLoop()
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    task = _FakeTask()
+    hf_mod._cancel_barge_task(task, None)  # no running loop here: this test is sync
+
+    assert task.cancelled is False, "an off-loop cancel must not be called directly"
+    assert marshalled == [task.cancel]
+
+
+@pytest.mark.asyncio
+async def test_on_loop_cancellation_stays_direct() -> None:
+    """On the handler's own loop the cancel is immediate, as before."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    confirm = h._barge_confirm_task
+
+    h.on_external_interrupt()
+    await asyncio.sleep(0)
+
+    assert confirm.cancelled() or confirm.done()
 
 
 @pytest.mark.asyncio

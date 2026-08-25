@@ -34,9 +34,12 @@ implemented commit-by-commit (`40acd1f..5eb4588`), and recorded in full in
    `get_tracked_face(wait=False)` (verified monotonic-clock-based), with the
    presence-as-orientation-proxy limitation stated rather than hidden.
 8. **Solo pause-then-decide barge-in** — `interrupt_response=false` in solo
-   mode; playback pauses (not flushes) on speech onset, confirms at 250 ms
-   sustained speech, rolls back on backchannel/empty/failed/timeout with a
-   watchdog repairing the (unverified-live) server one-active-response
+   mode; playback pauses (not flushes) on speech onset, and the transcript
+   normally decides: substantive or a control phrase (停/stop/…) confirms,
+   backchannel/empty/failed rolls back. The 1400 ms sustained-speech confirm
+   is the backstop and **must outlast `REALTIME_VAD_SILENCE_DURATION_MS`**
+   (800 ms) or the rollback is unreachable — the app warns if it does not.
+   A watchdog repairs the (unverified-live) server one-active-response
    rejection. Full revert: `REALTIME_SOLO_CLIENT_BARGE=0`.
 
 **Gate:** 1211 passed / 31 skipped (pre-round baseline) → **1309 passed / 31

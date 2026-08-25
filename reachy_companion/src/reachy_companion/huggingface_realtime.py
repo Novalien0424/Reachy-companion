@@ -124,9 +124,36 @@ def _solo_client_barge() -> bool:
     return env_bool("REALTIME_SOLO_CLIENT_BARGE", True)
 
 
+def _vad_silence_duration_ms() -> int:
+    """Silence the server VAD needs before it will report `speech_stopped`.
+
+    Lives here rather than in `openai_realtime._turn_detection` (its other
+    reader) because the barge-in confirm window is only meaningful relative to
+    it, and this module may not import that one — the dependency runs the other
+    way.
+    """
+    return env_int("REALTIME_VAD_SILENCE_DURATION_MS", _VAD_SILENCE_DURATION_DEFAULT_MS, lo=0)
+
+
 def _barge_confirm_s() -> float:
-    """How long speech must persist during a pause before it is a real barge."""
-    return env_int("REALTIME_BARGE_CONFIRM_MS", 250, lo=0) / 1000.0
+    """How long speech must persist during a pause before it is a real barge.
+
+    **The default must outlast `REALTIME_VAD_SILENCE_DURATION_MS`** (review
+    round, finding 1). `_confirm_solo_barge` confirms iff `_barge_speech_open`
+    is still True when it fires, and that flag can only go False on
+    `speech_stopped` — which the server does not send until its whole silence
+    window has elapsed. At the old 250 ms default the flag was therefore still
+    True for *every* onset, including a 100 ms cough: every pause confirmed,
+    and the rollback, backchannel and timer branches were unreachable. 1400 ms
+    clears the 800 ms window plus the cough itself with margin.
+
+    This costs no perceived stop latency: the pause already silences the robot
+    at the onset, so the user hears an immediate stop either way. What the
+    window buys is the chance for the transcript to arrive and decide the pause
+    properly — which is now the common path, with this timer as the backstop
+    for speech so long it needs no transcript.
+    """
+    return env_int("REALTIME_BARGE_CONFIRM_MS", 1400, lo=0) / 1000.0
 
 
 def _barge_rollback_timeout_s() -> float:
@@ -145,6 +172,36 @@ def _barge_cooldown_s() -> float:
 # reply at all. This is how long we wait before repairing that (Codex round 1,
 # finding 11).
 _BARGE_RESPONSE_WATCHDOG_S: Final[float] = 1.5
+# The server-VAD default this project ships; shared with `_turn_detection`.
+_VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 800
+_BARGE_CONFIRM_WARNED = False
+
+
+def warn_if_barge_confirm_races_vad() -> None:
+    """Warn once when the confirm window cannot outlast the VAD silence window.
+
+    Review round, finding 1. With `REALTIME_BARGE_CONFIRM_MS` at or below
+    `REALTIME_VAD_SILENCE_DURATION_MS`, `speech_stopped` cannot possibly have
+    arrived by the time the confirm timer fires, so every pause confirms and
+    the rollback path is dead. That is a silent misconfiguration — the robot
+    simply goes back to being interruptible by a cough — so it gets a warning
+    at session-config build rather than nothing at all.
+    """
+    global _BARGE_CONFIRM_WARNED
+    if _BARGE_CONFIRM_WARNED or not _solo_client_barge():
+        return
+    confirm_ms = _barge_confirm_s() * 1000.0
+    silence_ms = _vad_silence_duration_ms()
+    if confirm_ms > silence_ms:
+        return
+    _BARGE_CONFIRM_WARNED = True
+    logger.warning(
+        "REALTIME_BARGE_CONFIRM_MS=%.0f is not longer than REALTIME_VAD_SILENCE_DURATION_MS=%d: "
+        "speech_stopped cannot arrive before the confirm timer fires, so every barge-in will be "
+        "confirmed and the false-interruption rollback can never run.",
+        confirm_ms,
+        silence_ms,
+    )
 
 
 def _current_task() -> "asyncio.Task[Any] | None":
@@ -157,6 +214,36 @@ def _current_task() -> "asyncio.Task[Any] | None":
         return asyncio.current_task()
     except RuntimeError:
         return None
+
+
+def _cancel_barge_task(task: "asyncio.Task[None] | None", current: "asyncio.Task[Any] | None") -> None:
+    """Cancel *task*, marshalling onto its own loop when called from another thread.
+
+    Review round, finding 3. `on_external_interrupt()` is reached from the
+    JSON-RPC thread (`console.clear_audio_queue`), and `Task.cancel()` is not
+    thread-safe: off-loop it is delayed until the loop next touches the task,
+    and raises under asyncio debug mode. `console.close()` already marshals its
+    task cancellations the same way. A task carries its own loop, so no extra
+    bookkeeping is needed to find the right one.
+
+    Never cancels the caller's own task: a task that cancels itself never
+    reaches its own release.
+    """
+    if task is None or task is current or task.done():
+        return
+    loop = task.get_loop()
+    try:
+        on_loop = asyncio.get_running_loop() is loop
+    except RuntimeError:
+        on_loop = False
+    if on_loop:
+        task.cancel()
+        return
+    try:
+        loop.call_soon_threadsafe(task.cancel)
+    except RuntimeError:
+        # The loop is gone; the task can never run again anyway.
+        logger.debug("barge timer's loop is closed; skipping the cancel")
 
 
 # --- party gate: face-engagement signal (Task 7) ----------------------------
@@ -337,6 +424,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_watchdog_task: asyncio.Task[None] | None = None
         self._barge_cooldown_until: float = 0.0
         self._barge_response_seen: bool = False
+        # The response that was speaking when the pause began, so a commit can
+        # tell it apart from the answer to the turn being barged in with.
+        self._barge_paused_response_id: str | None = None
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
 
@@ -563,8 +653,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         and the drain tracker is told the robot has *not* gone quiet, so neither
         the music hooks nor `_robot_audible()` mistake a pause for a finished
         reply.
+
+        The id of the reply being paused is captured here so a later commit can
+        tell it apart from a *different* response that started in the meantime
+        (review round, finding 4).
         """
         self._barge_paused = True
+        self._barge_paused_response_id = self._active_response_id
         audio_drain.note_paused(True)
 
     def _resume_playback(self, *, rolled_back: bool) -> None:
@@ -583,12 +678,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_paused = False
         self._barge_pending = False
         audio_drain.note_paused(False)
+        self._barge_paused_response_id = None
         current = _current_task()
         confirm, self._barge_confirm_task = self._barge_confirm_task, None
         rollback, self._barge_rollback_task = self._barge_rollback_task, None
         for task in (confirm, rollback):
-            if task is not None and task is not current and not task.done():
-                task.cancel()
+            _cancel_barge_task(task, current)
         if not rolled_back:
             self._held_audio.clear()
             return
@@ -620,11 +715,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_rollback_task = None
         self._barge_watchdog_task = None
         for task in tasks:
-            if task is not None and task is not current and not task.done():
-                task.cancel()
+            _cancel_barge_task(task, current)
         self._barge_paused = False
         self._barge_pending = False
         self._barge_speech_open = False
+        self._barge_paused_response_id = None
         self._held_audio.clear()
         audio_drain.note_paused(False)
 
@@ -704,33 +799,26 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not self._barge_pending:
             return
         confirm, self._barge_confirm_task = self._barge_confirm_task, None
-        if confirm is not None and confirm is not _current_task() and not confirm.done():
-            confirm.cancel()
+        _cancel_barge_task(confirm, _current_task())
         self._arm_barge_rollback()
 
     def _arm_barge_confirm(self) -> None:
         """Start the confirm timer for the pause that just began."""
-        task = self._barge_confirm_task
-        if task is not None and task is not _current_task() and not task.done():
-            task.cancel()
+        _cancel_barge_task(self._barge_confirm_task, _current_task())
         self._barge_confirm_task = asyncio.create_task(
             self._confirm_solo_barge(self._party_utterance_seq), name="solo-barge-confirm"
         )
 
     def _arm_barge_rollback(self) -> None:
         """Start the rollback timer that resumes a pause nothing else resolved."""
-        task = self._barge_rollback_task
-        if task is not None and task is not _current_task() and not task.done():
-            task.cancel()
+        _cancel_barge_task(self._barge_rollback_task, _current_task())
         self._barge_rollback_task = asyncio.create_task(
             self._rollback_timer(self._party_utterance_seq), name="solo-barge-rollback"
         )
 
     def _arm_barge_watchdog(self) -> None:
         """Start the watchdog that repairs a barged turn the server did not answer."""
-        task = self._barge_watchdog_task
-        if task is not None and task is not _current_task() and not task.done():
-            task.cancel()
+        _cancel_barge_task(self._barge_watchdog_task, _current_task())
         self._barge_watchdog_task = asyncio.create_task(
             self._barge_response_watchdog(self._party_utterance_seq), name="solo-barge-watchdog"
         )
@@ -796,8 +884,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Record that a response did start, and stand the watchdog down."""
         self._barge_response_seen = True
         task, self._barge_watchdog_task = self._barge_watchdog_task, None
-        if task is not None and not task.done():
-            task.cancel()
+        _cancel_barge_task(task, _current_task())
 
     async def _commit_solo_barge(self) -> None:
         """Turn a pending pause into a real interruption: cancel, flush, cool down.
@@ -823,16 +910,31 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # confirmed the barge), so the flag has to survive it: it is what stops
         # the response watchdog from injecting a reply over a talking user.
         speech_open = self._barge_speech_open
+        # Review round, finding 4: a *different* response is live, so the reply
+        # we paused already ended and the server accepted the barged turn's own
+        # auto-response — this id belongs to the ANSWER to what the user just
+        # said. Cancelling it would kill the reply the barge was asking for, and
+        # arming the watchdog for it would ask for that same answer twice. The
+        # held audio still goes: it belongs to the reply that is over. A live id
+        # of None is NOT this case — nothing is speaking, so the turn may well
+        # have lost its auto-response and still needs the watchdog.
+        answer_already_live = (
+            self._active_response_id is not None and self._active_response_id != self._barge_paused_response_id
+        )
         try:
-            await self._cancel_active_response()
+            if answer_already_live:
+                logger.info("solo barge: the paused reply already ended; keeping the new response")
+            else:
+                await self._cancel_active_response()
         finally:
             if self._clear_queue:
                 self._clear_queue()
             self._resume_playback(rolled_back=False)
             self._barge_speech_open = speech_open
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
-        self._barge_response_seen = False
-        self._arm_barge_watchdog()
+        if not answer_already_live:
+            self._barge_response_seen = False
+            self._arm_barge_watchdog()
 
     async def _resolve_solo_barge(self, transcript: str) -> bool:
         """Decide a pending pause from the transcript the turn committed.
@@ -847,10 +949,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         belongs to the reply that is still speaking.
         """
         task, self._barge_rollback_task = self._barge_rollback_task, None
-        if task is not None and task is not _current_task() and not task.done():
-            task.cancel()
-        if is_substantive(transcript):
-            logger.info("solo barge-in confirmed by transcript (%d chars)", len(transcript))
+        _cancel_barge_task(task, _current_task())
+        # A robot you cannot silence is worse than any false positive (the party
+        # gate's first rule, review round finding 2). 「停」 is one character, so
+        # `is_substantive` rejects it against REALTIME_MIN_TURN_CHARS=2 and the
+        # reply would roll back and keep talking over the person telling it to
+        # stop. Control phrases are checked first, exactly as in `_party_gate_accepts`.
+        control = bool(_PARTY_CONTROL_RE.search(transcript.casefold()))
+        if control or is_substantive(transcript):
+            logger.info(
+                "solo barge-in confirmed by transcript (%s, %d chars)",
+                "control phrase" if control else "substantive",
+                len(transcript),
+            )
             await self._commit_solo_barge()
             return False
         self._resume_playback(rolled_back=True)

@@ -44,6 +44,8 @@ from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
     _party_names,
     _solo_client_barge,
+    _vad_silence_duration_ms,
+    warn_if_barge_confirm_races_vad,
 )
 
 
@@ -143,6 +145,7 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
     pre-Task-8 config byte for byte.
     """
     server_interrupts = not party and not _solo_client_barge()
+    warn_if_barge_confirm_races_vad()
     vad_type = os.getenv("REALTIME_VAD_TYPE", "server_vad").strip().lower() or "server_vad"
     if vad_type == "semantic_vad":
         semantic = SemanticVad(
@@ -160,7 +163,8 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
         interrupt_response=server_interrupts,
         threshold=env_float("REALTIME_VAD_THRESHOLD", 0.5, lo=0.0, hi=1.0),
         prefix_padding_ms=env_int("REALTIME_VAD_PREFIX_PADDING_MS", 300, lo=0),
-        silence_duration_ms=env_int("REALTIME_VAD_SILENCE_DURATION_MS", 800, lo=0),
+        # Shared with the barge-in confirm window, which must outlast it.
+        silence_duration_ms=_vad_silence_duration_ms(),
     )
     if party:
         server["create_response"] = False

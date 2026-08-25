@@ -1193,8 +1193,20 @@ a reply on the first VAD blip. On `input_audio_buffer.speech_started` while a
 reply is audible, the handler pauses playback (holds emitted audio in a FIFO
 buffer, sets the drain-pause flag) rather than flushing it, and starts a
 confirm timer: sustained speech for `REALTIME_BARGE_CONFIRM_MS` (default
-250 ms) confirms a real interruption on its own, without waiting for a
-transcript. A confirmed barge-in cancels the response, flushes the held
+1400 ms) confirms a real interruption on its own, without waiting for a
+transcript. **That default must outlast `REALTIME_VAD_SILENCE_DURATION_MS`
+(800 ms)** — the confirm test is "is the speech still open?", and the server
+cannot report `speech_stopped` until its whole silence window has elapsed, so
+a shorter confirm window (the 250 ms this shipped with until the branch review)
+confirms *every* onset, cough included, and makes the rollback branches dead
+code. `warn_if_barge_confirm_races_vad()` logs a warning at session-config
+build if the two are ever configured that way. The window costs no perceived
+stop latency — the pause already silences the robot at the onset — and the
+common resolution path is the transcript, not this timer. A confirmed barge-in
+cancels the response (unless `_active_response_id` has moved on from the id
+captured when the pause began: that response is the *answer* to the turn being
+barged in with, not the reply being interrupted, so it is kept and only the
+held audio is dropped), flushes the held
 audio, opens a `REALTIME_BARGE_COOLDOWN_MS` (default 800 ms) window against
 re-triggering on the cancelled reply's own tail/echo, and arms a
 1.5 s watchdog (`_BARGE_RESPONSE_WATCHDOG_S`, not env-tunable) to repair the
@@ -1204,15 +1216,20 @@ mechanism is UNVERIFIED against the live API** and is exactly feature_list row
 (c)'s subject. A pause rolls back — resuming the paused reply with the onset
 ramp re-armed — on backchannel transcript, empty transcript, failed
 transcription, or a `REALTIME_BARGE_ROLLBACK_TIMEOUT_S` (default 2.0 s)
-timeout with no transcript at all. Journal lines: `barge-in rolled back;
+timeout with no transcript at all. A control phrase (`_PARTY_CONTROL_RE`:
+停/閉嘴/stop/…) is checked *before* the substantive test and always confirms —
+「停」 is one character and would otherwise fail `REALTIME_MIN_TURN_CHARS=2` and
+roll back, leaving the robot talking over the person telling it to stop, the
+same rule the party gate puts first. Journal lines: `barge-in rolled back;
 resuming reply` (general) and `solo barge rolled back (<reason>)`
 (backchannel/empty/transcription failed). Why: the D-002 default
 (`interrupt_response=true`) is what let a cough or a 「嗯」 mid-reply silence
 Reachy outright — the same class of failure the party-mode gate exists to
 prevent, now handled for the 1:1 case without party mode's cost (party mode
 adds a transcription round-trip to every turn; solo's fast path is unchanged
-— only the barge-in decision itself adds latency, bounded by the 250 ms
-confirm). One parked, non-blocking finding from review: a held-audio drop
+— and the barge-in decision adds no *perceived* latency at all, since the
+pause silences the robot at the onset and only the cancel/resume verdict waits
+on the transcript or the confirm timer). One parked, non-blocking finding from review: a held-audio drop
 without the matching `note_cleared()` call when `_clear_queue` is `None` — the
 callback is unreachable in production (the console always installs it) and is
 recorded here rather than fixed as dead-code hardening. Revert:
