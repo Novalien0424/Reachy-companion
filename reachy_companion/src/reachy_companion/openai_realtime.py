@@ -217,6 +217,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
     _output_resampler: _StreamingResampler | None = None
     _voicefx: VoiceFX | None = None
     _clear_queue_callback: Callable[[], None] | None = None
+    _onset_ramp_remaining: int = 0
 
     @property
     def _clear_queue(self) -> Callable[[], None] | None:
@@ -421,6 +422,48 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             logger.debug("Dropping audio frame: connection not ready (%s)", e)
             return
 
+    def _onset_ramp_samples(self) -> int:
+        """Return how many samples the onset ramp covers, at `REALTIME_ONSET_RAMP_MS`.
+
+        Measured in `self.SAMPLE_RATE` (the model's 24 kHz), independent of
+        which emit() branch ends up applying it, so both branches ramp the
+        same sample count. `0` disables the ramp entirely.
+        """
+        return int(self.SAMPLE_RATE * env_int("REALTIME_ONSET_RAMP_MS", 120, lo=0) / 1000)
+
+    def _notify_response_started(self) -> None:
+        """Arm the onset ramp for the reply that is about to start (Task 5).
+
+        Ramping the first `REALTIME_ONSET_RAMP_MS` from silence gives the
+        robot's hardware echo canceller time to converge before full amplitude,
+        instead of slamming it with a step onset. Idempotent/re-armable: each
+        call (including Task 8's rollback-resume) resets the ramp to full
+        length rather than accumulating.
+        """
+        self._onset_ramp_remaining = self._onset_ramp_samples()
+
+    def _apply_onset_ramp(self, pcm: NDArray[np.int16]) -> NDArray[np.int16]:
+        """Scale the leading samples of `pcm` by a linear 0->1 ramp.
+
+        The ramp continues across chunk boundaries: `_onset_ramp_remaining`
+        tracks how much of the ramp is still owed, so a chunk shorter than the
+        remaining ramp only consumes part of it, and the next chunk picks up
+        where this one left off. Once the ramp is spent (or was never armed —
+        the class-level default is 0), this is a no-op that returns `pcm`
+        itself, unchanged and uncopied.
+        """
+        remaining = getattr(self, "_onset_ramp_remaining", 0)
+        if remaining <= 0 or pcm.size == 0:
+            return pcm
+        total = self._onset_ramp_samples()
+        n = min(remaining, pcm.size)
+        start = total - remaining
+        ramp = (np.arange(start, start + n, dtype=np.float32) + 1.0) / float(total)
+        flat = pcm.reshape(-1).astype(np.float32)
+        flat[:n] *= ramp
+        self._onset_ramp_remaining = remaining - n
+        return np.round(flat).astype(np.int16).reshape(pcm.shape)
+
     async def emit(self) -> HandlerOutput:
         """Emit the next output, filtered and downsampled to the robot's rate.
 
@@ -428,6 +471,11 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         SDK's fixed 16 kHz sink, so 24 kHz assistant PCM has to be converted here
         — the last point we own before `play_loop` sees it — rather than in the
         console. Text outputs pass through untouched.
+
+        The onset ramp (Task 5) runs first, on the raw int16 PCM, in both
+        branches below — before the voice filter and the resample — so the
+        faded-in amplitude is what actually reaches the speaker rather than
+        being partly undone by makeup gain or interpolation.
 
         The voice filter (D-010) runs *before* the downsample, on the model's
         24 kHz PCM: its pitch stage is a rate trick that assumes the model rate,
@@ -442,8 +490,9 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             return handler_output
 
         rate, pcm = handler_output
+        chunk_i16 = audio_to_int16(pcm)
         if rate == ROBOT_RATE:
-            return handler_output
+            return rate, self._apply_onset_ramp(chunk_i16)
 
-        filtered = self._voice_filter(rate).process(audio_to_int16(pcm))
+        filtered = self._voice_filter(rate).process(self._apply_onset_ramp(chunk_i16))
         return ROBOT_RATE, self._speaker_resampler(rate).process(filtered)

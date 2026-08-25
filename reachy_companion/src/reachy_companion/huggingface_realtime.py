@@ -275,6 +275,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """
         return None
 
+    def _notify_response_started(self) -> None:
+        """Notify that a new spoken response has started. Base: no-op.
+
+        The OpenAI subclass overrides this to arm the onset amplitude ramp
+        (Task 5) so a fresh reply fades in from silence, giving the robot's
+        hardware echo canceller time to converge before full volume. Called
+        once per `response.created`; Task 8's rollback-resume calls it again
+        to re-arm the ramp for the resumed reply, so this must stay idempotent
+        (each call re-arms the full ramp rather than accumulating).
+        """
+        return None
+
     def _robot_audible(self) -> bool:
         """Whether Reachy is speaking or still has queued/buffered speech.
 
@@ -1130,6 +1142,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._mark_activity("response_created")
                         self._active_response_id = getattr(getattr(event, "response", None), "id", None)
                         self.deps.movement_manager.set_speaking(True)
+                        self._notify_response_started()
                         self._response_done_event.clear()
                         self._response_started_or_rejected_event.set()
                         if self._turn_user_done_at is not None and self._turn_response_created_at is None:

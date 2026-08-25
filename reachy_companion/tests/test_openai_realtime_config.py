@@ -714,6 +714,181 @@ async def test_emit_applies_the_filter_when_it_is_enabled(monkeypatch: pytest.Mo
 
 
 # --------------------------------------------------------------------------
+# Onset amplitude ramp (Task 5) — AEC convergence aid
+# --------------------------------------------------------------------------
+
+
+def test_notify_response_started_arms_the_configured_sample_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hook must convert REALTIME_ONSET_RAMP_MS into a sample count at SAMPLE_RATE."""
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "10")
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+
+    h._notify_response_started()
+
+    assert h._onset_ramp_remaining == 240  # 24000 Hz * 10 ms / 1000
+
+
+def test_onset_ramp_ms_zero_disables_the_ramp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REALTIME_ONSET_RAMP_MS=0 arms zero samples, i.e. no ramp at all."""
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "0")
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+
+    h._notify_response_started()
+
+    assert h._onset_ramp_remaining == 0
+
+
+def test_apply_onset_ramp_is_a_noop_that_returns_the_same_array_when_unarmed() -> None:
+    """A handler that never had a response start (or already finished ramping) must not copy."""
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    pcm = np.array([100, 200, 300], dtype=np.int16)
+
+    assert h._apply_onset_ramp(pcm) is pcm
+
+
+def test_apply_onset_ramp_scales_linearly_and_continues_across_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 0->1 ramp must track fractional progress across two separate chunks.
+
+    240 samples total (10 ms at 24 kHz). The first 100-sample chunk consumes
+    100/240 of the ramp; the second 200-sample chunk finishes the remaining
+    140 samples exactly on its 140th sample and leaves the rest untouched.
+    """
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "10")
+    h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
+    h._notify_response_started()
+    assert h._onset_ramp_remaining == 240
+
+    chunk1 = np.full(100, 16000, dtype=np.int16)
+    out1 = h._apply_onset_ramp(chunk1)
+    assert int(out1[0]) == 67  # round(16000 * 1/240)
+    assert int(out1[50]) == 3400  # round(16000 * 51/240)
+    assert int(out1[99]) == 6667  # round(16000 * 100/240)
+    assert h._onset_ramp_remaining == 140
+
+    chunk2 = np.full(200, 16000, dtype=np.int16)
+    out2 = h._apply_onset_ramp(chunk2)
+    assert int(out2[0]) == 6733  # round(16000 * 101/240), continuing chunk1's fraction
+    assert int(out2[139]) == 16000  # round(16000 * 240/240): ramp completes exactly here
+    assert int(out2[140]) == 16000  # past the ramp: untouched full amplitude
+    assert int(out2[199]) == 16000
+    assert h._onset_ramp_remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_emit_ramps_robot_rate_audio_from_silence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `rate == ROBOT_RATE` early-return branch must also apply the ramp."""
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "10")
+    h = _emit_ready_handler()
+    h._notify_response_started()
+    pcm = np.full((1, 300), 16000, dtype=np.int16)  # 300 > the 240-sample ramp
+    await h.output_queue.put((ROBOT_RATE, pcm))
+
+    output = await h.emit()
+
+    assert isinstance(output, tuple)
+    rate, out = output
+    assert rate == ROBOT_RATE
+    flat = out.reshape(-1)
+    assert int(flat[0]) == 67  # starts near silence
+    assert int(flat[239]) == 16000  # ramp complete
+    assert int(flat[299]) == 16000  # tail beyond the ramp is untouched
+    assert out is not pcm  # ramping mutates -> no longer the caller's own array
+
+
+@pytest.mark.asyncio
+async def test_emit_robot_rate_audio_is_unchanged_when_the_ramp_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REALTIME_ONSET_RAMP_MS=0 must preserve the pre-Task-5 byte-identical path."""
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "0")
+    h = _emit_ready_handler()
+    h._notify_response_started()  # arms zero samples -> effectively a no-op
+    pcm = np.full((1, 300), 16000, dtype=np.int16)
+    await h.output_queue.put((ROBOT_RATE, pcm))
+
+    output = await h.emit()
+
+    assert isinstance(output, tuple)
+    assert output[1] is pcm
+
+
+@pytest.mark.asyncio
+async def test_emit_applies_the_onset_ramp_before_the_voice_filter() -> None:
+    """The ramp must run on raw int16 PCM, before VoiceFX and the resample.
+
+    Otherwise the filter's makeup gain or the resampler's interpolation could
+    partly undo the faded-in onset before it reaches the speaker.
+    """
+    h = _emit_ready_handler()
+    calls: list[str] = []
+    h._voicefx = _OrderSpy("voicefx", calls)  # type: ignore[assignment]
+    h._output_resampler = _OrderSpy("resampler", calls)  # type: ignore[assignment]
+
+    def _spy_ramp(pcm: np.ndarray) -> np.ndarray:
+        calls.append("ramp")
+        return pcm
+
+    h._apply_onset_ramp = _spy_ramp  # type: ignore[method-assign]
+
+    await h.output_queue.put((MODEL_RATE, np.zeros((1, 480), dtype=np.int16)))
+    await h.emit()
+
+    assert calls == ["ramp", "voicefx", "resampler"]
+
+
+@pytest.mark.asyncio
+async def test_emit_fades_in_the_first_reply_through_the_full_output_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: the onset ramp must survive VoiceFX (disabled) and the resample.
+
+    A constant-amplitude 440 Hz tone at the model rate, ramped for its first
+    10 ms, must reach the robot rate with its opening samples far quieter than
+    its steady-state ones — the audible effect this task exists to produce.
+    """
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "10")
+    h = _emit_ready_handler()
+    h._notify_response_started()
+    n = 24000
+    pcm = _to_int16(_sine(MODEL_RATE, n))
+
+    collected = []
+    for i in range(0, n, 480):
+        await h.output_queue.put((MODEL_RATE, pcm[i : i + 480].reshape(1, -1)))
+        output = await h.emit()
+        assert isinstance(output, tuple)
+        collected.append(output[1].reshape(-1))
+
+    got = np.concatenate(collected)
+    assert np.abs(got[:20]).max() < 2000  # ramped onset: near silence
+    assert np.abs(got[400:500]).max() > 15000  # steady state: full amplitude
+
+
+@pytest.mark.asyncio
+async def test_emit_without_the_onset_ramp_reaches_full_amplitude_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REALTIME_ONSET_RAMP_MS=0 must leave the model-rate path's onset unramped too."""
+    monkeypatch.setenv("REALTIME_ONSET_RAMP_MS", "0")
+    h = _emit_ready_handler()
+    h._notify_response_started()
+    n = 24000
+    pcm = _to_int16(_sine(MODEL_RATE, n))
+
+    collected = []
+    for i in range(0, n, 480):
+        await h.output_queue.put((MODEL_RATE, pcm[i : i + 480].reshape(1, -1)))
+        output = await h.emit()
+        assert isinstance(output, tuple)
+        collected.append(output[1].reshape(-1))
+
+    got = np.concatenate(collected)
+    assert np.abs(got[:20]).max() > 15000  # no ramp: full amplitude from sample 0
+
+
+# --------------------------------------------------------------------------
 # Barge-in
 # --------------------------------------------------------------------------
 
@@ -867,6 +1042,7 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "REALTIME_TRANSCRIPTION_MODEL" in text
     assert "REALTIME_TRANSCRIPTION_KEYWORDS" in text
     assert "REALTIME_TRANSCRIPTION_PROMPT" in text
+    assert "REALTIME_ONSET_RAMP_MS" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:
