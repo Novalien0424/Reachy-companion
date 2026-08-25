@@ -42,9 +42,22 @@ implemented commit-by-commit (`40acd1f..5eb4588`), and recorded in full in
    A watchdog repairs the (unverified-live) server one-active-response
    rejection. Full revert: `REALTIME_SOLO_CLIENT_BARGE=0`.
 
-**Gate:** 1211 passed / 31 skipped (pre-round baseline) → **1309 passed / 31
-skipped**, ruff clean, mypy clean (105 source files) — re-run at the end of
-this documentation pass to confirm nothing drifted.
+**Gate:** 1211 passed / 31 skipped (pre-round baseline) → **1319 passed / 31
+skipped** after the final-review fix wave (`3899d5c`: barge confirm default
+250→1400 ms so rollback is actually reachable, 「停」control escape in the
+solo resolver, thread-safe barge-task cancels, keep-the-answer discriminator),
+ruff clean, mypy clean (105 source files).
+
+Two narrow residual edges from the fix wave's re-review, recorded here
+rather than fixed (final review allows one fix wave; neither blocks the
+on-robot pass): (1) a barge that begins during the *tail drain* of an
+already-done response captures no paused-response id, so a response starting
+during that pause (e.g. a tool-call follow-up of the old turn) is treated as
+"the answer" and is not cancelled — the robot can talk through that barge;
+(2) on the keep-the-answer path the queue flush can clip the new answer's
+first already-queued chunk. Also noted: the confirm-vs-silence startup
+warning compares against the server_vad silence value even under
+`REALTIME_VAD_TYPE=semantic_vad`, where that knob is not sent.
 
 **Honest verification boundary: every item above is verified only against
 unit tests and a fake connection.** None of it has run against the live
