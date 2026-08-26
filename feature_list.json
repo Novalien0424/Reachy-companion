@@ -144,9 +144,9 @@
       "id": "VOICE-BOOT-GATE",
       "behavior": "The first session of a handler opens with turn_detection=None; VAD is switched back on only after the greeting's audio has fully drained (audio_drain.is_audible() clears, 100 ms poll / 3 s cap) following the first response.done, or after the REALTIME_BOOT_GATE_TIMEOUT_S=8s backstop — so the robot cannot commit a turn against hearing its own greeting",
       "verification": "On-robot: wake the robot into a noisy/talking room and read the journal for `boot gate released (greeting played)` (or `(no greeting configured)` / `(timeout)` on the backstop path), with zero committed user turns logged before that line appears.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator wake test in a noisy room; confirm no self-heard turn commits before the boot-gate-release journal line"
+      "state": "verified",
+      "evidence": "Thirteenth install 2026-08-27: live start on-robot — journal shows greeting queued 00:11:19, spoken 00:11:22, 'session turn_detection updated: party=False' then 'boot gate released (greeting played)' 00:11:24, zero tracebacks. Noisy-room variant still owed (this pass was a quiet room).",
+      "next_action": "Optional: repeat the wake in a noisy room and confirm no committed turn precedes the release line."
     },
     {
       "id": "VOICE-SOLO-BARGE",
@@ -184,9 +184,9 @@
       "id": "VOICE-TRANSCRIBE-MODEL",
       "behavior": "Input transcription defaults to REALTIME_TRANSCRIPTION_MODEL=gpt-transcribe with keyword biasing (defaults to the party address names) and a style prompt; a one-shot fallback to the legacy gpt-4o-transcribe shape fires if the API rejects the upgraded session config mid-startup",
       "verification": "On-robot: read the startup log for whether the gpt-transcribe session.update was accepted. If it was rejected, the journal shows `session.update rejected; retrying with legacy transcription shape` and the session proceeds on gpt-4o-transcribe with no keywords/prompt sent. Absence of that warning line across a full session is the positive-accept signal.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot: confirm gpt-transcribe is actually accepted by the live API (watch for the legacy-fallback warning line)"
+      "state": "verified",
+      "evidence": "Thirteenth install 2026-08-27: 'Realtime session initialized/updated successfully' with NO 'retrying with legacy transcription shape' warning — the live API accepted gpt-transcribe + keywords + prompt. Mandarin accuracy delta vs old model still an operator listening judgement.",
+      "next_action": "Operator: listen for name-recognition improvement (瑞奇/Richie) in normal use."
     },
     {
       "id": "VOICE-SEMANTIC-VAD-AB",

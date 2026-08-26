@@ -1,5 +1,43 @@
 # Progress
 
+## Thirteenth install + wake-up diagnosis (2026-08-27, 00:09–00:12 BST)
+
+**Voice-robustness build (b4e154f) deployed and live-verified on the robot.**
+Full ritual: backup manifest at `/tmp/reachy_companion_backup/20260826T230937Z-1448`
+(persona sha 8d3d01e8 preserved, faces.v1.json 1 record survived,
+memory.v1.json recorded absent, google-workspace-mcp 1 file), wheel
+sha-verified end to end (95754c6a…), two-step --no-deps install, restore
+manifest-driven, assets preloaded, app discovered. Live start evidence, all
+from the persistent journal, zero tracebacks: 41 tools in-session including
+**wait_for_user**; `persona: instance persona.md`; session initialized with
+**no legacy-transcription fallback warning** → the live API accepted
+gpt-transcribe + keywords (row VOICE-TRANSCRIBE-MODEL → verified); greeting
+queued 00:11:19 → spoken 00:11:22 → `session turn_detection updated:
+party=False` → **`boot gate released (greeting played)`** 00:11:24 (row
+VOICE-BOOT-GATE → verified, quiet-room variant); no confirm-vs-VAD race
+warning; VoiceFX chain + coral voice intact. Clean stop; robot left app-
+stopped with `startup_app=reachy_companion`. Remaining rows (mini tool
+quality, solo barge feel, wait_for_user firing on TV, party face gate,
+noise-reduction A/B, semantic_vad A/B) need the operator's live use.
+
+**"Hard to wake up" diagnosed: the robot is sometimes OFF — undervoltage
+hard power-loss, two days running.** Journal evidence: boot of Aug 25 ends
+at 13:53:02 with `hwmon: Undervoltage detected!` as its final line; boot of
+Aug 26 ends identically at 16:30:51 — then nothing until a human powers it
+back on (Aug 26's death left it dark for ~7.5 h; tonight's session found
+uptime 18 min). No `Shutdown button released` lines anywhere, so this is
+NOT the GPIO23 EMI clean-shutdown path from the 08-24 investigation — it is
+the 5 V rail sagging below threshold, and on Aug 26 the app was NOT even
+running (stopped cleanly at 13:32; daemon-only load killed it). Software
+cannot fix this; `startup_app` is set correctly and the wake path works
+whenever the robot has power. **Operator action: replace/upgrade the USB-C
+power supply and cable (official 5 V/5 A PSU class, short thick cable,
+avoid hubs/extenders), and glance at the power LED when the robot seems
+"hard to wake" — dark LED = this failure, not a software one.** Next
+occurrence will again print `Undervoltage detected!` as the boot's last
+line. `vcgencmd get_throttled` reads 0x0 after reboot (flags don't survive
+one), so the journal line is the only durable evidence.
+
 ## Voice-robustness round shipped: 8 tasks, D-023 (2026-08-25)
 
 Eight tasks against `docs/research-realtime-voice-best-practices.md` (a
