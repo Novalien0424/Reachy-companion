@@ -19,14 +19,13 @@ enrolled-count ready log, and the SDK-pinned YuNet preload. Plan:
 
 ## Next natural actions
 
-1. **Deploy the face fix wave** per `.claude/skills/reachy-deploy` — the
-   fourteenth install. The instance `faces.v1.json` (Louis + Lena, 2 records)
-   **must survive** the backup/restore ritual: it is the `FACE-CROSS-SESSION`
-   fixture. Copy the updated repo-root `persona.md` too (D-016 — the routing
-   rule reaches the model through it). Startup evidence to read back: `Face
-   memory ready: … 2 people enrolled`, the wake-check line followed by
-   `Extended wake face check: …`, `persona: instance persona.md`, zero
-   tracebacks.
+1. ~~Deploy the face fix wave~~ **DONE 2026-08-27 14:48–14:50 BST** —
+   fourteenth install, commit `ae62756`, all startup evidence verified
+   (`2 people enrolled`, extended wake window 7 rounds → closed at bound,
+   `persona: instance persona.md`, zero tracebacks); `faces.v1.json` survived
+   with both records; robot left app-stopped. Note: the stop API answered
+   `Motor communication error!` though the app stopped cleanly and
+   `get_throttled` read `0x0` — see `progress.md` → Current state.
 2. Operator live pass on the four new `FACE-*` rows (`FACE-ROUTING`,
    `FACE-WAKE-EXTENDED`, `FACE-CROSS-SESSION`, `FACE-MULTI-SAMPLE`) — they need
    a human face; exact journal greps are in `progress.md` → **Pending

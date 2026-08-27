@@ -29,10 +29,26 @@ strict clean. `DECISIONS.md` **D-023** summarizes the round;
 onto §8's ranked recommendations (item 7, a richer interaction-state gate, is
 deliberately still open).
 
-**Not on the robot yet — the face-recognition fix wave.** Branch
-`face-recognition-fix` (commits `143b551`…`ece7a58`) is implemented and
-gate-green here: suite **1348 passed / 30 skipped**, ruff clean, mypy strict
-clean. It ships identity routing to `who_is_this` (tool descriptions + locked
+**The face-recognition fix wave is now the robot's build — fourteenth
+install, 2026-08-27 14:48–14:50 BST, commit `ae62756` (merged to main), wheel
+sha `e3d538f8…` verified end to end,** two-step `--no-deps` install,
+manifest-driven backup/restore at
+`/tmp/reachy_companion_backup/20260827T134811Z-9229` (`faces.v1.json` **2
+records survived and read back**, `memory.v1.json` recorded absent, persona
+synced from the repo copy — sha `4c87d2ec`, the routing edit — google-oauth +
+nas index + google-workspace-mcp 1 file restored), assets preloaded with the
+pinned YuNet revision, app discovered. Live boot evidence, zero tracebacks:
+`persona: instance persona.md`; 41 tools; `Face memory ready: … 2 people
+enrolled`; quick wake check ran (no_face/too_far — nobody posed), then
+**`Extended wake face check: no recognition in 7 round(s); window closed.`** —
+seven real looks where the old build got 1–2, closing exactly at its bound.
+Robot left **app-stopped**. One observation for the operator: the stop API
+answered `Motor communication error! Check connections and power supply.`
+even though the app did stop cleanly and `vcgencmd get_throttled` read `0x0`
+(no rail sag) — possibly another face of the power/hardware story below;
+watch the next wake. Suite gate at this install: **1351 passed / 30 skipped**
+(the skip delta vs 1319/31 is 29 new tests plus `test_sface_contract` now
+running off the preload-warmed cache), ruff clean, mypy strict clean. It ships identity routing to `who_is_this` (tool descriptions + locked
 profile + `persona.md`), the margin rule restricted to candidates that clear the
 threshold, largest-face identification (the SDK tracker's own rule) while
 enrollment still demands exactly one face, capture/identify retries plus
@@ -45,8 +61,8 @@ wake-check failures since Aug 24, 「是誰。」 routed to `camera` in the 2026
 party transcript, while the recognizer itself measured healthy (same-session
 0.594 vs threshold 0.363; cross-person Lena↔Louis 0.1446). Plan:
 `docs/plans/2026-08-27-face-recognition-fix.md`; record: `DECISIONS.md`
-**D-024**. **No on-robot evidence — deploy is the next action**, and the four
-`FACE-*` rows below are the live gate.
+**D-024**. Deployed and boot-verified as above; the four `FACE-*` rows below
+(operator, with a human face) are the remaining live gate.
 
 ## Wake-up / power diagnosis (2026-08-27)
 
