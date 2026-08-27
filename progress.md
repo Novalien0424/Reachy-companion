@@ -30,13 +30,31 @@ NOT the GPIO23 EMI clean-shutdown path from the 08-24 investigation — it is
 the 5 V rail sagging below threshold, and on Aug 26 the app was NOT even
 running (stopped cleanly at 13:32; daemon-only load killed it). Software
 cannot fix this; `startup_app` is set correctly and the wake path works
-whenever the robot has power. **Operator action: replace/upgrade the USB-C
-power supply and cable (official 5 V/5 A PSU class, short thick cable,
-avoid hubs/extenders), and glance at the power LED when the robot seems
-"hard to wake" — dark LED = this failure, not a software one.** Next
-occurrence will again print `Undervoltage detected!` as the boot's last
-line. `vcgencmd get_throttled` reads 0x0 after reboot (flags don't survive
-one), so the journal line is the only durable evidence.
+whenever the robot has power.
+
+**Cause is ambiguous between three power stories (operator question,
+2026-08-27): a draining battery produces the exact same kernel line** — the
+hwmon watches the 5 V rail, not the reason it sagged, and this design has
+no battery-status API (low-battery LED only). Candidates: (a) weak
+PSU/cable while plugged; (b) unplugged and the battery ran out (the Aug 26
+boot lasted ~5 h — plausibly one charge; Aug 25's ~23.5 h run rules out
+battery-only for that day); (c) charging path under-delivering. **Operator
+observation (2026-08-27): it died while/when plugged into the ORIGINAL
+manufacturer adapter** — which eliminates "wrong PSU" and narrows to: a
+degraded/marginal official adapter or cable, a charging-path/power-board
+fault, or (if the death coincided with the *moment* of plugging in) a
+battery↔DC switchover glitch that dips the rail on hot-plug. No matching
+public issue in pollen-robotics/reachy_mini (searched 2026-08-27) — worth
+an upstream report with our two journal lines once one more occurrence
+pins the pattern. Triage next time: note whether death was AT plug-in
+(switchover glitch → plug in only while robot is off/before boot) vs
+minutes-to-hours later while plugged (adapter/charging path → swap in a
+known-good 5 V/5 A USB-C PSU + short cable and see if it survives the same
+duty). Live check while plugged: `vcgencmd get_throttled` (bit 0 = sagging
+now, bit 16 = sagged since boot; 0x0 at idle tonight) — re-read after a
+loud motors+speaker session. Either way: robot seems "hard to wake" → look
+at the power LED first; dark = power event, not software. Next occurrence
+again prints `Undervoltage detected!` as the boot's last line.
 
 ## Voice-robustness round shipped: 8 tasks, D-023 (2026-08-25)
 
