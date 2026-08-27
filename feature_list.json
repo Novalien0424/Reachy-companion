@@ -195,6 +195,38 @@
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot A/B: server_vad vs. semantic_vad(eagerness=low) on Mandarin backchannel handling and latency"
+    },
+    {
+      "id": "FACE-ROUTING",
+      "behavior": "Identity questions — 「我是誰」「你認得我嗎」「你記得我嗎」「我叫什麼名字」, or someone new walking in — select the who_is_this tool, never camera; enrollment asks (「記住我」) select remember_face. The camera description now carries an emphatic NEVER-for-identity clause naming who_is_this, the two face tools claim identity and enrollment explicitly, and the same rule is written into both the locked profile.md and the instance persona.md (D-016, the body that actually reaches the model). The 2026-08-24 party transcript is the defect this fixes: asked 「是誰。」 the model called camera and never who_is_this.",
+      "verification": "On-robot: in one session ask 「你記得我嗎」 and 「我是誰」, then ask a genuinely visual question (「你看到我拿的是什麼」). Journal must show `Tool call received — tool_name='who_is_this'` plus `Tool call: who_is_this status=…` on the two identity turns with NO camera call on them, and camera still selected for the visual turn.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: two identity turns + one visual turn, grep the journal for who_is_this vs camera tool selection"
+    },
+    {
+      "id": "FACE-WAKE-EXTENDED",
+      "behavior": "After the 1200 ms pre-greeting wake check misses (14/14 boots since 2026-08-24 did), a bounded extended window keeps looking for FACE_WAKE_EXTENDED_MS (default 8000, clamp 0–20000, 0 disables) after the greeting is queued, and on a hit injects a context item so Reachy greets the person by name late. It runs once per app start, honors the FACE_AUTO_GREET kill switch, closes silently the moment the user speaks (a context item landing mid-turn could steer the answer), aborts if the session reconnects, and is cancelled-and-awaited at shutdown — recognition never becomes a continuous scan (D-013).",
+      "verification": "On-robot: boot with nobody in frame, then lean into frame within 8 s without speaking. Journal must show the quick check missing, then `Extended wake face check: recognized <name> (score …) on round N; queued a late named greeting.` and a spoken greeting using the name. Negative control (nobody in frame at all): the window must end with `Extended wake face check: no recognition in N round(s); window closed.` — proving the bound. Speaking immediately after boot must instead produce no injection at all.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: late-arrival boot (hit), empty-room boot (window closed), and speak-immediately boot (silent close)"
+    },
+    {
+      "id": "FACE-CROSS-SESSION",
+      "behavior": "A person enrolled on an earlier day is recognized in a fresh session — the first live validation of the D-015 threshold 0.363 across an app restart. Live store on the robot holds 2 records (Louis enrolled 2026-08-26 13:32 robot time, Lena 2026-08-27 12:18); same-session recognition already measured 0.594 against threshold 0.363, and cross-person similarity Lena↔Louis measured 0.1446, matching the 0.11/0.15 wake-check scores that were correct rejections. Unknown until tested: whether a face enrolled under different lighting on a different day still clears 0.363.",
+      "verification": "On-robot after a restart: Louis (enrolled 2026-08-26) asks 「你認得我嗎」 → journal `Tool call: who_is_this status=recognized name=Louis score=…` with score ≥ 0.363; repeat for Lena. Also read the startup line `Face memory ready: … 2 people enrolled` to confirm the store survived the deploy backup/restore ritual. A `status=unknown` with a logged score just under threshold is the signal to re-tune, not a code defect.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: both enrolled people ask 「你認得我嗎」 in a fresh session; record the scores either way"
+    },
+    {
+      "id": "FACE-MULTI-SAMPLE",
+      "behavior": "One remember_face call now stores up to 3 samples instead of 1: after the first successful enroll it takes up to 2 extra best-effort samples 200 ms apart (a refused or failed extra sample breaks the loop and is never an error), and who_is_this looks up to 3 times per call, first recognition wins, otherwise the most informative result is reported. The defect this fixes: on 2026-08-27 who_is_this recognized Lena at 0.594 and then returned no_face 18 s later with the person still sitting there — one frame, no retry.",
+      "verification": "On-robot: say 「記住我，我叫X」 while holding still → journal `Tool call: remember_face saved name=X samples=N` with N ≥ 2 (N=1 is acceptable only if an `remember_face extra sample refused: status=…` line explains it). Then ask 「你認得我嗎」 several times in a row and confirm no spurious no_face while the person stays in frame; a retried round shows as a recognized answer after an initially empty look.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: one enrollment (check samples=N) plus repeated who_is_this calls with the person stationary"
     }
   ]
 }

@@ -22,12 +22,31 @@ party=False` → `boot gate released (greeting played)` 00:11:24
 warning. Clean stop; robot left **app-stopped** with
 `startup_app=reachy_companion`, volume 90, daemon 1.10.0rc5.
 
-Gate: suite **1319 passed / 31 skipped**, ruff clean, mypy strict clean.
-`DECISIONS.md` **D-023** summarizes the round;
+Gate at that install: suite **1319 passed / 31 skipped**, ruff clean, mypy
+strict clean. `DECISIONS.md` **D-023** summarizes the round;
 `docs/research-realtime-voice-best-practices.md` is its spec, and
 `docs/multi-person-investigation.md`'s 2026-08-25 addendum maps the eight tasks
 onto §8's ranked recommendations (item 7, a richer interaction-state gate, is
 deliberately still open).
+
+**Not on the robot yet — the face-recognition fix wave.** Branch
+`face-recognition-fix` (commits `143b551`…`ece7a58`) is implemented and
+gate-green here: suite **1348 passed / 30 skipped**, ruff clean, mypy strict
+clean. It ships identity routing to `who_is_this` (tool descriptions + locked
+profile + `persona.md`), the margin rule restricted to candidates that clear the
+threshold, largest-face identification (the SDK tracker's own rule) while
+enrollment still demands exactly one face, capture/identify retries plus
+up-to-3-sample enrollment, a bounded post-greeting extended wake window
+(`FACE_WAKE_EXTENDED_MS`, default 8000, 0 disables, closes silently once the
+user speaks), the `arcface5` alignment marker with unmarked records
+grandfathered, an enrolled-count in the ready log, `internal_error` for
+malformed embeddings, and an SDK-pinned YuNet preload. RCA behind it: 14/14 boot
+wake-check failures since Aug 24, 「是誰。」 routed to `camera` in the 2026-08-24
+party transcript, while the recognizer itself measured healthy (same-session
+0.594 vs threshold 0.363; cross-person Lena↔Louis 0.1446). Plan:
+`docs/plans/2026-08-27-face-recognition-fix.md`; record: `DECISIONS.md`
+**D-024**. **No on-robot evidence — deploy is the next action**, and the four
+`FACE-*` rows below are the live gate.
 
 ## Wake-up / power diagnosis (2026-08-27)
 
@@ -68,8 +87,19 @@ boot's last line.
 
 ## Pending verification (operator)
 
-Six `implemented-unverified` rows in `feature_list.json` still need live use:
-`VOICE-MINI-MODEL` (exercise a spread of tools on `gpt-realtime-2.1-mini`,
+Ten `implemented-unverified` rows in `feature_list.json` still need live use.
+**Face (four, this round, all gated on the deploy):** `FACE-ROUTING` (ask 「你記得
+我嗎」 and 「我是誰」 — journal must show `tool_name='who_is_this'` and no `camera`
+call on those turns, while a genuinely visual question still picks `camera`);
+`FACE-WAKE-EXTENDED` (boot with nobody in frame, lean in within 8 s → `Extended
+wake face check: recognized … queued a late named greeting`; an empty room must
+instead end `window closed`, proving the bound); `FACE-CROSS-SESSION` (Louis,
+enrolled 2026-08-26, asks 「你認得我嗎」 in a fresh session → `who_is_this
+status=recognized name=Louis score=…` ≥ 0.363 — the D-015 threshold's first live
+cross-day test); `FACE-MULTI-SAMPLE` (`remember_face saved name=… samples=N`
+with N ≥ 2, then repeated `who_is_this` calls with the person stationary and no
+spurious `no_face`). **Voice (six):** `VOICE-MINI-MODEL` (exercise a spread of
+tools on `gpt-realtime-2.1-mini`,
 watch for misrouted/malformed calls; `REALTIME_MODEL=gpt-realtime-2.1` is the
 one-line revert); `VOICE-SOLO-BARGE` (multi-turn, deliberately cough / say 「嗯」
 mid-reply — the sentence should finish with `barge-in rolled back; resuming
@@ -85,9 +115,10 @@ script); `VOICE-SEMANTIC-VAD-AB` (`REALTIME_VAD_TYPE=server_vad` vs
 Older human rows still owed: music duck→resume with a real voice (the machinery
 now demonstrably drains); the full gated email send with a dictated address; the
 five **PRD §8** demo gates. Also unconfirmed on-device: the `move_head`
-body-yaw fix (`a5f682d`, unit-covered only), and the D-015 face threshold
-**0.363** against real faces — every score is logged by `who_is_this` and the
-wake check, and any face enrolled before D-015 must be re-enrolled.
+body-yaw fix (`a5f682d`, unit-covered only). The D-015 threshold **0.363** now
+has same-session live evidence (0.594 hit, 0.1446 cross-person rejection); its
+remaining open question is the cross-day case, which `FACE-CROSS-SESSION`
+owns — every score is logged by `who_is_this` and the wake check.
 
 ## Known defects / open edges
 
@@ -148,4 +179,5 @@ wake check, and any face enrolled before D-015 must be re-enrolled.
   multi-person hardening T1–T3 (twelfth install).
 - **2026-08-25** — voice-robustness round, eight tasks, **D-023**.
 - **2026-08-27** — thirteenth install (`b4e154f`) live-verified; undervoltage
-  power diagnosis above.
+  power diagnosis above; face-recognition RCA + fix wave, **D-024**, on branch
+  `face-recognition-fix` (not yet deployed).

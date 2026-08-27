@@ -166,7 +166,8 @@ wake check plus explicit `who_is_this`), enrollment is explicit and verbal,
 `FACE_MEMORY_ENABLED=0` removes the feature and `FACE_AUTO_GREET=0` keeps the
 tools without the automatic look. Hardware finding: the robot is a Raspberry Pi
 **CM4**, not a Pi 5 — one embed costs 239 ms idle / 362 ms with the app running.
-Threshold and thread rules superseded by D-015.
+Threshold and thread rules superseded by D-015. Storage/marker details extended
+by D-024 (alignment field).
 
 ## D-014 — Audit outcome: what we accept, defer and close (2026-08-19)
 
@@ -517,3 +518,57 @@ the person telling it to stop. Journal: `barge-in rolled back; resuming reply`,
 without the matching `note_cleared()` when `_clear_queue` is `None`
 (unreachable in production). **Revert: `REALTIME_SOLO_CLIENT_BARGE=0`** restores
 immediate flush + server-side `interrupt_response=true`.
+
+## D-024 — Face recognition made reachable: routing, retries, a real wake window (2026-08-27)
+
+The recognizer core was never the problem. Live robot evidence (journal
+2026-08-24 → 27): the boot wake check failed **14/14 times** since Aug 24 (8×
+`no_face` — nobody posed in frame at that single instant — 2× a `multiple_faces`
+hard refusal, the rest inside a 1200 ms budget that fits only 1–2 of its 3
+rounds on the CM4); asked 「是誰。」 in the 2026-08-24 party session the model
+called **`camera`**, never `who_is_this`; meanwhile same-session recognition
+scored **0.594** against the D-015 threshold 0.363 and cross-person similarity
+(Lena↔Louis) measured **0.1446**, matching the 0.11/0.15 wake scores that were
+correct rejections. The store had also been **empty Aug 19–26** (`score=None`
+wake lines) with nothing logging how many people were loaded. Five decisions
+follow. **(1) Identity questions belong to the face tools — in the descriptions
+*and* in the persona:** `camera` now emphatically disclaims identity and names
+`who_is_this`, the two face tools claim identity and enrollment, and the rule is
+written into both `profile.md` and the instance `persona.md`, since D-016 makes
+the latter the body the model actually reads. **(2) Identification scores the
+largest face; enrollment still requires exactly one:** the selection rule is the
+SDK's own (`face = max(faces, key=_area)`, `reachy_mini/vision/face_tracking.py`)
+so recognition scores the face the head is already aiming at, while storing a
+bystander under the user's name is worse than refusing — `enroll` keeps the
+exactly-one contract and `multiple_faces` stays a member of the closed
+`Identification` contract (D-014). **(3) Retries live in our tool layer, not in
+the recognizer:** `capture_frame` retries `None` frames (the appsink is
+drop=True/max-buffers=1 — a miss is routine on a loaded CM4),
+`identify_with_retries` looks up to 3 times with the first recognition winning
+and the most informative miss reported otherwise, and one `remember_face` call
+stores up to 3 samples, the extras best-effort so a refused one is never an
+error. **(4) The wake check gets a bounded second window, not continuous
+scanning:** `FACE_WAKE_EXTENDED_MS` (default 8000, clamp 0–20000, 0 disables)
+keeps looking *after* the greeting is queued, so the greeting is never delayed;
+every await is bounded against the shared deadline, the window closes silently
+once the user speaks (a context item landing mid-turn could steer the answer),
+it aborts if the session reconnects, and it is cancelled-and-awaited at
+shutdown. It remains the **single** automatic recognition hook — D-013's privacy
+property holds. **(5) The store declares its alignment:**
+`faces.ALIGNMENT_VERSION = "arcface5"` is written into every record and a
+*different* marker drops that record with a warning, while records with **no**
+marker are grandfathered (the live Louis/Lena records *are* arcface5 and get
+stamped on their next rewrite); the ready log now reports `N people enrolled`,
+and a malformed embedding reports `internal_error` instead of the mislabeled
+`invalid_name`. Fixed in passing: the 0.05 margin rule now only compares
+candidates that **themselves** clear the threshold (a stranger at 0.35 no longer
+drags a 0.38 match to `ambiguous`), and `scripts/preload_assets.py` downloads
+the SDK-pinned YuNet revision so the warmed cache entry is the one
+`FaceDetector` actually loads. **Deliberately not done:** continuous recognition
+(rejected on privacy, D-013); a forget/list-faces tool (no operator need yet —
+the store is editable on disk); retry after a failed model load (a load failure
+is a deploy defect and retrying would hide it); relocating `faces.v1.json` out
+of site-packages (the `reachy-deploy` backup/restore ritual covers it, and
+moving it is a deploy-wide change, not a face change). Written as verified
+against the unit suite and the RCA only — the four `FACE-*` rows in
+`feature_list.json` are the live gate.

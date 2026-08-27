@@ -8,8 +8,9 @@ lock, atomic tmp+replace, `*_for_instance` path helper, tolerant readers that
 return `[]` on corruption — so the two stores age the same way.
 
 **No image is ever persisted here.** A record is a name, up to three
-L2-normalized 128-float vectors, and two timestamps. Vectors are rounded to
-6 decimal places (cosine error < 1e-6) so the file stays readable on the robot.
+L2-normalized 128-float vectors, an alignment tag, and two timestamps. Vectors
+are rounded to 6 decimal places (cosine error < 1e-6) so the file stays readable
+on the robot.
 """
 
 from __future__ import annotations
