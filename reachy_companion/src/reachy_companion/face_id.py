@@ -518,10 +518,15 @@ class FaceRecognizer:
 
         scored.sort(key=lambda item: item[0], reverse=True)
         best_score, best_name = scored[0]
-        runner_up_score, runner_up_name = scored[1] if len(scored) > 1 else (None, None)
 
         if best_score < self.threshold:
             return MatchResult(status="unknown", score=best_score, runner_up=None)
+
+        # The margin compares candidates, not noise: only a runner-up that
+        # itself clears the threshold can make the answer ambiguous. A stranger
+        # scoring 0.35 must not stop us from naming the person scoring 0.38.
+        qualified = [item for item in scored if item[0] >= self.threshold]
+        runner_up_score, runner_up_name = qualified[1] if len(qualified) > 1 else (None, None)
 
         if runner_up_score is not None and (best_score - runner_up_score) < self.margin:
             return MatchResult(

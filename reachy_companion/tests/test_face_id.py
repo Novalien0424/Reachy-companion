@@ -369,6 +369,38 @@ def test_match_reports_ambiguous_on_a_near_tie(tmp_path: Path) -> None:
     assert {result.name, result.runner_up} == {"A", "B"}
 
 
+def test_match_ignores_a_sub_threshold_runner_up(tmp_path: Path) -> None:
+    """A stranger scoring below the threshold must not drag a real match to `ambiguous`.
+
+    best=0.38 (>= 0.363), runner-up=0.35 (< 0.363), gap 0.03 < the 0.05 margin.
+    The margin separates *candidates*; 0.35 is not a candidate for anything, so
+    it cannot stop us from naming the person at 0.38.
+    """
+    basis = _basis()
+    probe = basis[0]
+    upsert_face(tmp_path, "A", _at_cosine(0.38, basis[1], probe))
+    upsert_face(tmp_path, "B", _at_cosine(0.35, basis[2], probe))
+
+    result = FaceRecognizer(tmp_path).match(probe)
+
+    assert result.status == "recognized"
+    assert result.name == "A"
+
+
+def test_match_still_ambiguous_when_both_clear_the_threshold(tmp_path: Path) -> None:
+    """best=0.40 vs runner-up=0.38: both clear the threshold, gap < margin, so ambiguous."""
+    basis = _basis()
+    probe = basis[0]
+    upsert_face(tmp_path, "A", _at_cosine(0.40, basis[1], probe))
+    upsert_face(tmp_path, "B", _at_cosine(0.38, basis[2], probe))
+
+    result = FaceRecognizer(tmp_path).match(probe)
+
+    assert result.status == "ambiguous"
+    assert result.name == "A"
+    assert result.runner_up == "B"
+
+
 def test_match_reports_unknown_below_threshold_with_the_score(tmp_path: Path) -> None:
     """A stranger is `unknown`, and the best score is reported so thresholds can be calibrated."""
     basis = _basis()
