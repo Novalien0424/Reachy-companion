@@ -16,7 +16,7 @@ import pytest
 from numpy.typing import NDArray
 
 import reachy_companion.huggingface_realtime as hf_mod
-from reachy_companion.faces import list_faces
+from reachy_companion.faces import EMBEDDING_DIM, FaceRecord, list_faces
 from reachy_companion.face_id import (
     ALIGNED_SIZE,
     IDENTIFICATION_REASONS,
@@ -26,6 +26,7 @@ from reachy_companion.face_id import (
 )
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.who_is_this import WhoIsThis
+from reachy_companion.tools.face_support import capture_frame
 from reachy_companion.tools.remember_face import RememberFace
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 
@@ -46,6 +47,7 @@ class _FakeRecognizer:
         wait_delay_s: float = 0.0,
         identify_delay_s: float = 0.0,
         results: list[Identification] | None = None,
+        enroll_results: list[tuple[Any, Identification]] | None = None,
         raises: Exception | None = None,
     ) -> None:
         self.identification = identification or Identification(status="no_face")
@@ -56,6 +58,8 @@ class _FakeRecognizer:
         self._identify_delay_s = identify_delay_s
         # A scripted answer per round; the last one repeats once exhausted.
         self._results = list(results) if results else None
+        # The same idiom for enrollment: one (record, identification) per sample.
+        self._enroll_results = list(enroll_results) if enroll_results else None
         self._raises = raises
         self.frames_seen = 0
 
@@ -85,6 +89,8 @@ class _FakeRecognizer:
         self.frames_seen += 1
         if self._raises is not None:
             raise self._raises
+        if self._enroll_results:
+            return self._enroll_results.pop(0) if len(self._enroll_results) > 1 else self._enroll_results[0]
         return self._record, self.identification
 
 
@@ -115,6 +121,37 @@ def _deps(
     )
 
 
+def _stored_record(samples: int, name: str = "Lena") -> FaceRecord:
+    """Return a stored record carrying `samples` embeddings, for stub enrollment.
+
+    The tools report `samples` straight off the record, so only its length
+    matters here — the vectors themselves are never compared.
+    """
+    vector = (0.0,) * EMBEDDING_DIM
+    return FaceRecord(
+        id="face-1",
+        name=name,
+        embeddings=tuple(vector for _ in range(samples)),
+        created_at=0,
+        updated_at=0,
+    )
+
+
+@pytest.fixture
+def instant_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the retry pauses, so a retry test costs no wall-clock time.
+
+    The pauses exist to let the scene change between looks; what the retry tests
+    assert is the sequence of looks, never its tempo.
+    """
+    real_sleep = asyncio.sleep
+
+    async def _instant(delay: float, result: Any = None) -> Any:
+        return await real_sleep(0, result)
+
+    monkeypatch.setattr(asyncio, "sleep", _instant)
+
+
 def _assert_carries_no_image(result: dict[str, Any]) -> None:
     """Assert a tool result contains no image payload of any kind."""
     assert "b64_im" not in result
@@ -138,7 +175,7 @@ def _assert_reason_is_a_stable_code(result: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_degrades_without_a_face() -> None:
+async def test_who_is_this_degrades_without_a_face(instant_sleep: None) -> None:
     """Nobody in frame is a plain status, not an error and not a guess."""
     result = await WhoIsThis()(_deps(_FakeRecognizer(Identification(status="no_face"))))
 
@@ -147,7 +184,7 @@ async def test_who_is_this_degrades_without_a_face() -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_reports_too_far() -> None:
+async def test_who_is_this_reports_too_far(instant_sleep: None) -> None:
     """A face too small to embed honestly is reported as such, so Reachy can ask them closer."""
     result = await WhoIsThis()(_deps(_FakeRecognizer(Identification(status="too_far", face_count=1))))
 
@@ -155,7 +192,7 @@ async def test_who_is_this_reports_too_far() -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_scores_a_face_when_two_are_in_frame(tmp_path: Path) -> None:
+async def test_who_is_this_scores_a_face_when_two_are_in_frame(instant_sleep: None, tmp_path: Path) -> None:
     """Two people in frame no longer refuses the question.
 
     `identify` scores the largest face — the SDK head tracker's rule — so the
@@ -177,7 +214,7 @@ async def test_who_is_this_scores_a_face_when_two_are_in_frame(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_reports_unknown_with_the_score() -> None:
+async def test_who_is_this_reports_unknown_with_the_score(instant_sleep: None) -> None:
     """A stranger is `unknown` with the best score, which is what makes thresholds tunable."""
     result = await WhoIsThis()(_deps(_FakeRecognizer(Identification(status="unknown", score=0.2134, face_count=1))))
 
@@ -186,7 +223,7 @@ async def test_who_is_this_reports_unknown_with_the_score() -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_reports_ambiguous_with_the_runner_up() -> None:
+async def test_who_is_this_reports_ambiguous_with_the_runner_up(instant_sleep: None) -> None:
     """A near-tie names both candidates as candidates, never one as a fact."""
     identification = Identification(status="ambiguous", name="A", runner_up="B", score=0.52, face_count=1)
 
@@ -232,7 +269,7 @@ async def test_who_is_this_is_unavailable_when_face_memory_is_disabled() -> None
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_is_unavailable_when_the_model_is_not_ready() -> None:
+async def test_who_is_this_is_unavailable_when_the_model_is_not_ready(instant_sleep: None) -> None:
     """A failed or still-loading model surfaces as `unavailable`, with the reason kept."""
     identification = Identification(status="unavailable", reason="model_unavailable")
 
@@ -243,22 +280,31 @@ async def test_who_is_this_is_unavailable_when_the_model_is_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_is_unavailable_without_a_frame() -> None:
-    """A camera that returns no frame is a status, not an exception."""
-    result = await WhoIsThis()(_deps(_FakeRecognizer(), frame=None))
+async def test_who_is_this_is_unavailable_without_a_frame(instant_sleep: None) -> None:
+    """A camera that never yields a frame is a status, not an exception.
+
+    `no_frame` is only reported once the retries are exhausted: three frame
+    pulls inside each of the three looks, all of them empty.
+    """
+    deps = _deps(_FakeRecognizer(), frame=None)
+
+    result = await WhoIsThis()(deps)
 
     assert result == {"status": "unavailable", "face_count": 0, "reason": "no_frame"}
     _assert_reason_is_a_stable_code(result)
+    assert deps.reachy_mini.media.get_frame.call_count == 9
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_survives_a_recognizer_exception(caplog: pytest.LogCaptureFixture) -> None:
+async def test_who_is_this_survives_a_recognizer_exception(
+    instant_sleep: None, caplog: pytest.LogCaptureFixture
+) -> None:
     """Even a broken recognizer must not take the turn down — nor leak its message.
 
     Tool results go straight to the cloud model, so the exception text belongs in
     the local log and `reason` stays a stable code.
     """
-    with caplog.at_level("ERROR", logger="reachy_companion.tools.who_is_this"):
+    with caplog.at_level("ERROR", logger="reachy_companion.tools.face_support"):
         result = await WhoIsThis()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))))
 
     assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
@@ -279,7 +325,9 @@ async def test_remember_face_survives_an_enrollment_exception(caplog: pytest.Log
 
 
 @pytest.mark.asyncio
-async def test_a_camera_failure_is_reported_without_its_exception_text(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_camera_failure_is_reported_without_its_exception_text(
+    instant_sleep: None, caplog: pytest.LogCaptureFixture
+) -> None:
     """A raising `get_frame()` is a stable code too, not a transport traceback."""
     deps = _deps(_FakeRecognizer())
     deps.reachy_mini.media.get_frame.side_effect = OSError("v4l2 device fell over")
@@ -329,6 +377,90 @@ async def test_remember_face_is_unavailable_when_disabled_or_blind() -> None:
     assert disabled["status"] == "unavailable"
     assert disabled["reason"] == "face_memory_disabled"
     assert blind["reason"] == "camera_disabled"
+
+
+# --- retries: dropped frames, extra looks, extra samples ---------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_frame_retries_none_frames(instant_sleep: None) -> None:
+    """Two 20 ms appsink misses then a real frame must yield the frame, not `no_frame`.
+
+    The camera is drop=True/max-buffers=1 with a 20 ms pull, so on a loaded CM4 a
+    `None` is routine timing, not a broken camera.
+    """
+    frame = _frame()
+    deps = _deps(_FakeRecognizer())
+    deps.reachy_mini.media.get_frame.side_effect = [None, None, frame]
+
+    captured, refusal = await capture_frame(deps)
+
+    assert refusal is None
+    assert captured is frame
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_retries_to_a_recognition(instant_sleep: None) -> None:
+    """Round one sees nobody, round two recognizes: the tool must answer recognized."""
+    recognizer = _FakeRecognizer(
+        results=[
+            Identification(status="no_face"),
+            Identification(status="recognized", name="Lena", score=0.59, face_count=1),
+        ]
+    )
+
+    result = await WhoIsThis()(_deps(recognizer))
+
+    assert result["status"] == "recognized"
+    assert result["name"] == "Lena"
+    # The first hit ends the loop; a third look would only risk losing it.
+    assert recognizer.frames_seen == 2
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_reports_the_best_informative_miss(instant_sleep: None) -> None:
+    """Rounds [no_face, unknown(0.21), no_face]: the answer is the scored unknown.
+
+    A scored miss is evidence — the model can say "I see you but I do not know
+    you", and the log carries a number to tune the threshold with. `no_face`
+    carries neither, so the last look must not overwrite the useful one.
+    """
+    recognizer = _FakeRecognizer(
+        results=[
+            Identification(status="no_face"),
+            Identification(status="unknown", score=0.21, face_count=1),
+            Identification(status="no_face"),
+        ]
+    )
+
+    result = await WhoIsThis()(_deps(recognizer))
+
+    assert result["status"] == "unknown"
+    assert result["score"] == 0.21
+    assert recognizer.frames_seen == 3
+    _assert_carries_no_image(result)
+
+
+@pytest.mark.asyncio
+async def test_remember_face_stores_multiple_samples(instant_sleep: None) -> None:
+    """One call takes up to three samples; a sample that misses ends the burst, not the call.
+
+    Three embeddings of one face — a blink, a turn, a different shadow — is what
+    makes the later recognition survive the same variation.
+    """
+    recognizer = _FakeRecognizer(
+        enroll_results=[
+            (_stored_record(1), Identification(status="unknown", face_count=1)),
+            (_stored_record(2), Identification(status="unknown", score=0.4, face_count=1)),
+            (None, Identification(status="no_face")),
+        ]
+    )
+
+    result = await RememberFace()(_deps(recognizer), name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 2}
+    assert recognizer.frames_seen == 3
+    _assert_carries_no_image(result)
 
 
 # --- enrollment -> recognition round trip -----------------------------------
@@ -391,8 +523,12 @@ def _round_trip_recognizer(tmp_path: Path) -> FaceRecognizer:
 
 
 @pytest.mark.asyncio
-async def test_enrollment_then_recognition_round_trip(tmp_path: Path) -> None:
-    """The feature in one test: remember a face, then recognize it on a later frame."""
+async def test_enrollment_then_recognition_round_trip(instant_sleep: None, tmp_path: Path) -> None:
+    """The feature in one test: remember a face, then recognize it on a later frame.
+
+    One call is three samples now, so the store holds three embeddings of the
+    one person — still one record, still one name.
+    """
     recognizer = _round_trip_recognizer(tmp_path)
 
     saved = await RememberFace()(
@@ -401,18 +537,18 @@ async def test_enrollment_then_recognition_round_trip(tmp_path: Path) -> None:
     )
     recalled = await WhoIsThis()(_deps(recognizer, instance_path=tmp_path, frame=_frame(102)))
 
-    assert saved == {"status": "saved", "name": "小明", "samples": 1}
+    assert saved == {"status": "saved", "name": "小明", "samples": 3}
     assert recalled["status"] == "recognized"
     assert recalled["name"] == "小明"
     records = list_faces(tmp_path)
     assert len(records) == 1
-    assert len(records[0].embeddings) == 1
+    assert len(records[0].embeddings) == 3
     _assert_carries_no_image(saved)
     _assert_carries_no_image(recalled)
 
 
 @pytest.mark.asyncio
-async def test_repeated_enrollment_ring_buffers_the_samples(tmp_path: Path) -> None:
+async def test_repeated_enrollment_ring_buffers_the_samples(instant_sleep: None, tmp_path: Path) -> None:
     """Saying "remember me" three more times keeps three samples, not four records."""
     recognizer = _round_trip_recognizer(tmp_path)
     deps = _deps(recognizer, instance_path=tmp_path, frame=_frame(100))
@@ -426,7 +562,7 @@ async def test_repeated_enrollment_ring_buffers_the_samples(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_a_stranger_is_not_recognized(tmp_path: Path) -> None:
+async def test_a_stranger_is_not_recognized(instant_sleep: None, tmp_path: Path) -> None:
     """A face unlike anything enrolled is `unknown` — Reachy says so instead of guessing."""
     recognizer = _round_trip_recognizer(tmp_path)
     await RememberFace()(_deps(recognizer, instance_path=tmp_path, frame=_frame(20)), name="小明")
@@ -746,7 +882,7 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     who = WhoIsThis.description
     remember = RememberFace.description
 
-    assert "who_is_this" in camera          # camera redirects identity asks
-    assert "NEVER" in camera                # ...and does so emphatically
+    assert "who_is_this" in camera  # camera redirects identity asks
+    assert "NEVER" in camera  # ...and does so emphatically
     assert "instead of the camera tool" in who
     assert "not the camera tool" in remember

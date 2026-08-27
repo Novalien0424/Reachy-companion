@@ -57,5 +57,24 @@ class RememberFace(Tool):
             refusal: dict[str, Any] = identification.as_dict()
             return refusal
 
+        # Two more looks, a fifth of a second apart: three embeddings of the same
+        # face — a blink, a turn, another shadow — are what make the later
+        # recognition survive that variation. Extras are best effort: the first
+        # sample is already saved, so a miss ends the burst, never the call.
+        for _ in range(2):
+            await asyncio.sleep(0.2)
+            extra_frame, blocked = await capture_frame(deps, attempts=1)
+            if blocked is not None:
+                break
+            try:
+                extra_record, extra_identification = await asyncio.to_thread(recognizer.enroll, extra_frame, name)
+            except Exception as e:
+                logger.warning("remember_face extra sample failed: %s: %s", type(e).__name__, e)
+                break
+            if extra_record is None:
+                logger.info("remember_face extra sample refused: status=%s", extra_identification.status)
+                break
+            record = extra_record
+
         logger.info("Tool call: remember_face saved name=%s samples=%d", record.name, len(record.embeddings))
         return {"status": "saved", "name": record.name, "samples": len(record.embeddings)}
