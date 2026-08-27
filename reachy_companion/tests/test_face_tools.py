@@ -47,7 +47,7 @@ class _FakeRecognizer:
         wait_delay_s: float = 0.0,
         identify_delay_s: float = 0.0,
         results: list[Identification] | None = None,
-        enroll_results: list[tuple[Any, Identification]] | None = None,
+        enroll_results: list[tuple[Any, Identification] | Exception] | None = None,
         raises: Exception | None = None,
     ) -> None:
         self.identification = identification or Identification(status="no_face")
@@ -59,6 +59,9 @@ class _FakeRecognizer:
         # A scripted answer per round; the last one repeats once exhausted.
         self._results = list(results) if results else None
         # The same idiom for enrollment: one (record, identification) per sample.
+        # An Exception in that list is raised on the sample it stands at, which
+        # is how a failure on the *second* sample only can be scripted at all —
+        # `raises` above is global and would take the first sample down with it.
         self._enroll_results = list(enroll_results) if enroll_results else None
         self._raises = raises
         self.frames_seen = 0
@@ -90,7 +93,10 @@ class _FakeRecognizer:
         if self._raises is not None:
             raise self._raises
         if self._enroll_results:
-            return self._enroll_results.pop(0) if len(self._enroll_results) > 1 else self._enroll_results[0]
+            scripted = self._enroll_results.pop(0) if len(self._enroll_results) > 1 else self._enroll_results[0]
+            if isinstance(scripted, Exception):
+                raise scripted
+            return scripted
         return self._record, self.identification
 
 
@@ -442,6 +448,28 @@ async def test_who_is_this_reports_the_best_informative_miss(instant_sleep: None
 
 
 @pytest.mark.asyncio
+async def test_who_is_this_prefers_the_last_informative_look(instant_sleep: None) -> None:
+    """Rounds [unknown(0.2), too_far]: the freshest scored look is the answer, not the first.
+
+    Two *differing* informative statuses is what pins the ordering: the person
+    stepped back between looks, so `too_far` is the true state of the scene and
+    Reachy can ask them closer. Keeping the first look would answer about a
+    moment that has passed.
+    """
+    recognizer = _FakeRecognizer(
+        results=[
+            Identification(status="unknown", score=0.2, face_count=1),
+            Identification(status="too_far", face_count=1),
+        ]
+    )
+
+    result = await WhoIsThis()(_deps(recognizer))
+
+    assert result == {"status": "too_far", "face_count": 1}
+    assert recognizer.frames_seen == 3
+
+
+@pytest.mark.asyncio
 async def test_remember_face_stores_multiple_samples(instant_sleep: None) -> None:
     """One call takes up to three samples; a sample that misses ends the burst, not the call.
 
@@ -461,6 +489,52 @@ async def test_remember_face_stores_multiple_samples(instant_sleep: None) -> Non
     assert result == {"status": "saved", "name": "Lena", "samples": 2}
     assert recognizer.frames_seen == 3
     _assert_carries_no_image(result)
+
+
+@pytest.mark.asyncio
+async def test_remember_face_keeps_the_first_sample_when_an_extra_frame_is_missed(
+    instant_sleep: None,
+) -> None:
+    """A dropped frame on an extra sample ends the burst, not the call.
+
+    The person is already remembered by then; failing the whole enrollment over
+    a 20 ms camera miss would be the worst possible answer.
+    """
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+    deps.reachy_mini.media.get_frame.side_effect = [_frame(), None]
+
+    result = await RememberFace()(deps, name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    # One enrollment, and the burst stopped at the missed frame rather than
+    # retrying it: the extra samples are a single pull each.
+    assert recognizer.frames_seen == 1
+    assert deps.reachy_mini.media.get_frame.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_remember_face_keeps_the_first_sample_when_an_extra_enroll_raises(
+    instant_sleep: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An exception on an extra sample is logged and swallowed — the save still stands."""
+    recognizer = _FakeRecognizer(
+        enroll_results=[
+            (_stored_record(1), Identification(status="unknown", face_count=1)),
+            RuntimeError("boom"),
+        ]
+    )
+
+    with caplog.at_level("WARNING", logger="reachy_companion.tools.remember_face"):
+        result = await RememberFace()(_deps(recognizer), name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    assert recognizer.frames_seen == 2
+    assert "boom" not in str(result)
+    assert "boom" in caplog.text
 
 
 # --- enrollment -> recognition round trip -----------------------------------
