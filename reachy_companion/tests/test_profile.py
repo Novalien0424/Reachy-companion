@@ -126,18 +126,22 @@ def test_locked_profile_can_remember_and_recall_a_face() -> None:
     Both halves are load-bearing: without the enrollment line nobody is ever
     stored, and without the recall line the model answers "我是谁?" from the
     conversation instead of looking. The "认不出就坦率说认不出" clause is the
-    honesty rule that keeps an `unknown` status from becoming a guessed name.
+    honesty rule that keeps an `unknown` status from becoming a guessed name,
+    and the "不要用 camera" clause is what keeps an identity question off the
+    camera tool — the routing the party session got wrong.
     """
     profile = read_profile(LOCKED_PROFILE)
 
     assert "remember_face" in profile.default_tools
     assert "who_is_this" in profile.default_tools
     assert (
-        '当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相。' in profile.instructions
+        '当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相，不要用 camera。'
+        in profile.instructions
     )
-    assert '当用户问"我是谁"、"你还认得我吗"时，用 who_is_this 工具；认不出就坦率说认不出，不要猜。' in (
-        profile.instructions
-    )
+    assert (
+        '只要问题是关于"这个人是谁"——"我是谁"、"你认得我吗"、"你还记得我吗"、"我叫什么名字"、'
+        "有人新走进来想知道是谁——一律用 who_is_this 工具，不要用 camera；认不出就坦率说认不出，不要猜。"
+    ) in profile.instructions
 
 
 def test_a_remembered_fact_reaches_the_locked_profile_session_instructions(

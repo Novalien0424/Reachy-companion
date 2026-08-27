@@ -15,7 +15,8 @@ class RememberFace(Tool):
     name = "remember_face"
     description = (
         "Remember what the person in front of the camera looks like, under the name they gave you. "
-        'Use this when the user asks you to remember them or their face ("remember me", "I am X, remember my face"). '
+        "Use this tool — not the camera tool — when the user asks you to remember them, their face, or "
+        'what they look like ("remember me", "I am X, remember my face"). '
         "Only the name and a numeric face signature are stored — never a picture. Requires exactly one person in "
         "frame: with nobody or several people visible it refuses, and you should ask them to face you alone."
     )

@@ -15,8 +15,10 @@ class Camera(Tool):
     description = (
         "Take a picture with the camera to see what is in front of the robot. "
         "Use this when the user asks you to look at something, see what they are holding, "
-        "check their appearance, describe the scene, or comment on how they look. "
+        "describe the scene, their outfit, or comment on how they look. "
         "Also use it when the user asks what you can see or wants your visual opinion. "
+        "NEVER use this tool to identify WHO a person is, whether you know or remember them, "
+        "or to recall someone's name — that is what the who_is_this tool is for. "
         "The camera is live, each call captures the current moment. "
         "If the user asks you to look without saying at what, do not ask for clarification, call this tool and describe what you see. "
     )

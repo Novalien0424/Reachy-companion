@@ -15,10 +15,11 @@ class WhoIsThis(Tool):
     name = "who_is_this"
     description = (
         "Look at the person in front of the camera and check whether you recognize them from face memory. "
-        'Use this when the user asks who they are, whether you still recognize them, or "do you remember me". '
-        "Returns a status only: recognized (with the remembered name), unknown, ambiguous, no_face, too_far, "
-        "multiple_faces or unavailable. It never returns a picture. If the status is not recognized, say plainly "
-        "that you do not recognize them — never guess a name."
+        "Always use this tool — instead of the camera tool — whenever the question is about a person's "
+        'IDENTITY: who someone is, "do you know me", "do you remember me", "what is my name", or who just '
+        "arrived. Returns a status only: recognized (with the remembered name), unknown, ambiguous, no_face, "
+        "too_far, multiple_faces or unavailable. It never returns a picture. If the status is not recognized, "
+        "say plainly that you do not recognize them — never guess a name."
     )
     parameters_schema: dict[str, Any] = {
         "type": "object",

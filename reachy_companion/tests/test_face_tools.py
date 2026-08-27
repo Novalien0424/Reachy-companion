@@ -703,3 +703,27 @@ async def test_greeting_hook_runs_recognition_off_the_event_loop(monkeypatch: py
     assert loop_thread is asyncio.get_running_loop()
     # One entry per round since D-015; every one of them off the event loop.
     assert seen and not any(seen)
+
+
+# --- tool-description routing ------------------------------------------------
+
+
+def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
+    """D-013 routing fix: camera must disclaim identity; who_is_this must claim it.
+
+    The 2026-08-24 party session proved the model answers 「是誰」 with `camera`.
+    These clauses are the machine-visible contract that prevents that; if a
+    rewrite drops them, this test is the tripwire.
+    """
+    from reachy_companion.tools.camera import Camera
+    from reachy_companion.tools.who_is_this import WhoIsThis
+    from reachy_companion.tools.remember_face import RememberFace
+
+    camera = Camera.description
+    who = WhoIsThis.description
+    remember = RememberFace.description
+
+    assert "who_is_this" in camera          # camera redirects identity asks
+    assert "NEVER" in camera                # ...and does so emphatically
+    assert "instead of the camera tool" in who
+    assert "not the camera tool" in remember
