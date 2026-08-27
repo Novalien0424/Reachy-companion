@@ -9,6 +9,7 @@ import reachy_companion.conversation_handler as conv_mod
 import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion.tools import core_tools
 from reachy_companion.config import config, get_default_voice
+from reachy_companion.face_id import Identification
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 from reachy_companion.tools.background_tool_manager import ToolState, ToolCallRoutine, ToolNotification
@@ -558,3 +559,253 @@ async def test_change_voice_updates_live_hf_session_without_restart(monkeypatch:
     restart.assert_not_awaited()
     session = captured_update["session"]
     assert session["audio"]["output"]["voice"] == "marin"
+
+
+# --- extended wake face window (Task 5) -------------------------------------
+# The quick pre-greeting check owns ~1200 ms at the instant of boot, and on all
+# 14 recorded robot boots nobody was posed in frame yet. These cover the bounded
+# extension that keeps looking *after* the greeting was queued, and the two
+# things it must never do: speak into a turn the user has started, or inject
+# into a session that has already been replaced.
+
+WAKE_GREETING = "用一句简短自然的中文主动问候用户。"
+
+
+class _WakeRecognizer:
+    """A FaceRecognizer stand-in with scripted answers, for the wake window."""
+
+    def __init__(self, results: list[Identification]) -> None:
+        """Store the scripted identifications; the last one repeats once exhausted."""
+        self._results = list(results)
+        # The real class carries both, and the hook reads `enabled` before it
+        # spends anything; a test can flip either one directly.
+        self.enabled = True
+        self.ready = True
+        # Called inside `identify`, so a test can move the world (a reconnect)
+        # at the exact moment a hit is produced.
+        self.on_identify: Any = None
+        self.ready_calls = 0
+        self.frames_seen = 0
+
+    def wait_ready(self, timeout_s: float) -> bool:
+        """Report readiness, counting the call so a test can assert it never happened."""
+        self.ready_calls += 1
+        return self.ready
+
+    def identify(self, frame: Any) -> Identification:
+        """Return the next scripted identification, running `on_identify` first."""
+        self.frames_seen += 1
+        if self.on_identify is not None:
+            self.on_identify()
+        return self._results.pop(0) if len(self._results) > 1 else self._results[0]
+
+
+class _CapturingConversationItem:
+    """`conversation.item`, recording every created item into a shared list."""
+
+    def __init__(self, created_items: list[dict[str, Any]]) -> None:
+        """Record into the connection's list rather than one of its own."""
+        self._created_items = created_items
+
+    async def create(self, item: dict[str, Any]) -> None:
+        """Record the item the handler wanted to put into the conversation."""
+        self._created_items.append(item)
+
+
+class _CapturingConnection:
+    """A minimal realtime connection exposing only `conversation.item.create`."""
+
+    def __init__(self) -> None:
+        """Start with an empty transcript of created items."""
+        self.created_items: list[dict[str, Any]] = []
+        self.item = _CapturingConversationItem(self.created_items)
+
+    @property
+    def conversation(self) -> "_CapturingConnection":
+        """Expose `.conversation.item` without a second object."""
+        return self
+
+
+def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = True) -> Any:
+    """Build a handler wired to a capturing connection and a counting response sender."""
+    # The real 0.7 s pause between looks is a robot-time value, not a test one.
+    monkeypatch.setattr(hf_mod, "_FACE_WAKE_EXTENDED_PAUSE_S", 0.01)
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: WAKE_GREETING)
+    reachy_mini = MagicMock()
+    reachy_mini.media.get_frame.return_value = object()
+    handler = HuggingFaceRealtimeHandler(
+        ToolDependencies(
+            reachy_mini=reachy_mini,
+            movement_manager=MagicMock(),
+            camera_enabled=camera_enabled,
+            face_recognizer=recognizer,
+        )
+    )
+    handler.connection = _CapturingConnection()
+    handler.instance_path = None
+    monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
+    return handler
+
+
+async def _drop_task(task: Any) -> None:
+    """Cancel a spawned wake task and await it, so nothing leaks into the next test."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_injects_late_recognition(monkeypatch: Any) -> None:
+    """Miss, then a hit: a context item is created and a response is requested.
+
+    Ordering against the boot greeting is the sender loop's job, so there is no
+    active-response precondition to assert here.
+    """
+    recognizer = _WakeRecognizer(
+        [
+            Identification(status="unknown", score=0.1, face_count=1),
+            Identification(status="recognized", name="小明", score=0.59, face_count=1),
+        ]
+    )
+    handler = _wake_handler(recognizer, monkeypatch)
+
+    await handler._extended_wake_face_check()
+
+    (item,) = handler.connection.created_items
+    assert item["role"] == "user"
+    assert "小明" in item["content"][0]["text"]
+    assert handler._safe_response_create.await_count == 1
+    assert recognizer.frames_seen == 2
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_goes_silent_after_user_spoke(monkeypatch: Any) -> None:
+    """Once the user has spoken, the window closes without injecting anything.
+
+    A context item landing mid-turn could steer the model's answer; from that
+    point identity belongs to the routed tools, not to the wake hook.
+    """
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+    handler._user_has_spoken = True
+
+    await handler._extended_wake_face_check()
+
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    assert recognizer.frames_seen == 0
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_disabled_by_env(monkeypatch: Any) -> None:
+    """`FACE_WAKE_EXTENDED_MS=0` turns the extension off without touching the camera."""
+    monkeypatch.setenv("FACE_WAKE_EXTENDED_MS", "0")
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+
+    await handler._extended_wake_face_check()
+
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    assert recognizer.ready_calls == 0
+    assert recognizer.frames_seen == 0
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_respects_auto_greet_kill_switch(monkeypatch: Any) -> None:
+    """The extension is the same D-013 hook, so the same kill switch silences it."""
+    monkeypatch.setenv("FACE_AUTO_GREET", "0")
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+
+    await handler._extended_wake_face_check()
+
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    assert recognizer.ready_calls == 0
+    assert recognizer.frames_seen == 0
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_gives_up_at_deadline(monkeypatch: Any) -> None:
+    """Nobody recognized: the loop must end on its budget, having created nothing."""
+    monkeypatch.setenv("FACE_WAKE_EXTENDED_MS", "200")
+    recognizer = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+
+    started = time.monotonic()
+    await handler._extended_wake_face_check()
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    assert recognizer.frames_seen >= 1
+    # 200 ms budget plus slack for a busy CI box; far below any unbounded wait.
+    assert elapsed_ms < 1500.0
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_aborts_on_reconnected_session(monkeypatch: Any) -> None:
+    """A hit produced after a reconnect must not be injected into the new session."""
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+    original = handler.connection
+    replacement = _CapturingConnection()
+
+    def _reconnect() -> None:
+        handler.connection = replacement
+
+    recognizer.on_identify = _reconnect
+
+    await handler._extended_wake_face_check()
+
+    assert replacement.created_items == []
+    assert original.created_items == []
+    assert handler._safe_response_create.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch: Any) -> None:
+    """The extension is spawned exactly when the quick check found nobody.
+
+    Three sub-cases in one test because they are one rule: a quick-check miss
+    spawns it once, a quick-check hit has nothing left to look for, and the
+    kill switch stops the spawn before a task is ever created.
+    """
+    miss = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
+    handler = _wake_handler(miss, monkeypatch)
+
+    await handler._send_startup_greeting_prompt()
+
+    (item,) = handler.connection.created_items
+    assert item["content"][0]["text"] == WAKE_GREETING
+    spawned = handler._wake_face_task
+    assert spawned is not None
+    # Once per app start: the greeting is already sent, so a second call is a
+    # no-op and must not start a second window.
+    await handler._send_startup_greeting_prompt()
+    assert handler._wake_face_task is spawned
+    await _drop_task(spawned)
+
+    hit = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    greeted = _wake_handler(hit, monkeypatch)
+
+    await greeted._send_startup_greeting_prompt()
+
+    (greeted_item,) = greeted.connection.created_items
+    assert "小明" in greeted_item["content"][0]["text"]
+    assert greeted._wake_face_task is None
+
+    monkeypatch.setenv("FACE_AUTO_GREET", "0")
+    silenced = _wake_handler(
+        _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)]),
+        monkeypatch,
+    )
+
+    await silenced._send_startup_greeting_prompt()
+
+    (silenced_item,) = silenced.connection.created_items
+    assert silenced_item["content"][0]["text"] == WAKE_GREETING
+    assert silenced._wake_face_task is None

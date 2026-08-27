@@ -274,6 +274,15 @@ _FACE_WAKE_RETRY_PAUSE_S: Final[float] = 0.15
 _FACE_GREETING_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
 )
+# The same hook, given a realistic window: the pre-greeting check is over
+# before anyone is posed in frame (14/14 on-robot boots), so the look continues
+# for a bounded few seconds *after* the greeting has been queued.
+_FACE_WAKE_EXTENDED_MS_DEFAULT: Final[int] = 8000
+_FACE_WAKE_EXTENDED_PAUSE_S: Final[float] = 0.7
+_FACE_LATE_RECOGNITION_PROMPT: Final[str] = (
+    "（系统提示：摄像头刚认出面前的人是「{name}」。自然地用名字招呼他，"
+    "或在你接下来说的话里称呼他的名字。不要提到摄像头或识别这件事。）"
+)
 
 # Boot gate (Task 6). The first session of a handler comes up with turn
 # detection OFF: the greeting is about to play out of a speaker sitting next to
@@ -407,6 +416,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._party_utterance_seq: int = 0
         self._party_barge_task: asyncio.Task[None] | None = None
         self._active_response_id: str | None = None
+        # --- extended wake face window (Task 5) ------------------------------
+        # `_user_has_spoken` closes that window for good: after the first
+        # syllable, an injected identity item would be steering an answer the
+        # user is already waiting on.
+        self._user_has_spoken = False
+        self._wake_face_task: asyncio.Task[None] | None = None
         # Late audio deltas from a cancelled response must not reach the
         # speaker (finding 8). Tiny bound: only very recent ids can race.
         self._cancelled_response_ids: deque[str] = deque(maxlen=8)
@@ -1395,6 +1410,100 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         )
         return _FACE_GREETING_PREFIX.format(name=identification.name) + "\n"
 
+    async def _extended_wake_face_check(self) -> None:
+        """Keep the wake face check alive briefly after the greeting (D-013 hook, part 2).
+
+        The pre-greeting check gets ~1200 ms at the exact moment of boot — the
+        14/14 on-robot failure mode is simply that nobody is posed in frame at
+        that instant. This extension keeps looking for a bounded few seconds
+        *after* the greeting went out; a hit becomes a context item plus a
+        queued spoken follow-up (the response sender loop serializes it behind
+        the greeting). The window closes silently the moment the user speaks —
+        a context item landing mid-turn could steer the answer. It runs once
+        per app start and is cancelled at shutdown; recognition never becomes
+        a continuous scan.
+        """
+        if not env_bool("FACE_AUTO_GREET", True):
+            return
+        budget_ms = env_int("FACE_WAKE_EXTENDED_MS", _FACE_WAKE_EXTENDED_MS_DEFAULT, lo=0, hi=20_000)
+        if budget_ms <= 0:
+            return
+        recognizer = self.deps.face_recognizer
+        if recognizer is None or not getattr(recognizer, "enabled", True) or not self.deps.camera_enabled:
+            return
+        connection = self.connection
+        if connection is None:
+            return
+
+        deadline = time.monotonic() + budget_ms / 1000.0
+
+        def remaining() -> float:
+            return deadline - time.monotonic()
+
+        rounds = 0
+        try:
+            ready = await asyncio.wait_for(asyncio.to_thread(recognizer.wait_ready, remaining()), remaining())
+            if not ready:
+                logger.info("Extended wake face check: face memory not ready within the window.")
+                return
+            while remaining() > 0.0 and not self._user_has_spoken:
+                if self.connection is not connection:
+                    logger.info("Extended wake face check: session changed; window closed.")
+                    return
+                frame = await asyncio.wait_for(
+                    asyncio.to_thread(self.deps.reachy_mini.media.get_frame), remaining()
+                )
+                if frame is not None:
+                    identification = await asyncio.wait_for(
+                        asyncio.to_thread(recognizer.identify, frame), remaining()
+                    )
+                    rounds += 1
+                    if identification.status == "recognized" and identification.name:
+                        if self._user_has_spoken or self.connection is not connection:
+                            logger.info("Extended wake face check: hit arrived too late; window closed.")
+                            return
+                        name = identification.name
+                        # Bounded so a stalled network write cannot keep this
+                        # task alive far past its window; 5 s is a transport
+                        # guard, not budget.
+                        await asyncio.wait_for(
+                            connection.conversation.item.create(
+                                item={
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "input_text",
+                                            "text": _FACE_LATE_RECOGNITION_PROMPT.format(name=name),
+                                        },
+                                    ],
+                                },
+                            ),
+                            5.0,
+                        )
+                        await self._safe_response_create()
+                        logger.info(
+                            "Extended wake face check: recognized %s (score %.3f) on round %d; "
+                            "queued a late named greeting.",
+                            name,
+                            identification.score or 0.0,
+                            rounds,
+                        )
+                        return
+                pause = min(_FACE_WAKE_EXTENDED_PAUSE_S, remaining())
+                if pause <= 0.0:
+                    break
+                await asyncio.sleep(pause)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.info("Extended wake face check: window expired mid-round after %d round(s).", rounds)
+            return
+        except Exception as e:
+            logger.warning("Extended wake face check failed: %s: %s", type(e).__name__, e)
+            return
+        logger.info("Extended wake face check: no recognition in %d round(s); window closed.", rounds)
+
     async def _send_startup_greeting_prompt(self) -> None:
         """Prompt the model to open the conversation once the session is ready."""
         if self._startup_greeting_sent or not self.connection:
@@ -1409,7 +1518,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             await self._finish_boot_gate("no greeting configured")
             return
 
-        greeting_prompt = await self._recognized_face_prefix() + greeting_prompt
+        face_prefix = await self._recognized_face_prefix()
+        greeting_prompt = face_prefix + greeting_prompt
 
         try:
             await self.connection.conversation.item.create(
@@ -1428,6 +1538,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._mark_activity("startup_greeting_prompt")
             await self._safe_response_create()
             logger.info("Queued startup greeting prompt")
+            # Task 5: nobody was in frame for the 1200 ms before the greeting.
+            # Keep looking for a bounded few seconds now that it is out, and
+            # greet by name late if someone turns up. The method re-checks the
+            # kill switch itself; the guard here only avoids creating a task
+            # that would instantly return.
+            if not face_prefix and env_bool("FACE_AUTO_GREET", True):
+                self._wake_face_task = asyncio.create_task(self._extended_wake_face_check())
         except Exception as e:
             logger.warning("Failed to queue startup greeting prompt: %s", e)
 
@@ -1769,6 +1886,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
                     if event.type == "input_audio_buffer.speech_started":
+                        self._user_has_spoken = True
                         self._mark_activity("user_speech_started")
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
@@ -2092,6 +2210,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                     boot_gate_task.cancel()
                     try:
                         await boot_gate_task
+                    except asyncio.CancelledError:
+                        pass
+
+                # Extended wake face window (Task 5): it holds this session's
+                # connection and may be mid-`item.create`. Cancel and await it
+                # here, exactly like the boot gate above, so nothing it started
+                # outlives the session it was looking on behalf of.
+                if self._wake_face_task is not None:
+                    wake_face_task, self._wake_face_task = self._wake_face_task, None
+                    wake_face_task.cancel()
+                    try:
+                        await wake_face_task
                     except asyncio.CancelledError:
                         pass
 
