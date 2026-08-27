@@ -1465,22 +1465,30 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         name = identification.name
                         # Bounded so a stalled network write cannot keep this
                         # task alive far past its window; 5 s is a transport
-                        # guard, not budget.
-                        await asyncio.wait_for(
-                            connection.conversation.item.create(
-                                item={
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "input_text",
-                                            "text": _FACE_LATE_RECOGNITION_PROMPT.format(name=name),
-                                        },
-                                    ],
-                                },
-                            ),
-                            5.0,
-                        )
+                        # guard, not budget — hence its own handler, so a stall
+                        # is never logged as an expired window.
+                        try:
+                            await asyncio.wait_for(
+                                connection.conversation.item.create(
+                                    item={
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": _FACE_LATE_RECOGNITION_PROMPT.format(name=name),
+                                            },
+                                        ],
+                                    },
+                                ),
+                                5.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Extended wake face check: item.create timed out; window closed without greeting %s.",
+                                name,
+                            )
+                            return
                         await self._safe_response_create()
                         logger.info(
                             "Extended wake face check: recognized %s (score %.3f) on round %d; "
@@ -1544,7 +1552,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # kill switch itself; the guard here only avoids creating a task
             # that would instantly return.
             if not face_prefix and env_bool("FACE_AUTO_GREET", True):
-                self._wake_face_task = asyncio.create_task(self._extended_wake_face_check())
+                self._wake_face_task = asyncio.create_task(
+                    self._extended_wake_face_check(), name="extended-wake-face-check"
+                )
         except Exception as e:
             logger.warning("Failed to queue startup greeting prompt: %s", e)
 

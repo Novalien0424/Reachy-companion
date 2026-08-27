@@ -699,6 +699,52 @@ async def test_extended_wake_check_goes_silent_after_user_spoke(monkeypatch: Any
 
 
 @pytest.mark.asyncio
+async def test_extended_wake_check_drops_a_hit_when_the_user_speaks_mid_round(monkeypatch: Any) -> None:
+    """The user starts talking while the round is in flight: the hit is dropped, unspoken.
+
+    The loop condition passed before the look began, so only the second half of
+    the double-check — the one immediately before `item.create` — can stop this
+    item from landing in the middle of a turn the user is already waiting on.
+    """
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+
+    def _user_speaks() -> None:
+        handler._user_has_spoken = True
+
+    recognizer.on_identify = _user_speaks
+
+    await handler._extended_wake_face_check()
+
+    assert recognizer.frames_seen == 1
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_speech_started_marks_that_the_user_has_spoken(monkeypatch: Any) -> None:
+    """The receiver loop is what sets the flag the wake window watches.
+
+    Asserted through a real session run rather than by calling the branch's
+    helpers, because the flag lives on the branch itself.
+    """
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = _make_fake_realtime_client(events=(_FakeEvent("input_audio_buffer.speech_started"),))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    assert handler._user_has_spoken is False
+
+    await handler._run_realtime_session()
+
+    assert handler._user_has_spoken is True
+
+
+@pytest.mark.asyncio
 async def test_extended_wake_check_disabled_by_env(monkeypatch: Any) -> None:
     """`FACE_WAKE_EXTENDED_MS=0` turns the extension off without touching the camera."""
     monkeypatch.setenv("FACE_WAKE_EXTENDED_MS", "0")
