@@ -160,6 +160,23 @@ def test_corrupt_store_reads_as_empty_and_never_raises(tmp_path: Path) -> None:
     assert list_faces(tmp_path) == []
 
 
+def test_corrupt_bytes_read_as_empty_and_never_raise(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A store that is not even valid UTF-8 must degrade the same way bad JSON does.
+
+    `UnicodeDecodeError` never reaches the JSON decoder, so before the fix it
+    escaped the tolerant reader entirely and surfaced from `list_faces` — which
+    the recognizer calls inside its own load `try`, misreporting a healthy
+    recognizer as "model load failed".
+    """
+    path = faces_path_for_instance(tmp_path)
+    path.write_bytes(b'{"version": 1, "faces": [\xff\xfe]}')
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.faces"):
+        assert list_faces(tmp_path) == []
+
+    assert "Failed to read face store" in caplog.text
+
+
 def test_malformed_records_are_dropped_individually(tmp_path: Path) -> None:
     """One bad record must not take the good ones down with it."""
     path = faces_path_for_instance(tmp_path)

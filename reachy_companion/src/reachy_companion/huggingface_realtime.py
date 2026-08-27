@@ -1463,6 +1463,32 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             logger.info("Extended wake face check: hit arrived too late; window closed.")
                             return
                         name = identification.name
+                        # The boot gate is still holding turn detection off
+                        # while the greeting plays, and its drain cap does NOT
+                        # restart for a second response (see `response.done`).
+                        # Injecting now would queue a reply that is still
+                        # speaking when that cap fires — VAD back on with the
+                        # robot audible, which is the echo turn the gate exists
+                        # to prevent. Wait it out inside the same budget,
+                        # polling exactly as the drain waiter does.
+                        async def _gate_released() -> None:
+                            while self._boot_gate_active:
+                                await asyncio.sleep(_BOOT_GATE_DRAIN_POLL_S)
+
+                        try:
+                            await asyncio.wait_for(_gate_released(), remaining())
+                        except asyncio.TimeoutError:
+                            logger.info(
+                                "Extended wake face check: boot gate still closed at the deadline; "
+                                "window closed without greeting %s.",
+                                name,
+                            )
+                            return
+                        # That wait can be seconds long, so both turn-safety
+                        # conditions are asked again before anything is sent.
+                        if self._user_has_spoken or self.connection is not connection:
+                            logger.info("Extended wake face check: hit went stale while gated; window closed.")
+                            return
                         # Bounded so a stalled network write cannot keep this
                         # task alive far past its window; 5 s is a transport
                         # guard, not budget — hence its own handler, so a stall

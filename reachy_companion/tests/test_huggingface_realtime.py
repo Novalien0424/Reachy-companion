@@ -643,6 +643,9 @@ def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = T
     )
     handler.connection = _CapturingConnection()
     handler.instance_path = None
+    # The ordinary case a late hit lands in: the greeting has finished playing
+    # and the boot gate is already open. The two tests that care hold it shut.
+    handler._boot_gate_active = False
     monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
     return handler
 
@@ -719,6 +722,49 @@ async def test_extended_wake_check_drops_a_hit_when_the_user_speaks_mid_round(mo
     assert recognizer.frames_seen == 1
     assert handler.connection.created_items == []
     assert handler._safe_response_create.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_waits_for_the_boot_gate_before_injecting(monkeypatch: Any) -> None:
+    """A hit while the greeting is still playing waits for the gate, then speaks.
+
+    The boot gate's drain cap is not restarted by a second `response.done`, so a
+    late greeting queued while the gate is shut can still be speaking when the
+    cap opens the microphone — the echo turn the gate exists to prevent.
+    """
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+    handler._boot_gate_active = True
+
+    async def _release_gate() -> None:
+        await asyncio.sleep(0.05)
+        handler._boot_gate_active = False
+
+    releaser = asyncio.create_task(_release_gate())
+    await handler._extended_wake_face_check()
+    await releaser
+
+    (item,) = handler.connection.created_items
+    assert "小明" in item["content"][0]["text"]
+    assert handler._safe_response_create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_drops_a_hit_when_the_boot_gate_never_opens(monkeypatch: Any) -> None:
+    """A gate that outlasts the window closes it: no item, no response, no echo turn."""
+    monkeypatch.setenv("FACE_WAKE_EXTENDED_MS", "300")
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch)
+    handler._boot_gate_active = True
+
+    started = time.monotonic()
+    await handler._extended_wake_face_check()
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+
+    assert handler.connection.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    # The gate wait is inside the window's budget, not on top of it.
+    assert elapsed_ms < 1500.0
 
 
 @pytest.mark.asyncio

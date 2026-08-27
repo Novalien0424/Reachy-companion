@@ -166,7 +166,12 @@ def _read_faces_file(path: Path) -> list[FaceRecord]:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    except OSError as exc:
+    # ValueError covers UnicodeDecodeError: a store file with corrupt *bytes*
+    # never reaches the JSON decoder, and the reader's contract is that a bad
+    # store reads as "nobody is enrolled" — not that it raises through its
+    # callers, one of which is the recognizer's ready log, where it would
+    # surface as "model load failed" on a perfectly healthy recognizer.
+    except (OSError, ValueError) as exc:
         logger.warning("Failed to read face store at %s: %s", path, exc)
         return []
 
