@@ -5,6 +5,7 @@ No model and no camera here: this file pins the persistence contract only
 """
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from reachy_companion.faces import (
     EMBEDDING_DIM,
     FACES_FILENAME,
     MAX_NAME_CHARS,
+    ALIGNMENT_VERSION,
     MAX_EMBEDDINGS_PER_PERSON,
     list_faces,
     clear_faces,
@@ -28,6 +30,26 @@ from reachy_companion.faces import (
 def _vector(index: int) -> NDArray[np.float32]:
     """Return the `index`-th canonical unit vector, a valid stored embedding."""
     return np.eye(EMBEDDING_DIM, dtype=np.float32)[index % EMBEDDING_DIM]
+
+
+def _write_record(tmp_path: Path, name: str, extra: dict[str, object] | None = None) -> None:
+    """Write one hand-built record straight to the store file.
+
+    The alignment cases need bytes on disk that `upsert_face` cannot produce:
+    a record stamped by an older pipeline, or one written before the marker
+    existed at all.
+    """
+    record: dict[str, object] = {
+        "id": f"f_{name}",
+        "name": name,
+        "embeddings": [[0.0] * EMBEDDING_DIM],
+        "createdAt": 1000,
+        "updatedAt": 1000,
+    }
+    record.update(extra or {})
+    path = faces_path_for_instance(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "faces": [record]}), encoding="utf-8")
 
 
 def test_upsert_appends_and_ring_buffers(tmp_path: Path) -> None:
@@ -166,6 +188,52 @@ def test_malformed_records_are_dropped_individually(tmp_path: Path) -> None:
     assert [record.name for record in list_faces(tmp_path)] == ["Ada"]
 
 
+def test_alignment_marker_round_trips(tmp_path: Path) -> None:
+    """Every written record names the pipeline that produced its embeddings."""
+    upsert_face(tmp_path, "Alice", _vector(0))
+
+    raw = json.loads(faces_path_for_instance(tmp_path).read_text(encoding="utf-8"))
+
+    assert ALIGNMENT_VERSION == "arcface5"
+    assert raw["faces"][0]["alignment"] == ALIGNMENT_VERSION
+
+
+def test_mismatched_alignment_marker_is_dropped_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A record from a different warp is not comparable — drop it, and say so.
+
+    D-015 silently invalidated every stored embedding with no signal at all;
+    the marker is what turns that into a loud "re-enroll this person".
+    """
+    _write_record(tmp_path, "Old", {"alignment": "threepoint-legacy"})
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.faces"):
+        assert list_faces(tmp_path) == []
+
+    assert "alignment" in caplog.text
+    assert "Old" in caplog.text
+
+
+def test_explicit_null_alignment_marker_is_dropped(tmp_path: Path) -> None:
+    """A present-but-null marker is a corrupted stamp, not an unmarked record."""
+    _write_record(tmp_path, "Broken", {"alignment": None})
+
+    assert list_faces(tmp_path) == []
+
+
+def test_unmarked_record_is_grandfathered(tmp_path: Path) -> None:
+    """Records written before the marker existed (the live Louis/Lena records) keep loading.
+
+    Those two were enrolled *after* D-015, so their embeddings are current;
+    dropping them on a missing key would forget the only two people the robot
+    actually knows.
+    """
+    _write_record(tmp_path, "Louis")
+
+    assert [record.name for record in list_faces(tmp_path)] == ["Louis"]
+
+
 def test_writes_are_atomic_and_leave_no_temp_files(tmp_path: Path) -> None:
     """Atomic tmp+replace, exactly like memory.py — a killed process must not truncate the store."""
     upsert_face(tmp_path, "Ada", _vector(0))
@@ -192,10 +260,10 @@ def test_stored_floats_are_normalized_and_stay_inspectable(tmp_path: Path) -> No
 
 
 def test_no_image_bytes_are_ever_persisted(tmp_path: Path) -> None:
-    """The privacy claim, asserted: names, vectors and timestamps — nothing else."""
+    """The privacy claim, asserted: names, vectors, timestamps and a pipeline tag — nothing else."""
     upsert_face(tmp_path, "Ada", _vector(0))
 
     payload = json.loads(faces_path_for_instance(tmp_path).read_text(encoding="utf-8"))
 
     assert set(payload) == {"version", "faces"}
-    assert set(payload["faces"][0]) == {"id", "name", "embeddings", "createdAt", "updatedAt"}
+    assert set(payload["faces"][0]) == {"id", "name", "embeddings", "createdAt", "updatedAt", "alignment"}

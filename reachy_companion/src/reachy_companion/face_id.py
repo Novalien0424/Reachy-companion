@@ -449,11 +449,15 @@ class FaceRecognizer:
             self._sface_input_name = session.get_inputs()[0].name
             self._load_ms = (time.perf_counter() - started) * 1000.0
             self._loaded = True
+            # The enrolled count is part of the line on purpose: the store read
+            # as empty for a week and nothing in the log ever said so.
             logger.info(
-                "Face memory ready: YuNet + SFace sessions built in %.0f ms (threshold %.2f, margin %.2f)",
+                "Face memory ready: YuNet + SFace sessions built in %.0f ms "
+                "(threshold %.2f, margin %.2f, %d people enrolled)",
                 self._load_ms,
                 self.threshold,
                 self.margin,
+                len(list_faces(self.instance_path)),
             )
         except Exception as exc:
             self._load_error = f"{type(exc).__name__}: {exc}"
@@ -564,8 +568,10 @@ class FaceRecognizer:
         try:
             record = upsert_face(self.instance_path, name, embedding)
         except ValueError as exc:
+            # A rejected embedding is our defect, not a bad name: telling the
+            # model `invalid_name` sends it off asking the user to spell it again.
             logger.warning("Face enrollment rejected: %s", exc)
-            return None, Identification(status="unavailable", face_count=1, reason="invalid_name")
+            return None, Identification(status="unavailable", face_count=1, reason="internal_error")
         if record is None:
             logger.warning("Face enrollment rejected: the name was empty.")
             return None, Identification(status="unavailable", face_count=1, reason="invalid_name")

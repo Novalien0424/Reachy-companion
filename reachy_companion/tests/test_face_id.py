@@ -614,6 +614,44 @@ def test_enroll_still_refuses_multiple_faces(tmp_path: Path) -> None:
     assert list_faces(tmp_path) == []
 
 
+def test_enroll_malformed_embedding_reports_internal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected embedding is our defect, not a bad name — `invalid_name` misled the model.
+
+    The empty-name branch keeps `invalid_name`; a `ValueError` out of the store
+    means the vector we produced was malformed, which the model can do nothing
+    about but retry.
+    """
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(120.0)])
+    recognizer.embed = _lit_or_dark_embedder  # type: ignore[method-assign]
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("bad embedding")
+
+    monkeypatch.setattr("reachy_companion.face_id.upsert_face", _raise)
+
+    record, identification = recognizer.enroll(np.zeros((720, 1280, 3), dtype=np.uint8), "Alice")
+
+    assert record is None
+    assert identification.status == "unavailable"
+    assert identification.reason == "internal_error"
+    # face_count 1 pins the *store* branch: `_capture`'s own internal_error
+    # would report 0, so the assertion above cannot pass by the wrong route.
+    assert identification.face_count == 1
+
+
+def test_enroll_empty_name_still_reports_invalid_name(tmp_path: Path) -> None:
+    """The other half of the split: a blank name really is the caller's fault."""
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(120.0)])
+    recognizer.embed = _lit_or_dark_embedder  # type: ignore[method-assign]
+
+    record, identification = recognizer.enroll(np.zeros((720, 1280, 3), dtype=np.uint8), "   ")
+
+    assert record is None
+    assert (identification.reason, identification.face_count) == ("invalid_name", 1)
+
+
 def test_identify_reports_too_far_for_a_small_face(tmp_path: Path) -> None:
     """A face under MIN_FACE_PX at full resolution has too little detail to embed honestly."""
     # Detection runs on the half-resolution frame, so a 59 px full-res bbox is 29.5 px there.
@@ -810,6 +848,26 @@ def test_sface_thread_count_is_env_tunable_and_clamped(
     built = _load_with_stub_sessions(tmp_path, monkeypatch)
 
     assert _sface_options(built).intra_op_num_threads == expected
+
+
+def test_ready_log_reports_people_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Startup says how many people are enrolled.
+
+    The store read as empty for a week (Aug 19-26) and nothing in the log ever
+    said so; the count is what makes "the robot knows nobody" visible at boot.
+    """
+    upsert_face(tmp_path, "Alice", _unit_embedding(0))
+    upsert_face(tmp_path, "Bob", _unit_embedding(1))
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.face_id"):
+        _load_with_stub_sessions(tmp_path, monkeypatch)
+
+    ready = [record.getMessage() for record in caplog.records if "Face memory ready" in record.getMessage()]
+
+    assert len(ready) == 1
+    assert "2 people enrolled" in ready[0]
 
 
 # --- model contract (gated on the local HF cache, no network) ---------------

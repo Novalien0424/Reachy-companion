@@ -20,6 +20,7 @@ import random
 import string
 import logging
 import threading
+from typing import Final
 from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
@@ -32,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 FACES_FILENAME = "faces.v1.json"
+# Which alignment pipeline produced a stored embedding. Embeddings are only
+# comparable within one warp: D-015 replaced the three-point warp with the
+# five-point one and silently invalidated every stored vector, with no signal
+# beyond scores that quietly stopped matching. Stamping the pipeline turns the
+# next such change into a dropped record and a WARNING telling you to re-enroll.
+ALIGNMENT_VERSION: Final[str] = "arcface5"
 MAX_PEOPLE = 12
 MAX_EMBEDDINGS_PER_PERSON = 3
 EMBEDDING_DIM = 128
@@ -52,7 +59,7 @@ class FaceRecord:
     updated_at: int
 
     def to_json(self) -> dict[str, object]:
-        """Return the persisted JSON shape."""
+        """Return the persisted record fields; the writer adds the alignment marker."""
         return {
             "id": self.id,
             "name": self.name,
@@ -123,6 +130,19 @@ def _record_from_json(value: object) -> FaceRecord | None:
     if not normalized_name:
         return None
 
+    # Key-presence, not `.get()`: records written before the marker existed are
+    # grandfathered in (they hold current-pipeline embeddings), while a marker
+    # that is present and wrong — an explicit null included — is a vector this
+    # build cannot compare and must not silently score.
+    if "alignment" in value and value["alignment"] != ALIGNMENT_VERSION:
+        logger.warning(
+            "Dropping face record %r: alignment %r does not match the current pipeline (%s); re-enroll this person.",
+            name,
+            value["alignment"],
+            ALIGNMENT_VERSION,
+        )
+        return None
+
     embeddings: list[tuple[float, ...]] = []
     for item in embeddings_value:
         embedding = _embedding_from_json(item)
@@ -178,7 +198,10 @@ def _write_faces_file(path: Path, records: list[FaceRecord]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": SCHEMA_VERSION,
-        "faces": [record.to_json() for record in records[:MAX_PEOPLE]],
+        # Anything this build writes came through the current alignment, including
+        # a grandfathered record being rewritten — stamping it here is what stops
+        # the store drifting back into "no marker at all".
+        "faces": [{**record.to_json(), "alignment": ALIGNMENT_VERSION} for record in records[:MAX_PEOPLE]],
     }
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
