@@ -155,11 +155,25 @@ async def test_who_is_this_reports_too_far() -> None:
 
 
 @pytest.mark.asyncio
-async def test_who_is_this_reports_multiple_faces() -> None:
-    """With two people in frame there is no single answer; say so instead of picking one."""
-    result = await WhoIsThis()(_deps(_FakeRecognizer(Identification(status="multiple_faces", face_count=2))))
+async def test_who_is_this_scores_a_face_when_two_are_in_frame(tmp_path: Path) -> None:
+    """Two people in frame no longer refuses the question.
 
-    assert result == {"status": "multiple_faces", "face_count": 2}
+    `identify` scores the largest face — the SDK head tracker's rule — so the
+    tool answers about that face and still reports the true count. Enrollment
+    is the path that keeps refusing (see `remember_face` below).
+    """
+    recognizer = FaceRecognizer(tmp_path)
+    recognizer._detector = _StubDetector([_face(), _face(width=30.0)])
+    recognizer._loaded = True
+    recognizer._load_done.set()
+    recognizer.embed = _brightness_embedder  # type: ignore[method-assign]
+
+    result = await WhoIsThis()(_deps(recognizer, instance_path=tmp_path, frame=_frame()))
+
+    assert result["status"] == "unknown"
+    assert result["face_count"] == 2
+    assert "name" not in result
+    _assert_carries_no_image(result)
 
 
 @pytest.mark.asyncio
@@ -330,15 +344,24 @@ class _StubDetector:
         return self.faces
 
 
-def _face() -> Face5:
-    """One face large enough to pass MIN_FACE_PX once scaled back to full resolution."""
+def _face(width: float = 60.0) -> Face5:
+    """One face `width` px wide as detected; the default passes MIN_FACE_PX at full resolution.
+
+    Landmarks keep their proportions, so a narrower face is the same face,
+    smaller — which is what makes a largest-of-two frame meaningful.
+    """
+    scale = width / 60.0
+
+    def at(dx: float, dy: float) -> tuple[float, float]:
+        return (10.0 + dx * scale, 10.0 + dy * scale)
+
     return Face5(
-        bbox=(10.0, 10.0, 60.0, 60.0),
-        right_eye=(25.0, 30.0),
-        left_eye=(45.0, 30.0),
-        nose=(35.0, 40.0),
-        right_mouth=(28.0, 50.0),
-        left_mouth=(42.0, 50.0),
+        bbox=(10.0, 10.0, width, width),
+        right_eye=at(15.0, 20.0),
+        left_eye=at(35.0, 20.0),
+        nose=at(25.0, 30.0),
+        right_mouth=at(18.0, 40.0),
+        left_mouth=at(32.0, 40.0),
     )
 
 

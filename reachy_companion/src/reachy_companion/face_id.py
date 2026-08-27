@@ -505,8 +505,8 @@ class FaceRecognizer:
 
         Per-person score is the best of that person's (up to three) samples.
         `recognized` requires both `best >= threshold` and a `margin` lead over
-        the runner-up; a near-tie is reported as `ambiguous` rather than
-        confidently naming the wrong person.
+        a runner-up that also clears the threshold; a near-tie between them is
+        reported as `ambiguous` rather than confidently naming the wrong person.
         """
         scored = [
             (max(cosine(embedding, np.asarray(sample, dtype=np.float32)) for sample in record.embeddings), record.name)
@@ -544,7 +544,7 @@ class FaceRecognizer:
 
     def identify(self, frame_bgr: NDArray[np.uint8] | None) -> Identification:
         """Return who is in front of the camera, as a status that is never an exception."""
-        _, identification = self._capture(frame_bgr)
+        _, identification = self._capture(frame_bgr, select_largest=True)
         return identification
 
     def enroll(
@@ -574,8 +574,15 @@ class FaceRecognizer:
     def _capture(
         self,
         frame_bgr: NDArray[np.uint8] | None,
+        *,
+        select_largest: bool = False,
     ) -> tuple[NDArray[np.float32] | None, Identification]:
-        """Run the whole pipeline once, returning the embedding when there is exactly one face."""
+        """Run the whole pipeline once, returning the embedding of the face it scored.
+
+        `select_largest` decides what a crowded frame means: identification
+        picks the largest face, enrollment (the default) refuses anything but
+        exactly one.
+        """
         if not self.enabled:
             return None, Identification(status="unavailable", reason="face_memory_disabled")
         if frame_bgr is None:
@@ -599,12 +606,18 @@ class FaceRecognizer:
             detected = self._detector.detect(small)
             if not detected:
                 return None, Identification(status="no_face", face_count=0)
-            if len(detected) > 1:
-                return None, Identification(status="multiple_faces", face_count=len(detected))
+            face_count = len(detected)
+            if face_count > 1 and not select_largest:
+                return None, Identification(status="multiple_faces", face_count=face_count)
 
-            face = _scale_face(detected[0], DETECT_DOWNSCALE)
+            # Identification mirrors the SDK head tracker's rule (face_tracking.py:
+            # "acquire largest"), so recognition scores the same face the head is
+            # already aiming at. Enrollment keeps the exactly-one-face contract:
+            # storing a bystander under the user's name is worse than refusing.
+            chosen = max(detected, key=lambda candidate: candidate.bbox[2] * candidate.bbox[3])
+            face = _scale_face(chosen, DETECT_DOWNSCALE)
             if face.bbox[2] < MIN_FACE_PX:
-                return None, Identification(status="too_far", face_count=1)
+                return None, Identification(status="too_far", face_count=face_count)
 
             # The crop comes from the full-resolution frame, not the decimated one.
             aligned = align_face(frame, face)
@@ -620,7 +633,7 @@ class FaceRecognizer:
             name=result.name,
             score=result.score,
             runner_up=result.runner_up,
-            face_count=1,
+            face_count=face_count,
         )
 
 

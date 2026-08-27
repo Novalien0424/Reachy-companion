@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from reachy_companion.faces import upsert_face
+from reachy_companion.faces import list_faces, upsert_face
 from reachy_companion.face_id import (
     SFACE_FILE,
     ALIGNED_SIZE,
@@ -531,16 +531,38 @@ def _loaded_recognizer(tmp_path: Path, faces: list[Face5]) -> tuple[FaceRecogniz
     return recognizer, detector
 
 
-def _face_of_width(width: float) -> Face5:
-    """Return one face whose bbox is `width` px wide at full resolution, landmarks inside it."""
+def _face_of_width(width: float, *, origin: tuple[float, float] = (100.0, 100.0)) -> Face5:
+    """Return one face whose bbox is `width` px wide as detected, landmarks inside it.
+
+    Coordinates are the ones a detector reports, i.e. on the decimated frame; a
+    caller comparing against MIN_FACE_PX must scale by `DETECT_DOWNSCALE`.
+    """
+    x, y = origin
     return Face5(
-        bbox=(100.0, 100.0, width, width),
-        right_eye=(100.0 + width * 0.3, 100.0 + width * 0.4),
-        left_eye=(100.0 + width * 0.7, 100.0 + width * 0.4),
-        nose=(100.0 + width * 0.5, 100.0 + width * 0.6),
-        right_mouth=(100.0 + width * 0.35, 100.0 + width * 0.75),
-        left_mouth=(100.0 + width * 0.65, 100.0 + width * 0.75),
+        bbox=(x, y, width, width),
+        right_eye=(x + width * 0.3, y + width * 0.4),
+        left_eye=(x + width * 0.7, y + width * 0.4),
+        nose=(x + width * 0.5, y + width * 0.6),
+        right_mouth=(x + width * 0.35, y + width * 0.75),
+        left_mouth=(x + width * 0.65, y + width * 0.75),
     )
+
+
+def _unit_embedding(index: int) -> NDArray[np.float32]:
+    """Return the 128-d unit vector along `index`; two such vectors are orthogonal."""
+    vector = np.zeros(128, dtype=np.float32)
+    vector[index] = 1.0
+    return vector
+
+
+def _lit_or_dark_embedder(aligned: NDArray[np.uint8]) -> NDArray[np.float32]:
+    """Map a lit crop and a dark crop onto orthogonal unit vectors.
+
+    A stand-in for SFace that makes *which* face was aligned observable: the
+    two candidates score 1.0 and 0.0 against the same enrolled record, so a
+    test can tell the largest-face pick from the first-face pick.
+    """
+    return _unit_embedding(0 if float(aligned.mean()) > 32.0 else 1)
 
 
 def test_identify_reports_no_face(tmp_path: Path) -> None:
@@ -552,14 +574,44 @@ def test_identify_reports_no_face(tmp_path: Path) -> None:
     assert (identification.status, identification.face_count) == ("no_face", 0)
 
 
-def test_identify_reports_multiple_faces(tmp_path: Path) -> None:
-    """Two people in frame is ambiguous by construction; report the count, name nobody."""
-    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(50.0), _face_of_width(50.0)])
+def test_identify_picks_the_largest_of_several_faces(tmp_path: Path) -> None:
+    """Two faces in frame: identify scores the largest instead of refusing.
 
-    identification = recognizer.identify(np.zeros((720, 1280, 3), dtype=np.uint8))
+    That is the SDK head tracker's own rule (`face_tracking.py`: acquire
+    largest), so recognition answers about the face the head is already aiming
+    at — and the reported count stays the true one.
+    """
+    small = _face_of_width(40.0, origin=(10.0, 10.0))
+    large = _face_of_width(120.0, origin=(200.0, 100.0))
+    # The small face is listed first: picking `detected[0]` would score it.
+    recognizer, _ = _loaded_recognizer(tmp_path, [small, large])
+    recognizer.embed = _lit_or_dark_embedder  # type: ignore[method-assign]
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    # Only the large face's full-resolution neighbourhood is lit; the small
+    # face (full-res bbox 20,20,80,80) stays black.
+    frame[120:560, 320:760] = 220
+    upsert_face(tmp_path, "Alice", _unit_embedding(0))
 
+    identification = recognizer.identify(frame)
+
+    assert identification.status == "recognized"
+    assert identification.name == "Alice"
+    assert identification.face_count == 2
+
+
+def test_enroll_still_refuses_multiple_faces(tmp_path: Path) -> None:
+    """Enrollment keeps the exactly-one-face contract, whatever identify does.
+
+    Storing a bystander under the user's name is worse than refusing.
+    """
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(50.0), _face_of_width(120.0)])
+
+    record, identification = recognizer.enroll(np.zeros((720, 1280, 3), dtype=np.uint8), "Alice")
+
+    assert record is None
     assert (identification.status, identification.face_count) == ("multiple_faces", 2)
     assert identification.name is None
+    assert list_faces(tmp_path) == []
 
 
 def test_identify_reports_too_far_for_a_small_face(tmp_path: Path) -> None:
@@ -570,6 +622,15 @@ def test_identify_reports_too_far_for_a_small_face(tmp_path: Path) -> None:
     identification = recognizer.identify(np.zeros((720, 1280, 3), dtype=np.uint8))
 
     assert (identification.status, identification.face_count) == ("too_far", 1)
+
+
+def test_identify_reports_the_true_count_when_the_largest_face_is_too_far(tmp_path: Path) -> None:
+    """`too_far` carries the real detected count, not a hardcoded one."""
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(20.0), _face_of_width(29.0)])
+
+    identification = recognizer.identify(np.zeros((720, 1280, 3), dtype=np.uint8))
+
+    assert (identification.status, identification.face_count) == ("too_far", 2)
 
 
 def test_identify_detects_on_the_downscaled_frame_and_aligns_on_the_full_one(tmp_path: Path) -> None:
