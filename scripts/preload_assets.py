@@ -2,10 +2,12 @@
 from huggingface_hub import hf_hub_download
 from reachy_mini.motion.recorded_move import RecordedMoves
 
-# Face-detection model (daemon side). Mirror repo/file/revision pinned in
-# reachy_mini/vision/face_detector.py.
-hf_hub_download("pollen-robotics/face_detection_yunet_2026may",
-                "face_detection_yunet_2026may.onnx")
+# Face-detection model (daemon side). Import the SDK's own pins so the warmed
+# cache entry is exactly the revision FaceDetector loads — an unpinned download
+# warms a *different* entry and the robot still hits the network at wake time.
+from reachy_mini.vision.face_detector import _MODEL_FILE, _MODEL_REPO, _MODEL_REVISION
+
+hf_hub_download(_MODEL_REPO, _MODEL_FILE, revision=_MODEL_REVISION)
 print("cached: YuNet face model")
 
 # Face-recognition model (app side, D-013). ~37 MB, Apache-2.0. Mirrors
