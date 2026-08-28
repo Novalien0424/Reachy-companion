@@ -11,10 +11,15 @@ drift.
 Every idiom is lifted from `reachy_companion.people`, its closest sibling: a
 schema version, a module-level lock, atomic tmp+replace writes, and a tolerant
 reader that degrades to "nobody is known" rather than raising through its
-callers. Three things differ deliberately:
+callers. Four things differ deliberately:
 
 * **No caps.** The Mac holds everything; the 12-people / 3-embeddings / 20-facts
   caps are projection's concern, not the store's.
+* **A corrupt file is preserved, not clobbered.** Upstream may discard a store
+  it cannot parse, because the robot's copy is rebuildable. This one is the
+  source of truth, so an unparseable file is renamed to
+  `people.json.corrupt.<epoch_ms>` on the read that discovers it, before the
+  write that follows can overwrite it. The read still returns empty.
 * **Photo bytes.** They live at `data_dir/photos/<person_id>/<photo_id><ext>`.
   The extension is whitelisted from the upload's filename and the filename is
   never otherwise used for a path — a client that uploads `../../evil.jpg`
@@ -389,8 +394,40 @@ def _sync_from_json(value: object) -> SyncMeta:
     )
 
 
+def _corrupt(path: Path) -> _Document:
+    """Preserve an unusable store file, then read as empty.
+
+    The robot's stores may be discarded when they will not parse — they are a
+    rebuildable projection. This one is the source of truth, so the file is
+    renamed to `people.json.corrupt.<epoch_ms>` *before* the caller's write
+    creates a fresh one: the store still degrades to "nobody is known", but the
+    original bytes survive for the operator to inspect or salvage.
+
+    Callers hold `_STORE_LOCK`, so two readers in this process cannot race the
+    rename; a second attempt from anywhere else simply finds the file gone,
+    which is not an error — the evidence is already safe.
+    """
+    aside = path.with_name(f"{path.name}.corrupt.{_now_ms()}")
+    try:
+        path.rename(aside)
+    except FileNotFoundError:
+        logger.warning("The backend people store at %s was already set aside by another reader.", path)
+    except OSError as exc:
+        # Nothing more we can do; the write that follows may overwrite it.
+        logger.warning("Failed to set the corrupt backend people store at %s aside: %s", path, exc)
+    else:
+        logger.warning("Set the corrupt backend people store at %s aside as %s.", path, aside)
+    return _Document()
+
+
 def _read_document(path: Path) -> _Document:
-    """Read the store, degrading to an empty document rather than raising."""
+    """Read the store, degrading to an empty document rather than raising.
+
+    A file that exists but yields no usable people list is corrupt, and is set
+    aside by `_corrupt` rather than left for the next write to overwrite. Rows
+    *within* a readable file stay tolerant: one malformed person is skipped and
+    the rest of the store still loads.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -399,20 +436,22 @@ def _read_document(path: Path) -> _Document:
     # decoder, and a bad store must still read as "nobody is known".
     except (OSError, ValueError) as exc:
         logger.warning("Failed to read the backend people store at %s: %s", path, exc)
-        return _Document()
+        return _corrupt(path)
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         logger.warning("Failed to parse the backend people store at %s: %s", path, exc)
-        return _Document()
+        return _corrupt(path)
 
     if not isinstance(parsed, Mapping):
-        return _Document()
+        logger.warning("The backend people store at %s is not a JSON object.", path)
+        return _corrupt(path)
 
     people_value = parsed.get("people")
     if not isinstance(people_value, list):
-        return _Document(people=(), sync=_sync_from_json(parsed.get("sync")))
+        logger.warning("The backend people store at %s holds no usable people list.", path)
+        return _corrupt(path)
 
     people = [_person_from_json(item) for item in people_value]
     return _Document(

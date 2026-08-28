@@ -27,9 +27,17 @@ The robot's address comes from the repo-root `.env` (`REACHY_HOST`,
 `companion_backend/data/` (gitignored; override with `COMPANION_BACKEND_DATA`):
 
 ```
-data/people.json            people, facts, photo records, sync state
-data/photos/<person_id>/    the uploaded bytes, named after the photo id
+data/people.json                  people, facts, photo records, sync state
+data/photos/<person_id>/          the uploaded bytes, named after the photo id
+data/people.json.corrupt.<ms>     an unparseable store, kept for inspection
 ```
+
+This store is the source of truth — the robot's copy is a projection that can
+be rebuilt from it, not the other way round. So a `people.json` that will not
+parse is never overwritten: the read that finds it renames it aside with an
+epoch-millisecond suffix and logs a WARNING naming that path, and the store
+then starts fresh. If you ever see one of those files, the people in it were
+not lost; salvage what you need and delete it.
 
 ## Tests
 

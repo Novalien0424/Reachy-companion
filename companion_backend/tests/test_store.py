@@ -414,6 +414,46 @@ def test_a_corrupt_store_reads_as_empty(settings: Settings, raw: bytes) -> None:
     assert store.create_person(settings, "Lena").name == "Lena"
 
 
+def test_a_corrupt_store_is_set_aside_never_clobbered(settings: Settings) -> None:
+    """This store is the source of truth, so corrupt bytes are preserved, not overwritten.
+
+    The robot's copy is a rebuildable projection and may be discarded; this one
+    may not. A read that cannot parse the file renames it aside first, so the
+    write that follows creates a fresh store without destroying the evidence.
+    """
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.data_dir / store.PEOPLE_FILENAME
+    original = b'{"version": 1, "people": [{"id": "bp_1", "name": "Lena", truncated'
+    path.write_bytes(original)
+
+    assert store.list_people(settings) == []
+
+    asides = list(settings.data_dir.glob(f"{store.PEOPLE_FILENAME}.corrupt.*"))
+    assert len(asides) == 1
+    assert asides[0].read_bytes() == original
+    assert asides[0].name.rsplit(".", 1)[-1].isdigit()
+    assert not path.exists()
+
+    person = store.create_person(settings, "Mo")
+
+    assert store.list_people(settings) == [person]
+    assert json.loads(path.read_text(encoding="utf-8"))["people"][0]["name"] == "Mo"
+    # The evidence survives the write that followed it.
+    assert asides[0].read_bytes() == original
+
+
+def test_setting_a_corrupt_store_aside_happens_once(settings: Settings) -> None:
+    """A second reader finds the file already gone and tolerates it."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / store.PEOPLE_FILENAME).write_bytes(b"{not json")
+
+    assert store.list_people(settings) == []
+    assert store.list_people(settings) == []
+    assert store.get_sync_meta(settings) == store.SyncMeta(None, None, None)
+
+    assert len(list(settings.data_dir.glob(f"{store.PEOPLE_FILENAME}.corrupt.*"))) == 1
+
+
 def test_unusable_records_are_dropped_not_raised(settings: Settings) -> None:
     """Individual malformed rows are skipped; the rest of the file still loads."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
