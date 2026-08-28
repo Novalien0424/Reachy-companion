@@ -1,0 +1,38 @@
+# Tooling configuration only.
+#
+# `companion_backend/` is run as a plain directory out of `reachy_companion/.venv`
+# (see run.sh) and is never built, packaged or installed, so there is no
+# [build-system] and no [project] table here — only the lint and type-check
+# settings, kept close to the robot-side package's own so the two read alike.
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+show_error_codes = true
+warn_unused_ignores = true
+# `reachy_companion` is installed editable and ships no `py.typed` marker; its
+# own pyproject sets the same flag. Values crossing that boundary are given an
+# explicit annotation at the call site instead.
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 119
+exclude = [ ".venv", "**/__pycache__", ".mypy_cache", ".pytest_cache", "data",]
+
+[tool.ruff.lint]
+select = [ "E", "F", "W", "I", "C4",]
+ignore = [ "E501",]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+length-sort = true
+lines-after-imports = 2
+no-lines-before = [ "standard-library", "local-folder",]
+known-local-folder = [ "backend",]
+known-first-party = [ "reachy_companion",]
+split-on-trailing-comma = true
