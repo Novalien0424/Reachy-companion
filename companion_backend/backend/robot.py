@@ -74,6 +74,11 @@ scheme was judged not worth its complexity for a POC.
 
 Nothing but these two JSON files ever leaves the Mac: photo bytes stay in
 `data_dir/photos`, and only the embeddings derived from them are projected.
+Traffic the other way carries one thing more — the single posed snapshot the
+robot keeps per enrolled person (the D-013 amendment of 2026-08-28). It is
+fetched best-effort beside every face an import applies and stored as a
+**display-only** photo, so the operator gets a face to look at and the projection
+still sends back exactly the samples the robot enrolled.
 """
 
 from __future__ import annotations
@@ -91,7 +96,7 @@ from collections.abc import Sequence
 
 import httpx
 
-from reachy_companion import faces, people
+from reachy_companion import faces, people, face_snapshot
 from backend import store, projection
 from backend.config import Settings
 
@@ -109,6 +114,18 @@ PEOPLE_KEY: Final[str] = "people"
 # Where a verified push keeps a copy of what it wrote, so the next diff can see
 # what the robot has since deleted.
 LAST_PUSH_DIRNAME: Final[str] = "last_push"
+
+# The robot's own snapshot directory name, taken from the module that writes it
+# rather than restated here — one string, one owner.
+SNAPSHOT_DIRNAME: Final[str] = face_snapshot.SNAPSHOT_DIRNAME
+
+# A robot record id becomes part of a remote path, so it is matched against the
+# exact shape `faces._make_id` generates — `f_<epoch ms>_<6 lowercase alnum>` —
+# and never merely checked for separators (Codex A2-5, A3-2). `faces.v1.json` is
+# a plain file on a robot anyone can ssh into: a hand-written id carrying a
+# space, a quote, a `$`, a `;` or a glob would otherwise reach scp's argument
+# list and, through it, the remote shell scp runs to open the file.
+_SNAPSHOT_RECORD_ID: Final[re.Pattern[str]] = re.compile(r"^f_\d+_[a-z0-9]{6}$")
 
 # Every remote call is bounded. 20 s is generous for two ~40 KB files over the
 # robot's wifi and short enough that a wedged link fails a request instead of
@@ -796,6 +813,61 @@ def _add_embeddings(settings: Settings, person_id: str, embeddings: tuple[tuple[
         store.add_synthetic_photo(settings, person_id, embedding)
 
 
+def _fetch_snapshot(settings: Settings, record_id: str) -> bytes | None:
+    """Fetch one enrollment snapshot off the robot, or return None. Never raises.
+
+    Best effort end to end. A missing file is the *normal* case — the person was
+    enrolled before this feature, or the robot has not been redeployed yet — and
+    an unreachable robot cannot matter either: the face itself is already in
+    hand, and refusing the import over a missing picture would strand real
+    content behind a nicety.
+    """
+    if not _SNAPSHOT_RECORD_ID.match(record_id):
+        logger.warning(
+            "Not fetching a snapshot for the robot record id %r: it is not the shape the robot generates.",
+            record_id,
+        )
+        return None
+    try:
+        remote = f"{_target(settings)}:{_remote_dir(settings)}/{SNAPSHOT_DIRNAME}/{record_id}.jpg"
+        with tempfile.TemporaryDirectory(prefix="companion-snapshot-") as raw:
+            destination = Path(raw) / f"{record_id}.jpg"
+            completed = _run(["scp", remote, str(destination)])
+            if completed.returncode != 0:
+                logger.info(
+                    "No enrollment snapshot for %s: %s",
+                    record_id,
+                    completed.stderr.strip() or f"scp exited {completed.returncode}",
+                )
+                return None
+            fetched = destination.read_bytes()
+    except (RobotError, OSError) as exc:
+        logger.warning("Could not fetch the enrollment snapshot for %s: %s", record_id, exc)
+        return None
+    if not fetched:
+        # Some scp builds create the local file before the remote open fails.
+        logger.info("The enrollment snapshot for %s arrived empty; ignoring it.", record_id)
+        return None
+    return fetched
+
+
+def _import_snapshot(settings: Settings, person_id: str, record_id: str) -> None:
+    """Store this record's enrollment snapshot as a display-only photo, if there is one.
+
+    Not counted in `applied` and never a conflict: the face it belongs to is the
+    content, and this is the picture beside it.
+    """
+    raw = _fetch_snapshot(settings, record_id)
+    if raw is None:
+        return
+    try:
+        photo = store.add_display_photo(settings, person_id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, raw)
+    except (ValueError, LookupError, OSError) as exc:
+        logger.warning("Could not store the enrollment snapshot for %s: %s", record_id, exc)
+        return
+    logger.info("The enrollment snapshot for %s is photo %s.", record_id, photo.id)
+
+
 def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
     """Copy the robot's content into the backend store, one item at a time."""
     applied = 0
@@ -840,6 +912,7 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
         except (ValueError, LookupError) as exc:
             conflicts.append(f"{name}: could not import the robot's face record ({exc}).")
             continue
+        _import_snapshot(settings, person.id, entry.record_id)
         applied += 1
 
     for entry in diff.changed_faces:
@@ -855,6 +928,9 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
         except (ValueError, LookupError) as exc:
             conflicts.append(f"{entry.name}: could not import the robot's new samples ({exc}).")
             continue
+        # A re-enrollment overwrites the robot's snapshot, so a changed face may
+        # carry a newer picture than the one already here.
+        _import_snapshot(settings, linked.id, entry.record_id)
         applied += 1
 
     for facts_entry in diff.new_person_facts:

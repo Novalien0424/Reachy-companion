@@ -85,8 +85,19 @@ def embeddings_for(person: BackendPerson) -> tuple[tuple[float, ...], ...]:
     Synthetic photos count: an embedding imported from a robot-side voice
     enrollment is a real sample, and dropping it here would delete that
     enrollment on the next push.
+
+    Display-only photos never do (Codex A1-3). The enrollment snapshot the sync
+    layer fetches off the robot is a picture for the operator, and the window is
+    three slots wide: letting one in would evict one of the robot's own samples
+    and push back a face it never enrolled. The flag is read rather than relying
+    on the snapshot having no embedding — that is true today, and this is the one
+    line that has to stay true if it ever stops being.
     """
-    newest = [photo.embedding for photo in person.photos if photo.embedding is not None]
+    newest = [
+        photo.embedding
+        for photo in person.photos
+        if photo.embedding is not None and not photo.display_only
+    ]
     return tuple(reversed(newest[:MAX_PROJECTED_EMBEDDINGS]))
 
 

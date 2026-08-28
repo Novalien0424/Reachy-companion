@@ -143,8 +143,13 @@ export function describeError(error) {
   return MESSAGE_BY_KIND[error.kind] || error.message;
 }
 
-/** The per-photo status an operator reads: embedded, the failure, or "no image". */
+/** The per-photo status an operator reads: embedded, the failure, or why there is neither.
+ *
+ * `display_only` comes first: an imported enrollment snapshot has a picture and
+ * no embedding, which without the label reads as an upload that failed silently.
+ */
 export function photoStatus(photo) {
+  if (photo.display_only) return "robot snapshot — display only";
   if (photo.synthetic) return "synthetic — no image";
   if (photo.error) return photo.error;
   if (photo.has_embedding) return "embedded";
@@ -153,7 +158,7 @@ export function photoStatus(photo) {
 
 /** Which of the three status tones a photo is in. */
 export function photoTone(photo) {
-  if (photo.synthetic) return "muted";
+  if (photo.display_only || photo.synthetic) return "muted";
   if (photo.error) return "error";
   return photo.has_embedding ? "ok" : "warn";
 }

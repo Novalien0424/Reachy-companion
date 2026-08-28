@@ -193,7 +193,9 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
         "p",
         { class: "muted" },
         "Each photo is embedded on upload; only the embedding is ever pushed to the robot. " +
-          "The robot keeps the newest three per person."
+          "The robot keeps the newest three per person. A photo marked “robot snapshot” came " +
+          "back from an enrollment on the robot: it is there to look at, and is never used to " +
+          "recognize anyone."
       ),
       fileInput,
       grid

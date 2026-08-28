@@ -239,6 +239,10 @@ def test_merge_people_carries_everything_onto_the_survivor(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The whole contract in one pass: facts, photo bytes, identity, and one write."""
+    # Merged facts order by `created_at`, so the assertions below need a clock
+    # that cannot put two writes in the same millisecond.
+    ticks = count(1_700_000_000_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(ticks))
     target = store.create_person(settings, "Linna")
     source = store.create_person(settings, "Lena")
     store.set_person_face_id(settings, source.id, "f_lena")
@@ -306,6 +310,39 @@ def test_merge_people_interleaves_photos_newest_first(
     ]
     assert [photo.added_at for photo in merged.photos] == sorted(
         (photo.added_at for photo in merged.photos), reverse=True
+    )
+
+
+def test_merge_people_interleaves_facts_newest_first(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Facts interleave by `created_at` for the same reason photos do: a window takes the front.
+
+    Projection emits the newest 20, and the UI prints each row's own timestamp.
+    Appending the source's facts behind the target's would both hide the newest
+    ones past the cap and render a list whose dates run backwards halfway down.
+    """
+    ticks = count(1_700_000_000_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(ticks))
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    # Interleaved in time: the source's are older, newer, and newest.
+    store.add_fact(settings, source.id, "old source fact")
+    for index in range(20):
+        store.add_fact(settings, target.id, f"target fact {index}")
+    store.add_fact(settings, source.id, "new source fact")
+    store.add_fact(settings, source.id, "newest source fact")
+
+    merged = store.merge_people(settings, target.id, source.id)
+
+    assert [fact.text for fact in merged.facts] == [
+        "newest source fact",
+        "new source fact",
+        *(f"target fact {index}" for index in reversed(range(20))),
+        "old source fact",
+    ]
+    assert [fact.created_at for fact in merged.facts] == sorted(
+        (fact.created_at for fact in merged.facts), reverse=True
     )
 
 
@@ -608,6 +645,75 @@ def test_add_synthetic_photo_holds_an_embedding_with_no_bytes(settings: Settings
     assert reloaded is not None
     assert reloaded.photos == (photo,)
     assert reloaded.photos[0].embedding == embedding
+
+
+def test_add_display_photo_keeps_bytes_that_never_reach_the_projection(settings: Settings) -> None:
+    """An imported enrollment snapshot is a picture for the operator and nothing else."""
+    person = store.create_person(settings, "Lena")
+
+    photo = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    assert photo.display_only is True
+    assert photo.synthetic is False
+    assert photo.embedding is None
+    assert photo.error is None
+    assert photo.display_name == "robot-snapshot.jpg"
+    assert photo.stored_as == f"{photo.id}.jpg"
+
+    written = store.photo_dir(settings, person.id) / str(photo.stored_as)
+    assert written.read_bytes() == b"jpeg-bytes"
+
+    # Persisted, or the next read would offer the snapshot as an un-embedded upload.
+    payload = json.loads((settings.data_dir / store.PEOPLE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["people"][0]["photos"][0]["displayOnly"] is True
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos == (photo,)
+
+
+def test_a_photo_without_the_display_only_flag_reads_as_a_normal_photo(settings: Settings) -> None:
+    """Tolerant read: a store written before the flag existed is not display-only."""
+    person = store.create_person(settings, "Lena")
+    photo = store.add_photo(settings, person.id, "face.jpg", b"jpeg-bytes")
+
+    path = settings.data_dir / store.PEOPLE_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["people"][0]["photos"][0]["displayOnly"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos[0].id == photo.id
+    assert reloaded.photos[0].display_only is False
+
+
+def test_add_display_photo_is_deduped_against_any_photo_bytes_this_person_has(settings: Settings) -> None:
+    """Re-importing the same snapshot must add nothing — including over a real upload.
+
+    The sync layer re-fetches the snapshot on every import that touches the face,
+    so without content dedupe one enrollment would grow a photo per import.
+    """
+    person = store.create_person(settings, "Lena")
+    uploaded = store.add_photo(settings, person.id, "face.jpg", b"jpeg-bytes")
+
+    same = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    assert same == uploaded
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos == (uploaded,)
+    assert len(list(store.photo_dir(settings, person.id).iterdir())) == 1
+
+    # Different bytes are a different photo.
+    other = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"other-bytes")
+    assert other.id != uploaded.id
+    assert other.display_only is True
+
+    # And re-offering *that* one is a no-op too.
+    assert store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"other-bytes") == other
+
+    with pytest.raises(store.PersonNotFoundError):
+        store.add_display_photo(settings, "bp_nope", store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"bytes")
 
 
 def test_set_photo_embedding_rejects_a_vector_of_the_wrong_length(settings: Settings) -> None:

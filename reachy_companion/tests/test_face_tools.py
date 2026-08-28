@@ -862,11 +862,17 @@ async def test_remember_face_schedules_one_snapshot_of_the_first_accepted_frame(
 async def test_remember_face_snapshot_frame_is_detached_from_the_camera_buffer(
     instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
 ) -> None:
-    """The scheduled frame is a copy: the appsink hands back a view it may reuse.
+    """The scheduled frame is a copy, so no caller's buffer can change under it.
 
-    Codex A1-5. The camera here returns the *same* array every pull and then
-    overwrites it, which is exactly what the GStreamer appsink does; a snapshot
-    that aliased it would encode whatever the last pull left behind.
+    Codex A1-5, kept as defense in depth. Today's camera path cannot bite: the
+    SDK's `gstreamer_utils.get_sample` returns `buf.extract_dup`, a fresh
+    allocation per pull, so the frames this tool sees are already its own. But
+    that is an implementation detail rather than a documented contract, and the
+    encode happens *later*, on another thread, after the hold releases — the one
+    shape where an aliased buffer would cost a photo of whatever came next. The
+    copy is what makes the snapshot independent of how any present or future
+    frame source manages its memory, so the camera here deliberately does the
+    hostile thing: it returns the *same* array every pull and then overwrites it.
     """
     buffer = _frame(10)
     recognizer = _FakeRecognizer(

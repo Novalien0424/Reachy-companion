@@ -115,6 +115,7 @@ class FakeRobot:
     calls: list[tuple[str, ...]] = field(default_factory=list)
     log: list[tuple[str, ...]] = field(default_factory=list)
     download_error: str | None = None
+    download_error_for: str | None = None
     upload_error_for: str | None = None
     promote_error: bool = False
     before_promote: Callable[[FakeRobot], None] | None = None
@@ -155,6 +156,9 @@ class FakeRobot:
             self.log.append(("get", filename))
             if self.download_error is not None:
                 return subprocess.CompletedProcess(argv, 1, "", self.download_error)
+            if self.download_error_for == filename:
+                # A reachable robot that still cannot hand this one file over.
+                return subprocess.CompletedProcess(argv, 1, "", "scp: read error: Input/output error")
             content = self.remote.get(filename)
             if content is None:
                 # Some scp builds create and truncate the local file before the
@@ -1135,6 +1139,188 @@ def test_a_face_id_collision_under_the_canonical_name_is_still_a_conflict(
     reloaded = store.get_person(settings, person.id)
     assert reloaded is not None
     assert reloaded.former_face_ids == ()
+
+
+# --------------------------------------------------------------------------
+# enrollment snapshots (addendum Feature 2)
+# --------------------------------------------------------------------------
+
+# The shape the robot actually generates, which is the only shape the snapshot
+# fetch will interpolate into a remote path.
+_SNAPSHOT_RECORD = "f_1700000000000_ab12cd"
+
+
+def _snapshot_calls(fake: FakeRobot) -> list[tuple[str, ...]]:
+    """Every remote call that reached for a snapshot file."""
+    return [call for call in fake.calls if any(robot.SNAPSHOT_DIRNAME in part for part in call)]
+
+
+def _display_photos(settings: Settings, name: str) -> list[store.BackendPhoto]:
+    person = next(item for item in store.list_people(settings) if item.name == name)
+    return [photo for photo in person.photos if photo.display_only]
+
+
+def _enrolled(fake: FakeRobot, tmp_path: Path, *, snapshot: str | None) -> None:
+    """Put one three-sample voice enrollment on the fake robot, with or without its snapshot."""
+    fake.remote[faces.FACES_FILENAME] = _faces_content(tmp_path, [_record(_SNAPSHOT_RECORD, "Sam", [5, 6, 7])])
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(tmp_path, [("Sam", _SNAPSHOT_RECORD, [])])
+    if snapshot is not None:
+        fake.remote[f"{_SNAPSHOT_RECORD}.jpg"] = snapshot
+
+
+def test_an_imported_face_brings_its_enrollment_snapshot_as_a_display_only_photo(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """The operator's picture: fetched beside the face, never a recognition sample.
+
+    Three samples is the robot's full window, so this is also the "import then
+    push immediately" cycle: the snapshot must not make the push think the robot
+    holds something unknown, and the projection must not carry it back.
+    """
+    _enrolled(fake, tmp_path, snapshot="jpeg-bytes-sam")
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+
+    assert result.conflicts == []
+    fetched = _snapshot_calls(fake)
+    assert len(fetched) == 1
+    assert fetched[0][1].endswith(f"{robot.SNAPSHOT_DIRNAME}/{_SNAPSHOT_RECORD}.jpg")
+
+    snapshots = _display_photos(settings, "Sam")
+    assert len(snapshots) == 1
+    assert snapshots[0].display_name == store.ROBOT_SNAPSHOT_DISPLAY_NAME
+    assert snapshots[0].embedding is None
+    assert snapshots[0].error is None
+    assert snapshots[0].synthetic is False
+
+    person = next(item for item in store.list_people(settings) if item.name == "Sam")
+    stored = store.photo_path(settings, person.id, snapshots[0])
+    assert stored is not None
+    assert stored.read_bytes() == b"jpeg-bytes-sam"
+
+    # The recognition samples are still exactly the robot's own three.
+    assert projection.embeddings_for(person) == (_vector(5), _vector(6), _vector(7))
+    assert robot.robot_diff(settings).empty
+    assert robot.push(settings).pushed is True
+    assert robot.robot_diff(settings).empty
+
+
+def test_re_importing_the_same_snapshot_adds_no_second_photo(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """Content dedupe, against an existing *real* photo as well as an imported one."""
+    person = _person(settings, "Sam", embeddings=[5], face_id=_SNAPSHOT_RECORD)
+    uploaded = store.add_photo(settings, person.id, "sam.jpg", b"jpeg-bytes-sam")
+    _enrolled(fake, tmp_path, snapshot="jpeg-bytes-sam")
+
+    robot.apply_import(settings, robot.import_from_robot(settings))
+    robot.apply_import(settings, robot.import_from_robot(settings))
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    with_bytes = [photo for photo in reloaded.photos if photo.stored_as is not None]
+    assert [photo.id for photo in with_bytes] == [uploaded.id]
+    assert _display_photos(settings, "Sam") == []
+    assert len(list(store.photo_dir(settings, person.id).iterdir())) == 1
+
+
+def test_a_robot_with_no_snapshot_yet_imports_its_face_unchanged(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """Enrolled before the feature, or not yet redeployed: a missing file is the normal case."""
+    _enrolled(fake, tmp_path, snapshot=None)
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+
+    assert result.conflicts == []
+    assert result.applied == 1
+    assert _display_photos(settings, "Sam") == []
+    assert robot.robot_diff(settings).empty
+
+
+def test_a_failed_snapshot_transfer_never_fails_the_face_import(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """The face is the content; the picture is a nicety, and it may not take the face down."""
+    _enrolled(fake, tmp_path, snapshot="jpeg-bytes-sam")
+    fake.download_error_for = f"{_SNAPSHOT_RECORD}.jpg"
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+
+    assert result.conflicts == []
+    assert result.applied == 1
+    assert _display_photos(settings, "Sam") == []
+    person = next(item for item in store.list_people(settings) if item.name == "Sam")
+    assert person.face_id == _SNAPSHOT_RECORD
+    assert projection.embeddings_for(person) == (_vector(5), _vector(6), _vector(7))
+
+
+def test_the_snapshot_follows_a_changed_face_and_an_alias_attach(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """Every applied face gets its picture: a re-enrollment's new samples, and an alias attach."""
+    _person(settings, "Linna", embeddings=[1], face_id="f_linna")
+    _person(settings, "Lena", facts=["likes tea"])
+    survivor = _merged(settings, "Linna", "Lena")
+
+    fake.remote[faces.FACES_FILENAME] = _faces_content(
+        tmp_path, [_record("f_linna", "Linna", [1, 2]), _record(_SNAPSHOT_RECORD, "Lena", [5])]
+    )
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(
+        tmp_path, [("Linna", "f_linna", []), ("Lena", _SNAPSHOT_RECORD, [])]
+    )
+    fake.remote[f"{_SNAPSHOT_RECORD}.jpg"] = "jpeg-bytes-lena"
+
+    diff = robot.import_from_robot(settings)
+    assert [entry.record_id for entry in diff.new_faces] == [_SNAPSHOT_RECORD]
+    assert [entry.record_id for entry in diff.changed_faces] == ["f_linna"]
+
+    result = robot.apply_import(settings, diff)
+
+    assert result.conflicts == []
+    # `f_linna` is not the generated shape, so only the alias attach fetched.
+    assert len(_snapshot_calls(fake)) == 1
+    reloaded = store.get_person(settings, survivor.id)
+    assert reloaded is not None
+    assert [photo.display_only for photo in reloaded.photos].count(True) == 1
+
+
+@pytest.mark.parametrize(
+    "record_id",
+    [
+        "f_1700000000000_ab/cd",
+        "f_1700000000000_ab\\cd",
+        "../../../etc/passwd",
+        "f_1700000000000_ab cd",
+        "f_1700000000000_'ab'",
+        'f_1700000000000_"ab"',
+        "f_1700000000000_$(id)",
+        "f_1700000000000_ab;id",
+        "f_1700000000000_ab*d",
+        "f_1700000000000_ab?d",
+        "f_1700000000000_AB12CD",
+        "f_notanepoch_ab12cd",
+        "f_1700000000000_ab12cde",
+    ],
+)
+def test_a_record_id_that_is_not_the_generated_shape_never_reaches_a_remote_path(
+    settings: Settings, fake: FakeRobot, tmp_path: Path, record_id: str
+) -> None:
+    """Codex A2-5 / A3-2: the robot's JSON is hand-editable, so the id is validated, not trusted.
+
+    An id the robot could not have generated skips the snapshot **only** — the
+    face itself is real content and still imports.
+    """
+    fake.remote[faces.FACES_FILENAME] = _faces_content(tmp_path, [_record(record_id, "Sam", [5])])
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(tmp_path, [("Sam", record_id, [])])
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+
+    assert result.conflicts == []
+    assert _snapshot_calls(fake) == []
+    assert _display_photos(settings, "Sam") == []
+    person = next(item for item in store.list_people(settings) if item.name == "Sam")
+    assert person.face_id == record_id
 
 
 # --------------------------------------------------------------------------

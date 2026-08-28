@@ -50,6 +50,7 @@ import time
 import random
 import shutil
 import string
+import hashlib
 import logging
 import threading
 from typing import Final
@@ -80,6 +81,10 @@ PHOTO_ERRORS: Final[frozenset[str]] = frozenset(
 )
 
 SYNTHETIC_DISPLAY_NAME: Final[str] = "robot enrollment"
+# The label on an enrollment snapshot the sync layer fetched off the robot. It is
+# a `.jpg` because that is what the robot writes, and the extension is what gives
+# the stored file its type.
+ROBOT_SNAPSHOT_DISPLAY_NAME: Final[str] = "robot-snapshot.jpg"
 
 _PERSON_ID_PREFIX: Final[str] = "bp"
 _FACT_ID_PREFIX: Final[str] = "bf"
@@ -135,6 +140,14 @@ class BackendPhoto:
     projects back to the robot so a re-enrollment survives the next push.
     `embedding` is the 128-float SFace vector, None while it is unset or the
     photo failed; `error` then says why.
+
+    `display_only=True` is the mirror image of `synthetic`: bytes with no
+    standing as a sample. It marks the one enrollment snapshot the robot keeps
+    per person (D-013 amendment), fetched by the sync layer so the operator has a
+    face to look at. An explicit flag rather than "has bytes and no embedding"
+    (Codex A2-4), because that description also fits an upload whose embedding is
+    still being computed, and mislabelling one as the other would either hide a
+    real sample from the robot or offer a snapshot to it as recognition data.
     """
 
     id: str
@@ -144,6 +157,7 @@ class BackendPhoto:
     embedding: tuple[float, ...] | None
     error: str | None
     synthetic: bool = False
+    display_only: bool = False
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape for this photo."""
@@ -155,6 +169,7 @@ class BackendPhoto:
             "embedding": None if self.embedding is None else list(self.embedding),
             "error": self.error,
             "synthetic": self.synthetic,
+            "displayOnly": self.display_only,
         }
 
 
@@ -432,6 +447,10 @@ def _photo_from_json(value: object) -> BackendPhoto | None:
         embedding=_embedding_from(value.get("embedding")),
         error=error,
         synthetic=value.get("synthetic") is True,
+        # Absent in every store written before the snapshot import existed, and
+        # "absent" has to mean an ordinary photo — anything else would retire a
+        # real sample the moment the flag shipped.
+        display_only=value.get("displayOnly") is True,
     )
 
 
@@ -743,21 +762,23 @@ def add_former_face_id(settings: Settings, person_id: str, face_id: str) -> Back
 
 
 def _merged_facts(target: BackendPerson, source: BackendPerson) -> tuple[BackendFact, ...]:
-    """Fold the source's facts into the target's, through the store's own dedupe.
+    """Interleave both fact lists newest-first, through the store's own dedupe.
 
-    Replayed oldest-first and prepended, exactly as `add_fact` would have added
-    them one at a time, so the survivor's newest-first order is the one the
-    projection expects and a fact both people held is kept once.
+    Same rule as the photos below, for the same two reasons: the projection emits
+    the newest 20 and the UI prints each row's own `created_at`. Folding the whole
+    source in ahead of the target — the shape a plain oldest-first replay leaves —
+    would push the target's newer facts past the robot's cap to make room for the
+    source's older ones, and render a list whose dates run backwards halfway down.
+
+    A fact both people held is kept once, as the *target's* record: `add_fact`
+    treats a duplicate as already stored rather than re-storing it, and the two
+    rows differ only in an id and a timestamp the operator never asked to move.
+    The sort is stable, so facts sharing a millisecond keep target-before-source
+    order.
     """
-    merged = list(target.facts)
-    known = {fact.text.casefold() for fact in merged}
-    for fact in reversed(source.facts):
-        key = fact.text.casefold()
-        if key in known:
-            continue
-        known.add(key)
-        merged.insert(0, fact)
-    return tuple(merged)
+    known = {fact.text.casefold() for fact in target.facts}
+    merged = [*target.facts, *(fact for fact in source.facts if fact.text.casefold() not in known)]
+    return tuple(sorted(merged, key=lambda fact: fact.created_at, reverse=True))
 
 
 def _merged_photos(target: BackendPerson, source: BackendPerson) -> tuple[BackendPhoto, ...]:
@@ -922,34 +943,82 @@ def delete_fact(settings: Settings, person_id: str, fact_id: str) -> BackendFact
 # --------------------------------------------------------------------------
 
 
-def add_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
-    """Store uploaded bytes for one person and record the photo (embedding still unset).
+def _write_photo(
+    settings: Settings, person_id: str, display_name: str, raw: bytes, *, display_only: bool
+) -> BackendPhoto:
+    """Write bytes for one person and record the photo. The caller holds the lock.
 
     The file is named after the generated photo id; `display_name` is kept only
     as a label. Nothing a client sends can influence where the bytes land.
     """
     photo_id = _make_id(_PHOTO_ID_PREFIX)
     stored_as = f"{photo_id}{_photo_extension(display_name)}"
-    label = " ".join(display_name.split()) or stored_as
     photo = BackendPhoto(
         id=photo_id,
-        display_name=label,
+        display_name=" ".join(display_name.split()) or stored_as,
         stored_as=stored_as,
         added_at=_now_ms(),
         embedding=None,
         error=None,
         synthetic=False,
+        display_only=display_only,
     )
+    directory = photo_dir(settings, person_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / stored_as).write_bytes(raw)
+    _mutate(settings, person_id, lambda person, _: replace(person, photos=(photo, *person.photos)))
+    return photo
 
+
+def add_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
+    """Store uploaded bytes for one person and record the photo (embedding still unset)."""
     with _STORE_LOCK:
         # Fail before writing bytes we would then have to clean up.
         if get_person(settings, person_id) is None:
             raise PersonNotFoundError(f"No person with id {person_id!r}.")
-        directory = photo_dir(settings, person_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / stored_as).write_bytes(raw)
-        _mutate(settings, person_id, lambda person, _: replace(person, photos=(photo, *person.photos)))
-        return photo
+        return _write_photo(settings, person_id, display_name, raw, display_only=False)
+
+
+def _photo_holding(settings: Settings, person: BackendPerson, digest: str) -> BackendPhoto | None:
+    """Return this person's photo whose bytes hash to `digest`, if they have one."""
+    for photo in person.photos:
+        path = photo_path(settings, person.id, photo)
+        if path is None:
+            continue
+        try:
+            existing = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            # A photo we cannot read is not a match; it is also not a reason to
+            # refuse the new bytes.
+            logger.warning("Could not hash the photo bytes at %s: %s", path, exc)
+            continue
+        if existing == digest:
+            return photo
+    return None
+
+
+def add_display_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
+    """Store bytes that are a picture and nothing else — the robot's enrollment snapshot.
+
+    `display_only` bytes never become a recognition sample: no embedding is ever
+    computed for them and the projection skips them structurally, so the person's
+    samples stay exactly what the robot enrolled.
+
+    Deduped by content against *every* photo this person already has, uploads
+    included: the sync layer re-offers the same snapshot on every import that
+    touches the face, and a matching photo is returned unchanged rather than
+    stored twice — the same answer `add_fact` gives a fact the person already
+    has, and for the same reason.
+    """
+    digest = hashlib.sha256(raw).hexdigest()
+    with _STORE_LOCK:
+        person = get_person(settings, person_id)
+        if person is None:
+            raise PersonNotFoundError(f"No person with id {person_id!r}.")
+        existing = _photo_holding(settings, person, digest)
+        if existing is not None:
+            return existing
+        return _write_photo(settings, person_id, display_name, raw, display_only=True)
 
 
 def add_synthetic_photo(settings: Settings, person_id: str, embedding: Sequence[float]) -> BackendPhoto:

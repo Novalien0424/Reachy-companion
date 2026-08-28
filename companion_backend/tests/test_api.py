@@ -296,6 +296,7 @@ def test_photo_upload_embeds_synchronously(client: TestClient, monkeypatch: pyte
     assert photo["has_embedding"] is True
     assert photo["error"] is None
     assert photo["synthetic"] is False
+    assert photo["display_only"] is False
     assert "embedding" not in photo
     # The bytes really were written where the embedder was pointed.
     assert seen and seen[0].read_bytes() == GRAY_JPEG.read_bytes()
@@ -358,6 +359,21 @@ def test_listed_photos_never_carry_the_embedding(client: TestClient, settings: S
     assert photo["synthetic"] is True
     assert photo["stored_as"] is None
     assert "embedding" not in photo
+
+
+def test_an_imported_snapshot_is_listed_as_display_only(client: TestClient, settings: Settings) -> None:
+    """The UI labels the imported picture from the flag, so the flag has to travel."""
+    person = store.create_person(settings, "Nova")
+    snapshot = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    photo = client.get("/api/people").json()[0]["photos"][0]
+
+    assert photo["id"] == snapshot.id
+    assert photo["display_only"] is True
+    assert photo["has_embedding"] is False
+    assert photo["error"] is None
+    # It has bytes, so the thumbnail route serves it like any other photo.
+    assert client.get(f"/api/people/{person.id}/photos/{snapshot.id}/file").status_code == 200
 
 
 # --------------------------------------------------------------------------

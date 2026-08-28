@@ -188,7 +188,12 @@ def _fact_view(fact: store.BackendFact) -> dict[str, Any]:
 
 
 def _photo_view(photo: store.BackendPhoto) -> dict[str, Any]:
-    """One photo, with its embedding reduced to whether there is one."""
+    """One photo, with its embedding reduced to whether there is one.
+
+    `display_only` travels because the UI has to say why a photo with a perfectly
+    good picture in it is not embedded and never will be: it is the robot's
+    enrollment snapshot, not a sample.
+    """
     return {
         "id": photo.id,
         "display_name": photo.display_name,
@@ -197,6 +202,7 @@ def _photo_view(photo: store.BackendPhoto) -> dict[str, Any]:
         "has_embedding": photo.embedding is not None,
         "error": photo.error,
         "synthetic": photo.synthetic,
+        "display_only": photo.display_only,
     }
 
 
