@@ -191,10 +191,15 @@ Architecture **option C**: the Mac backend is the source of truth; the robot's
 ### 4.3 Concurrency & conflict rule
 
 Single-writer-per-side with explicit sync: the robot writes its stores only
-via voice enrollment / person-scoped remember; the Mac only via push. Push
-performs read-back-diff first: if the robot's file contains records unknown to
-the backend, the push is blocked with an "import first" prompt in the UI.
-This closes the lost-update window without robot-side locking.
+via voice enrollment / person-scoped remember; the Mac only via push. Drift
+detection is hash-based (robot file sha256 vs the recorded last-push hashes —
+any robot-side change since our push counts, including re-enrollment into an
+existing record): push is blocked on drift with an "import first" prompt,
+except when everything on the robot is already known to the backend after an
+import. The push itself is a guarded remote promote (scp to temp names, one
+ssh command re-checks the pre-push hashes and moves both files into place),
+closing the lost-update window without robot-side locking. (Strengthened from
+"unknown-record diff" per Codex review R1-1/R1-2 — see the plan's review log.)
 
 ## 5. Error handling
 
