@@ -17,14 +17,29 @@
  *   published through `onConnectionChange` rather than only surfacing as a
  *   rejected call.
  *
- * Reconnection is the original's: while anything is subscribed, a closed
- * socket is retried once a second. Nothing here retries a *call* — a call that
- * failed because the robot went away should be re-clicked, not replayed.
+ * Reconnection deliberately diverges from the original. The console retries
+ * only a socket that had once been open, at a flat 1 Hz; here a socket that
+ * *never* opened is the normal case — the robot's app is usually not running —
+ * and not retrying it means the live panel stays dead after the operator clicks
+ * Start. So every close schedules a retry while anything is subscribed, with
+ * the delay doubling from 1 s to a 15 s ceiling and resetting on a successful
+ * open. Nothing here retries a *call*: a call that failed because the robot
+ * went away should be re-clicked, not replayed.
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
-const RECONNECT_DELAY_MS = 1000;
 const ROBOT_RPC_PORT = 7860;
+
+// Reconnect backoff. The console's original retried at a flat 1 Hz and only
+// after a socket that had *once* been open — fine when the server is
+// same-origin and effectively always up. Here the robot is off, asleep or
+// running no app most of the time, so the never-opened case is the normal one
+// and must retry too. It backs off to a 15 s ceiling so an absent robot is not
+// dialled sixty times a minute for as long as the page is left open, and the
+// delay resets on a successful open so a robot that comes back is picked up
+// promptly the next time it drops.
+const RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 15000;
 
 export class RpcError extends Error {
   constructor(message, reason) {
@@ -38,13 +53,40 @@ let socket = null;
 let connecting = null;
 let rpcCounter = 0;
 let connectionState = "idle"; // idle | connecting | connected | disconnected | unconfigured
+let reconnectDelay = RECONNECT_DELAY_MS;
+let reconnectTimer = null;
 const pending = new Map(); // id -> { resolve, reject, timer }
 const subscribers = new Map(); // method -> Set<cb>
 const connectionListeners = new Set();
 
+/** Queue the next reconnect attempt, if anything is still listening for one. */
+function scheduleReconnect() {
+  // Subscribers are the liveness signal: a view that has gone away calls
+  // `disconnect()`, which clears them, and no timer outlives it.
+  if (reconnectTimer !== null || subscribers.size === 0) return;
+  const delay = reconnectDelay;
+  reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (subscribers.size === 0) return;
+    // `connect()` reuses an in-flight attempt, so a manual call that raced this
+    // timer does not open a second socket.
+    connect().catch(() => {});
+  }, delay);
+}
+
+/** Drop any queued reconnect and start the backoff over. */
+function cancelReconnect() {
+  if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectDelay = RECONNECT_DELAY_MS;
+}
+
 /** Point the client at a robot. Called once at boot with `/api/config`'s host. */
 export function setRobotHost(host) {
   robotHost = (host || "").trim();
+  // A retry queued against the old address would dial the wrong machine.
+  cancelReconnect();
   setConnectionState(robotHost ? "idle" : "unconfigured");
 }
 
@@ -109,6 +151,9 @@ function connect() {
     ws.onopen = () => {
       opened = true;
       connecting = null;
+      // A reachable robot starts the backoff over, so the *next* drop is
+      // retried in a second rather than inheriting a ceiling-length delay.
+      cancelReconnect();
       setConnectionState("connected");
       resolve();
     };
@@ -135,9 +180,13 @@ function connect() {
         entry.reject(new RpcError("The connection to the robot closed.", "disconnected"));
       }
       pending.clear();
+      // Fail this attempt's caller fast — an awaiting `rpcCall` must not hang
+      // for the length of the backoff — and then retry anyway. The two are
+      // independent: rejecting is about the call, retrying is about the
+      // notification stream, and a socket that never opened needs the retry
+      // most (the robot's app being down is the normal state here).
       if (!opened) reject(new RpcError(`Cannot reach the robot console at ${url}.`, "disconnected"));
-      // Keep the notification stream alive across drops while anyone listens.
-      else if (subscribers.size > 0) setTimeout(() => connect().catch(() => {}), RECONNECT_DELAY_MS);
+      scheduleReconnect();
     };
   });
   return connecting;
@@ -202,7 +251,10 @@ export function subscribe(method, cb) {
 
 /** Close the socket and forget every subscriber — used when the Control view unmounts. */
 export function disconnect() {
+  // Subscribers first: `scheduleReconnect` reads them, so clearing them here is
+  // what guarantees the close below cannot start a loop nobody is watching.
   subscribers.clear();
+  cancelReconnect();
   const open = socket;
   socket = null;
   connecting = null;

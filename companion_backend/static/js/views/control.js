@@ -174,6 +174,14 @@ export async function mountControlView({ outlet, signal }) {
       const [text, tone] = CONNECTION_COPY[state] || [state, "muted"];
       connectionBadge.textContent = text;
       connectionBadge.className = `badge badge--${tone}`;
+      // Now that a dead socket really does reconnect on its own, the things
+      // read once at mount have to be re-read — otherwise a panel that has
+      // recovered still shows "Mic: unknown" and the failure message from
+      // whenever the robot was last down, which reads as "still dead".
+      if (state === "connected") {
+        setStatus(liveStatus, "");
+        void syncMic();
+      }
     }),
     subscribe("conversation.transcript", (params) => {
       const text = String(params.text || "").trim();
