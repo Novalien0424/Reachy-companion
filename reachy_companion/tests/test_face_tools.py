@@ -818,6 +818,29 @@ async def test_greeting_facts_are_capped_by_the_env_knob(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_greeting_recall_is_truncated_to_the_newest_facts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A non-zero cap keeps the newest facts and drops the rest — it is not all-or-nothing.
+
+    `FACE_GREETING_FACTS=0` already pins the off switch; this pins the truncation
+    itself, so the limit cannot silently become "every fact on file".
+    """
+    add_person_fact(tmp_path, "Lena", "在准备一场马拉松")
+    add_person_fact(tmp_path, "Lena", "喜欢喝美式咖啡")
+    monkeypatch.setenv("FACE_GREETING_FACTS", "1")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    text = _sent_text(handler)
+    assert "喜欢喝美式咖啡" in text
+    assert "在准备一场马拉松" not in text
+    assert text == hf_mod._FACE_KNOWN_WITH_FACTS_PREFIX.format(name="Lena", facts="喜欢喝美式咖啡") + "\n" + GREETING
+
+
+@pytest.mark.asyncio
 async def test_greeting_survives_an_unreadable_person_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A fact lookup that blows up costs the recall, never the greeting or the name."""
 

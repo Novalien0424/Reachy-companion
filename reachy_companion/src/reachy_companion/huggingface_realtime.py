@@ -298,6 +298,16 @@ _FACE_LATE_RECOGNITION_PROMPT: Final[str] = (
     "（系统提示：摄像头刚认出面前的人是「{name}」。自然地用名字招呼他，"
     "或在你接下来说的话里称呼他的名字。不要提到摄像头或识别这件事。）"
 )
+_FACE_LATE_KNOWN_WITH_FACTS_PROMPT: Final[str] = (
+    "（系统提示：摄像头刚认出面前的人是「{name}」。你记得关于他的这些事：{facts}。"
+    "自然地用名字招呼他，可以自然带到你记得的事。不要提到摄像头或识别这件事。）"
+)
+# The person store is a small local JSON file, so this read is normally
+# sub-millisecond — but it takes a lock a tool write may hold, and it sits on
+# the path of a greeting the user is already waiting for. Bounded so a stalled
+# store costs the recall and nothing else; both callers fall back to the plain
+# named prompt when it expires.
+_FACE_FACTS_READ_TIMEOUT_S: Final[float] = 1.0
 
 
 def _startup_greeting_prefix(identification: Any, facts: list[str]) -> str:
@@ -464,6 +474,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # user is already waiting on.
         self._user_has_spoken = False
         self._wake_face_task: asyncio.Task[None] | None = None
+        # Person-scoped memory label (spec §3.3): set on recognition, cleared
+        # per session. `deps` outlives the handler, so a rebuild starts with no
+        # inherited identity — whoever is in the room is established again.
+        self.deps.current_person = None
         # Late audio deltas from a cancelled response must not reach the
         # speaker (finding 8). Tiny bound: only very recent ids can race.
         self._cancelled_response_ids: deque[str] = deque(maxlen=8)
@@ -1459,6 +1473,29 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         )
         return identification
 
+    async def _remembered_facts(self, name: str, timeout_s: float) -> list[str]:
+        """Return the newest remembered facts for `name`, newest first.
+
+        One reader for both recognition moments (boot greeting and the extended
+        wake window) so the two can never drift on the limit, the off switch or
+        the failure policy. Three rules, all of them "the greeting wins": the
+        store is read off the event loop, the read is bounded, and any failure
+        — including that bound expiring — is a warning and an empty list, never
+        an exception through a caller that is about to speak.
+        """
+        limit = env_int("FACE_GREETING_FACTS", _FACE_GREETING_FACTS_DEFAULT, lo=0, hi=20)
+        if limit <= 0:
+            return []
+        try:
+            facts = await asyncio.wait_for(
+                asyncio.to_thread(facts_for_person, self.deps.instance_path, name, limit=limit),
+                timeout_s,
+            )
+        except Exception as e:
+            logger.warning("Could not read person facts for greeting: %s: %s", type(e).__name__, e)
+            return []
+        return [fact.text for fact in facts]
+
     async def _extended_wake_face_check(self) -> None:
         """Keep the wake face check alive briefly after the greeting (D-013 hook, part 2).
 
@@ -1533,11 +1570,32 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 name,
                             )
                             return
-                        # That wait can be seconds long, so both turn-safety
+                        # The same recall the boot greeting gets, one window
+                        # later. Its own 1 s bound stays *inside* this window's
+                        # deadline, so a slow store can never push the late
+                        # greeting past the budget it was given. Read *before*
+                        # the re-check below on purpose: that check has to stay
+                        # the last thing between here and `item.create`, which
+                        # is exactly what its comment promises.
+                        facts = await self._remembered_facts(
+                            name, min(_FACE_FACTS_READ_TIMEOUT_S, max(remaining(), 0.0))
+                        )
+                        # The gate wait can be seconds long and the recall is
+                        # bounded rather than instant, so both turn-safety
                         # conditions are asked again before anything is sent.
                         if self._user_has_spoken or self.connection is not connection:
                             logger.info("Extended wake face check: hit went stale while gated; window closed.")
                             return
+                        # Person-scoped memory label (spec §3.3): set on
+                        # recognition, cleared per session. Below the re-check
+                        # so a label can never be written into the session that
+                        # replaced this one and already cleared it.
+                        self.deps.current_person = name
+                        late_prompt = (
+                            _FACE_LATE_KNOWN_WITH_FACTS_PROMPT.format(name=name, facts="；".join(facts))
+                            if facts
+                            else _FACE_LATE_RECOGNITION_PROMPT.format(name=name)
+                        )
                         # Bounded so a stalled network write cannot keep this
                         # task alive far past its window; 5 s is a transport
                         # guard, not budget — hence its own handler, so a stall
@@ -1551,7 +1609,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                         "content": [
                                             {
                                                 "type": "input_text",
-                                                "text": _FACE_LATE_RECOGNITION_PROMPT.format(name=name),
+                                                "text": late_prompt,
                                             },
                                         ],
                                     },
@@ -1567,10 +1625,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         await self._safe_response_create()
                         logger.info(
                             "Extended wake face check: recognized %s (score %.3f) on round %d; "
-                            "queued a late named greeting.",
+                            "queued a late named greeting with %d remembered fact(s).",
                             name,
                             identification.score or 0.0,
                             rounds,
+                            len(facts),
                         )
                         return
                 pause = min(_FACE_WAKE_EXTENDED_PAUSE_S, remaining())
@@ -1605,20 +1664,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         recognized = identification is not None and identification.status == "recognized" and identification.name
         facts: list[str] = []
         if recognized:
-            limit = env_int("FACE_GREETING_FACTS", _FACE_GREETING_FACTS_DEFAULT, lo=0, hi=20)
-            if limit > 0:
-                try:
-                    facts = [
-                        fact.text
-                        for fact in await asyncio.to_thread(
-                            facts_for_person,
-                            self.deps.instance_path,
-                            identification.name,
-                            limit=limit,
-                        )
-                    ]
-                except Exception as e:
-                    logger.warning("Could not read person facts for greeting: %s: %s", type(e).__name__, e)
+            facts = await self._remembered_facts(identification.name, _FACE_FACTS_READ_TIMEOUT_S)
+            # Person-scoped memory label (spec §3.3): set on recognition,
+            # cleared per session.
             self.deps.current_person = identification.name
             logger.info(
                 "Startup greeting personalized for %s with %d remembered fact(s).",
@@ -1913,6 +1961,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Solo barge session-boundary reset (Task 8): a pause, its held audio and
         # its timers belong to the session that opened them.
         self._barge_reset_for_new_session()
+        # Person-scoped memory label (spec §3.3): set on recognition, cleared
+        # per session. Cleared here, before the session config is built and
+        # therefore before the connection is published, so nothing in the new
+        # session — instructions or a routed tool — can read an identity that
+        # was established in the session this one replaces. A reconnect
+        # re-establishes it through the wake checks or `who_is_this`.
+        self.deps.current_person = None
         tool_specs = get_tool_specs()
         logger.info(
             "Tools to be used in conversation: %s",
