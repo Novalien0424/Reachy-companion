@@ -41,7 +41,7 @@ from reachy_companion.config import (
     get_hf_connection_selection,
 )
 from reachy_companion.hanova import audio_drain
-from reachy_companion.people import facts_for_person
+from reachy_companion.people import PERSON_FACTS_DEFAULT, facts_for_person
 from reachy_companion.prompts import (
     get_session_voice,
     get_session_instructions,
@@ -276,10 +276,9 @@ _FACE_WAKE_RETRY_PAUSE_S: Final[float] = 0.15
 _FACE_GREETING_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
 )
-# How many remembered facts a personalized greeting may lean on. Enough for the
-# greeting to sound like it knows the person, few enough that it cannot turn
-# into a recitation of everything on file.
-_FACE_GREETING_FACTS_DEFAULT: Final[int] = 6
+# How many remembered facts a personalized greeting may lean on is
+# `people.PERSON_FACTS_DEFAULT`, kept with the store that owns the facts: the
+# greeting and `who_is_this` read one knob and must not drift on its default.
 _FACE_KNOWN_WITH_FACTS_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。你记得关于他的这些事：{facts}。"
     "像老朋友一样自然地叫他的名字打招呼，可以自然带到一两件你记得的事，"
@@ -1483,7 +1482,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         — including that bound expiring — is a warning and an empty list, never
         an exception through a caller that is about to speak.
         """
-        limit = env_int("FACE_GREETING_FACTS", _FACE_GREETING_FACTS_DEFAULT, lo=0, hi=20)
+        limit = env_int("FACE_GREETING_FACTS", PERSON_FACTS_DEFAULT, lo=0, hi=20)
         if limit <= 0:
             return []
         try:

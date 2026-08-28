@@ -256,6 +256,16 @@ export function disconnect() {
   subscribers.clear();
   cancelReconnect();
   const open = socket;
+  // Final review, F4: the `onclose` teardown below rejects `pending`, but its
+  // `socket !== ws` guard sees the null this function is about to write and
+  // bails — so every in-flight call used to sit on its 8 s timer after the view
+  // had already gone away. Reject them here, where the intent is known, and the
+  // guard stays correct for the case it exists for (a stale socket's close).
+  for (const entry of pending.values()) {
+    clearTimeout(entry.timer);
+    entry.reject(new RpcError("The connection to the robot closed.", "disconnected"));
+  }
+  pending.clear();
   socket = null;
   connecting = null;
   if (open) open.close();

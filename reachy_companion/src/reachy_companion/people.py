@@ -49,6 +49,9 @@ PEOPLE_FILENAME = "people.v1.json"
 MAX_PEOPLE: Final[int] = faces.MAX_PEOPLE
 MAX_FACT_CHARS: Final[int] = memory.MAX_FACT_CHARS
 MAX_FACTS_PER_PERSON = 20
+# The one default for how many person facts recall surfaces, greeting and
+# `who_is_this` alike — both read `FACE_GREETING_FACTS` and must not drift.
+PERSON_FACTS_DEFAULT: Final[int] = 6
 _PERSON_ID_PREFIX: Final[str] = "p"
 _FACT_ID_PREFIX: Final[str] = "m"
 

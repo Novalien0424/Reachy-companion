@@ -1,21 +1,14 @@
 import asyncio
 import logging
-from typing import Any, Final
+from typing import Any
 
-from reachy_companion.people import facts_for_person
+from reachy_companion.people import PERSON_FACTS_DEFAULT, facts_for_person
 from reachy_companion.audio.envparse import env_int
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 from reachy_companion.tools.face_support import identify_with_retries, recognizer_or_unavailable
 
 
 logger = logging.getLogger(__name__)
-
-# How many remembered facts one recognition may hand back. Deliberately the same
-# knob and default as the boot greeting's recall (`_FACE_GREETING_FACTS_DEFAULT`
-# in `huggingface_realtime.py`): both are the same act — the robot recognizing
-# someone and drawing on what it remembers — so an operator who turns the
-# greeting's recall down or off must not still get facts through the tool.
-_KNOWN_FACTS_DEFAULT: Final[int] = 6
 
 
 class WhoIsThis(Tool):
@@ -71,7 +64,13 @@ class WhoIsThis(Tool):
         any failure — an unreadable file, the recall switched off — costs the
         facts and never the recognition the caller is waiting on.
         """
-        limit = env_int("FACE_GREETING_FACTS", _KNOWN_FACTS_DEFAULT, lo=0, hi=20)
+        # How many facts one recognition may hand back: deliberately the same
+        # knob AND the same default object as the boot greeting's recall, which
+        # is why the number lives in `people` rather than being written out here
+        # too. Both are the same act — the robot recognizing someone and drawing
+        # on what it remembers — so an operator who turns the greeting's recall
+        # down or off must not still get facts through the tool.
+        limit = env_int("FACE_GREETING_FACTS", PERSON_FACTS_DEFAULT, lo=0, hi=20)
         if limit <= 0:
             return
         try:

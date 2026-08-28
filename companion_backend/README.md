@@ -127,7 +127,11 @@ from this store on every push. Three rules govern the round trip:
   facts on this Mac always projects at exactly 20, so nothing they forget by
   voice is ever read back — voice forgets only round-trip for people under the
   cap.** Face deletions are not modelled at all; no robot-side tool removes a
-  person.
+  person. The same one-way rule has a mirror image worth expecting: delete a
+  person here while the robot has drifted and they reappear in the import
+  preview — the gate errs toward keeping data it cannot prove you meant to drop
+  — so delete them again after the import, then push; the preview always shows
+  the record before anything is applied.
 
 ## Tests
 

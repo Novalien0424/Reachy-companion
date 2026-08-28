@@ -179,12 +179,17 @@ export async function mountSyncView({ outlet, signal }) {
       previewButton.disabled = false;
     }
     if (signal.aborted) return;
+    // Final review, F5: the body is read *outside* the try/catch above, so a
+    // malformed 200 (a proxy's error page, a truncated response) used to throw
+    // an unhandled TypeError here instead of reaching the status line. Optional
+    // chaining keeps a garbage body inside the UI's own reporting.
+    const empty = preview?.diff?.empty;
     setStatus(
       importStatus,
-      preview.diff.empty ? "Nothing to import — the robot holds nothing new." : "Preview only; nothing applied yet.",
-      preview.diff.empty ? "ok" : ""
+      empty ? "Nothing to import — the robot holds nothing new." : "Preview only; nothing applied yet.",
+      empty ? "ok" : ""
     );
-    importResult.replaceChildren(renderDiff(preview.diff, { conflicts: preview.conflicts }));
+    importResult.replaceChildren(renderDiff(preview?.diff, { conflicts: preview?.conflicts || [] }));
   }
 
   async function onApply() {
@@ -205,14 +210,18 @@ export async function mountSyncView({ outlet, signal }) {
       applyButton.disabled = false;
     }
     if (signal.aborted) return;
+    // Final review, F5: same rule as `onPreview` — the body is dereferenced
+    // outside the try/catch, so a garbage 200 must land in the status line
+    // rather than as an unhandled rejection.
+    const conflicts = outcome?.conflicts || [];
     setStatus(
       importStatus,
-      `Imported ${count(outcome.applied, "item")}${outcome.conflicts.length ? " with conflicts." : "."}`,
-      outcome.conflicts.length ? "warn" : "ok"
+      `Imported ${count(outcome?.applied ?? 0, "item")}${conflicts.length ? " with conflicts." : "."}`,
+      conflicts.length ? "warn" : "ok"
     );
     // The diff shown is the one the server re-fetched and applied, not the
     // preview — the robot may have enrolled a face in between.
-    importResult.replaceChildren(renderDiff(outcome.diff, { conflicts: outcome.conflicts }));
+    importResult.replaceChildren(renderDiff(outcome?.diff, { conflicts }));
     await refreshStatus();
   }
 

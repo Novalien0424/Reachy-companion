@@ -17,7 +17,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+import reachy_companion.tools.who_is_this as who_is_this_mod
 import reachy_companion.huggingface_realtime as hf_mod
+from reachy_companion import people
 from reachy_companion.faces import EMBEDDING_DIM, FaceRecord, list_faces
 from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import (
@@ -351,6 +353,21 @@ async def test_who_is_this_recall_is_bounded_by_the_greeting_knob(
     assert result["status"] == "recognized"
     assert "known_facts" not in result
     assert deps.current_person == "Louis"
+
+
+def test_the_recall_default_has_exactly_one_definition() -> None:
+    """Final review, F2: the default `6` was written out twice, once per call site.
+
+    Two literals behind one env knob is a drift waiting to happen — an operator
+    reading `who_is_this`'s default would have had no way to know the greeting
+    carried its own copy. `people.PERSON_FACTS_DEFAULT` is now the single
+    definition and both call sites import it, so a change lands on both at once.
+    """
+    assert people.PERSON_FACTS_DEFAULT == 6
+    assert hf_mod.PERSON_FACTS_DEFAULT is people.PERSON_FACTS_DEFAULT
+    assert who_is_this_mod.PERSON_FACTS_DEFAULT is people.PERSON_FACTS_DEFAULT
+    assert not hasattr(hf_mod, "_FACE_GREETING_FACTS_DEFAULT")
+    assert not hasattr(who_is_this_mod, "_KNOWN_FACTS_DEFAULT")
 
 
 @pytest.mark.asyncio
