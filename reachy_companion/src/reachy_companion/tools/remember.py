@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from reachy_companion.memory import add_memory_fact
+from reachy_companion.people import add_person_fact
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
 
@@ -16,7 +17,9 @@ class Remember(Tool):
         "Save ONE short fact about the user to long-term memory so it is available in future sessions. "
         "Use this for stable user information they explicitly shared: name, preferences, hobbies, recurring projects, "
         "important people, or plans. Keep each fact atomic and under one sentence. Do not save sensitive data "
-        "(passwords, addresses, payment info, health diagnoses) or fleeting details. Use this silently in the "
+        "(passwords, addresses, payment info, health diagnoses) or fleeting details. "
+        "When you have recognized who you are talking to, the fact is saved about that specific person. "
+        "Use this silently in the "
         'background; acknowledge naturally without saying "I will remember that".'
     )
     parameters_schema = {
@@ -40,9 +43,27 @@ class Remember(Tool):
             logger.warning("remember: empty fact")
             return {"error": "fact must be a non-empty string"}
 
+        # A recognized person scopes the fact to them. When the person store
+        # refuses it (an empty name after normalization), the fact is still worth
+        # keeping, so the global store is the fallback rather than an error.
+        person = deps.current_person
+        if person:
+            stored_person_fact = add_person_fact(deps.instance_path, person, fact)
+            if stored_person_fact is not None:
+                logger.info(
+                    "Tool call: remember person=%s fact=%s",
+                    person[:40],
+                    stored_person_fact.text[:120],
+                )
+                return {
+                    "saved": stored_person_fact.text,
+                    "memory_id": stored_person_fact.id,
+                    "scope": f"person:{person}",
+                }
+
         stored = add_memory_fact(deps.instance_path, fact)
         if stored is None:
             return {"error": "fact was empty or invalid; nothing was saved"}
 
         logger.info("Tool call: remember fact=%s", stored.text[:120])
-        return {"saved": stored.text, "memory_id": stored.id}
+        return {"saved": stored.text, "memory_id": stored.id, "scope": "global"}
