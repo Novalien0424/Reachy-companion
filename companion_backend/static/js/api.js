@@ -71,6 +71,15 @@ export const createPerson = (name) => request("POST", "/api/people", { json: { n
 export const renamePerson = (id, name) => request("PATCH", `/api/people/${encodeURIComponent(id)}`, { json: { name } });
 export const deletePerson = (id) => request("DELETE", `/api/people/${encodeURIComponent(id)}`);
 
+/**
+ * Fold one person into another; `id` is the survivor and answers with them.
+ *
+ * 404 for an unknown id, 400 for merging someone into themselves, 409 when a
+ * name the survivor would answer to already reaches somebody else.
+ */
+export const mergePerson = (id, sourceId) =>
+  request("POST", `/api/people/${encodeURIComponent(id)}/merge`, { json: { source_id: sourceId } });
+
 export const addFact = (id, text) =>
   request("POST", `/api/people/${encodeURIComponent(id)}/facts`, { json: { text } });
 export const deleteFact = (id, factId) =>

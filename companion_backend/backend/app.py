@@ -201,10 +201,18 @@ def _photo_view(photo: store.BackendPhoto) -> dict[str, Any]:
 
 
 def _person_view(person: store.BackendPerson) -> dict[str, Any]:
+    """One person. `aliases` travels; `former_face_ids` deliberately does not.
+
+    An alias is something the operator needs to see — it is the other name this
+    person answers to, and the reason a merge did what it did. A former robot
+    record id is sync-layer bookkeeping with no meaning on the page, so it stays
+    on the Mac side of this boundary.
+    """
     return {
         "id": person.id,
         "name": person.name,
         "face_id": person.face_id,
+        "aliases": list(person.aliases),
         "facts": [_fact_view(fact) for fact in person.facts],
         "photos": [_photo_view(photo) for photo in person.photos],
         "created_at": person.created_at,
@@ -280,6 +288,12 @@ class FactBody(BaseModel):
     text: str
 
 
+class MergeBody(BaseModel):
+    """The body of a merge: who is being folded into the person in the path."""
+
+    source_id: str
+
+
 # --------------------------------------------------------------------------
 # routes
 # --------------------------------------------------------------------------
@@ -325,6 +339,16 @@ def rename_person(person_id: str, body: NameBody, settings: SettingsDep) -> dict
 def delete_person(person_id: str, settings: SettingsDep) -> dict[str, Any]:
     """Remove one person, their facts and their photo bytes; return what was removed."""
     return _person_view(store.delete_person(settings, person_id))
+
+
+@router.post("/api/people/{person_id}/merge")
+def merge_people(person_id: str, body: MergeBody, settings: SettingsDep) -> dict[str, Any]:
+    """Fold `source_id` into the person in the path and return the survivor.
+
+    404 for an id neither side knows, 400 for merging someone into themselves,
+    409 when a name the survivor would answer to already reaches somebody else.
+    """
+    return _person_view(store.merge_people(settings, person_id, body.source_id))
 
 
 @router.post("/api/people/{person_id}/facts")
@@ -567,6 +591,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # KeyError or an internal ValueError is a defect here and must stay a 500.
     application.add_exception_handler(store.DuplicateNameError, _handler(409, "duplicate_name"))
     application.add_exception_handler(store.EmptyValueError, _handler(400, "empty_value"))
+    application.add_exception_handler(store.MergeError, _handler(400, "invalid_merge"))
     application.add_exception_handler(store.PersonNotFoundError, _handler(404, "not_found"))
     application.add_exception_handler(store.FactNotFoundError, _handler(404, "not_found"))
     application.add_exception_handler(store.PhotoNotFoundError, _handler(404, "not_found"))

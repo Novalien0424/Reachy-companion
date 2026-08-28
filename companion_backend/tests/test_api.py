@@ -21,6 +21,7 @@ out of every test but the one that asks for it.
 """
 
 from __future__ import annotations
+import json
 import math
 import random
 import threading
@@ -163,6 +164,80 @@ def test_unknown_person_is_404(client: TestClient) -> None:
     assert client.patch("/api/people/bp_nope", json={"name": "Nova"}).status_code == 404
     assert client.delete("/api/people/bp_nope").status_code == 404
     assert client.post("/api/people/bp_nope/facts", json={"text": "hi"}).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# merge (addendum Feature 1)
+# --------------------------------------------------------------------------
+
+
+def test_merge_returns_the_survivor_with_its_aliases(client: TestClient) -> None:
+    """The route answers with the merged person; `aliases` is part of every person view."""
+    target = _create(client, "Linna")
+    source = _create(client, "Lena")
+    client.post(f"/api/people/{source['id']}/facts", json={"text": "likes tea"})
+
+    response = client.post(f"/api/people/{target['id']}/merge", json={"source_id": source["id"]})
+
+    assert response.status_code == 200, response.text
+    merged = response.json()
+    assert merged["id"] == target["id"]
+    assert merged["name"] == "Linna"
+    assert merged["aliases"] == ["Lena"]
+    assert [fact["text"] for fact in merged["facts"]] == ["likes tea"]
+    # Robot record ids the survivor inherited are sync-layer bookkeeping, not a
+    # thing the UI has any use for.
+    assert "former_face_ids" not in merged
+
+    assert [item["id"] for item in client.get("/api/people").json()] == [target["id"]]
+
+
+def test_every_person_view_carries_aliases(client: TestClient) -> None:
+    """A person who has never been merged still reports the field, as an empty list."""
+    person = _create(client, "Nova")
+    assert person["aliases"] == []
+    assert client.get("/api/people").json()[0]["aliases"] == []
+
+
+def test_merging_a_person_into_themselves_is_400(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    response = client.post(f"/api/people/{person['id']}/merge", json={"source_id": person["id"]})
+    assert response.status_code == 400
+    assert response.json()["kind"] == "invalid_merge"
+
+
+def test_merging_an_unknown_id_is_404(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    assert client.post(f"/api/people/{person['id']}/merge", json={"source_id": "bp_nope"}).status_code == 404
+    assert client.post("/api/people/bp_nope/merge", json={"source_id": person["id"]}).status_code == 404
+
+
+def test_a_merge_whose_alias_is_already_taken_is_409(client: TestClient, settings: Settings) -> None:
+    """The store's index guard reaches the operator as the same 409 a duplicate name does."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / store.PEOPLE_FILENAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "people": [
+                    {"id": "bp_t", "name": "Linna", "createdAt": 1, "updatedAt": 1},
+                    {"id": "bp_s", "name": "Lena", "createdAt": 1, "updatedAt": 1},
+                    {"id": "bp_x", "name": "Lena Wu", "aliases": ["Lena"], "createdAt": 1, "updatedAt": 1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/people/bp_t/merge", json={"source_id": "bp_s"})
+
+    assert response.status_code == 409
+    assert response.json()["kind"] == "duplicate_name"
+
+
+def test_merge_without_a_source_id_is_422(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    assert client.post(f"/api/people/{person['id']}/merge", json={}).status_code == 422
 
 
 # --------------------------------------------------------------------------

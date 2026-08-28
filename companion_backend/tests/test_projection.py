@@ -136,6 +136,25 @@ def test_project_keeps_the_newest_three_embeddings_oldest_first(settings: Settin
     assert record.embeddings == (_vector(3), _vector(4), _vector(5))
 
 
+def test_a_merge_does_not_hide_the_survivors_newest_samples(settings: Settings, tmp_path: Path) -> None:
+    """Codex A3-1: merged photos interleave by `added_at`, so the window keeps the true newest.
+
+    The target already holds three enrollment samples and the source, merged in
+    afterwards, holds two newer ones. Appending the source's photos behind the
+    target's would leave the window full of the *older* three and the robot would
+    be pushed a face that predates the merge.
+    """
+    target = _person(settings, "Linna", embeddings=[1, 2, 3])
+    source = _person(settings, "Lena", embeddings=[8, 9])
+
+    store.merge_people(settings, target.id, source.id)
+    projection.project(settings, tmp_path / "out")
+
+    record = _projected_faces(tmp_path / "out")[0]
+    assert record.name == "Linna"
+    assert record.embeddings == (_vector(3), _vector(8), _vector(9))
+
+
 def test_project_carries_embeddings_through_unchanged(settings: Settings, tmp_path: Path) -> None:
     """Stored vectors are the wire format already — projection must not re-round them."""
     _person(settings, "Lena", embeddings=[7])
