@@ -147,7 +147,15 @@ def project(settings: Settings, out_dir: Path) -> ProjectionResult:
     ranked = ranked_people(settings)
     selected, facts_only, skipped = _select(ranked)
     refreshed = _mint_face_ids(settings, selected)
-    with_faces = [refreshed.get(person.id, person) for person in selected]
+    # Re-rank *after* minting, never re-select: minting rewrote `updated_at` for
+    # some of these people, and writing them in the pre-mint order would put the
+    # records in an order the very next projection no longer agrees with — the
+    # same two files, byte-different, for a reason invisible in either of them.
+    with_faces = sorted(
+        (refreshed.get(person.id, person) for person in selected),
+        key=lambda person: person.updated_at,
+        reverse=True,
+    )
 
     records = []
     for person in with_faces:

@@ -334,6 +334,28 @@ def test_two_projections_emit_identical_face_ids(settings: Settings, tmp_path: P
     )
 
 
+def test_two_projections_are_identical_when_only_some_people_were_minted(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Minting reorders the ranking, so the records are re-ranked after it, not before.
+
+    Bea is older and unlinked; Ada is newer and already carries an id. Minting
+    moves Bea to the top, so a projection that wrote the *pre*-mint order would
+    disagree with every projection after it.
+    """
+    _person(settings, "Bea", embeddings=[2])
+    ada = _person(settings, "Ada", embeddings=[1])
+    store.set_person_face_id(settings, ada.id, "f_ada")
+
+    projection.project(settings, tmp_path / "first")
+    projection.project(settings, tmp_path / "second")
+
+    assert faces.faces_path_for_instance(tmp_path / "first").read_bytes() == (
+        faces.faces_path_for_instance(tmp_path / "second").read_bytes()
+    )
+    assert [record.name for record in _projected_faces(tmp_path / "first")] == ["Bea", "Ada"]
+
+
 def test_project_keeps_an_existing_face_id(settings: Settings, tmp_path: Path) -> None:
     """An id imported from the robot is the person's identity — projection never re-mints it."""
     person = _person(settings, "Lena", embeddings=[1])

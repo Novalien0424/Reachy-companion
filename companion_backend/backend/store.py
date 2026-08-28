@@ -612,11 +612,31 @@ def set_person_face_id(settings: Settings, person_id: str, face_id: str | None) 
 
 
 def add_fact(settings: Settings, person_id: str, text: str) -> BackendFact:
-    """Store one fact, normalized to exactly what projection will write to the robot."""
+    """Store one fact, normalized to exactly what projection will write to the robot.
+
+    A fact this person already has (case-insensitively) is returned unchanged
+    instead of being stored twice — the same rule `people.add_person_fact`
+    applies on the robot, and for the same reason: the robot's voice path and the
+    sync layer both re-offer facts they have already offered, and a store that
+    counted every re-offer would project a person's memory back to them twice.
+    The record is still touched, so `updated_at` moves and the person keeps their
+    place in projection's ranking; they were just talked about either way.
+    """
     normalized = _normalized_fact(text)
-    fact = BackendFact(id=_make_id(_FACT_ID_PREFIX), text=normalized, created_at=_now_ms())
-    _mutate(settings, person_id, lambda person, _: replace(person, facts=(fact, *person.facts)))
-    return fact
+    key = normalized.casefold()
+    created = BackendFact(id=_make_id(_FACT_ID_PREFIX), text=normalized, created_at=_now_ms())
+    stored: list[BackendFact] = []
+
+    def change(person: BackendPerson, _: _Document) -> BackendPerson:
+        duplicate = next((fact for fact in person.facts if fact.text.casefold() == key), None)
+        if duplicate is not None:
+            stored.append(duplicate)
+            return person
+        stored.append(created)
+        return replace(person, facts=(created, *person.facts))
+
+    _mutate(settings, person_id, change)
+    return stored[0]
 
 
 def delete_fact(settings: Settings, person_id: str, fact_id: str) -> BackendFact:

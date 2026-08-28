@@ -115,6 +115,8 @@ class FakeRobot:
     calls: list[tuple[str, ...]] = field(default_factory=list)
     log: list[tuple[str, ...]] = field(default_factory=list)
     download_error: str | None = None
+    upload_error_for: str | None = None
+    promote_error: bool = False
     before_promote: Callable[[FakeRobot], None] | None = None
     after_promote: Callable[[FakeRobot], None] | None = None
 
@@ -127,6 +129,7 @@ class FakeRobot:
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         assert kwargs["timeout"] == robot.SSH_TIMEOUT_SECONDS
+        assert kwargs["stdin"] is subprocess.DEVNULL
         argv = list(argv)
         assert "expect" not in argv[0]
         self.calls.append(tuple(argv))
@@ -134,8 +137,16 @@ class FakeRobot:
         if argv[0] == "scp":
             return self._scp(argv)
         if argv[0] == "ssh":
+            if argv[-1].startswith("rm -f"):
+                return self._discard(argv)
             return self._promote(argv)
         raise AssertionError(f"unexpected program {argv[0]!r}")
+
+    def _discard(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        self.log.append(("discard",))
+        self.remote.pop(robot.FACES_TMP_NAME, None)
+        self.remote.pop(robot.PEOPLE_TMP_NAME, None)
+        return subprocess.CompletedProcess(argv, 0, "", "")
 
     def _scp(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         source, destination = argv[-2], argv[-1]
@@ -155,6 +166,8 @@ class FakeRobot:
 
         filename = destination.rsplit("/", 1)[-1]
         self.log.append(("put", filename))
+        if self.upload_error_for == filename:
+            return subprocess.CompletedProcess(argv, 1, "", "scp: write: No space left on device")
         self.remote[filename] = Path(source).read_text(encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -162,6 +175,8 @@ class FakeRobot:
         self.log.append(("promote",))
         assert "-o" in argv and "BatchMode=yes" in argv
         script = argv[-1]
+        if self.promote_error:
+            return subprocess.CompletedProcess(argv, 1, "", "sh: sha256sum: not found")
         if self.before_promote is not None:
             self.before_promote(self)
 
@@ -521,6 +536,50 @@ def test_push_writes_the_whole_projection(settings: Settings, fake: FakeRobot, t
     )
 
 
+def test_push_clears_the_staged_files_when_the_promote_fails(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """A promote that fails for any reason but a race must not strand its staged files."""
+    _person(settings, "Lena", embeddings=[1])
+    fake.promote_error = True
+
+    with pytest.raises(robot.RobotError):
+        robot.push(settings)
+
+    assert fake.log[-1] == ("discard",)
+    assert robot.FACES_TMP_NAME not in fake.remote
+    assert robot.PEOPLE_TMP_NAME not in fake.remote
+    assert store.get_sync_meta(settings) == store.SyncMeta()
+
+
+def test_push_clears_the_staged_file_when_the_second_upload_fails(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """The first file is already staged when the second transfer dies."""
+    _person(settings, "Lena", embeddings=[1])
+    fake.upload_error_for = robot.PEOPLE_TMP_NAME
+
+    with pytest.raises(robot.RobotError):
+        robot.push(settings)
+
+    assert fake.log[-1] == ("discard",)
+    assert robot.FACES_TMP_NAME not in fake.remote
+    assert ("promote",) not in fake.log
+
+
+def test_push_reports_the_people_it_could_not_carry(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """`ProjectionResult.skipped` reaches the operator through the push result."""
+    _person(settings, "Lena", embeddings=[1])
+    _person(settings, "Nobody")
+
+    result = robot.push(settings)
+
+    assert result.pushed is True
+    assert result.skipped == ["Nobody"]
+
+
 def test_push_guard_expects_an_absent_file_as_absent(
     settings: Settings, fake: FakeRobot, tmp_path: Path
 ) -> None:
@@ -627,6 +686,35 @@ def test_apply_import_appends_facts_oldest_first(settings: Settings, fake: FakeR
     assert [fact.text for fact in person.facts] == ["likes tea", "has a cat"]
 
 
+def test_apply_import_does_not_link_a_person_it_could_not_give_samples(
+    settings: Settings, fake: FakeRobot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A half-finished face import must leave the record importable, not a linked empty person.
+
+    A person linked to a face id with no samples projects as a *person* with no
+    *face record* — the robot would stop recognizing someone it already knew.
+    """
+    fake.remote[faces.FACES_FILENAME] = _faces_content(tmp_path, [_record("f_new", "Sam", [5, 6])])
+    written = count()
+    real = store.add_synthetic_photo
+
+    def flaky(settings_: Settings, person_id: str, embedding: Sequence[float]) -> store.BackendPhoto:
+        if next(written) == 1:
+            raise ValueError("the second sample could not be stored")
+        return real(settings_, person_id, embedding)
+
+    monkeypatch.setattr(robot.store, "add_synthetic_photo", flaky)
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+
+    assert result.applied == 0
+    assert len(result.conflicts) == 1
+    person = next(item for item in store.list_people(settings) if item.name == "Sam")
+    assert person.face_id is None
+    # Still unlinked, so the record reads as new and importing again finishes it.
+    assert [entry.record_id for entry in robot.import_from_robot(settings).new_faces] == ["f_new"]
+
+
 def test_apply_import_follows_the_face_link_across_a_rename(
     settings: Settings, fake: FakeRobot, tmp_path: Path
 ) -> None:
@@ -680,6 +768,129 @@ def test_import_then_push_leaves_the_robot_holding_its_own_enrollment(
     promoted = {record.id: record for record in _faces_from_remote(fake, tmp_path)}
     assert set(promoted) == {"f_lena", "f_sam"}
     assert promoted["f_sam"].embeddings == (_vector(5),)
+
+
+# --------------------------------------------------------------------------
+# removals: what the robot forgot
+# --------------------------------------------------------------------------
+
+
+def _face_id_of(settings: Settings, name: str) -> str:
+    person = next(item for item in store.list_people(settings) if item.name == name)
+    assert person.face_id is not None
+    return person.face_id
+
+
+def test_a_voice_forget_survives_the_next_push(settings: Settings, fake: FakeRobot, tmp_path: Path) -> None:
+    """The whole point: a fact forgotten on the robot must not be written back.
+
+    Push, forget one fact by voice on the robot, and the next push is refused
+    until the removal is imported — after which the Mac no longer holds the fact,
+    the projection omits it, and the push goes through.
+    """
+    person = _person(settings, "Lena", embeddings=[1], facts=["likes tea", "has a cat"])
+    assert robot.push(settings).pushed is True
+    assert (robot.last_push_dir(settings) / people.PEOPLE_FILENAME).is_file()
+
+    face_id = _face_id_of(settings, "Lena")
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(tmp_path, [("Lena", face_id, ["likes tea"])])
+
+    diff = robot.robot_diff(settings)
+    assert diff.new_person_facts == []
+    assert diff.removed_person_facts == [
+        robot.RobotPersonFacts(name="Lena", face_id=face_id, facts=["has a cat"])
+    ]
+    assert not diff.empty
+
+    blocked = robot.push(settings)
+    assert blocked.pushed is False
+    assert blocked.blocked_by is not None
+
+    result = robot.apply_import(settings, robot.import_from_robot(settings))
+    assert result.applied == 1
+    assert result.conflicts == []
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert [fact.text for fact in reloaded.facts] == ["likes tea"]
+
+    projection.project(settings, tmp_path / "out")
+    projected = people.list_people(tmp_path / "out")
+    assert [fact.text for fact in projected[0].facts] == ["likes tea"]
+
+    assert robot.robot_diff(settings).empty
+    after = robot.push(settings)
+    assert after.pushed is True
+    assert "has a cat" not in fake.remote[people.PEOPLE_FILENAME]
+
+
+def test_a_fact_added_on_the_mac_is_not_a_removal(settings: Settings, fake: FakeRobot, tmp_path: Path) -> None:
+    """A fact the backend has but never pushed is an addition, and pushes normally."""
+    person = _person(settings, "Lena", embeddings=[1], facts=["likes tea"])
+    assert robot.push(settings).pushed is True
+
+    store.add_fact(settings, person.id, "has a cat")
+
+    diff = robot.robot_diff(settings)
+    assert diff.removed_person_facts == []
+    assert diff.empty
+
+    assert robot.push(settings).pushed is True
+    assert "has a cat" in fake.remote[people.PEOPLE_FILENAME]
+
+
+def test_no_snapshot_means_no_removal_detection(settings: Settings, fake: FakeRobot, tmp_path: Path) -> None:
+    """Never pushed: there is nothing to compare against, so nothing reads as forgotten."""
+    _person(settings, "Lena", embeddings=[1], facts=["likes tea", "has a cat"], face_id="f_lena")
+    fake.remote[faces.FACES_FILENAME] = _faces_content(tmp_path, [_record("f_lena", "Lena", [1])])
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(tmp_path, [("Lena", "f_lena", [])])
+
+    assert robot.robot_diff(settings).removed_person_facts == []
+
+
+def test_a_fact_evicted_by_the_twenty_fact_cap_is_not_a_removal(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """At the robot's fact cap, an absence is the store making room — not somebody forgetting.
+
+    The two are indistinguishable in the file, and deleting a fact from the Mac
+    that nobody asked to forget is the worse mistake, so removals are only read
+    below the cap. The voice-added fact is still seen as new.
+    """
+    _person(
+        settings,
+        "Lena",
+        embeddings=[1],
+        facts=[f"fact {index:02d}" for index in range(people.MAX_FACTS_PER_PERSON)],
+    )
+    assert robot.push(settings).pushed is True
+
+    face_id = _face_id_of(settings, "Lena")
+    # 21 facts replayed into a store that keeps 20: the oldest falls out.
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(
+        tmp_path,
+        [("Lena", face_id, [f"fact {index:02d}" for index in range(people.MAX_FACTS_PER_PERSON + 1)])],
+    )
+
+    diff = robot.robot_diff(settings)
+
+    assert diff.removed_person_facts == []
+    assert [entry.facts for entry in diff.new_person_facts] == [["fact 20"]]
+
+
+def test_a_person_evicted_from_the_robot_is_not_a_removal(
+    settings: Settings, fake: FakeRobot, tmp_path: Path
+) -> None:
+    """The robot's twelve-person LRU dropping a record is not somebody forgetting a fact."""
+    _person(settings, "Lena", embeddings=[1], facts=["likes tea"])
+    assert robot.push(settings).pushed is True
+
+    fake.remote[people.PEOPLE_FILENAME] = _people_content(tmp_path, [("Sam", None, ["plays cello"])])
+
+    diff = robot.robot_diff(settings)
+
+    assert diff.removed_person_facts == []
+    assert [entry.name for entry in diff.new_person_facts] == ["Sam"]
 
 
 # --------------------------------------------------------------------------

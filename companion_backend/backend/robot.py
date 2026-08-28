@@ -21,6 +21,29 @@ always the same: import the robot's content, then push. After an import the
 hashes are stale by design ("imported drift") but the content is known, so the
 push proceeds.
 
+**Removals are content too.** The robot's voice `forget` deletes a fact from
+`people.v1.json`. A deletion leaves no trace in the file it was deleted from, so
+it can only be seen by comparing against what the last push *left* there — which
+is why every verified push snapshots its own two files under
+`data_dir/last_push/`. A fact in that snapshot, absent from the robot now, whose
+person record still exists on the robot, and which the backend still holds, is a
+deliberate removal: it blocks the push and is applied to the Mac store by an
+import, exactly like an addition. Without this, the next push would silently
+write the forgotten fact back.
+
+*Deliberately not modelled:* face removals. The robot has no person-deletion
+tool, so a face record can only ever appear or gain samples, never be dropped by
+a person talking to the robot.
+
+*Accepted behaviour (three sample slots).* A face record holds at most three
+embeddings and the projection emits a person's newest three. So samples imported
+from the robot can be pushed out of that window by photos added on the Mac
+afterwards; if the robot still holds them and anything else has drifted, the
+record reads as unknown content again and the push re-blocks until the operator
+imports once more. The alternative — keeping every sample the robot ever had —
+would mean the Mac quietly deciding which three the robot may use, and the
+window is three by the robot's own rule. One extra import is the accepted price.
+
 **The promote is guarded.** The window between reading the robot's files and
 overwriting them is a real race — an enrollment can land inside it. So both
 files are staged as `.faces.push.tmp` / `.people.push.tmp` and promoted by ONE
@@ -41,6 +64,7 @@ Nothing but these two JSON files ever leaves the Mac: photo bytes stay in
 """
 
 from __future__ import annotations
+import os
 import re
 import time
 import hashlib
@@ -49,7 +73,7 @@ import tempfile
 import subprocess
 from typing import Final
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 import httpx
 
@@ -67,6 +91,10 @@ PEOPLE_TMP_NAME: Final[str] = ".people.push.tmp"
 
 FACES_KEY: Final[str] = "faces"
 PEOPLE_KEY: Final[str] = "people"
+
+# Where a verified push keeps a copy of what it wrote, so the next diff can see
+# what the robot has since deleted.
+LAST_PUSH_DIRNAME: Final[str] = "last_push"
 
 # Every remote call is bounded. 20 s is generous for two ~40 KB files over the
 # robot's wifi and short enough that a wedged link fails a request instead of
@@ -139,16 +167,24 @@ class RobotPersonFacts:
 
 @dataclass(frozen=True)
 class RobotDiff:
-    """The content the robot holds that the backend does not know about."""
+    """The content the robot holds that the backend does not know about.
+
+    `removed_person_facts` is the mirror image of the other three: facts the last
+    push left on the robot that are gone from it now. Its `facts` are the removed
+    texts, so an import knows exactly what to delete from the Mac store.
+    """
 
     new_faces: list[RobotFace]
     changed_faces: list[RobotFace]
     new_person_facts: list[RobotPersonFacts]
+    removed_person_facts: list[RobotPersonFacts] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
-        """True when nothing on the robot is unknown to the backend."""
-        return not (self.new_faces or self.changed_faces or self.new_person_facts)
+        """True when the robot holds no change the backend has not accounted for."""
+        return not (
+            self.new_faces or self.changed_faces or self.new_person_facts or self.removed_person_facts
+        )
 
 
 @dataclass(frozen=True)
@@ -160,12 +196,18 @@ class PushRace:
 
 @dataclass(frozen=True)
 class PushResult:
-    """What one push did, or what stopped it."""
+    """What one push did, or what stopped it.
+
+    `skipped` carries `ProjectionResult.skipped` through to the caller: the
+    people that reached the robot as nothing at all, which is the one thing a
+    successful push still needs to tell the operator.
+    """
 
     pushed: bool
     faces_count: int
     people_count: int
     blocked_by: object | None
+    skipped: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -199,9 +241,19 @@ def _remote_dir(settings: Settings) -> str:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run one remote command, bounded, never through a pty wrapper."""
+    """Run one remote command, bounded, never through a pty wrapper.
+
+    `stdin` is closed: `BatchMode=yes` already refuses to prompt, and a remote
+    command that reads stdin anyway must not be handed the backend process's own.
+    """
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=SSH_TIMEOUT_SECONDS)
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=SSH_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as exc:
         raise RobotError(f"`{argv[0]}` to the robot timed out after {SSH_TIMEOUT_SECONDS}s.") from exc
     except OSError as exc:
@@ -246,6 +298,42 @@ def _upload(settings: Settings, source: Path, filename: str) -> None:
         raise RobotError(f"Could not stage {filename} on the robot: {completed.stderr.strip() or 'scp failed'}")
 
 
+def _ssh(settings: Settings, script: str) -> subprocess.CompletedProcess[str]:
+    """Run one command on the robot over a non-interactive ssh."""
+    return _run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={CONNECT_TIMEOUT_SECONDS}",
+            _target(settings),
+            script,
+        ]
+    )
+
+
+def _discard_staged(settings: Settings) -> None:
+    """Remove both staged files from the robot, best effort.
+
+    Called on every failure path that leaves them there. A staged file is never
+    promoted by a later push — every push re-uploads both before promoting — so
+    this is hygiene rather than correctness, and it must never mask the error
+    that brought us here.
+    """
+    directory = _remote_dir(settings)
+    try:
+        completed = _ssh(settings, f'rm -f "{directory}/{FACES_TMP_NAME}" "{directory}/{PEOPLE_TMP_NAME}"')
+    except RobotError as exc:
+        logger.warning("Could not clear the staged push files on the robot: %s", exc)
+        return
+    if completed.returncode != 0:
+        logger.warning(
+            "Could not clear the staged push files on the robot: %s",
+            completed.stderr.strip() or completed.returncode,
+        )
+
+
 def fetch_stores(settings: Settings, into: Path) -> dict[str, Path | None]:
     """Fetch both robot store files into `into`; a missing remote file is None, not an error."""
     into.mkdir(parents=True, exist_ok=True)
@@ -253,6 +341,39 @@ def fetch_stores(settings: Settings, into: Path) -> dict[str, Path | None]:
         FACES_KEY: _download(settings, faces.FACES_FILENAME, into / faces.FACES_FILENAME),
         PEOPLE_KEY: _download(settings, people.PEOPLE_FILENAME, into / people.PEOPLE_FILENAME),
     }
+
+
+# --------------------------------------------------------------------------
+# the last-push snapshot
+# --------------------------------------------------------------------------
+
+
+def last_push_dir(settings: Settings) -> Path:
+    """Return the directory holding a copy of what the last verified push wrote."""
+    return settings.data_dir / LAST_PUSH_DIRNAME
+
+
+def _snapshot_push(settings: Settings, faces_file: Path, people_file: Path) -> None:
+    """Keep a copy of the two files this push put on the robot.
+
+    A deletion on the robot is invisible in the file it happened to — the fact is
+    simply not there — so the only way to see one is to compare against what we
+    left behind. Written with the store's own tmp+replace idiom so a crash
+    mid-write cannot leave a half-file that would read as a fabricated removal.
+    """
+    directory = last_push_dir(settings)
+    directory.mkdir(parents=True, exist_ok=True)
+    for source, name in ((faces_file, faces.FACES_FILENAME), (people_file, people.PEOPLE_FILENAME)):
+        destination = directory / name
+        tmp_path = destination.with_name(f".{name}.{os.getpid()}.tmp")
+        try:
+            tmp_path.write_bytes(source.read_bytes())
+            tmp_path.replace(destination)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # --------------------------------------------------------------------------
@@ -294,6 +415,70 @@ def _resolve(
     return by_name.get(name.casefold())
 
 
+@dataclass(frozen=True)
+class _PushedFacts:
+    """The facts our last verified push left on the robot, keyed both ways."""
+
+    by_face_id: dict[str, list[str]]
+    by_name: dict[str, list[str]]
+
+    def for_record(self, face_id: str | None, name: str) -> list[str]:
+        """Return what we pushed for one robot record — face link first, then name."""
+        if face_id is not None and face_id in self.by_face_id:
+            return self.by_face_id[face_id]
+        return self.by_name.get(name.casefold(), [])
+
+
+def _last_pushed_facts(settings: Settings) -> _PushedFacts:
+    """Read the last push's own `people.v1.json` back. No snapshot reads as nothing pushed."""
+    directory = last_push_dir(settings)
+    by_face_id: dict[str, list[str]] = {}
+    by_name: dict[str, list[str]] = {}
+    for record in people.list_people(directory):
+        texts = [fact.text for fact in record.facts]
+        if record.face_id:
+            by_face_id[record.face_id] = texts
+        by_name[record.name.casefold()] = texts
+    return _PushedFacts(by_face_id=by_face_id, by_name=by_name)
+
+
+def _removed_facts(
+    pushed: _PushedFacts,
+    person: store.BackendPerson | None,
+    face_id: str | None,
+    name: str,
+    here: set[str],
+    fact_count: int,
+) -> list[str]:
+    """Return the facts this push left on the robot that the robot no longer has.
+
+    Four conditions, and each one is load-bearing:
+
+    * the person still exists on the robot — a record evicted by the robot's own
+      twelve-person LRU is not a deliberate deletion;
+    * the fact was in the last push's snapshot — a fact the backend has but never
+      pushed is a *Mac-side addition*, which pushes normally;
+    * the fact is not in the robot's file now;
+    * the backend still holds it — otherwise an import that already applied the
+      removal would keep reporting it and the push could never proceed.
+
+    Plus one guard the criteria alone do not give: at the robot's twenty-fact cap
+    an absence is indistinguishable from the store evicting its own oldest fact
+    to make room, and treating an eviction as a deletion would delete a fact from
+    the Mac that nobody asked to forget. Below the cap no eviction can have
+    happened, so removals are only read there. Erring here costs a reverted
+    deletion; erring the other way costs data.
+    """
+    if person is None or fact_count >= people.MAX_FACTS_PER_PERSON:
+        return []
+    still_on_the_mac = {fact.text.casefold() for fact in person.facts}
+    return [
+        text
+        for text in pushed.for_record(face_id, name)
+        if text.casefold() not in here and text.casefold() in still_on_the_mac
+    ]
+
+
 def _diff_from(settings: Settings, fetched_dir: Path) -> RobotDiff:
     """Build the content view of a fetched pair of robot stores.
 
@@ -322,16 +507,33 @@ def _diff_from(settings: Settings, fetched_dir: Path) -> RobotDiff:
             changed_faces.append(entry)
 
     new_person_facts: list[RobotPersonFacts] = []
+    removed_person_facts: list[RobotPersonFacts] = []
+    pushed_facts = _last_pushed_facts(settings)
     for record in people.list_people(fetched_dir):
         person = _resolve(record.face_id, record.name, by_face_id, by_name)
         known = set() if person is None else {fact.text.casefold() for fact in person.facts}
+        here = {fact.text.casefold() for fact in record.facts}
+
         # `record.facts` is newest-first; the order is carried through so the
         # import can replay it oldest-first into the backend's own store.
         unseen = [fact.text for fact in record.facts if fact.text.casefold() not in known]
         if unseen:
             new_person_facts.append(RobotPersonFacts(name=record.name, face_id=record.face_id, facts=unseen))
 
-    return RobotDiff(new_faces=new_faces, changed_faces=changed_faces, new_person_facts=new_person_facts)
+        gone = _removed_facts(
+            pushed_facts, person, record.face_id, record.name, here, len(record.facts)
+        )
+        if gone:
+            removed_person_facts.append(
+                RobotPersonFacts(name=record.name, face_id=record.face_id, facts=gone)
+            )
+
+    return RobotDiff(
+        new_faces=new_faces,
+        changed_faces=changed_faces,
+        new_person_facts=new_person_facts,
+        removed_person_facts=removed_person_facts,
+    )
 
 
 def drift(settings: Settings) -> DriftState:
@@ -399,21 +601,16 @@ def _promote_script(settings: Settings, faces_sha: str | None, people_sha: str |
 
 
 def _promote(settings: Settings, faces_sha: str | None, people_sha: str | None) -> bool:
-    """Run the guarded promote; return False when the guard found the robot changed."""
-    completed = _run(
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={CONNECT_TIMEOUT_SECONDS}",
-            _target(settings),
-            _promote_script(settings, faces_sha, people_sha),
-        ]
-    )
+    """Run the guarded promote; return False when the guard found the robot changed.
+
+    The guard cleans up after itself on a race. Every other non-zero exit is a
+    failure we caused, so the staged files are cleared here before raising.
+    """
+    completed = _ssh(settings, _promote_script(settings, faces_sha, people_sha))
     if completed.returncode == PROMOTE_RACE_EXIT:
         return False
     if completed.returncode != 0:
+        _discard_staged(settings)
         raise RobotError(f"The robot refused the promote: {completed.stderr.strip() or completed.returncode}")
     return True
 
@@ -449,8 +646,14 @@ def push(settings: Settings) -> PushResult:
         local_faces: Path = faces.faces_path_for_instance(out_dir)
         local_people: Path = people.people_path_for_instance(out_dir)
 
-        _upload(settings, local_faces, FACES_TMP_NAME)
-        _upload(settings, local_people, PEOPLE_TMP_NAME)
+        try:
+            _upload(settings, local_faces, FACES_TMP_NAME)
+            _upload(settings, local_people, PEOPLE_TMP_NAME)
+        except RobotError:
+            # The first file may already be staged; leaving it there would strand
+            # a half-push on the robot until the next successful one.
+            _discard_staged(settings)
+            raise
 
         if not _promote(settings, faces_before, people_before):
             logger.info("The robot's stores changed between the fetch and the promote; nothing was written.")
@@ -475,6 +678,11 @@ def push(settings: Settings) -> PushResult:
 
         faces_count = len(faces.list_faces(verify_dir))
         people_count = len(people.list_people(verify_dir))
+        # The snapshot and the hashes describe the same verified state and are
+        # written together: a hash without its snapshot would report every fact
+        # the robot forgets as still present, and a snapshot without its hash
+        # would never be consulted.
+        _snapshot_push(settings, local_faces, local_people)
         store.set_sync_meta(
             settings,
             store.SyncMeta(
@@ -489,7 +697,13 @@ def push(settings: Settings) -> PushResult:
             people_count,
             len(projected.skipped),
         )
-        return PushResult(pushed=True, faces_count=faces_count, people_count=people_count, blocked_by=None)
+        return PushResult(
+            pushed=True,
+            faces_count=faces_count,
+            people_count=people_count,
+            blocked_by=None,
+            skipped=projected.skipped,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -553,8 +767,14 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
 
         try:
             person = existing if existing is not None else store.create_person(settings, name)
-            store.set_person_face_id(settings, person.id, entry.record_id)
+            # Samples first, link last. A failure part-way then leaves a person
+            # who is *not* linked to this record, so the record still reads as new
+            # and importing again finishes the job. Linking first would leave a
+            # person claiming a face they have no sample of — the projection would
+            # drop them from `faces.v1.json` and the robot would stop recognizing
+            # someone it already knew.
             _add_embeddings(settings, person.id, entry.embeddings)
+            store.set_person_face_id(settings, person.id, entry.record_id)
         except (ValueError, LookupError) as exc:
             conflicts.append(f"{name}: could not import the robot's face record ({exc}).")
             continue
@@ -593,6 +813,26 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
                 store.add_fact(settings, target.id, text)
             except (ValueError, LookupError) as exc:
                 conflicts.append(f"{name}: could not import the fact {text!r} ({exc}).")
+                continue
+            applied += 1
+
+    for facts_entry in diff.removed_person_facts:
+        name = faces.normalize_face_name(facts_entry.name)
+        target = _person_for_record(settings, facts_entry.face_id, name) if name else None
+        if target is None:
+            conflicts.append(f"{facts_entry.name!r}: nobody here to forget {len(facts_entry.facts)} fact(s) for.")
+            continue
+        for text in facts_entry.facts:
+            key = text.casefold()
+            fact = next((item for item in target.facts if item.text.casefold() == key), None)
+            if fact is None:
+                # Already gone from the Mac: the removal has nothing left to do,
+                # which is a finished job rather than a conflict.
+                continue
+            try:
+                store.delete_fact(settings, target.id, fact.id)
+            except LookupError as exc:
+                conflicts.append(f"{name}: could not forget the fact {text!r} ({exc}).")
                 continue
             applied += 1
 

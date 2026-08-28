@@ -158,6 +158,28 @@ def test_add_fact_rejects_a_fact_that_normalizes_to_empty(settings: Settings) ->
         store.add_fact(settings, person.id, "  \t ")
 
 
+def test_add_fact_returns_the_existing_fact_instead_of_duplicating_it(settings: Settings) -> None:
+    """The robot's own rule: a fact a person already has is not stored twice.
+
+    The sync layer re-offers facts it has already imported, so without this an
+    import applied twice would project a person's memory back to them doubled.
+    """
+    person = store.create_person(settings, "Lena")
+    first = store.add_fact(settings, person.id, "likes tea")
+    mo = store.create_person(settings, "Mo")
+    assert [item.id for item in store.list_people(settings)] == [mo.id, person.id]
+
+    again = store.add_fact(settings, person.id, "  Likes   TEA  ")
+
+    assert again == first
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.facts == (first,)
+    # The record is still touched: they were talked about either way, and
+    # projection ranks by that.
+    assert [item.id for item in store.list_people(settings)] == [person.id, mo.id]
+
+
 def test_facts_are_newest_first_and_delete_by_id(settings: Settings) -> None:
     """Facts stack newest-first; deleting an unknown id is an error, not a silent no-op."""
     person = store.create_person(settings, "Lena")
