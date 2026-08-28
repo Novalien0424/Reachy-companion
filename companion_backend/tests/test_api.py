@@ -23,6 +23,7 @@ out of every test but the one that asks for it.
 from __future__ import annotations
 import math
 import random
+import threading
 from typing import Any
 from pathlib import Path
 from itertools import count
@@ -446,6 +447,99 @@ def test_import_failure_is_502(client: TestClient, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(robot, "import_from_robot", failing)
     assert client.get("/api/sync/import").status_code == 502
     assert client.post("/api/sync/import").status_code == 502
+
+
+def test_a_push_the_robot_did_not_keep_is_502_robot_not_verified(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed verify is not "the robot is unreachable" — it has its own slug.
+
+    Both are 502, but the operator's next move differs: an unreachable robot is
+    retried, a robot that reported success and then does not hold what was sent
+    is investigated. `RobotVerifyError` subclasses `RobotError`, so this asserts
+    the *more specific* handler wins.
+    """
+
+    def failing(_settings: Settings) -> robot.PushResult:
+        raise robot.RobotVerifyError("The promote reported success but the robot does not hold what this push sent")
+
+    monkeypatch.setattr(robot, "push", failing)
+    response = client.post("/api/sync/push")
+    assert response.status_code == 502
+    body = response.json()
+    assert body["kind"] == "robot_not_verified"
+    assert "does not hold what this push sent" in body["error"]
+
+
+def _blocking_seam(started: threading.Event, release: threading.Event) -> Any:
+    """Return a robot seam that parks inside the route until `release` is set."""
+
+    def seam(_settings: Settings) -> Any:
+        started.set()
+        assert release.wait(timeout=10)
+        return robot.PushResult(pushed=True, faces_count=1, people_count=1, blocked_by=None)
+
+    return seam
+
+
+@pytest.mark.parametrize("second_call", ["push", "import"])
+def test_a_concurrent_mutating_sync_is_409_sync_busy(
+    client: TestClient, settings: Settings, monkeypatch: pytest.MonkeyPatch, second_call: str
+) -> None:
+    """Two pushes at once would race on the robot's staged files; the second is refused.
+
+    The refusal is immediate (a non-blocking acquire), not a queue: the operator
+    gets an answer rather than a request that hangs behind a 20 s ssh.
+    """
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(robot, "push", _blocking_seam(started, release))
+    monkeypatch.setattr(robot, "import_from_robot", lambda _settings: pytest.fail("the lock let a second sync in"))
+
+    first: dict[str, int] = {}
+    thread = threading.Thread(target=lambda: first.update(status=client.post("/api/sync/push").status_code))
+    thread.start()
+    try:
+        assert started.wait(timeout=10)
+        # A second client, to prove the lock is the module's and not one client's.
+        busy = TestClient(app_module.create_app(settings)).post(f"/api/sync/{second_call}")
+        assert busy.status_code == 409
+        assert busy.json()["kind"] == "sync_busy"
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert first == {"status": 200}
+
+
+def test_the_sync_lock_is_released_after_a_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A push that raised must not leave the next one refused as busy."""
+
+    def failing(_settings: Settings) -> robot.PushResult:
+        raise robot.RobotError("Connection timed out")
+
+    monkeypatch.setattr(robot, "push", failing)
+    assert client.post("/api/sync/push").status_code == 502
+    assert client.post("/api/sync/push").status_code == 502  # not 409
+    assert not app_module._SYNC_LOCK.locked()
+
+
+def test_the_import_preview_is_not_serialized(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GET reads the robot and writes nothing, so it must not be blocked by a push."""
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(robot, "push", _blocking_seam(started, release))
+    monkeypatch.setattr(
+        robot,
+        "import_from_robot",
+        lambda _settings: robot.RobotDiff(new_faces=[], changed_faces=[], new_person_facts=[]),
+    )
+
+    thread = threading.Thread(target=lambda: client.post("/api/sync/push"))
+    thread.start()
+    try:
+        assert started.wait(timeout=10)
+        assert client.get("/api/sync/import").status_code == 200
+    finally:
+        release.set()
+        thread.join(timeout=10)
 
 
 # --------------------------------------------------------------------------

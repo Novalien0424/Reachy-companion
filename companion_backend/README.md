@@ -73,10 +73,23 @@ Three shapes are worth knowing before writing a client:
   `too_far`, `decode_failed`, `internal_error`, or `null`.
 - **One error envelope**, always `{"error": <message>, "kind": <slug>}`:
   `duplicate_name` 409, `empty_value` 400, `not_found` 404, `no_photo_bytes`
-  404, `photo_too_large` 413, `invalid_request` 422, `robot_unreachable` 502
-  (carrying the ssh/scp stderr tail). `GET /api/sync/status` is the exception
-  the UI polls: an unreachable robot is `robot_reachable: false` there, never a
-  502.
+  404, `sync_busy` 409, `photo_too_large` 413, `invalid_request` 422,
+  `robot_unreachable` 502 (carrying the ssh/scp stderr tail) and
+  `robot_not_verified` 502. `GET /api/sync/status` is the exception the UI
+  polls: an unreachable robot is `robot_reachable: false` there, never a 502.
+
+  Two of those are worth expanding. `robot_not_verified` is *not*
+  `robot_unreachable`: the promote reported success and the robot then did not
+  hold what was sent, which needs looking at rather than clicking Push again.
+  `sync_busy` is what a second concurrent push or import apply gets — those two
+  routes stage files on the robot under fixed names, so a module-level lock
+  serializes them and the loser is refused immediately rather than queued. The
+  import *preview* (`GET`) is not serialized; it writes nothing.
+
+  The refused-push 409 is the one non-envelope failure: it carries the push
+  *result* (`pushed: false` plus `blocked_by`), because the diff that blocked it
+  is what the operator acts on. A client tells the two apart by whether the body
+  has a `pushed` key.
 
 ## Tests
 
@@ -113,4 +126,37 @@ exist and the residual risks can be stated concretely.)*
 | `backend/projection.py` | Mac store → robot store files *(Task 10)* |
 | `backend/robot.py` | ssh/scp push, drift detection, import *(Task 10)* |
 | `backend/app.py` | the HTTP API — routes, error mapping, the shared recognizer |
-| `static/` | the operator UI — a placeholder page until *(Task 12)* |
+| `static/` | the operator UI *(Task 12)* — see below |
+
+## The operator UI
+
+Vanilla ES modules, no framework and no build step: open
+`http://127.0.0.1:8710/` and the browser loads what is on disk. The DOM
+helpers, hash router and JSON-RPC client are lifted from the robot's own
+console (`reachy_companion/src/reachy_companion/static/js/`) so the two read
+alike; `js/rpc.js` is that console's client pointed at
+`ws://{reachy_host}:7860/rpc`, with the host coming from `GET /api/config`.
+
+| Route | What it does |
+|---|---|
+| `#/people` | every person, with photo/fact counts and per-photo error badges; create, delete |
+| `#/people/<id>` | photo grid with per-photo status, multi-upload, delete; facts with a 280-char counter |
+| `#/sync` | drift, the guarded push (a 409 renders the diff and an "Import first" button), import preview + apply |
+| `#/control` | the robot app's lifecycle over REST, plus a live panel over `rpc.js` — mic, interrupt, say, transcript |
+
+Three rules the UI is built around, all of them load-bearing:
+
+- **No `innerHTML`, anywhere.** Display names, facts, photo filenames, robot
+  transcripts and ssh stderr are all stored and rendered verbatim, and nothing
+  sanitizes them at any layer. Text nodes are the whole defense, so `js/ui.js`
+  deliberately drops the trusted-HTML escape hatch the console's own `h()` has.
+- **Photos are re-encoded before upload.** A phone photo is stored landscape
+  with an EXIF `Orientation` tag; `backend/embedding.py` decodes through ffmpeg,
+  which hands back the raw unrotated pixels, so an upright-looking portrait
+  reaches YuNet sideways and comes back `no_face`. The upload path runs
+  `createImageBitmap(file, {imageOrientation: "from-image"})` onto a canvas and
+  uploads the re-encoded JPEG, falling back to the original file whenever that
+  is unavailable or throws.
+- **Synthetic photos are never fetched.** A photo imported from the robot is an
+  embedding with no bytes behind it, and its file route 404s by design, so those
+  tiles render a placeholder instead of a broken `<img>`.

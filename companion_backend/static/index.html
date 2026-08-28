@@ -3,33 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Reachy companion — people</title>
-    <style>
-      body {
-        margin: 0;
-        padding: 3rem 1.5rem;
-        font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: #1c1c1e;
-        background: #f5f5f7;
-      }
-      main { max-width: 34rem; margin: 0 auto; }
-      code { background: #e8e8ed; padding: 0.1em 0.35em; border-radius: 3px; }
-      ul { padding-left: 1.2rem; }
-    </style>
+    <title>Reachy companion — management backend</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
   </head>
   <body>
-    <main>
-      <h1>Reachy companion — management backend</h1>
-      <p>
-        The API is running. The operator UI lands in Task 12; until then this
-        page is a placeholder that proves the static directory is mounted.
-      </p>
-      <ul>
-        <li><code>GET /api/config</code> — the robot this backend manages</li>
-        <li><code>GET /api/people</code> — everyone this Mac knows</li>
-        <li><code>GET /api/sync/status</code> — last push, drift, reachability</li>
-        <li><code>GET /docs</code> — the generated API reference</li>
-      </ul>
-    </main>
+    <header class="shell">
+      <div class="shell__brand">
+        <span class="shell__title">Reachy companion</span>
+        <span class="shell__host" id="robot-host">…</span>
+      </div>
+      <nav class="nav" id="nav" aria-label="Sections"></nav>
+    </header>
+    <main id="view-outlet" class="outlet"></main>
+    <noscript>
+      <p class="outlet">This operator UI is JavaScript. The API itself is at <code>/docs</code>.</p>
+    </noscript>
+    <script type="module" src="/static/js/main.js"></script>
   </body>
 </html>

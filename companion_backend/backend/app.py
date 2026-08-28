@@ -39,7 +39,10 @@ with the robot's own readers, so it must not drift to suit a web client.
 
 Handlers are plain `def`, so FastAPI runs them on its threadpool: every call
 below is blocking (file IO, ssh, a synchronous embed), and the store's own
-`RLock` makes that safe.
+`RLock` makes that safe. The one hazard that lock does not cover is two syncs
+in flight at once — they race on the robot's staged files, not on the store —
+so the two mutating sync routes take `_SYNC_LOCK` and a second caller is
+refused immediately with a 409 rather than queued.
 """
 
 from __future__ import annotations
@@ -48,8 +51,8 @@ import mimetypes
 import threading
 from typing import Any, Final, Annotated
 from pathlib import Path
-from contextlib import asynccontextmanager
-from collections.abc import Callable, AsyncIterator
+from contextlib import contextmanager, asynccontextmanager
+from collections.abc import Callable, Iterator, AsyncIterator
 
 from fastapi import Depends, FastAPI, Request, APIRouter, UploadFile
 from pydantic import BaseModel
@@ -405,6 +408,29 @@ def get_photo_file(person_id: str, photo_id: str, settings: SettingsDep) -> File
 # sync
 # --------------------------------------------------------------------------
 
+# One sync at a time. Both mutating sync routes stage files on the robot under
+# fixed names and both write the Mac store, so two of them in flight would race
+# on the robot's `.faces.push.tmp` and on the last-push snapshot that the whole
+# gate is built on. Handlers are plain `def` and FastAPI runs them on its
+# threadpool, so two operator clicks really are two threads — a process-wide
+# `threading.Lock` is exactly the scope of the hazard.
+#
+# The acquire is non-blocking on purpose: an operator who double-clicks Push
+# gets an immediate "already running" instead of a request parked behind a 20 s
+# ssh, and a worker thread is not held hostage by one.
+_SYNC_LOCK: Final[threading.Lock] = threading.Lock()
+
+
+@contextmanager
+def _one_sync_at_a_time() -> Iterator[None]:
+    """Hold the sync lock for the body, or refuse the request outright."""
+    if not _SYNC_LOCK.acquire(blocking=False):
+        raise ApiError(409, "sync_busy", "Another push or import is still running; wait for it to finish.")
+    try:
+        yield
+    finally:
+        _SYNC_LOCK.release()
+
 
 @router.get("/api/sync/status")
 def sync_status(settings: SettingsDep) -> dict[str, Any]:
@@ -436,7 +462,8 @@ def sync_status(settings: SettingsDep) -> dict[str, Any]:
 @router.post("/api/sync/push")
 def sync_push(settings: SettingsDep) -> JSONResponse:
     """Push the projection to the robot. A refused push is a 409 carrying its reason."""
-    result = robot.push(settings)
+    with _one_sync_at_a_time():
+        result = robot.push(settings)
     return JSONResponse(_push_view(result), status_code=200 if result.pushed else 409)
 
 
@@ -445,7 +472,9 @@ def preview_import(settings: SettingsDep) -> dict[str, Any]:
     """Preview what an import would bring back, including facts the robot has forgotten.
 
     Shares the POST's envelope so the UI renders one shape either way; `applied`
-    is null here because nothing was.
+    is null here because nothing was. Deliberately *not* under the sync lock: it
+    reads the robot and writes nothing, so refusing it during a push would only
+    stop the operator from seeing why their push is taking so long.
     """
     return {"diff": _diff_view(robot.import_from_robot(settings)), "applied": None, "conflicts": []}
 
@@ -458,8 +487,9 @@ def run_import(settings: SettingsDep) -> dict[str, Any]:
     may have enrolled a face in between, and importing a stale diff would leave
     that enrollment to be overwritten by the very next push.
     """
-    diff = robot.import_from_robot(settings)
-    result = robot.apply_import(settings, diff)
+    with _one_sync_at_a_time():
+        diff = robot.import_from_robot(settings)
+        result = robot.apply_import(settings, diff)
     return {"diff": _diff_view(diff), "applied": result.applied, "conflicts": result.conflicts}
 
 
@@ -540,6 +570,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(store.PersonNotFoundError, _handler(404, "not_found"))
     application.add_exception_handler(store.FactNotFoundError, _handler(404, "not_found"))
     application.add_exception_handler(store.PhotoNotFoundError, _handler(404, "not_found"))
+    # The subclass first, so the file reads in the order Starlette resolves it:
+    # its lookup walks the exception's MRO, so a `RobotVerifyError` finds this
+    # handler and never the `RobotError` one below. Both are 502, but only one
+    # of them is worth retrying — "the robot did not keep what we sent" needs
+    # looking at, not clicking Push again.
+    application.add_exception_handler(robot.RobotVerifyError, _handler(502, "robot_not_verified"))
     application.add_exception_handler(robot.RobotError, _handler(502, "robot_unreachable"))
 
     application.include_router(router)
