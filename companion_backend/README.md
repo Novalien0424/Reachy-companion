@@ -14,10 +14,16 @@ of the backend — enroll once on the Mac, push as often as you like.
 ```sh
 ./run.sh                 # http://127.0.0.1:8710 — open that and you are in the UI
 ./run.sh --reload        # extra args are passed straight to uvicorn
+
+# Access over Tailscale (operator-authorized 2026-08-28): bind the tailnet IP
+# so other devices on YOUR tailnet reach the UI at http://<tailscale-ip>:8710,
+# without exposing it on the home LAN or loopback:
+COMPANION_BACKEND_HOST="$(tailscale ip -4)" ./run.sh
 ```
 
-Port **8710**, bound to `127.0.0.1` (see the security section — do not change
-that). `/` serves the operator UI, `/docs` the generated API reference. The
+Port **8710**, bound to `127.0.0.1` unless `COMPANION_BACKEND_HOST` says
+otherwise (see the security section — the Tailscale IP is the one sanctioned
+alternative; never `0.0.0.0`). `/` serves the operator UI, `/docs` the generated API reference. The
 first photo upload of a run pays a one-off ~1.4 s model load; the server kicks
 that warmup at startup so it is usually already paid.
 
@@ -167,8 +173,17 @@ front of it. Anyone who can reach the port can read and delete every stored
 photo and fact, and can push arbitrary content to the robot.
 
 - Do not change the bind address to `0.0.0.0`.
-- Access it from another machine only through an SSH tunnel
-  (`ssh -L 8710:127.0.0.1:8710 …`), never by re-binding.
+- From another machine, access it through an SSH tunnel
+  (`ssh -L 8710:127.0.0.1:8710 …`) or — operator-authorized 2026-08-28 — by
+  binding this Mac's **Tailscale IP** (`COMPANION_BACKEND_HOST="$(tailscale ip
+  -4)" ./run.sh`). A tailnet is device-authenticated and private to the
+  operator's own devices, the same trust boundary as the home LAN this posture
+  already accepts; the CSRF notes below apply on tailnet devices too. Never
+  `tailscale funnel` (that is the public internet), and note the `#/control`
+  live panel still needs the browser to reach the robot's LAN address —
+  from a remote tailnet device that means a Tailscale subnet route to the
+  home LAN; without one, everything except the live panel works (app
+  start/stop/restart included, since those run server-side).
 - Robot access itself is plain `ssh`/`scp` over the local network and assumes a
   trusted LAN.
 
