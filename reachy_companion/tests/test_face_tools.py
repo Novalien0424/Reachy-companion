@@ -510,9 +510,43 @@ async def test_remember_face_holds_the_head_still_around_the_burst(instant_sleep
 
     assert result == {"status": "saved", "name": "Lena", "samples": 3}
     assert calls[:3] == ["hold=True", "disable_wobbling", "frame"]
-    assert calls[-2:] == ["enable_wobbling", "hold=False"]
+    # The synchronous release goes first, so a cancellation landing on the
+    # wobbling await cannot skip it (see hold_still).
+    assert calls[-2:] == ["hold=False", "enable_wobbling"]
     # Every one of the three looks happened inside the bracket.
     assert calls.count("frame") == 3
+
+
+@pytest.mark.asyncio
+async def test_remember_face_releases_the_hold_when_it_is_cancelled() -> None:
+    """A cancellation during the settle must not leave the robot frozen for the session.
+
+    `background_tool_manager.cancel_tool` and the timeout sweep both `task.cancel()`
+    a running tool. `CancelledError` is a BaseException, so if the freeze and the
+    settle sat outside the guarded region the restore would never run and the head
+    would stay parked at weight 0.0 with wobbling off until the app restarted.
+    """
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+
+    task = asyncio.ensure_future(RememberFace()(deps, name="Lena"))
+    # Cancel inside the settle pause: once wobbling is off, the burst has not
+    # started yet (the settle is longer than this poll by an order of magnitude).
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if deps.reachy_mini.disable_wobbling.called:
+            break
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
+    deps.reachy_mini.enable_wobbling.assert_called_once_with()
+    # The cancellation landed before any enrollment work.
+    assert recognizer.frames_seen == 0
 
 
 @pytest.mark.asyncio

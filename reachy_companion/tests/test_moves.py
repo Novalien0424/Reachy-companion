@@ -82,6 +82,15 @@ def test_head_tracking_follows_speaking() -> None:
     robot.stop_head_tracking.assert_called_once()
 
 
+def _a_real_move() -> BreathingMove:
+    """Return an actual `Move`; `_FakeMove` is rejected by the queue's isinstance guard."""
+    return BreathingMove(
+        interpolation_start_pose=create_head_pose(0, 0, 0, 0, 0, 0, degrees=True),
+        interpolation_start_antennas=np.array([0.0, 0.0]),
+        interpolation_duration=1.0,
+    )
+
+
 def _apply_hold(manager: MovementManager, hold: bool) -> None:
     """Post the public hold command and let the loop's own drain apply it.
 
@@ -114,7 +123,7 @@ def test_hold_still_parks_the_head_and_hands_it_back() -> None:
 
 
 def test_hold_still_release_leaves_the_head_to_speech() -> None:
-    """If the assistant started talking during the burst, set_speaking owns the anchor."""
+    """A burst taken mid-speech releases to the speaking anchor, never to full tracking."""
     robot = MagicMock()
     robot.get_current_head_pose.return_value = np.eye(4)
     manager = MovementManager(robot)
@@ -125,7 +134,8 @@ def test_hold_still_release_leaves_the_head_to_speech() -> None:
     robot.start_head_tracking.reset_mock()
     _apply_hold(manager, False)
 
-    robot.start_head_tracking.assert_not_called()
+    # Still parked: set_speaking owns the head until the reply ends.
+    assert robot.start_head_tracking.call_args_list == [call(weight=0.0)]
     assert manager._hold_still is False
 
 
@@ -144,6 +154,136 @@ def test_hold_still_clears_the_active_move_and_the_queue() -> None:
     assert manager.state.move_start_time is None
     assert not manager.move_queue
     assert manager._breathing_active is False
+
+
+def test_speech_ending_mid_hold_is_deferred_to_the_release() -> None:
+    """A short reply finishing during the burst must not re-arm tracking mid-photo.
+
+    This is the common collision: the assistant says "let me look at you", the
+    reply ends, and `set_speaking(False)` would otherwise hand the head straight
+    back to the daemon at full weight — mid-capture.
+    """
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+    manager._is_speaking = True
+
+    _apply_hold(manager, True)
+    robot.start_head_tracking.reset_mock()
+
+    manager.set_speaking(False)
+    manager._poll_signals(manager._now())
+
+    # The flag moved; the robot did not.
+    assert manager._is_speaking is False
+    robot.start_head_tracking.assert_not_called()
+
+    _apply_hold(manager, False)
+
+    assert robot.start_head_tracking.call_args_list == [call(weight=1.0)]
+
+
+def test_speech_starting_mid_hold_keeps_the_head_parked_on_release() -> None:
+    """If speech began during the burst, release hands the anchor to set_speaking, not to tracking."""
+    robot = MagicMock()
+    anchor = create_head_pose(0, 0, 0, 0, 0, 12, degrees=True)
+    robot.get_current_head_pose.return_value = anchor
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_hold(manager, True)
+    robot.start_head_tracking.reset_mock()
+
+    manager.set_speaking(True)
+    manager._poll_signals(manager._now())
+
+    assert manager._is_speaking is True
+    robot.start_head_tracking.assert_not_called()
+    robot.get_tracked_face.assert_not_called()
+
+    _apply_hold(manager, False)
+
+    assert robot.start_head_tracking.call_args_list == [call(weight=0.0)]
+    assert manager._track_anchor is not None and np.allclose(manager._track_anchor, anchor)
+
+
+def test_head_tracking_turned_off_mid_hold_stops_only_on_release() -> None:
+    """Disabling tracking during the burst is applied at the release edge."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_hold(manager, True)
+    robot.start_head_tracking.reset_mock()
+
+    manager.set_head_tracking(False)
+    manager._poll_signals(manager._now())
+
+    assert manager._head_tracking is False
+    robot.stop_head_tracking.assert_not_called()
+
+    _apply_hold(manager, False)
+
+    robot.stop_head_tracking.assert_called_once_with()
+    robot.start_head_tracking.assert_not_called()
+
+
+def test_head_tracking_turned_on_mid_hold_arms_on_release() -> None:
+    """Enabling tracking during the burst waits for the photo, then arms at full weight."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+
+    _apply_hold(manager, True)
+
+    manager.set_head_tracking(True)
+    manager._poll_signals(manager._now())
+
+    assert manager._head_tracking is True
+    robot.start_head_tracking.assert_not_called()
+
+    _apply_hold(manager, False)
+
+    assert robot.start_head_tracking.call_args_list == [call(weight=1.0)]
+
+
+def test_release_touches_nothing_when_tracking_was_never_on() -> None:
+    """With tracking off throughout, the hold is a pure no-op on the tracking API."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+
+    _apply_hold(manager, True)
+    _apply_hold(manager, False)
+
+    robot.start_head_tracking.assert_not_called()
+    robot.stop_head_tracking.assert_not_called()
+
+
+def test_queued_moves_are_dropped_during_the_hold(caplog: pytest.LogCaptureFixture) -> None:
+    """A dance or emotion arriving mid-capture is dropped: the photo wins."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+
+    _apply_hold(manager, True)
+
+    with caplog.at_level("INFO", logger="reachy_companion.moves"):
+        manager.queue_move(_a_real_move())
+        manager._poll_signals(manager._now())
+
+    assert not manager.move_queue
+    assert manager.state.current_move is None
+    assert "still-pose hold" in caplog.text
+
+    # The positive control — a real Move, so the drop above cannot be passing
+    # for the unrelated "invalid payload" reason — the queue works again the
+    # moment the hold is released.
+    _apply_hold(manager, False)
+    manager.queue_move(_a_real_move())
+    manager._poll_signals(manager._now())
+
+    assert len(manager.move_queue) == 1
 
 
 def test_breathing_does_not_restart_while_held() -> None:
