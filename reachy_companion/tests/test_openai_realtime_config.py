@@ -1055,6 +1055,13 @@ def test_env_example_documents_the_new_knobs() -> None:
     assert "REALTIME_BARGE_CONFIRM_MS" in text
     assert "REALTIME_BARGE_ROLLBACK_TIMEOUT_S" in text
     assert "REALTIME_BARGE_COOLDOWN_MS" in text
+    # The face knobs `huggingface_realtime.py` reads at wake time. An operator
+    # tuning the boot greeting has no other place to discover them.
+    assert "FACE_AUTO_GREET" in text
+    assert "FACE_WAKE_BUDGET_MS" in text
+    assert "FACE_WAKE_ATTEMPTS" in text
+    assert "FACE_WAKE_EXTENDED_MS" in text
+    assert "FACE_GREETING_FACTS" in text
 
 
 def test_session_config_defaults_to_far_field_noise_reduction(handler: OpenAIRealtimeHandler) -> None:

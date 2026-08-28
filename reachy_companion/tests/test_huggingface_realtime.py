@@ -1,6 +1,7 @@
 import time
 import asyncio
 from typing import Any
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -626,7 +627,13 @@ class _CapturingConnection:
         return self
 
 
-def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = True) -> Any:
+def _wake_handler(
+    recognizer: Any,
+    monkeypatch: Any,
+    *,
+    camera_enabled: bool = True,
+    instance_path: Any = None,
+) -> Any:
     """Build a handler wired to a capturing connection and a counting response sender."""
     # The real 0.7 s pause between looks is a robot-time value, not a test one.
     monkeypatch.setattr(hf_mod, "_FACE_WAKE_EXTENDED_PAUSE_S", 0.01)
@@ -637,6 +644,7 @@ def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = T
         ToolDependencies(
             reachy_mini=reachy_mini,
             movement_manager=MagicMock(),
+            instance_path=instance_path,
             camera_enabled=camera_enabled,
             face_recognizer=recognizer,
         )
@@ -859,15 +867,16 @@ async def test_extended_wake_check_aborts_on_reconnected_session(monkeypatch: An
 
 
 @pytest.mark.asyncio
-async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch: Any) -> None:
-    """The extension is spawned exactly when the quick check found nobody.
+async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch: Any, tmp_path: Path) -> None:
+    """The extension is spawned exactly when the quick check did not place anybody.
 
-    Three sub-cases in one test because they are one rule: a quick-check miss
-    spawns it once, a quick-check hit has nothing left to look for, and the
-    kill switch stops the spawn before a task is ever created.
+    Four sub-cases in one test because they are one rule: an empty frame spawns
+    it once, a stranger spawns it too (they may yet be someone Reachy knows, seen
+    badly), a quick-check hit has nothing left to look for, and the kill switch
+    stops the spawn before a task is ever created.
     """
-    miss = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
-    handler = _wake_handler(miss, monkeypatch)
+    empty = _WakeRecognizer([Identification(status="no_face")])
+    handler = _wake_handler(empty, monkeypatch, instance_path=tmp_path)
 
     await handler._send_startup_greeting_prompt()
 
@@ -881,8 +890,21 @@ async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch
     assert handler._wake_face_task is spawned
     await _drop_task(spawned)
 
+    stranger = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
+    met = _wake_handler(stranger, monkeypatch, instance_path=tmp_path)
+
+    await met._send_startup_greeting_prompt()
+
+    (stranger_item,) = met.connection.created_items
+    stranger_text = stranger_item["content"][0]["text"]
+    assert stranger_text.startswith(hf_mod._FACE_STRANGER_GREETING_PREFIX)
+    assert stranger_text.endswith(WAKE_GREETING)
+    stranger_task = met._wake_face_task
+    assert stranger_task is not None
+    await _drop_task(stranger_task)
+
     hit = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
-    greeted = _wake_handler(hit, monkeypatch)
+    greeted = _wake_handler(hit, monkeypatch, instance_path=tmp_path)
 
     await greeted._send_startup_greeting_prompt()
 
@@ -894,6 +916,7 @@ async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch
     silenced = _wake_handler(
         _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)]),
         monkeypatch,
+        instance_path=tmp_path,
     )
 
     await silenced._send_startup_greeting_prompt()

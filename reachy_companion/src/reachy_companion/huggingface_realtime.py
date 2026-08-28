@@ -41,6 +41,7 @@ from reachy_companion.config import (
     get_hf_connection_selection,
 )
 from reachy_companion.hanova import audio_drain
+from reachy_companion.people import facts_for_person
 from reachy_companion.prompts import (
     get_session_voice,
     get_session_instructions,
@@ -261,18 +262,32 @@ def _party_face_center() -> float:
     """Max |x| (normalized to [-1, 1]) for a face to count as facing the robot."""
     return env_float("REALTIME_PARTY_FACE_CENTER", 0.4, lo=0.0, hi=1.0)
 
+
 # Face memory at wake time (D-013). One monotonic deadline bounds the whole
 # check — model readiness, frame capture and identification together — because
 # this hook runs before the session starts processing events: every millisecond
 # it spends is a millisecond the greeting is late.
-_FACE_WAKE_BUDGET_MS_DEFAULT: Final[int] = 1200
+_FACE_WAKE_BUDGET_MS_DEFAULT: Final[int] = 4000
 # Several looks fit inside that budget, and at a dozen enrolled people extra
 # frames buy more recognitions than any model change does (D-015): a blink, a
 # turned head or a shadow is a per-frame accident, not a per-person one.
-_FACE_WAKE_ATTEMPTS_DEFAULT: Final[int] = 3
+_FACE_WAKE_ATTEMPTS_DEFAULT: Final[int] = 5
 _FACE_WAKE_RETRY_PAUSE_S: Final[float] = 0.15
 _FACE_GREETING_PREFIX: Final[str] = (
     "（系统提示：摄像头认出面前的人是「{name}」。自然地叫出他的名字打招呼，不要提到摄像头或识别。）"
+)
+# How many remembered facts a personalized greeting may lean on. Enough for the
+# greeting to sound like it knows the person, few enough that it cannot turn
+# into a recitation of everything on file.
+_FACE_GREETING_FACTS_DEFAULT: Final[int] = 6
+_FACE_KNOWN_WITH_FACTS_PREFIX: Final[str] = (
+    "（系统提示：摄像头认出面前的人是「{name}」。你记得关于他的这些事：{facts}。"
+    "像老朋友一样自然地叫他的名字打招呼，可以自然带到一两件你记得的事，"
+    "不要自我介绍，也不要提到摄像头或识别。）"
+)
+_FACE_STRANGER_GREETING_PREFIX: Final[str] = (
+    "（系统提示：摄像头看到面前有人，但认不出是谁。向这位新朋友自然地问候并简单介绍你自己，"
+    "可以礼貌地问对方怎么称呼。不要提到摄像头或识别。）"
 )
 # The same hook, given a realistic window: the pre-greeting check is over
 # before anyone is posed in frame (14/14 on-robot boots), so the look continues
@@ -283,6 +298,33 @@ _FACE_LATE_RECOGNITION_PROMPT: Final[str] = (
     "（系统提示：摄像头刚认出面前的人是「{name}」。自然地用名字招呼他，"
     "或在你接下来说的话里称呼他的名字。不要提到摄像头或识别这件事。）"
 )
+
+
+def _startup_greeting_prefix(identification: Any, facts: list[str]) -> str:
+    """Map the wake-check outcome onto one of the three greeting prefixes.
+
+    Three ways a boot can start: a friend the camera placed (by name, and with
+    what is remembered about them when there is anything), somebody who is there
+    but unplaceable (met as a new friend — never guessed at), and an empty frame
+    (the greeting exactly as the profile wrote it). `identification is None` is
+    the "the check never ran or failed" case and takes the empty-frame branch,
+    so face memory can still never cost anyone their greeting.
+    """
+    if identification is None:
+        return ""
+    if identification.status == "recognized" and identification.name:
+        if facts:
+            return _FACE_KNOWN_WITH_FACTS_PREFIX.format(name=identification.name, facts="；".join(facts)) + "\n"
+        return _FACE_GREETING_PREFIX.format(name=identification.name) + "\n"
+    if identification.face_count > 0 or identification.status in (
+        "unknown",
+        "ambiguous",
+        "too_far",
+        "multiple_faces",
+    ):
+        return _FACE_STRANGER_GREETING_PREFIX + "\n"
+    return ""
+
 
 # Boot gate (Task 6). The first session of a handler comes up with turn
 # detection OFF: the greeting is about to play out of a speaker sitting next to
@@ -1303,31 +1345,36 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._mark_activity("say")
         await self._safe_response_create()
 
-    async def _recognized_face_prefix(self) -> str:
-        """Return the greeting prefix naming a recognized face, or "" (D-013, D-015).
+    async def _wake_face_identification(self) -> Any:
+        """Return the wake-time `Identification`, or None when no check happened (D-013, D-015).
 
         The single auto-recognition hook in the app: one bounded check at wake
         time, never a continuous scan. Inside it, up to `FACE_WAKE_ATTEMPTS`
         looks, and the first confident one wins. Every round shares **one**
         monotonic deadline covering readiness, frame capture and identification
-        together — hitting it, failing to recognize anybody, or any exception at
-        all yields "", so the greeting is sent unchanged and on time. Face memory
-        must never be able to delay or lose the first thing Reachy says.
+        together — hitting it, or any exception at all, yields None, and the
+        caller then sends the greeting unchanged and on time. Face memory must
+        never be able to delay or lose the first thing Reachy says.
+
+        A *miss* still returns its `Identification`: "somebody is there but I
+        cannot place them" is a real outcome the caller greets differently from
+        "the camera saw nobody". Only the paths where no look ever happened —
+        disabled, no camera, no frame, timeout, exception — return None.
         """
         if not env_bool("FACE_AUTO_GREET", True):
-            return ""
+            return None
 
         recognizer = self.deps.face_recognizer
         if recognizer is None:
-            return ""
+            return None
         # Checked here rather than left to `wait_ready` returning False, so the
         # log says "disabled" instead of misattributing the skip to the budget.
         if not getattr(recognizer, "enabled", True):
             logger.info("Face memory is disabled; greeting unchanged.")
-            return ""
+            return None
         if not self.deps.camera_enabled:
             logger.info("No camera available for the wake face check; greeting unchanged.")
-            return ""
+            return None
 
         budget_s = env_int("FACE_WAKE_BUDGET_MS", _FACE_WAKE_BUDGET_MS_DEFAULT, lo=0, hi=10_000) / 1000.0
         attempts = env_int("FACE_WAKE_ATTEMPTS", _FACE_WAKE_ATTEMPTS_DEFAULT, lo=1, hi=5)
@@ -1344,11 +1391,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         rounds = 0
         try:
             if remaining() <= 0.0:
-                return ""
+                return None
             ready = await asyncio.wait_for(asyncio.to_thread(recognizer.wait_ready, remaining()), remaining())
             if not ready:
                 logger.info("Face memory not ready within the wake budget; greeting unchanged.")
-                return ""
+                return None
 
             for attempt in range(1, attempts + 1):
                 if remaining() <= 0.0:
@@ -1358,7 +1405,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 # media path as the tools; a None frame skips recognition entirely.
                 frame = await asyncio.wait_for(asyncio.to_thread(self.deps.reachy_mini.media.get_frame), remaining())
                 if frame is None:
-                    return ""
+                    return None
 
                 if remaining() <= 0.0:
                     break
@@ -1384,36 +1431,38 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 await asyncio.sleep(pause)
         except asyncio.TimeoutError:
             logger.info("Face memory exceeded its %.0f ms wake budget; greeting unchanged.", budget_s * 1000.0)
-            return ""
+            return None
         except Exception as e:
             logger.warning("Face memory check failed at wake time: %s: %s", type(e).__name__, e)
-            return ""
+            return None
 
         elapsed_ms = (time.monotonic() - started) * 1000.0
         if identification is None or identification.status != "recognized" or not identification.name:
             logger.info(
-                "Wake face check: %d round(s), last status=%s score=%s in %.0f ms; greeting unchanged.",
+                "Wake face check: %d round(s), last status=%s score=%s in %.0f ms; nobody recognized.",
                 rounds,
                 identification.status if identification is not None else "none",
                 identification.score if identification is not None else None,
                 elapsed_ms,
             )
-            return ""
+            # Still the identification, not None: a face that is *there* but
+            # unplaceable is greeted as a stranger, and only the caller knows that.
+            return identification
 
         logger.info(
-            "Wake face check: recognized %s (score %.3f) on round %d of %d in %.0f ms; greeting personalized.",
+            "Wake face check: recognized %s (score %.3f) on round %d of %d in %.0f ms.",
             identification.name,
             identification.score or 0.0,
             rounds,
             attempts,
             elapsed_ms,
         )
-        return _FACE_GREETING_PREFIX.format(name=identification.name) + "\n"
+        return identification
 
     async def _extended_wake_face_check(self) -> None:
         """Keep the wake face check alive briefly after the greeting (D-013 hook, part 2).
 
-        The pre-greeting check gets ~1200 ms at the exact moment of boot — the
+        The pre-greeting check gets ~4000 ms at the exact moment of boot — the
         14/14 on-robot failure mode is simply that nobody is posed in frame at
         that instant. This extension keeps looking for a bounded few seconds
         *after* the greeting went out; a hit becomes a context item plus a
@@ -1552,8 +1601,31 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             await self._finish_boot_gate("no greeting configured")
             return
 
-        face_prefix = await self._recognized_face_prefix()
-        greeting_prompt = face_prefix + greeting_prompt
+        identification = await self._wake_face_identification()
+        recognized = identification is not None and identification.status == "recognized" and identification.name
+        facts: list[str] = []
+        if recognized:
+            limit = env_int("FACE_GREETING_FACTS", _FACE_GREETING_FACTS_DEFAULT, lo=0, hi=20)
+            if limit > 0:
+                try:
+                    facts = [
+                        fact.text
+                        for fact in await asyncio.to_thread(
+                            facts_for_person,
+                            self.deps.instance_path,
+                            identification.name,
+                            limit=limit,
+                        )
+                    ]
+                except Exception as e:
+                    logger.warning("Could not read person facts for greeting: %s: %s", type(e).__name__, e)
+            self.deps.current_person = identification.name
+            logger.info(
+                "Startup greeting personalized for %s with %d remembered fact(s).",
+                identification.name,
+                len(facts),
+            )
+        greeting_prompt = _startup_greeting_prefix(identification, facts) + greeting_prompt
 
         try:
             await self.connection.conversation.item.create(
@@ -1572,12 +1644,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._mark_activity("startup_greeting_prompt")
             await self._safe_response_create()
             logger.info("Queued startup greeting prompt")
-            # Task 5: nobody was in frame for the 1200 ms before the greeting.
-            # Keep looking for a bounded few seconds now that it is out, and
-            # greet by name late if someone turns up. The method re-checks the
+            # Task 5: nobody was *placed* in the seconds before the greeting —
+            # either the frame was empty or the face could not be matched. Keep
+            # looking for a bounded few seconds now that the greeting is out, and
+            # greet by name late if the person resolves. The method re-checks the
             # kill switch itself; the guard here only avoids creating a task
             # that would instantly return.
-            if not face_prefix and env_bool("FACE_AUTO_GREET", True):
+            if not recognized and env_bool("FACE_AUTO_GREET", True):
                 self._wake_face_task = asyncio.create_task(
                     self._extended_wake_face_check(), name="extended-wake-face-check"
                 )
