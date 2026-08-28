@@ -64,6 +64,45 @@ party transcript, while the recognizer itself measured healthy (same-session
 **D-024**. Deployed and boot-verified as above; the four `FACE-*` rows below
 (operator, with a human face) are the remaining live gate.
 
+**The person-memory-and-backend wave is implemented but NOT deployed** — branch
+`person-memory-backend` (off `main` @ `59fd811`), fourteen tasks, spec
+`docs/superpowers/specs/2026-08-28-person-memory-and-backend-design.md`, record
+`DECISIONS.md` **D-025**. Robot side: a **three-way boot greeting** (recognized →
+greeted by name with up to `FACE_GREETING_FACTS`=6 of that person's facts and no
+self-introduction; a human present but unplaceable → stranger intro; empty room →
+the profile greeting verbatim), on a widened wake budget —
+`FACE_WAKE_BUDGET_MS` 1200 → **4000**, `FACE_WAKE_ATTEMPTS` 3 → **5**, the same
+single-shared-deadline mechanism, still exiting early on the first confident hit;
+a sibling store `people.v1.json` (`people.py`, built on `faces.py` idioms, caps
+12 people / 20 facts / 280 chars); person-scoped `remember`/`forget` plus
+`known_facts` on `who_is_this`, scoped by a `deps.current_person` label cleared
+**per session** (handler init and reconnect) that deliberately survives a
+non-recognized glance; and still-pose enrollment (`hold_still` — weight-0 head
+anchor, wobbling off, 0.35 s settle, mid-hold toggles applied on release, queued
+moves dropped so the photo wins). Mac side: `companion_backend/` — FastAPI plus a
+vanilla-ES-module UI on `127.0.0.1:8710`, run out of the same
+`reachy_companion/.venv` with **no new dependency** — owns
+`companion_backend/data/people.json` (gitignored) and projects it onto the
+robot's two files *through the robot's own writers*, pushed by a guarded remote
+promote (scp to temp names → one ssh re-checks the pre-push hashes and moves both
+into place → read-back verification) that is refused whenever the robot holds
+content the backend has not imported. A push does **not** restart the app: faces
+and person facts are re-read on every use.
+
+Gate on that branch: robot suite **1414 passed / 30 skipped**, ruff clean, mypy
+strict clean (106 files); backend **159 passed**, `ruff check backend/ tests/
+scripts/` clean, `mypy --strict backend/ scripts/` clean. The Mac end-to-end
+selftest (`companion_backend/scripts/selftest.py`, `--enroll-photo` /
+`--probe-photo`) is written and runs, but **no real-face photo exists on this
+machine**: the 2026-08-28 run against the gray fixture blocks honestly at
+`no_face` (exit 3) after building the YuNet+SFace sessions in 1372 ms, and the
+projection → `FaceRecognizer.match` half was proven separately with a synthetic
+128-d vector — plumbing evidence, not recognition evidence. **The operator must
+supply two different real photos of one person** for the real E2E run. Two things
+are owed at the first live push: adding `people.v1.json` to the `reachy-deploy`
+backup/restore manifest, and one manual check that a Mac-embedded vector and a
+robot voice enrollment of the same person score like a same-person pair.
+
 ## Wake-up / power diagnosis (2026-08-27)
 
 **"Hard to wake up" = the robot is sometimes OFF — undervoltage hard
@@ -103,8 +142,29 @@ boot's last line.
 
 ## Pending verification (operator)
 
-Ten `implemented-unverified` rows in `feature_list.json` still need live use.
-**Face (four, this round, all gated on the deploy):** `FACE-ROUTING` (ask 「你記得
+Seventeen `implemented-unverified` rows in `feature_list.json` still need live
+use. **Person memory + backend (seven, new, all gated on a deploy of the
+`person-memory-backend` branch):** `PERSON-GREET-KNOWN` (enrolled person seated
+in frame at boot → `Wake face check: recognized …` then `Startup greeting
+personalized for <name> with K remembered fact(s).`, a named fact-referencing
+greeting and no self-introduction — and listen for the accepted edge: a
+`multiple_faces`/`too_far` boot speaks the *stranger* line even with an enrolled
+person among the faces, which the extended window then corrects);
+`PERSON-GREET-STRANGER` (unenrolled person in frame → a self-introduction, not
+the empty-room greeting); `PERSON-GREET-EMPTY` (empty room → the profile greeting
+verbatim, wake line at or under ~4000 ms — and a judgement on whether the ~4 s
+pause before Reachy speaks is acceptable); `PERSON-MEMORY-AUTO` (say a fact while
+recognized → `Tool call: remember person=<name> fact=…` and `scope:
+person:<name>`; restart and boot recognized again to hear it come back; global
+control in an unrecognized session); `ENROLL-STILL` (「記住我」 → the head visibly
+stops, `remember_face saved name=… samples=N` with N ≥ 2, no `hold_still: could
+not …` warning, tracking and wobble restored afterwards — the 0.35 s settle is a
+guess that has never met the real head); `BACKEND-PUSH-LIVE` (two real photos →
+`scripts/selftest.py` PASS ≥ 0.363 → push → recognized on a robot that was never
+restarted); `BACKEND-IMPORT` (voice-enroll on the robot → the blocked push, the
+import preview/apply, then a byte-identical re-push; plus one fact forgotten by
+voice on a person **under** the 20-fact cap). **Face (four, all gated on the
+deploy):** `FACE-ROUTING` (ask 「你記得
 我嗎」 and 「我是誰」 — journal must show `tool_name='who_is_this'` and no `camera`
 call on those turns, while a genuinely visual question still picks `camera`);
 `FACE-WAKE-EXTENDED` (boot with nobody in frame, lean in within 8 s → `Extended
@@ -156,7 +216,13 @@ owns — every score is logged by `who_is_this` and the wake check.
   (session-reuse opportunity, deferred).
 - `.env`, `persona.md`, `memory.v1.json` and `faces.v1.json` live inside
   site-packages on the robot and are wiped by every reinstall — they survive
-  only via the `reachy-deploy` backup/restore ritual.
+  only via the `reachy-deploy` backup/restore ritual. **`people.v1.json` joins
+  that list and is NOT in the manifest yet** — it must be added before the next
+  deploy or every person fact is lost on install.
+- Backend sync, known hole (deliberate): a Mac person carrying ≥ 20 facts always
+  projects at exactly 20, so a fact they forget by voice on the robot is
+  indistinguishable from cap eviction and is never imported back. Removals are
+  only readable for people under the cap; face removals are not modelled at all.
 - Accepted, not defects (D-014): the local console + `/rpc` on `0.0.0.0:7860`
   is unauthenticated (can make Reachy speak, mute the mic, rewrite settings);
   the idle policy plays a spontaneous dance/emotion/head turn after 180 s.
@@ -197,3 +263,5 @@ owns — every score is logged by `who_is_this` and the wake check.
 - **2026-08-27** — thirteenth install (`b4e154f`) live-verified; undervoltage
   power diagnosis above; face-recognition RCA + fix wave, **D-024**, on branch
   `face-recognition-fix` (not yet deployed).
+- **2026-08-28** — person memory + Mac management backend, fourteen tasks,
+  **D-025**, on branch `person-memory-backend` (not yet deployed).

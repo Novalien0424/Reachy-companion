@@ -12,9 +12,14 @@ of the backend — enroll once on the Mac, push as often as you like.
 ## Running
 
 ```sh
-./run.sh                 # http://127.0.0.1:8710
+./run.sh                 # http://127.0.0.1:8710 — open that and you are in the UI
 ./run.sh --reload        # extra args are passed straight to uvicorn
 ```
+
+Port **8710**, bound to `127.0.0.1` (see the security section — do not change
+that). `/` serves the operator UI, `/docs` the generated API reference. The
+first photo upload of a run pays a one-off ~1.4 s model load; the server kicks
+that warmup at startup so it is usually already paid.
 
 There is nothing to install. `run.sh` execs the existing
 `reachy_companion/.venv` (Python 3.12), which already carries fastapi, uvicorn
@@ -29,8 +34,16 @@ The robot's address comes from the repo-root `.env` (`REACHY_HOST`,
 ```
 data/people.json                  people, facts, photo records, sync state
 data/photos/<person_id>/          the uploaded bytes, named after the photo id
+data/last_push/                   the two files the last push verified on the robot
+data/recognizer/                  scratch instance dir for the shared recognizer
 data/people.json.corrupt.<ms>     an unparseable store, kept for inspection
 ```
+
+`last_push/` is not a backup — it is how a robot-side *deletion* is told apart
+from a Mac-side addition (see **Sync** below), so deleting it makes the next
+import treat every forgotten fact as still present. `recognizer/` exists only
+because `FaceRecognizer` insists on an instance path; nothing reads the
+`faces.v1.json` it would put there.
 
 This store is the source of truth — the robot's copy is a projection that can
 be rebuilt from it, not the other way round. So a `people.json` that will not
@@ -91,14 +104,56 @@ Three shapes are worth knowing before writing a client:
   is what the operator acts on. A client tells the two apart by whether the body
   has a `pushed` key.
 
+## Sync
+
+The Mac is authoritative and the robot's two files are a projection, rebuilt
+from this store on every push. Three rules govern the round trip:
+
+- **Push is a guarded promote, not two `scp`s.** Both files go up under temp
+  names; one ssh command re-checks the pre-push hashes and moves them into place
+  together; the result is fetched back and counted with the robot's own readers
+  before the push is recorded. It **never restarts the app** — both files are
+  re-read on every use, so a pushed face and a pushed fact apply live. (Only the
+  global memory prompt is session-scoped, and nothing here touches it.)
+- **Push is refused whenever the robot holds content this store does not know**
+  — a face enrolled by voice, an extra embedding on a face we already have, a
+  fact remembered by voice. The 409 carries the diff: import, then push again.
+- **Deletions travel too, one way, with two guards.** A fact recorded in
+  `last_push/` that the robot no longer holds reads as a robot-side forget: it
+  blocks the push, and the import applies that deletion here. It is honoured
+  only while the fact is still on the Mac, and never while that person sits at
+  the robot's 20-fact cap, where a deletion cannot be told from cap eviction.
+  **Consequence worth knowing before you use it: a person carrying 20 or more
+  facts on this Mac always projects at exactly 20, so nothing they forget by
+  voice is ever read back — voice forgets only round-trip for people under the
+  cap.** Face deletions are not modelled at all; no robot-side tool removes a
+  person.
+
 ## Tests
 
 ```sh
 cd companion_backend
 ../reachy_companion/.venv/bin/python -m pytest tests/ -v
-../reachy_companion/.venv/bin/ruff check backend/ tests/
-../reachy_companion/.venv/bin/mypy --strict backend/
+../reachy_companion/.venv/bin/ruff check backend/ tests/ scripts/
+../reachy_companion/.venv/bin/mypy --strict backend/ scripts/
 ```
+
+`scripts/selftest.py` is the one check that runs the whole chain in a single
+process — store → embedding → projection → the robot's own `FaceRecognizer`
+matching against the projected `faces.v1.json` — with no robot involved:
+
+```sh
+../reachy_companion/.venv/bin/python scripts/selftest.py \
+    --enroll-photo ~/Pictures/lena-1.jpg --probe-photo ~/Pictures/lena-2.jpg
+```
+
+The two photos must be **different real photos of the same person**. Matching a
+photo against itself proves serialization, not recognition, so a run without
+`--probe-photo` is reported as a REDUCED SMOKE test and is not end-to-end
+evidence; a synthetic or generated face is not evidence either. Exit codes: `0`
+recognized, `1` not recognized (a real signal about the pipeline or the 0.363
+threshold), `3` could not run — the photo carried no usable face. Everything is
+written to a temp directory (`--keep` to inspect it); `data/` is never touched.
 
 ## Security posture — trusted LAN only
 
@@ -113,8 +168,29 @@ photo and fact, and can push arbitrary content to the robot.
 - Robot access itself is plain `ssh`/`scp` over the local network and assumes a
   trusted LAN.
 
-*(Placeholder — Task 13 revisits this section once the sync and UI surfaces
-exist and the residual risks can be stated concretely.)*
+Now that the sync and UI surfaces exist, the residual risks are these, and they
+are accepted for a POC rather than unknown:
+
+- **The API can push to the robot, and some of it is CSRF-reachable.**
+  `POST /api/sync/push` overwrites both robot stores from this store, and
+  `/api/robot/{start,stop,restart}` drives the robot's app. Those four take no
+  request body, so they are *simple* cross-origin requests: any page the
+  operator has open can fire one at `127.0.0.1:8710` with `mode: "no-cors"` and
+  the side effect happens, even though the browser hides the response. The
+  JSON-bodied routes are protected only by the preflight the browser chooses to
+  send, not by anything here — there is no CSRF token and no origin check.
+- **The UI talks to the robot directly.** `#/control` opens
+  `ws://<reachy_host>:7860/rpc` from the browser, which is the unauthenticated
+  console surface D-014 already accepted; this backend widens who *finds* it, not
+  what it permits.
+- **The store is the real asset.** Real people's names, faces and private facts
+  live in `data/`, unencrypted, and `GET /api/people/{id}/photos/{id}/file`
+  serves the original bytes. A stolen laptop is the threat this posture does not
+  address.
+- **Rendering is the one place we do not rely on the LAN.** No `innerHTML`
+  anywhere in the UI, so a name or a fact containing markup — or an ssh error
+  echoing attacker-chosen bytes — is text, not script. That defence is
+  deliberate and load-bearing; keep it.
 
 ## Layout
 
@@ -122,11 +198,12 @@ exist and the residual risks can be stated concretely.)*
 |---|---|
 | `backend/config.py` | `Settings` + `load_settings()` — robot address, data dir |
 | `backend/store.py` | the JSON people store |
-| `backend/embedding.py` | photo decode + SFace embedding *(Task 9)* |
-| `backend/projection.py` | Mac store → robot store files *(Task 10)* |
-| `backend/robot.py` | ssh/scp push, drift detection, import *(Task 10)* |
+| `backend/embedding.py` | photo decode + SFace embedding |
+| `backend/projection.py` | Mac store → robot store files |
+| `backend/robot.py` | ssh/scp push, drift detection, import, the last-push snapshot |
 | `backend/app.py` | the HTTP API — routes, error mapping, the shared recognizer |
-| `static/` | the operator UI *(Task 12)* — see below |
+| `scripts/selftest.py` | the whole chain in one process — see **Tests** |
+| `static/` | the operator UI — see below |
 
 ## The operator UI
 
