@@ -14,7 +14,10 @@ Extends `docs/superpowers/plans/2026-08-28-person-memory-and-backend.md`
   `former_face_ids: tuple[str, ...] = ()` (tolerant read: missing → empty;
   non-list/non-str entries dropped). Both persisted.
 - `merge_people(settings, target_id, source_id) -> BackendPerson`:
-  - `LookupError` if either id missing; `ValueError` if `target_id == source_id`.
+  - Concrete exceptions only (Codex A2-2, the API maps concrete classes):
+    the store's existing person-not-found `LookupError` subclass for missing
+    ids (→404), a new `MergeError(ValueError)` for `target_id == source_id`
+    (→400), `DuplicateNameError` for alias collisions (→409).
   - Facts: source facts appended into target oldest→newest through the
     existing dedupe (case-insensitive within the person).
   - Photos: photo FILES move from the source dir to the target dir
@@ -23,8 +26,10 @@ Extends `docs/superpowers/plans/2026-08-28-person-memory-and-backend.md`
     (target's first, then source's — recency semantics stay honest because
     the merge bumps target `updated_at` via `_mutate`).
   - `face_id`: target keeps its own; if target has none, it adopts the
-    source's. A source `face_id` that is NOT adopted goes into
-    `former_face_ids` (so the sync diff still knows the robot record).
+    source's. `former_face_ids` of the survivor = `target.former_face_ids ∪
+    source.former_face_ids ∪ {unadopted source.face_id}`, deduped, excluding
+    the survivor's primary `face_id` (Codex A2-1 — merge chains must not
+    forget older robot ids).
   - Aliases: the source's name, and the source's aliases, join the target's
     `aliases` (deduped, case-insensitive, never duplicating the target's
     own name). Aliases pass through `faces.normalize_face_name` exactly like
@@ -98,9 +103,11 @@ images; continuous capture remains rejected.
   first (`np.ascontiguousarray(frame, dtype=np.uint8)` — the appsink buffer
   must not be aliased), then `asyncio.create_task` into a module-level task
   set with a done-callback that discards the handle and logs any exception;
-  the tool result NEVER awaits it. The ffmpeg subprocess runs with a bounded
-  timeout (10 s, killed on expiry). The encode happens after the hold
-  releases; only the copied frame crosses. Tool `description` updated: it
+  the tool result NEVER awaits it. The scheduled task wraps the synchronous
+  writer in `asyncio.to_thread` (Codex A2-3 — a blocking ffmpeg call inside
+  a bare task would still stall the event loop); the ffmpeg subprocess runs
+  with a bounded timeout (10 s, killed on expiry). The encode happens after
+  the hold releases; only the copied frame crosses. Tool `description` updated: it
   now stores the name, the numeric signature, AND one enrollment snapshot
   photo (the "never a picture" sentence is amended — D-013 amendment).
 - Lifecycle notes (docs): snapshots live in the instance dir → wiped on
@@ -113,14 +120,19 @@ images; continuous capture remains rejected.
 - `robot.py` import: for every robot face it applies (new, changed, attach),
   best-effort scp of `face_snapshots/<record_id>.jpg` (missing file is
   normal — enrolled before this feature, or robot not yet redeployed).
-  Fetched bytes become a **display-only** backend photo on that person
-  (`display_name "robot-snapshot.jpg"`, `embedding=None`, `error=None` — it
-  is deliberately NOT embedded, so it can never enter the projected sample
-  window and perturb the changed-subset test; Codex A1-3). The person's
-  recognition samples remain the robot's exact synthetic embeddings. UI
-  labels an un-embedded, error-free photo as a display photo rather than
-  "pending". Re-import of an unchanged snapshot must not duplicate photos:
-  skip when the person already has a photo whose bytes sha256-match.
+  Fetched bytes become a **display-only** backend photo on that person:
+  `BackendPhoto` gains a persisted `display_only: bool = False` flag (Codex
+  A2-4 — an explicit flag, so a pending upload is never mislabeled);
+  `display_name "robot-snapshot.jpg"`, `embedding=None`, `error=None`,
+  `display_only=True`. Projection skips display-only photos structurally
+  (they also carry no embedding), so the snapshot can never enter the
+  projected sample window (Codex A1-3); the person's recognition samples
+  remain the robot's exact synthetic embeddings. The API exposes the flag;
+  the UI labels from it. The robot `record_id` is validated with the same
+  no-separator/`Path(...).name` rule before it is ever interpolated into
+  the scp path (Codex A2-5); an invalid id skips only the snapshot, never
+  the face import. Re-import of an unchanged snapshot must not duplicate
+  photos: skip when the person already has a photo whose bytes sha256-match.
 - UI: nothing new — the photo grid already renders real photos.
 
 ## Tests (same gates as the main plan)
@@ -146,6 +158,12 @@ scp failure never fails the face import; sha256 dedupe against an existing
 real photo's bytes.
 
 ## Review log
+
+**Round 2 (2026-08-28, 5 findings, all accepted):** A2-1 merge chains carry
+`former_face_ids` forward; A2-2 concrete exception classes so the API's
+400/404/409 mapping holds; A2-3 snapshot task wraps `asyncio.to_thread`;
+A2-4 explicit persisted `display_only` photo flag; A2-5 record-id validated
+before scp interpolation, invalid id skips only the snapshot.
 
 **Round 1 (2026-08-28, 5 findings, all accepted):** A1-1 attach-under-alias
 must persist the new robot id into `former_face_ids` (else permanent push
