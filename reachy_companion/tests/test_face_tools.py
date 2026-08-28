@@ -9,15 +9,18 @@ failure inside it falls back to the verbatim one, on time.
 
 import time
 import asyncio
+import threading
 from typing import Any
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call
+from collections.abc import Iterator
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
 import reachy_companion.tools.who_is_this as who_is_this_mod
+import reachy_companion.tools.remember_face as remember_face_mod
 import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion import people
 from reachy_companion.faces import EMBEDDING_DIM, FaceRecord, list_faces
@@ -29,6 +32,7 @@ from reachy_companion.face_id import (
     FaceRecognizer,
     Identification,
 )
+from reachy_companion.face_snapshot import SNAPSHOT_DIRNAME, save_snapshot
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.who_is_this import WhoIsThis
 from reachy_companion.tools.face_support import capture_frame
@@ -178,6 +182,63 @@ def _stored_record(samples: int, name: str = "Lena") -> FaceRecord:
         created_at=0,
         updated_at=0,
     )
+
+
+class _SnapshotSpy:
+    """Stands in for the enrollment snapshot writer, recording every call.
+
+    Substituted for `save_snapshot` in every test in this file: the suite runs
+    dozens of enrollments, and each real snapshot is an ffmpeg subprocess.
+    `passthrough()` opts one test back into the real writer.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, str, NDArray[np.uint8]]] = []
+        self.finished = False
+        self.raises: Exception | None = None
+        self._gate: threading.Event | None = None
+        self._real = False
+
+    def block(self) -> None:
+        """Make the next call hang until `release()`, standing in for a slow encode."""
+        self._gate = threading.Event()
+
+    def release(self) -> None:
+        """Let a blocked call finish."""
+        if self._gate is not None:
+            self._gate.set()
+
+    def passthrough(self) -> None:
+        """Record the call and then run the real writer."""
+        self._real = True
+
+    def __call__(self, instance_path: Any, record_id: str, frame: NDArray[np.uint8]) -> bool:
+        self.calls.append((instance_path, record_id, frame))
+        if self._gate is not None:
+            assert self._gate.wait(5.0), "the blocked snapshot was never released"
+        if self.raises is not None:
+            raise self.raises
+        written = save_snapshot(instance_path, record_id, frame) if self._real else True
+        self.finished = True
+        return written
+
+
+@pytest.fixture(autouse=True)
+def snapshot_writer(monkeypatch: pytest.MonkeyPatch) -> Iterator[_SnapshotSpy]:
+    """Replace the enrollment snapshot writer, and never leave a task on a closing loop."""
+    spy = _SnapshotSpy()
+    monkeypatch.setattr(remember_face_mod, "save_snapshot", spy)
+    yield spy
+    spy.release()
+    remember_face_mod._SNAPSHOT_TASKS.clear()
+
+
+async def _drain_snapshots() -> None:
+    """Await every scheduled snapshot task and let its done callback run."""
+    tasks = list(remember_face_mod._SNAPSHOT_TASKS)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -760,6 +821,169 @@ async def test_remember_face_keeps_the_first_sample_when_an_extra_enroll_raises(
     assert recognizer.frames_seen == 2
     assert "boom" not in str(result)
     assert "boom" in caplog.text
+
+
+# --- enrollment snapshot (D-013 amendment, 2026-08-28) -----------------------
+
+
+@pytest.mark.asyncio
+async def test_remember_face_schedules_one_snapshot_of_the_first_accepted_frame(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """A successful enrollment writes exactly one snapshot, of the frame that was accepted.
+
+    The extra samples pull two more frames; the photo is the first one, and it
+    is keyed by the stored record's id so the Mac side can match it to the face.
+    """
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer, instance_path=tmp_path)
+    deps.reachy_mini.media.get_frame.side_effect = [_frame(10), _frame(20), _frame(30)]
+
+    result = await RememberFace()(deps, name="Lena")
+    await _drain_snapshots()
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    assert len(snapshot_writer.calls) == 1
+    instance_path, record_id, frame = snapshot_writer.calls[0]
+    assert instance_path == tmp_path
+    assert record_id == "face-1"
+    assert np.array_equal(frame, _frame(10))
+
+
+@pytest.mark.asyncio
+async def test_remember_face_snapshot_frame_is_detached_from_the_camera_buffer(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """The scheduled frame is a copy: the appsink hands back a view it may reuse.
+
+    Codex A1-5. The camera here returns the *same* array every pull and then
+    overwrites it, which is exactly what the GStreamer appsink does; a snapshot
+    that aliased it would encode whatever the last pull left behind.
+    """
+    buffer = _frame(10)
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    def _reused_buffer() -> NDArray[np.uint8]:
+        return buffer
+
+    deps.reachy_mini.media.get_frame.side_effect = _reused_buffer
+
+    await RememberFace()(deps, name="Lena")
+    buffer[:] = 200
+    await _drain_snapshots()
+
+    assert np.array_equal(snapshot_writer.calls[0][2], _frame(10))
+
+
+@pytest.mark.asyncio
+async def test_remember_face_writes_no_snapshot_when_the_enrollment_is_refused(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """A refusal stores no face, so it must store no photo either."""
+    recognizer = _FakeRecognizer(identification=Identification(status="multiple_faces", face_count=2))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await RememberFace()(deps, name="Lena")
+    await _drain_snapshots()
+
+    assert result["status"] == "multiple_faces"
+    assert snapshot_writer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_remember_face_writes_no_snapshot_when_the_tool_is_unavailable(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy
+) -> None:
+    """Every early return — no name, no camera, no frame, an enroll exception — stores nothing."""
+    await RememberFace()(_deps(_FakeRecognizer()), name="  ")
+    await RememberFace()(_deps(_FakeRecognizer(), camera_enabled=False), name="Lena")
+    await RememberFace()(_deps(_FakeRecognizer(), frame=None), name="Lena")
+    await RememberFace()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))), name="Lena")
+    await _drain_snapshots()
+
+    assert snapshot_writer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_remember_face_returns_without_waiting_for_the_snapshot(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """The tool result never waits on the encode — a slow ffmpeg must not slow a reply."""
+    snapshot_writer.block()
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+
+    result = await RememberFace()(_deps(recognizer, instance_path=tmp_path), name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    assert not snapshot_writer.finished
+    _assert_carries_no_image(result)
+    snapshot_writer.release()
+    await _drain_snapshots()
+    assert snapshot_writer.finished
+
+
+@pytest.mark.asyncio
+async def test_remember_face_survives_a_snapshot_writer_that_raises(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An exception inside the snapshot task is logged and dropped, never surfaced."""
+    snapshot_writer.raises = RuntimeError("encoder exploded")
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+
+    with caplog.at_level("WARNING", logger="reachy_companion.tools.remember_face"):
+        result = await RememberFace()(_deps(recognizer, instance_path=tmp_path), name="Lena")
+        await _drain_snapshots()
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    assert "encoder exploded" in caplog.text
+    assert "encoder exploded" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_remember_face_forgets_its_snapshot_tasks_when_they_finish(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """The owned task set is a hold, not a leak: a finished task is discarded."""
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+
+    await RememberFace()(_deps(recognizer, instance_path=tmp_path), name="Lena")
+    assert len(remember_face_mod._SNAPSHOT_TASKS) == 1
+    await _drain_snapshots()
+
+    assert remember_face_mod._SNAPSHOT_TASKS == set()
+
+
+@pytest.mark.asyncio
+async def test_remember_face_writes_a_real_jpeg_end_to_end(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """Unstubbed, one enrollment leaves one decodable JPEG in the instance dir."""
+    snapshot_writer.passthrough()
+    recognizer = _round_trip_recognizer(tmp_path)
+
+    saved = await RememberFace()(_deps(recognizer, instance_path=tmp_path, frame=_frame(100)), name="小明")
+    await _drain_snapshots()
+
+    record_id = list_faces(tmp_path)[0].id
+    written = tmp_path / SNAPSHOT_DIRNAME / f"{record_id}.jpg"
+    assert saved["status"] == "saved"
+    assert written.read_bytes().startswith(b"\xff\xd8\xff")
 
 
 # --- enrollment -> recognition round trip -----------------------------------
