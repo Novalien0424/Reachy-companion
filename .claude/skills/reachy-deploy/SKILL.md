@@ -96,6 +96,14 @@ is the proven alternative when ssh is unavailable.
      (`faces.py:33`, `FACES_FILENAME`, D-013). Same rule, higher cost to lose:
      re-enrolling means asking every person to stand in front of the camera
      again, and the wake-time greeting silently stops using anyone's name.
+   - `people.v1.json` — the per-person facts store (`people.py`, D-025).
+     Person-scoped memory written by the `remember` tool while someone is
+     recognized, and pushed by the Mac backend. Losing it silently strips the
+     personalized greeting of its content.
+   - `face_snapshots/` (directory) — one enrollment snapshot JPEG per person
+     (`face_snapshot.py`, D-026). Lost snapshots are not recoverable until
+     that person re-enrolls; the Mac backend may already hold imported
+     copies, but the robot-side originals are the source.
    - `google-workspace-mcp/<account>.json` — the Google Calendar/Tasks OAuth
      credentials (D-018). **This file is rewritten by the app** every time the
      access token is refreshed, so the robot's copy is authoritative for its own
@@ -134,7 +142,7 @@ is the proven alternative when ssh is unavailable.
    [ -z "$(ls -A "$BACKUP")" ] || { echo "FATAL: backup dir not empty"; exit 1; }
 
    : > "$BACKUP/manifest.txt"
-   for NAME in .env persona.md memory.v1.json faces.v1.json google-oauth.json nas-video-index.json; do
+   for NAME in .env persona.md memory.v1.json faces.v1.json people.v1.json google-oauth.json nas-video-index.json; do
      if [ -e "$INST/$NAME" ]; then
        cp -a "$INST/$NAME" "$BACKUP/$NAME"
        echo "file $NAME $(stat -c '%a %s' "$INST/$NAME")" >> "$BACKUP/manifest.txt"
@@ -151,6 +159,12 @@ is the proven alternative when ssh is unavailable.
      echo "dir google-workspace-mcp $(find "$INST/google-workspace-mcp" -type f | wc -l) files" >> "$BACKUP/manifest.txt"
    else
      echo "absent google-workspace-mcp" >> "$BACKUP/manifest.txt"
+   fi
+   if [ -d "$INST/face_snapshots" ]; then
+     cp -a "$INST/face_snapshots" "$BACKUP/face_snapshots"
+     echo "dir face_snapshots $(find "$INST/face_snapshots" -type f | wc -l) files" >> "$BACKUP/manifest.txt"
+   else
+     echo "absent face_snapshots" >> "$BACKUP/manifest.txt"
    fi
    echo "$BACKUP"
    cat "$BACKUP/manifest.txt"
