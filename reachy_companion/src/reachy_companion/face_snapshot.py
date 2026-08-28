@@ -17,12 +17,22 @@ music (D-018) — the robot has no system packages, and this feature must not ad
 an image dependency. `hanova.ytdlp.ffmpeg_exe` is the one place in this repo
 that resolves that binary, so it is reused rather than copied.
 
+**Size.** The SDK camera runs HD (`camera_constants.CameraResolution`; the Mini
+ships 1536x864 and 1280x720 modes), so one raw bgr24 frame is ~2.8-4 MB and the
+`-q:v 4` JPEG written here lands in the low hundreds of KB at full resolution.
+That is deliberate: this is the only photo of a person the system will ever
+have, and the Mac-side sync scps it over the robot's wifi exactly once per
+enrollment, so a legible face is worth the transfer. Nothing downscales it — if
+that transfer ever becomes the complaint, a `-vf scale=` is the change, not a
+lower quality setting.
+
 Everything here is best effort. A snapshot may never fail, delay, or raise into
 an enrollment: every failure path logs a warning and returns False.
 """
 
 from __future__ import annotations
 import os
+import uuid
 import logging
 import subprocess
 from typing import Final
@@ -150,7 +160,11 @@ def save_snapshot(
         return False
 
     height, width = int(frame.shape[0]), int(frame.shape[1])
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    # A per-call token, not just the pid: two enrollments of the same person in
+    # one process (a re-enroll while the first encode is still running) would
+    # otherwise share a tmp name, and the second ffmpeg's `-y` would truncate
+    # the first's output underneath it — leaving a partial file to be promoted.
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     cmd = [
         ffmpeg,
         "-y",

@@ -196,6 +196,9 @@ class _SnapshotSpy:
         self.calls: list[tuple[Any, str, NDArray[np.uint8]]] = []
         self.finished = False
         self.raises: Exception | None = None
+        # Set to `_record_motion_calls`'s list to place the encode on the same
+        # timeline as the hold-still bracket.
+        self.timeline: list[str] | None = None
         self._gate: threading.Event | None = None
         self._real = False
 
@@ -214,6 +217,8 @@ class _SnapshotSpy:
 
     def __call__(self, instance_path: Any, record_id: str, frame: NDArray[np.uint8]) -> bool:
         self.calls.append((instance_path, record_id, frame))
+        if self.timeline is not None:
+            self.timeline.append("snapshot")
         if self._gate is not None:
             assert self._gate.wait(5.0), "the blocked snapshot was never released"
         if self.raises is not None:
@@ -880,6 +885,32 @@ async def test_remember_face_snapshot_frame_is_detached_from_the_camera_buffer(
     await _drain_snapshots()
 
     assert np.array_equal(snapshot_writer.calls[0][2], _frame(10))
+
+
+@pytest.mark.asyncio
+async def test_remember_face_encodes_the_snapshot_only_after_the_hold_releases(
+    instant_sleep: None, snapshot_writer: _SnapshotSpy, tmp_path: Path
+) -> None:
+    """The encode is scheduled after the still pose ends, never inside it.
+
+    Placed on the same timeline as the hold-still bracket: an encode that ran
+    between the freeze and the release would hold the head parked and the
+    breathing suppressed for the length of an ffmpeg call.
+    """
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer, instance_path=tmp_path)
+    calls = _record_motion_calls(deps)
+    snapshot_writer.timeline = calls
+
+    await RememberFace()(deps, name="Lena")
+    await _drain_snapshots()
+
+    assert calls.count("snapshot") == 1
+    assert calls.index("enable_wobbling") < calls.index("snapshot")
+    assert calls.index("hold=False") < calls.index("snapshot")
 
 
 @pytest.mark.asyncio

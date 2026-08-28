@@ -47,7 +47,10 @@ def _schedule_snapshot(instance_path: str | Path | None, record_id: str, frame_b
     a bare task would stall the realtime loop for the length of the encode.
     """
     try:
-        task = asyncio.create_task(asyncio.to_thread(save_snapshot, instance_path, record_id, frame_bgr))
+        task = asyncio.create_task(
+            asyncio.to_thread(save_snapshot, instance_path, record_id, frame_bgr),
+            name="face-snapshot",
+        )
     except Exception as e:
         logger.warning("remember_face could not schedule the snapshot: %s: %s", type(e).__name__, e)
         return
@@ -110,11 +113,15 @@ class RememberFace(Tool):
                 return refusal
 
             # The snapshot (D-013 amendment) is the FIRST accepted sample's
-            # frame, copied here while it is still that frame: the extra samples
-            # below pull more frames, and `media.get_frame` returns a numpy view
-            # over the GStreamer appsink buffer, which the next pull may reuse.
-            # `ascontiguousarray` alone hands back that same view for an
-            # already-contiguous frame, so the copy is explicit (Codex A1-5).
+            # frame, taken here because the extra samples below overwrite the
+            # local name. The copy is defense in depth, not a fix for a known
+            # bug: today's SDK hands back a private buffer per pull
+            # (`gstreamer_utils.get_sample` -> `buf.extract_dup`), but that is
+            # an implementation detail, not a documented contract, and this
+            # array outlives the call on a background thread.
+            # `np.ascontiguousarray` alone would NOT guarantee a detached array
+            # — it returns its argument unchanged when the frame is already
+            # contiguous uint8 — so the copy is explicit (Codex A1-5).
             snapshot_record_id: str = record.id
             snapshot_frame: NDArray[np.uint8] = np.ascontiguousarray(frame, dtype=np.uint8).copy()
 
