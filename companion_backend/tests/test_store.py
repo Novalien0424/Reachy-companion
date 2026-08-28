@@ -282,6 +282,41 @@ def test_add_synthetic_photo_holds_an_embedding_with_no_bytes(settings: Settings
     assert reloaded.photos[0].embedding == embedding
 
 
+def test_set_photo_embedding_rejects_a_vector_of_the_wrong_length(settings: Settings) -> None:
+    """A short or long vector is refused here, where the caller can still see it.
+
+    The robot's reader (`faces._embedding_from_json`) drops any embedding that is
+    not exactly `EMBEDDING_DIM` long, silently — no log, no error. Accepting one
+    here would mean a photo that looks embedded on the Mac and simply is not
+    there after a push, which is exactly the silent drift this store forbids.
+    """
+    person = store.create_person(settings, "Lena")
+    photo = store.add_photo(settings, person.id, "face.jpg", b"bytes")
+
+    with pytest.raises(ValueError):
+        store.set_photo_embedding(settings, person.id, photo.id, (0.1,) * 127, None)
+    with pytest.raises(ValueError):
+        store.set_photo_embedding(settings, person.id, photo.id, (0.1,) * 129, None)
+    with pytest.raises(ValueError):
+        store.set_photo_embedding(settings, person.id, photo.id, (), None)
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos[0].embedding is None  # nothing half-written
+
+
+def test_add_synthetic_photo_rejects_a_vector_of_the_wrong_length(settings: Settings) -> None:
+    """The import path gets the same gate: a robot embedding is 128 floats or it is nothing."""
+    person = store.create_person(settings, "Lena")
+
+    with pytest.raises(ValueError):
+        store.add_synthetic_photo(settings, person.id, (0.1,) * 127)
+    with pytest.raises(ValueError):
+        store.add_synthetic_photo(settings, person.id, ())
+
+    assert store.get_person(settings, person.id).photos == ()  # type: ignore[union-attr]
+
+
 def test_delete_photo_removes_the_record_and_the_bytes(settings: Settings) -> None:
     """Deleting a photo unlinks its file; a synthetic photo has none to unlink."""
     person = store.create_person(settings, "Lena")

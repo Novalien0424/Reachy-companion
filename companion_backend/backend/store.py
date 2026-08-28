@@ -295,6 +295,19 @@ def _embedding_from(value: object) -> tuple[float, ...] | None:
     return tuple(numbers)
 
 
+def _require_full_embedding(vector: tuple[float, ...]) -> None:
+    """Reject a vector the robot would silently drop, at the boundary that can still say so.
+
+    `faces._embedding_from_json` returns None for any embedding whose length is
+    not `EMBEDDING_DIM`, and `_record_from_json` skips those without a log. A
+    wrong-length vector accepted here would therefore look embedded on the Mac
+    and simply not exist after a push — the silent drift this store's contract
+    rules out. The write side is the only place left to catch it.
+    """
+    if len(vector) != faces.EMBEDDING_DIM:
+        raise ValueError(f"An embedding must have {faces.EMBEDDING_DIM} values, got {len(vector)}.")
+
+
 def _clean_str(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -663,8 +676,9 @@ def add_photo(settings: Settings, person_id: str, display_name: str, raw: bytes)
 def add_synthetic_photo(settings: Settings, person_id: str, embedding: Sequence[float]) -> BackendPhoto:
     """Record an embedding imported from the robot: no bytes, but it still projects back."""
     vector = _embedding_from(embedding)
-    if vector is None or not vector:
-        raise ValueError("A synthetic photo needs a non-empty embedding.")
+    if vector is None:
+        raise ValueError("A synthetic photo needs an embedding of real numbers.")
+    _require_full_embedding(vector)
 
     photo = BackendPhoto(
         id=_make_id(_PHOTO_ID_PREFIX),
@@ -692,6 +706,8 @@ def set_photo_embedding(
     vector = None if embedding is None else _embedding_from(embedding)
     if embedding is not None and vector is None:
         raise ValueError("An embedding must be a sequence of real numbers.")
+    if vector is not None:
+        _require_full_embedding(vector)
     if vector is not None and error is not None:
         raise ValueError("A photo has either an embedding or an error, never both.")
 

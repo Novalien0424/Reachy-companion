@@ -652,6 +652,94 @@ def test_enroll_empty_name_still_reports_invalid_name(tmp_path: Path) -> None:
     assert (identification.reason, identification.face_count) == ("invalid_name", 1)
 
 
+def test_enroll_still_reports_a_face_that_already_matches_someone(tmp_path: Path) -> None:
+    """Enrollment's identification must still say *whether this face is already known*.
+
+    That is `enroll`'s documented second half: the record says what was stored,
+    the identification says who the sampled face looked like. Splitting the
+    pipeline into extract-then-store must not quietly drop the match — a caller
+    warning "that already looks like Alice" would go silent, not red.
+    """
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(120.0)])
+    recognizer.embed = _lit_or_dark_embedder  # type: ignore[method-assign]
+    upsert_face(tmp_path, "Alice", _unit_embedding(0))
+
+    record, identification = recognizer.enroll(np.full((720, 1280, 3), 220, dtype=np.uint8), "Bob")
+
+    assert record is not None and record.name == "Bob"
+    assert (identification.status, identification.name) == ("recognized", "Alice")
+    assert identification.score == pytest.approx(1.0)
+    assert identification.face_count == 1
+
+
+# --- the extract-only seam (shared with the Mac backend) ---------------------
+
+
+def test_embedding_for_frame_extracts_without_identifying(tmp_path: Path) -> None:
+    """The seam returns the raw embedding and a face count, and identifies nobody.
+
+    Alice is enrolled and the frame embeds to her vector exactly, so a seam that
+    still matched would come back `recognized`. `unknown` is the whole contract:
+    the Mac backend embeds photos of people the robot has never met.
+    """
+    recognizer, detector = _loaded_recognizer(tmp_path, [_face_of_width(120.0)])
+    recognizer.embed = _lit_or_dark_embedder  # type: ignore[method-assign]
+    upsert_face(tmp_path, "Alice", _unit_embedding(0))
+
+    embedding, identification = recognizer.embedding_for_frame(np.full((720, 1280, 3), 220, dtype=np.uint8))
+
+    assert embedding is not None
+    assert embedding.shape == (128,)
+    assert cosine(embedding, _unit_embedding(0)) == pytest.approx(1.0)
+    assert (identification.status, identification.face_count) == ("unknown", 1)
+    assert (identification.name, identification.score, identification.runner_up) == (None, None, None)
+    # Still the SDK's decimated detect, and still nothing written to the store.
+    assert detector.seen_shape == (360, 640, 3)
+    assert [record.name for record in list_faces(tmp_path)] == ["Alice"]
+
+
+def test_embedding_for_frame_reports_no_face_for_a_blank_frame(tmp_path: Path) -> None:
+    """Nothing detected is `no_face` with no embedding — a status, never an exception."""
+    recognizer, _ = _loaded_recognizer(tmp_path, [])
+
+    embedding, identification = recognizer.embedding_for_frame(np.zeros((720, 1280, 3), dtype=np.uint8))
+
+    assert embedding is None
+    assert (identification.status, identification.face_count) == ("no_face", 0)
+
+
+def test_embedding_for_frame_refuses_a_crowded_frame(tmp_path: Path) -> None:
+    """The seam keeps enrollment's exactly-one-face rule, not identify's largest-face one.
+
+    A photo with two people in it must fail loudly on the Mac rather than
+    silently embed whichever face happens to be bigger.
+    """
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(50.0), _face_of_width(120.0)])
+
+    embedding, identification = recognizer.embedding_for_frame(np.zeros((720, 1280, 3), dtype=np.uint8))
+
+    assert embedding is None
+    assert (identification.status, identification.face_count) == ("multiple_faces", 2)
+
+
+def test_embedding_for_frame_reports_too_far_for_a_small_face(tmp_path: Path) -> None:
+    """MIN_FACE_PX applies to a photo the same way it applies to a camera frame."""
+    recognizer, _ = _loaded_recognizer(tmp_path, [_face_of_width(59.0 / 2)])
+
+    embedding, identification = recognizer.embedding_for_frame(np.zeros((720, 1280, 3), dtype=np.uint8))
+
+    assert embedding is None
+    assert (identification.status, identification.face_count) == ("too_far", 1)
+
+
+def test_embedding_for_frame_reports_unavailable_for_an_unusable_frame(tmp_path: Path) -> None:
+    """The seam inherits `_capture`'s totality: a malformed array is a status."""
+    embedding, identification = FaceRecognizer(tmp_path).embedding_for_frame(np.zeros((4, 4), dtype=np.uint8))
+
+    assert embedding is None
+    assert (identification.status, identification.reason) == ("unavailable", "unsupported_frame")
+
+
 def test_identify_reports_too_far_for_a_small_face(tmp_path: Path) -> None:
     """A face under MIN_FACE_PX at full resolution has too little detail to embed honestly."""
     # Detection runs on the half-resolution frame, so a 59 px full-res bbox is 29.5 px there.
