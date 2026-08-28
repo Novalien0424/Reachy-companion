@@ -214,6 +214,8 @@ class MovementManager:
         self._is_listening = False
         # Speaking pauses tracking; the captured look-at pose anchors queued moves.
         self._is_speaking = False
+        # Photo hold: the head is parked at its current pose for a capture burst.
+        self._hold_still = False
         self._track_anchor: NDArray[np.float64] | None = None
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
         self._listening_antennas: Tuple[float, float] = self._last_commanded_pose[1]
@@ -298,6 +300,16 @@ class MovementManager:
         daemon tracking. Thread-safe: posted to the worker command queue.
         """
         self._command_queue.put(("set_speaking", speaking))
+
+    def set_hold_still(self, hold: bool) -> None:
+        """Freeze the head for a photo capture; thread-safe via the command queue.
+
+        While held: face tracking is paused at the current pose (weight-0.0, the
+        set_speaking anchor pattern) and idle breathing is suppressed, so an
+        enrollment frame is not motion-blurred. Release restores tracking unless
+        the assistant is mid-speech (set_speaking owns the anchor then).
+        """
+        self._command_queue.put(("set_hold_still", hold))
 
     def _poll_signals(self, current_time: float) -> None:
         """Apply queued commands."""
@@ -399,6 +411,28 @@ class MovementManager:
                     self.current_robot.start_head_tracking(weight=1.0)
             except Exception as e:
                 logger.warning("Head-tracking speaking handoff failed: %s", e)
+        elif command == "set_hold_still":
+            hold = bool(payload)
+            if self._hold_still == hold:
+                return
+            self._hold_still = hold
+            try:
+                if hold:
+                    # Any active move — breathing, a dance, an emotion — blurs
+                    # the capture; the person asked to be memorized, so the
+                    # photo wins. Same semantics as clear_queue.
+                    self.move_queue.clear()
+                    self.state.current_move = None
+                    self.state.move_start_time = None
+                    self._breathing_active = False
+                    if self._head_tracking:
+                        self._track_anchor = self.current_robot.get_current_head_pose()
+                        self.current_robot.start_head_tracking(weight=0.0)
+                elif self._head_tracking and not self._is_speaking:
+                    self._track_anchor = None
+                    self.current_robot.start_head_tracking(weight=1.0)
+            except Exception as e:
+                logger.warning("Hold-still toggle failed: %s", e)
         else:
             logger.warning("Unknown command received by MovementManager: %s", command)
 
@@ -426,6 +460,10 @@ class MovementManager:
 
     def _manage_breathing(self, current_time: float) -> None:
         """Manage automatic breathing when idle."""
+        # A capture burst owns the head: breathing must not restart mid-photo.
+        # It resumes on release through the normal idle timer.
+        if self._hold_still:
+            return
         if (
             self.state.current_move is None
             and not self.move_queue

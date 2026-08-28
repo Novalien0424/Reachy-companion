@@ -11,7 +11,7 @@ import time
 import asyncio
 from typing import Any
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import numpy as np
 import pytest
@@ -140,6 +140,26 @@ def _deps(
         camera_enabled=camera_enabled,
         face_recognizer=recognizer,
     )
+
+
+def _record_motion_calls(deps: ToolDependencies) -> list[str]:
+    """Record the hold/wobble/frame calls in one ordered list.
+
+    The still-pose bracket is an ordering promise — freeze before the first
+    frame, restore after the last — and only a single timeline can assert it.
+    """
+    calls: list[str] = []
+    frame = _frame()
+
+    def _grab_frame() -> NDArray[np.uint8]:
+        calls.append("frame")
+        return frame
+
+    deps.movement_manager.set_hold_still.side_effect = lambda hold: calls.append(f"hold={hold}")
+    deps.reachy_mini.disable_wobbling.side_effect = lambda: calls.append("disable_wobbling")
+    deps.reachy_mini.enable_wobbling.side_effect = lambda: calls.append("enable_wobbling")
+    deps.reachy_mini.media.get_frame.side_effect = _grab_frame
+    return calls
 
 
 def _stored_record(samples: int, name: str = "Lena") -> FaceRecord:
@@ -423,14 +443,24 @@ async def test_who_is_this_survives_a_recognizer_exception(
 
 
 @pytest.mark.asyncio
-async def test_remember_face_survives_an_enrollment_exception(caplog: pytest.LogCaptureFixture) -> None:
-    """The enrollment path sanitizes its failures exactly like who_is_this does."""
+async def test_remember_face_survives_an_enrollment_exception(
+    instant_sleep: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The enrollment path sanitizes its failures exactly like who_is_this does.
+
+    And it un-freezes on the way out: a raising recognizer must not leave the
+    robot's head parked and its wobbling off for the rest of the session.
+    """
+    deps = _deps(_FakeRecognizer(raises=RuntimeError("boom")))
+
     with caplog.at_level("ERROR", logger="reachy_companion.tools.remember_face"):
-        result = await RememberFace()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))), name="小明")
+        result = await RememberFace()(deps, name="小明")
 
     assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
     assert "boom" not in str(result)
     assert "boom" in caplog.text
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
+    deps.reachy_mini.enable_wobbling.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -454,13 +484,54 @@ async def test_a_camera_failure_is_reported_without_its_exception_text(
 
 @pytest.mark.asyncio
 async def test_remember_face_requires_a_name() -> None:
-    """An empty name enrolls nobody and touches no store."""
+    """An empty name enrolls nobody, touches no store, and moves nothing."""
     recognizer = _FakeRecognizer()
+    deps = _deps(recognizer)
 
-    result = await RememberFace()(_deps(recognizer), name="   ")
+    result = await RememberFace()(deps, name="   ")
 
     assert result == {"error": "name must be a non-empty string"}
     assert recognizer.frames_seen == 0
+    # The hold brackets the capture burst only: a refused call never stiffens.
+    deps.movement_manager.set_hold_still.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remember_face_holds_the_head_still_around_the_burst(instant_sleep: None) -> None:
+    """Freeze the head and stop wobbling before the first frame; restore after the last."""
+    recognizer = _FakeRecognizer(
+        record=_stored_record(3),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+    calls = _record_motion_calls(deps)
+
+    result = await RememberFace()(deps, name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 3}
+    assert calls[:3] == ["hold=True", "disable_wobbling", "frame"]
+    assert calls[-2:] == ["enable_wobbling", "hold=False"]
+    # Every one of the three looks happened inside the bracket.
+    assert calls.count("frame") == 3
+
+
+@pytest.mark.asyncio
+async def test_remember_face_survives_a_motion_api_failure(instant_sleep: None) -> None:
+    """A slightly blurred enrollment beats a refused one: motion errors never fail the tool."""
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+    deps.movement_manager.set_hold_still.side_effect = RuntimeError("no movement manager")
+    deps.reachy_mini.disable_wobbling.side_effect = RuntimeError("no wobble")
+    deps.reachy_mini.enable_wobbling.side_effect = RuntimeError("no wobble")
+
+    result = await RememberFace()(deps, name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    # Both edges were still attempted, so a transient failure does not stick.
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
 
 
 @pytest.mark.asyncio
