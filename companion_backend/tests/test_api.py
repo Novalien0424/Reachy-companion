@@ -21,6 +21,7 @@ out of every test but the one that asks for it.
 """
 
 from __future__ import annotations
+import json
 import math
 import random
 import threading
@@ -166,6 +167,80 @@ def test_unknown_person_is_404(client: TestClient) -> None:
 
 
 # --------------------------------------------------------------------------
+# merge (addendum Feature 1)
+# --------------------------------------------------------------------------
+
+
+def test_merge_returns_the_survivor_with_its_aliases(client: TestClient) -> None:
+    """The route answers with the merged person; `aliases` is part of every person view."""
+    target = _create(client, "Linna")
+    source = _create(client, "Lena")
+    client.post(f"/api/people/{source['id']}/facts", json={"text": "likes tea"})
+
+    response = client.post(f"/api/people/{target['id']}/merge", json={"source_id": source["id"]})
+
+    assert response.status_code == 200, response.text
+    merged = response.json()
+    assert merged["id"] == target["id"]
+    assert merged["name"] == "Linna"
+    assert merged["aliases"] == ["Lena"]
+    assert [fact["text"] for fact in merged["facts"]] == ["likes tea"]
+    # Robot record ids the survivor inherited are sync-layer bookkeeping, not a
+    # thing the UI has any use for.
+    assert "former_face_ids" not in merged
+
+    assert [item["id"] for item in client.get("/api/people").json()] == [target["id"]]
+
+
+def test_every_person_view_carries_aliases(client: TestClient) -> None:
+    """A person who has never been merged still reports the field, as an empty list."""
+    person = _create(client, "Nova")
+    assert person["aliases"] == []
+    assert client.get("/api/people").json()[0]["aliases"] == []
+
+
+def test_merging_a_person_into_themselves_is_400(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    response = client.post(f"/api/people/{person['id']}/merge", json={"source_id": person["id"]})
+    assert response.status_code == 400
+    assert response.json()["kind"] == "invalid_merge"
+
+
+def test_merging_an_unknown_id_is_404(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    assert client.post(f"/api/people/{person['id']}/merge", json={"source_id": "bp_nope"}).status_code == 404
+    assert client.post("/api/people/bp_nope/merge", json={"source_id": person["id"]}).status_code == 404
+
+
+def test_a_merge_whose_alias_is_already_taken_is_409(client: TestClient, settings: Settings) -> None:
+    """The store's index guard reaches the operator as the same 409 a duplicate name does."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / store.PEOPLE_FILENAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "people": [
+                    {"id": "bp_t", "name": "Linna", "createdAt": 1, "updatedAt": 1},
+                    {"id": "bp_s", "name": "Lena", "createdAt": 1, "updatedAt": 1},
+                    {"id": "bp_x", "name": "Lena Wu", "aliases": ["Lena"], "createdAt": 1, "updatedAt": 1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post("/api/people/bp_t/merge", json={"source_id": "bp_s"})
+
+    assert response.status_code == 409
+    assert response.json()["kind"] == "duplicate_name"
+
+
+def test_merge_without_a_source_id_is_422(client: TestClient) -> None:
+    person = _create(client, "Nova")
+    assert client.post(f"/api/people/{person['id']}/merge", json={}).status_code == 422
+
+
+# --------------------------------------------------------------------------
 # facts
 # --------------------------------------------------------------------------
 
@@ -221,6 +296,7 @@ def test_photo_upload_embeds_synchronously(client: TestClient, monkeypatch: pyte
     assert photo["has_embedding"] is True
     assert photo["error"] is None
     assert photo["synthetic"] is False
+    assert photo["display_only"] is False
     assert "embedding" not in photo
     # The bytes really were written where the embedder was pointed.
     assert seen and seen[0].read_bytes() == GRAY_JPEG.read_bytes()
@@ -283,6 +359,21 @@ def test_listed_photos_never_carry_the_embedding(client: TestClient, settings: S
     assert photo["synthetic"] is True
     assert photo["stored_as"] is None
     assert "embedding" not in photo
+
+
+def test_an_imported_snapshot_is_listed_as_display_only(client: TestClient, settings: Settings) -> None:
+    """The UI labels the imported picture from the flag, so the flag has to travel."""
+    person = store.create_person(settings, "Nova")
+    snapshot = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    photo = client.get("/api/people").json()[0]["photos"][0]
+
+    assert photo["id"] == snapshot.id
+    assert photo["display_only"] is True
+    assert photo["has_embedding"] is False
+    assert photo["error"] is None
+    # It has bytes, so the thumbnail route serves it like any other photo.
+    assert client.get(f"/api/people/{person.id}/photos/{snapshot.id}/file").status_code == 200
 
 
 # --------------------------------------------------------------------------

@@ -29,6 +29,15 @@ callers. Four things differ deliberately:
   `set_sync_meta`, after a push has been verified. Person mutations carry the
   existing block through untouched, and vice versa.
 
+**Names resolve through one index.** The robot mishears; an operator merging the
+two records it produced leaves the survivor answering to both spellings. So
+uniqueness is checked over `name` **and** `aliases` together, and one normalized
+string reaches at most one person — `create_person`, `rename_person` and
+`merge_people` all ask the same question of the same index, and the sync layer
+resolves robot records against it. `former_face_ids` is the same idea for robot
+record ids. Neither field is ever projected: both exist so that content the robot
+still holds under an old name or an old id reads as *known* here.
+
 The lock is an `RLock` so that a compound operation (write photo bytes, then
 record the photo) can hold it across a nested mutation; FastAPI serves requests
 on a thread pool, so every read-modify-write here is inside it.
@@ -41,12 +50,13 @@ import time
 import random
 import shutil
 import string
+import hashlib
 import logging
 import threading
 from typing import Final
 from pathlib import Path
 from dataclasses import field, replace, dataclass
-from collections.abc import Mapping, Callable, Sequence
+from collections.abc import Mapping, Callable, Sequence, Collection
 
 from reachy_companion import faces, memory
 from backend.config import Settings
@@ -71,6 +81,10 @@ PHOTO_ERRORS: Final[frozenset[str]] = frozenset(
 )
 
 SYNTHETIC_DISPLAY_NAME: Final[str] = "robot enrollment"
+# The label on an enrollment snapshot the sync layer fetched off the robot. It is
+# a `.jpg` because that is what the robot writes, and the extension is what gives
+# the stored file its type.
+ROBOT_SNAPSHOT_DISPLAY_NAME: Final[str] = "robot-snapshot.jpg"
 
 _PERSON_ID_PREFIX: Final[str] = "bp"
 _FACT_ID_PREFIX: Final[str] = "bf"
@@ -80,7 +94,11 @@ _STORE_LOCK = threading.RLock()
 
 
 class DuplicateNameError(ValueError):
-    """A person with that name (case-insensitively, after normalization) already exists."""
+    """That name is already answered to by someone else — as their name, or as an alias."""
+
+
+class MergeError(ValueError):
+    """A merge that cannot mean anything: a person merged into themselves."""
 
 
 class EmptyValueError(ValueError):
@@ -122,6 +140,14 @@ class BackendPhoto:
     projects back to the robot so a re-enrollment survives the next push.
     `embedding` is the 128-float SFace vector, None while it is unset or the
     photo failed; `error` then says why.
+
+    `display_only=True` is the mirror image of `synthetic`: bytes with no
+    standing as a sample. It marks the one enrollment snapshot the robot keeps
+    per person (D-013 amendment), fetched by the sync layer so the operator has a
+    face to look at. An explicit flag rather than "has bytes and no embedding"
+    (Codex A2-4), because that description also fits an upload whose embedding is
+    still being computed, and mislabelling one as the other would either hide a
+    real sample from the robot or offer a snapshot to it as recognition data.
     """
 
     id: str
@@ -131,6 +157,7 @@ class BackendPhoto:
     embedding: tuple[float, ...] | None
     error: str | None
     synthetic: bool = False
+    display_only: bool = False
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape for this photo."""
@@ -142,6 +169,7 @@ class BackendPhoto:
             "embedding": None if self.embedding is None else list(self.embedding),
             "error": self.error,
             "synthetic": self.synthetic,
+            "displayOnly": self.display_only,
         }
 
 
@@ -151,6 +179,14 @@ class BackendPerson:
 
     `facts` and `photos` are both newest-first, which is the order projection
     reads them in (newest ≤3 embeddings, newest ≤20 facts).
+
+    `aliases` and `former_face_ids` are what a merge leaves behind, and both are
+    **Mac-side only** — neither is ever projected. An alias is a name the robot
+    still hears this person by (it misheard "Linna" as "Lena"), normalized by
+    exactly the same rule as `name`, so the sync layer can resolve a robot record
+    under the old name onto the survivor. A former face id is a robot record id
+    that used to be this person's, so a face the robot still holds under it reads
+    as *known* rather than as a stranger enrolling for the first time.
     """
 
     id: str
@@ -160,6 +196,12 @@ class BackendPerson:
     photos: tuple[BackendPhoto, ...]
     created_at: int
     updated_at: int
+    aliases: tuple[str, ...] = ()
+    former_face_ids: tuple[str, ...] = ()
+
+    def name_keys(self) -> set[str]:
+        """Return every normalized string that resolves to this person."""
+        return {self.name.casefold(), *(alias.casefold() for alias in self.aliases)}
 
     def to_json(self) -> dict[str, object]:
         """Return the persisted JSON shape for this person."""
@@ -171,6 +213,8 @@ class BackendPerson:
             "photos": [photo.to_json() for photo in self.photos],
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "aliases": list(self.aliases),
+            "formerFaceIds": list(self.former_face_ids),
         }
 
 
@@ -320,6 +364,48 @@ def _clean_int(value: object) -> int | None:
     return int(value)
 
 
+def _deduped(values: Sequence[str], *, excluding: Collection[str] = ()) -> tuple[str, ...]:
+    """Return the values in order, case-insensitively deduped, minus the `excluding` keys."""
+    seen = set(excluding)
+    kept: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(value)
+    return tuple(kept)
+
+
+def _aliases_from(value: object, name: str) -> tuple[str, ...]:
+    """Coerce a persisted alias list, dropping anything that is not a usable name.
+
+    Aliases go through `faces.normalize_face_name` exactly as `name` does (Codex
+    A1-4): the sync layer compares a robot record's name against them, and a
+    stored alias the robot could never spell would simply never match. An alias
+    equal to the person's own name is dropped too — it would be a second way for
+    one string to resolve, which is the thing the index rules out.
+    """
+    if not isinstance(value, list):
+        return ()
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        alias: str = faces.normalize_face_name(item)
+        if alias:
+            normalized.append(alias)
+    return _deduped(normalized, excluding={name.casefold()})
+
+
+def _former_face_ids_from(value: object, face_id: str | None) -> tuple[str, ...]:
+    """Coerce a persisted former-id list; the primary id is never also a former one."""
+    if not isinstance(value, list):
+        return ()
+    cleaned = [item for item in (_clean_str(entry) for entry in value) if item is not None]
+    return _deduped(cleaned, excluding=set() if face_id is None else {face_id.casefold()})
+
+
 # --------------------------------------------------------------------------
 # reading
 # --------------------------------------------------------------------------
@@ -361,6 +447,10 @@ def _photo_from_json(value: object) -> BackendPhoto | None:
         embedding=_embedding_from(value.get("embedding")),
         error=error,
         synthetic=value.get("synthetic") is True,
+        # Absent in every store written before the snapshot import existed, and
+        # "absent" has to mean an ordinary photo — anything else would retire a
+        # real sample the moment the flag shipped.
+        display_only=value.get("displayOnly") is True,
     )
 
 
@@ -386,14 +476,17 @@ def _person_from_json(value: object) -> BackendPerson | None:
     photos_value = value.get("photos")
     photos = [] if not isinstance(photos_value, list) else [_photo_from_json(item) for item in photos_value]
 
+    face_id = _clean_str(value.get("faceId"))
     return BackendPerson(
         id=person_id,
         name=normalized_name,
-        face_id=_clean_str(value.get("faceId")),
+        face_id=face_id,
         facts=tuple(fact for fact in facts if fact is not None),
         photos=tuple(photo for photo in photos if photo is not None),
         created_at=created_at,
         updated_at=updated_at,
+        aliases=_aliases_from(value.get("aliases"), normalized_name),
+        former_face_ids=_former_face_ids_from(value.get("formerFaceIds"), face_id),
     )
 
 
@@ -506,14 +599,25 @@ def _require(document: _Document, person_id: str) -> BackendPerson:
     return person
 
 
-def _assert_name_is_free(document: _Document, name: str, *, except_id: str | None = None) -> None:
-    key = name.casefold()
-    clash = next(
-        (item for item in document.people if item.id != except_id and item.name.casefold() == key),
+def _holder_of(document: _Document, key: str, *, excluding: Collection[str] = ()) -> BackendPerson | None:
+    """Return the one person that normalized string resolves to (Codex A1-4).
+
+    The index is over `name` **and** `aliases` together: after a merge, "Lena" is
+    still a way to reach the person now called "Linna", and letting a second
+    person claim it would make one string resolve two ways — the sync layer picks
+    exactly one, so the other would silently stop being reachable.
+    """
+    return next(
+        (item for item in document.people if item.id not in excluding and key in item.name_keys()),
         None,
     )
+
+
+def _assert_name_is_free(document: _Document, name: str, *, except_id: str | None = None) -> None:
+    excluding = () if except_id is None else (except_id,)
+    clash = _holder_of(document, name.casefold(), excluding=excluding)
     if clash is not None:
-        raise DuplicateNameError(f"A person named {clash.name!r} already exists.")
+        raise DuplicateNameError(f"{name!r} is already how {clash.name!r} is reached.")
 
 
 def _mutate(
@@ -578,12 +682,23 @@ def create_person(settings: Settings, name: str) -> BackendPerson:
 
 
 def rename_person(settings: Settings, person_id: str, name: str) -> BackendPerson:
-    """Rename one person. Raises on an empty name or another person's name."""
+    """Rename one person, swapping when the new name is one of their own aliases.
+
+    Renaming onto your OWN alias is the merge's undo (Codex A1-4): the operator
+    merged "Lena" into "Linna" and then decided the robot had it right after all.
+    The alias becomes the canonical name and the old canonical name becomes the
+    alias, so the robot's records under either spelling still resolve here. Every
+    other rename is the plain thing: the name changes and the aliases do not.
+    """
     normalized = _normalized_name(name)
+    key = normalized.casefold()
 
     def change(person: BackendPerson, document: _Document) -> BackendPerson:
         _assert_name_is_free(document, normalized, except_id=person.id)
-        return replace(person, name=normalized)
+        if key not in {alias.casefold() for alias in person.aliases}:
+            return replace(person, name=normalized)
+        swapped = [alias for alias in person.aliases if alias.casefold() != key]
+        return replace(person, name=normalized, aliases=_deduped([person.name, *swapped], excluding={key}))
 
     return _mutate(settings, person_id, change)
 
@@ -601,9 +716,174 @@ def delete_person(settings: Settings, person_id: str) -> BackendPerson:
 
 
 def set_person_face_id(settings: Settings, person_id: str, face_id: str | None) -> BackendPerson:
-    """Link a person to a robot `faces.v1.json` record id (projection mints it)."""
+    """Link a person to a robot `faces.v1.json` record id (projection mints it).
+
+    An id promoted to primary is dropped from `former_face_ids`: the two lists
+    answer the same question ("does this robot record belong to this person?"),
+    and one id in both would make "is it the primary" depend on which was read.
+    """
     cleaned = _clean_str(face_id)
-    return _mutate(settings, person_id, lambda person, _: replace(person, face_id=cleaned))
+    return _mutate(
+        settings,
+        person_id,
+        lambda person, _: replace(
+            person,
+            face_id=cleaned,
+            former_face_ids=_former_face_ids_from(list(person.former_face_ids), cleaned),
+        ),
+    )
+
+
+def add_former_face_id(settings: Settings, person_id: str, face_id: str) -> BackendPerson:
+    """Remember one more robot record id as belonging to this person.
+
+    Written by the sync layer when the robot re-enrolls someone under a name that
+    is now an alias (Codex A1-1): the person keeps the primary id they already
+    have, and the new record id is recorded here so the next diff reads that face
+    as *known*. Without it the record would be re-reported as new on every diff
+    and the push gate would never open again.
+    """
+    cleaned = _clean_str(face_id)
+
+    def change(person: BackendPerson, _: _Document) -> BackendPerson:
+        if cleaned is None:
+            return person
+        return replace(
+            person,
+            former_face_ids=_former_face_ids_from([*person.former_face_ids, cleaned], person.face_id),
+        )
+
+    return _mutate(settings, person_id, change)
+
+
+# --------------------------------------------------------------------------
+# merge
+# --------------------------------------------------------------------------
+
+
+def _merged_facts(target: BackendPerson, source: BackendPerson) -> tuple[BackendFact, ...]:
+    """Interleave both fact lists newest-first, through the store's own dedupe.
+
+    Same rule as the photos below, for the same two reasons: the projection emits
+    the newest 20 and the UI prints each row's own `created_at`. Folding the whole
+    source in ahead of the target — the shape a plain oldest-first replay leaves —
+    would push the target's newer facts past the robot's cap to make room for the
+    source's older ones, and render a list whose dates run backwards halfway down.
+
+    A fact both people held is kept once, as the *target's* record: `add_fact`
+    treats a duplicate as already stored rather than re-storing it, and the two
+    rows differ only in an id and a timestamp the operator never asked to move.
+    The sort is stable, so facts sharing a millisecond keep target-before-source
+    order.
+    """
+    known = {fact.text.casefold() for fact in target.facts}
+    merged = [*target.facts, *(fact for fact in source.facts if fact.text.casefold() not in known)]
+    return tuple(sorted(merged, key=lambda fact: fact.created_at, reverse=True))
+
+
+def _merged_photos(target: BackendPerson, source: BackendPerson) -> tuple[BackendPhoto, ...]:
+    """Interleave both photo lists newest-first (Codex A3-1).
+
+    Concatenating would be wrong, not merely untidy: `projection.embeddings_for`
+    takes the *first* three embeddings, so a source's newer enrollment samples
+    appended behind the target's older ones would never reach the robot. The sort
+    is stable, so photos sharing a millisecond keep target-before-source order.
+    """
+    return tuple(sorted([*target.photos, *source.photos], key=lambda photo: photo.added_at, reverse=True))
+
+
+def _move_photo_files(settings: Settings, source: BackendPerson, target_id: str) -> None:
+    """Move one person's photo bytes into another's directory, all or nothing.
+
+    `stored_as` is `<photo_id><ext>` and photo ids are unique across the store, so
+    the destination can never already be taken. A partial move would leave the
+    surviving records pointing at files that are neither here nor there, so a
+    failure puts back what it moved and raises rather than writing the document.
+    """
+    destination_dir = photo_dir(settings, target_id)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for photo in source.photos:
+            origin = photo_path(settings, source.id, photo)
+            if origin is None or not origin.is_file():
+                continue
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            destination = destination_dir / str(photo.stored_as)
+            origin.replace(destination)
+            moved.append((origin, destination))
+    except OSError:
+        for origin, destination in reversed(moved):
+            try:
+                destination.replace(origin)
+            except OSError as exc:
+                logger.warning("Could not put the photo bytes at %s back: %s", destination, exc)
+        raise
+
+
+def merge_people(settings: Settings, target_id: str, source_id: str) -> BackendPerson:
+    """Fold one person into another and delete the source, returning the survivor.
+
+    The robot misheard a name and enrolled the same person twice; this is the
+    operator saying so. The target survives with its own id and name, and gains:
+    the source's facts (deduped), the source's photos (records *and* bytes,
+    interleaved newest-first), the source's name and aliases as aliases of its
+    own, and every robot record id either of them ever carried.
+
+    `face_id` is the one thing that is not simply unioned: the robot can hold only
+    one primary link per person, so the target keeps its own and adopts the
+    source's only when it had none. Every id that does not end up primary lands in
+    `former_face_ids` (Codex A2-1), including ids the *source* had already
+    inherited from an earlier merge — a chain of merges must not forget the
+    robot ids at its start, or the faces still living under them would read as
+    strangers on the next diff.
+    """
+    if target_id == source_id:
+        raise MergeError("A person cannot be merged into themselves.")
+
+    path = people_path(settings)
+    with _STORE_LOCK:
+        document = _read_document(path)
+        target = _require(document, target_id)
+        source = _require(document, source_id)
+
+        aliases = _deduped(
+            [*target.aliases, source.name, *source.aliases],
+            excluding={target.name.casefold()},
+        )
+        # The index invariant has to survive the merge: every string the survivor
+        # would answer to must not already reach somebody else. Unreachable
+        # through the writers — they all check the same index — but a store is a
+        # file an operator can edit, and one name resolving two ways afterwards
+        # would silently strand whichever person lost the lookup.
+        for key in {target.name.casefold(), *(alias.casefold() for alias in aliases)}:
+            clash = _holder_of(document, key, excluding=(target_id, source_id))
+            if clash is not None:
+                raise DuplicateNameError(f"{key!r} is already how {clash.name!r} is reached.")
+
+        face_id = target.face_id if target.face_id is not None else source.face_id
+        unadopted = [] if source.face_id in (None, face_id) else [str(source.face_id)]
+        former = _former_face_ids_from(
+            [*target.former_face_ids, *source.former_face_ids, *unadopted], face_id
+        )
+
+        # Bytes first: a failure here leaves the document untouched, so the merge
+        # simply has not happened yet rather than half-happened.
+        _move_photo_files(settings, source, target_id)
+
+        merged = replace(
+            target,
+            face_id=face_id,
+            facts=_merged_facts(target, source),
+            photos=_merged_photos(target, source),
+            aliases=aliases,
+            former_face_ids=former,
+            updated_at=_now_ms(),
+        )
+        remaining = tuple(item for item in document.people if item.id not in {target_id, source_id})
+        _write_document(path, _Document(people=(merged, *remaining), sync=document.sync))
+        shutil.rmtree(photo_dir(settings, source_id), ignore_errors=True)
+        logger.info("Merged %r into %r; aliases are now %s.", source.name, merged.name, list(merged.aliases))
+        return merged
 
 
 # --------------------------------------------------------------------------
@@ -663,34 +943,82 @@ def delete_fact(settings: Settings, person_id: str, fact_id: str) -> BackendFact
 # --------------------------------------------------------------------------
 
 
-def add_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
-    """Store uploaded bytes for one person and record the photo (embedding still unset).
+def _write_photo(
+    settings: Settings, person_id: str, display_name: str, raw: bytes, *, display_only: bool
+) -> BackendPhoto:
+    """Write bytes for one person and record the photo. The caller holds the lock.
 
     The file is named after the generated photo id; `display_name` is kept only
     as a label. Nothing a client sends can influence where the bytes land.
     """
     photo_id = _make_id(_PHOTO_ID_PREFIX)
     stored_as = f"{photo_id}{_photo_extension(display_name)}"
-    label = " ".join(display_name.split()) or stored_as
     photo = BackendPhoto(
         id=photo_id,
-        display_name=label,
+        display_name=" ".join(display_name.split()) or stored_as,
         stored_as=stored_as,
         added_at=_now_ms(),
         embedding=None,
         error=None,
         synthetic=False,
+        display_only=display_only,
     )
+    directory = photo_dir(settings, person_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / stored_as).write_bytes(raw)
+    _mutate(settings, person_id, lambda person, _: replace(person, photos=(photo, *person.photos)))
+    return photo
 
+
+def add_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
+    """Store uploaded bytes for one person and record the photo (embedding still unset)."""
     with _STORE_LOCK:
         # Fail before writing bytes we would then have to clean up.
         if get_person(settings, person_id) is None:
             raise PersonNotFoundError(f"No person with id {person_id!r}.")
-        directory = photo_dir(settings, person_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / stored_as).write_bytes(raw)
-        _mutate(settings, person_id, lambda person, _: replace(person, photos=(photo, *person.photos)))
-        return photo
+        return _write_photo(settings, person_id, display_name, raw, display_only=False)
+
+
+def _photo_holding(settings: Settings, person: BackendPerson, digest: str) -> BackendPhoto | None:
+    """Return this person's photo whose bytes hash to `digest`, if they have one."""
+    for photo in person.photos:
+        path = photo_path(settings, person.id, photo)
+        if path is None:
+            continue
+        try:
+            existing = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            # A photo we cannot read is not a match; it is also not a reason to
+            # refuse the new bytes.
+            logger.warning("Could not hash the photo bytes at %s: %s", path, exc)
+            continue
+        if existing == digest:
+            return photo
+    return None
+
+
+def add_display_photo(settings: Settings, person_id: str, display_name: str, raw: bytes) -> BackendPhoto:
+    """Store bytes that are a picture and nothing else — the robot's enrollment snapshot.
+
+    `display_only` bytes never become a recognition sample: no embedding is ever
+    computed for them and the projection skips them structurally, so the person's
+    samples stay exactly what the robot enrolled.
+
+    Deduped by content against *every* photo this person already has, uploads
+    included: the sync layer re-offers the same snapshot on every import that
+    touches the face, and a matching photo is returned unchanged rather than
+    stored twice — the same answer `add_fact` gives a fact the person already
+    has, and for the same reason.
+    """
+    digest = hashlib.sha256(raw).hexdigest()
+    with _STORE_LOCK:
+        person = get_person(settings, person_id)
+        if person is None:
+            raise PersonNotFoundError(f"No person with id {person_id!r}.")
+        existing = _photo_holding(settings, person, digest)
+        if existing is not None:
+            return existing
+        return _write_photo(settings, person_id, display_name, raw, display_only=True)
 
 
 def add_synthetic_photo(settings: Settings, person_id: str, embedding: Sequence[float]) -> BackendPhoto:

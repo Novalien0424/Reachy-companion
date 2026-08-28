@@ -133,6 +133,349 @@ def test_list_people_is_most_recently_updated_first(settings: Settings) -> None:
 
 
 # --------------------------------------------------------------------------
+# aliases and the one name index (addendum A1-4)
+# --------------------------------------------------------------------------
+
+
+def _write_people(settings: Settings, people: list[dict[str, object]]) -> None:
+    """Hand-write a store file, the way an operator or an older version might have."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / store.PEOPLE_FILENAME).write_text(
+        json.dumps({"version": 1, "people": people}), encoding="utf-8"
+    )
+
+
+def _row(person_id: str, name: str, **extra: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": person_id,
+        "name": name,
+        "createdAt": 1,
+        "updatedAt": 1,
+        "facts": [],
+        "photos": [],
+    }
+    row.update(extra)
+    return row
+
+
+def test_a_store_written_before_aliases_reads_as_empty_tuples(settings: Settings) -> None:
+    """Tolerant read: the two new fields are optional, and junk in them is dropped."""
+    _write_people(
+        settings,
+        [
+            _row("bp_old", "Lena"),
+            _row("bp_junk", "Mo", aliases="not a list", formerFaceIds={"nope": 1}),
+            _row("bp_mixed", "Ada", aliases=["  Ada  Lovelace ", 7, None, "   ", "ada lovelace"],
+                 formerFaceIds=["f_1", 7, "", "f_1"]),
+        ],
+    )
+
+    by_id = {person.id: person for person in store.list_people(settings)}
+
+    assert by_id["bp_old"].aliases == ()
+    assert by_id["bp_old"].former_face_ids == ()
+    assert by_id["bp_junk"].aliases == ()
+    assert by_id["bp_junk"].former_face_ids == ()
+    # Aliases normalize exactly like names, and dedupe case-insensitively.
+    assert by_id["bp_mixed"].aliases == ("Ada Lovelace",)
+    assert by_id["bp_mixed"].former_face_ids == ("f_1",)
+
+
+def test_an_alias_equal_to_the_persons_own_name_is_dropped_on_read(settings: Settings) -> None:
+    """One normalized string resolves one way; a self-alias would be a second way."""
+    _write_people(settings, [_row("bp_1", "Lena", aliases=["LENA", "Lenna"])])
+
+    person = store.list_people(settings)[0]
+    assert person.aliases == ("Lenna",)
+
+
+def test_the_name_index_covers_aliases(settings: Settings) -> None:
+    """Codex A1-4: create and rename resolve against `name` + `aliases`, not `name` alone."""
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    store.merge_people(settings, target.id, source.id)
+    mo = store.create_person(settings, "Mo")
+
+    with pytest.raises(store.DuplicateNameError):
+        store.create_person(settings, "  lena  ")
+    with pytest.raises(store.DuplicateNameError):
+        store.rename_person(settings, mo.id, "LENA")
+
+    assert [person.name for person in store.list_people(settings)] == ["Mo", "Linna"]
+
+
+def test_rename_onto_your_own_alias_swaps_the_two(settings: Settings) -> None:
+    """Codex A1-4: the robot misheard the *survivor's* name — renaming back is a swap."""
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    store.merge_people(settings, target.id, source.id)
+
+    swapped = store.rename_person(settings, target.id, "lena")
+
+    assert swapped.name == "lena"
+    assert swapped.aliases == ("Linna",)
+    # And the swap is itself reversible.
+    assert store.rename_person(settings, target.id, "Linna").aliases == ("lena",)
+
+
+def test_renaming_a_person_to_their_own_name_leaves_their_aliases_alone(settings: Settings) -> None:
+    """Re-spelling your own name is not a swap, so it must not mint an alias for it."""
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    store.merge_people(settings, target.id, source.id)
+
+    renamed = store.rename_person(settings, target.id, "LINNA")
+
+    assert renamed.name == "LINNA"
+    assert renamed.aliases == ("Lena",)
+
+
+# --------------------------------------------------------------------------
+# merge (addendum Feature 1)
+# --------------------------------------------------------------------------
+
+
+def test_merge_people_carries_everything_onto_the_survivor(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole contract in one pass: facts, photo bytes, identity, and one write."""
+    # Merged facts order by `created_at`, so the assertions below need a clock
+    # that cannot put two writes in the same millisecond.
+    ticks = count(1_700_000_000_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(ticks))
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    store.set_person_face_id(settings, source.id, "f_lena")
+    store.add_fact(settings, target.id, "likes tea")
+    store.add_fact(settings, source.id, "LIKES TEA")
+    store.add_fact(settings, source.id, "has a cat")
+    kept = store.add_photo(settings, target.id, "target.jpg", b"target-bytes")
+    moved = store.add_photo(settings, source.id, "source.jpg", b"source-bytes")
+
+    writes: list[int] = []
+    real_write = store._write_document
+    monkeypatch.setattr(
+        store,
+        "_write_document",
+        lambda path, document: (writes.append(1), real_write(path, document))[1],
+    )
+
+    merged = store.merge_people(settings, target.id, source.id)
+
+    assert writes == [1]
+    assert merged.id == target.id
+    assert merged.name == "Linna"
+    assert merged.aliases == ("Lena",)
+    # The target had no face id of its own, so it adopts the source's — and an
+    # adopted id is the primary, never also a former one.
+    assert merged.face_id == "f_lena"
+    assert merged.former_face_ids == ()
+    # Case-insensitive dedupe, and the source's facts land newest-first.
+    assert [fact.text for fact in merged.facts] == ["has a cat", "likes tea"]
+    assert {photo.id for photo in merged.photos} == {kept.id, moved.id}
+
+    # The bytes moved; the source person and their directory are gone.
+    target_dir = store.photo_dir(settings, target.id)
+    assert (target_dir / str(kept.stored_as)).read_bytes() == b"target-bytes"
+    assert (target_dir / str(moved.stored_as)).read_bytes() == b"source-bytes"
+    assert not store.photo_dir(settings, source.id).exists()
+    assert store.get_person(settings, source.id) is None
+    assert store.get_person(settings, target.id) == merged
+
+
+def test_merge_people_interleaves_photos_newest_first(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex A3-1: the projection window takes the first three, so order is correctness.
+
+    The target holds three older enrollment samples and the source two newer
+    ones. Concatenating instead of interleaving would leave the newest samples
+    hidden behind the older ones and the robot would be pushed a stale face.
+    """
+    ticks = count(1_700_000_000_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(ticks))
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    older = [store.add_photo(settings, target.id, f"old-{index}.jpg", b"x") for index in range(3)]
+    newer = [store.add_photo(settings, source.id, f"new-{index}.jpg", b"y") for index in range(2)]
+
+    merged = store.merge_people(settings, target.id, source.id)
+
+    assert [photo.id for photo in merged.photos] == [
+        newer[1].id,
+        newer[0].id,
+        older[2].id,
+        older[1].id,
+        older[0].id,
+    ]
+    assert [photo.added_at for photo in merged.photos] == sorted(
+        (photo.added_at for photo in merged.photos), reverse=True
+    )
+
+
+def test_merge_people_interleaves_facts_newest_first(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Facts interleave by `created_at` for the same reason photos do: a window takes the front.
+
+    Projection emits the newest 20, and the UI prints each row's own timestamp.
+    Appending the source's facts behind the target's would both hide the newest
+    ones past the cap and render a list whose dates run backwards halfway down.
+    """
+    ticks = count(1_700_000_000_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(ticks))
+    target = store.create_person(settings, "Linna")
+    source = store.create_person(settings, "Lena")
+    # Interleaved in time: the source's are older, newer, and newest.
+    store.add_fact(settings, source.id, "old source fact")
+    for index in range(20):
+        store.add_fact(settings, target.id, f"target fact {index}")
+    store.add_fact(settings, source.id, "new source fact")
+    store.add_fact(settings, source.id, "newest source fact")
+
+    merged = store.merge_people(settings, target.id, source.id)
+
+    assert [fact.text for fact in merged.facts] == [
+        "newest source fact",
+        "new source fact",
+        *(f"target fact {index}" for index in reversed(range(20))),
+        "old source fact",
+    ]
+    assert [fact.created_at for fact in merged.facts] == sorted(
+        (fact.created_at for fact in merged.facts), reverse=True
+    )
+
+
+def test_merge_people_keeps_the_targets_face_id_and_remembers_the_sources(settings: Settings) -> None:
+    """Codex A2-1: a merge chain must not forget an older robot id along the way."""
+    first = store.create_person(settings, "Linna")
+    store.set_person_face_id(settings, first.id, "f_linna")
+    second = store.create_person(settings, "Lena")
+    store.set_person_face_id(settings, second.id, "f_lena")
+
+    once = store.merge_people(settings, first.id, second.id)
+    assert once.face_id == "f_linna"
+    assert once.former_face_ids == ("f_lena",)
+
+    third = store.create_person(settings, "Leena")
+    store.set_person_face_id(settings, third.id, "f_leena")
+    store.merge_people(settings, third.id, first.id)
+
+    survivor = store.get_person(settings, third.id)
+    assert survivor is not None
+    assert survivor.face_id == "f_leena"
+    assert set(survivor.former_face_ids) == {"f_linna", "f_lena"}
+    assert survivor.face_id not in survivor.former_face_ids
+    assert set(survivor.aliases) == {"Linna", "Lena"}
+
+
+def test_merge_people_refuses_to_merge_a_person_into_themselves(settings: Settings) -> None:
+    """Codex A2-2: a concrete class, because the API maps it to a 400 and not a 404."""
+    person = store.create_person(settings, "Lena")
+
+    with pytest.raises(store.MergeError):
+        store.merge_people(settings, person.id, person.id)
+
+    assert isinstance(store.MergeError("x"), ValueError)
+    assert store.get_person(settings, person.id) == person
+
+
+def test_merge_people_raises_for_an_unknown_id(settings: Settings) -> None:
+    """An unknown id on either side is a 404, so it stays a `PersonNotFoundError`."""
+    person = store.create_person(settings, "Lena")
+
+    with pytest.raises(store.PersonNotFoundError):
+        store.merge_people(settings, person.id, "bp_nope")
+    with pytest.raises(store.PersonNotFoundError):
+        store.merge_people(settings, "bp_nope", person.id)
+
+
+def test_merge_people_refuses_an_alias_a_third_person_already_answers_to(settings: Settings) -> None:
+    """The index invariant survives a merge: one normalized string, at most one person.
+
+    Both collisions are only reachable through a hand-edited store — the writers
+    themselves never let one name resolve two ways — which is exactly why the
+    check is here rather than assumed.
+    """
+    _write_people(
+        settings,
+        [
+            _row("bp_target", "Linna"),
+            _row("bp_source", "Lena"),
+            _row("bp_third", "Lena Wu", aliases=["Lena"]),
+        ],
+    )
+
+    with pytest.raises(store.DuplicateNameError):
+        store.merge_people(settings, "bp_target", "bp_source")
+
+    # …and alias against alias, the same way.
+    _write_people(
+        settings,
+        [
+            _row("bp_target", "Linna"),
+            _row("bp_source", "Lena", aliases=["Lenna"]),
+            _row("bp_third", "Mo", aliases=["Lenna"]),
+        ],
+    )
+
+    with pytest.raises(store.DuplicateNameError):
+        store.merge_people(settings, "bp_target", "bp_source")
+
+    assert {person.id for person in store.list_people(settings)} == {"bp_target", "bp_source", "bp_third"}
+
+
+def test_merge_people_never_makes_the_survivor_an_alias_of_themselves(settings: Settings) -> None:
+    """The source's aliases may already include the target's name; that is a no-op."""
+    _write_people(
+        settings,
+        [
+            _row("bp_target", "Linna Hmm"),
+            _row("bp_source", "Lena", aliases=["Linna Hmm", "Lenna"]),
+        ],
+    )
+
+    merged = store.merge_people(settings, "bp_target", "bp_source")
+
+    assert merged.name == "Linna Hmm"
+    assert set(merged.aliases) == {"Lena", "Lenna"}
+    assert "Linna Hmm" not in merged.aliases
+
+
+def test_add_former_face_id_dedupes_and_never_shadows_the_primary(settings: Settings) -> None:
+    """Codex A1-1's store side: the sync layer records a second robot id for one person."""
+    person = store.create_person(settings, "Linna")
+    store.set_person_face_id(settings, person.id, "f_linna")
+
+    once = store.add_former_face_id(settings, person.id, "f_lena")
+    assert once.former_face_ids == ("f_lena",)
+
+    twice = store.add_former_face_id(settings, person.id, "f_lena")
+    assert twice.former_face_ids == ("f_lena",)
+
+    # The primary is never also a former id.
+    assert store.add_former_face_id(settings, person.id, "f_linna").former_face_ids == ("f_lena",)
+    assert store.add_former_face_id(settings, person.id, "   ").former_face_ids == ("f_lena",)
+
+    with pytest.raises(store.PersonNotFoundError):
+        store.add_former_face_id(settings, "bp_nope", "f_x")
+
+
+def test_aliases_and_former_ids_survive_a_round_trip_through_disk(settings: Settings) -> None:
+    """Both new fields are persisted, or a merge would be forgotten on the next read."""
+    target = store.create_person(settings, "Linna")
+    store.set_person_face_id(settings, target.id, "f_linna")
+    source = store.create_person(settings, "Lena")
+    store.set_person_face_id(settings, source.id, "f_lena")
+    merged = store.merge_people(settings, target.id, source.id)
+
+    payload = json.loads((settings.data_dir / store.PEOPLE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["people"][0]["aliases"] == ["Lena"]
+    assert payload["people"][0]["formerFaceIds"] == ["f_lena"]
+    assert store.get_person(settings, target.id) == merged
+
+
+# --------------------------------------------------------------------------
 # facts
 # --------------------------------------------------------------------------
 
@@ -302,6 +645,75 @@ def test_add_synthetic_photo_holds_an_embedding_with_no_bytes(settings: Settings
     assert reloaded is not None
     assert reloaded.photos == (photo,)
     assert reloaded.photos[0].embedding == embedding
+
+
+def test_add_display_photo_keeps_bytes_that_never_reach_the_projection(settings: Settings) -> None:
+    """An imported enrollment snapshot is a picture for the operator and nothing else."""
+    person = store.create_person(settings, "Lena")
+
+    photo = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    assert photo.display_only is True
+    assert photo.synthetic is False
+    assert photo.embedding is None
+    assert photo.error is None
+    assert photo.display_name == "robot-snapshot.jpg"
+    assert photo.stored_as == f"{photo.id}.jpg"
+
+    written = store.photo_dir(settings, person.id) / str(photo.stored_as)
+    assert written.read_bytes() == b"jpeg-bytes"
+
+    # Persisted, or the next read would offer the snapshot as an un-embedded upload.
+    payload = json.loads((settings.data_dir / store.PEOPLE_FILENAME).read_text(encoding="utf-8"))
+    assert payload["people"][0]["photos"][0]["displayOnly"] is True
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos == (photo,)
+
+
+def test_a_photo_without_the_display_only_flag_reads_as_a_normal_photo(settings: Settings) -> None:
+    """Tolerant read: a store written before the flag existed is not display-only."""
+    person = store.create_person(settings, "Lena")
+    photo = store.add_photo(settings, person.id, "face.jpg", b"jpeg-bytes")
+
+    path = settings.data_dir / store.PEOPLE_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["people"][0]["photos"][0]["displayOnly"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos[0].id == photo.id
+    assert reloaded.photos[0].display_only is False
+
+
+def test_add_display_photo_is_deduped_against_any_photo_bytes_this_person_has(settings: Settings) -> None:
+    """Re-importing the same snapshot must add nothing — including over a real upload.
+
+    The sync layer re-fetches the snapshot on every import that touches the face,
+    so without content dedupe one enrollment would grow a photo per import.
+    """
+    person = store.create_person(settings, "Lena")
+    uploaded = store.add_photo(settings, person.id, "face.jpg", b"jpeg-bytes")
+
+    same = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+
+    assert same == uploaded
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.photos == (uploaded,)
+    assert len(list(store.photo_dir(settings, person.id).iterdir())) == 1
+
+    # Different bytes are a different photo.
+    other = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"other-bytes")
+    assert other.id != uploaded.id
+    assert other.display_only is True
+
+    # And re-offering *that* one is a no-op too.
+    assert store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"other-bytes") == other
+
+    with pytest.raises(store.PersonNotFoundError):
+        store.add_display_photo(settings, "bp_nope", store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"bytes")
 
 
 def test_set_photo_embedding_rejects_a_vector_of_the_wrong_length(settings: Settings) -> None:

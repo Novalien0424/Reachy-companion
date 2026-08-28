@@ -675,3 +675,78 @@ face-less Mac selftest run only** — the seven `PERSON-*` / `ENROLL-STILL` /
 `BACKEND-*` rows in `feature_list.json` are the live gate, and `people.v1.json`
 must join the `reachy-deploy` backup/restore manifest before any of it survives
 a reinstall.
+
+## D-026 — Profile merge, and one enrollment snapshot per person (2026-08-28)
+
+Operator-requested after the *first live use* of the backend, which found two
+things D-025 had no answer for: the robot misheard "Linna" as "Lena" and
+enrolled one person twice, and a person imported from a voice enrollment had no
+picture anywhere. Plan and its three-round Codex log (12 findings, **all 12
+accepted**, review closed at the round cap):
+`docs/superpowers/plans/2026-08-28-merge-and-snapshots-addendum.md` §Review log.
+Five decisions. **(1) A merge is a fold that leaves two kinds of memory
+behind.** `store.merge_people` folds the source into the target under one lock
+hold and one `_write_document`: facts through the store's own case-insensitive
+dedupe, photo records *and* photo bytes (`stored_as` is photo-id-based, so the
+move cannot collide), and — for both lists — an **interleave by timestamp,
+newest-first, stable on ties** rather than a concatenation, because the
+projection takes the newest ≤3 embeddings and ≤20 facts off the front and the UI
+prints each row's own time. The target keeps its own `face_id` and adopts the
+source's only when it had none; every id that does not end up primary lands in
+`former_face_ids`, ids the source had itself inherited included, so a *chain* of
+merges cannot forget the robot ids at its start. The source's name and aliases
+become the survivor's `aliases`, normalized by `faces.normalize_face_name`
+exactly as names are. Source person and directory deleted. **(2) One
+normalized-name index over `name` + `aliases`.** `create_person`,
+`rename_person`, merge and import-attach all ask the same index the same
+question, so one normalized string reaches at most one person; renaming onto your
+*own* alias is allowed and swaps (the merge's undo), onto anyone else's name or
+alias is `DuplicateNameError` → 409. Concrete exception classes throughout, since
+the API maps them: `PersonNotFoundError` → 404, `MergeError` → 400,
+`DuplicateNameError` → 409. **(3) The changed-face test is redefined
+store-wide**, and this **retires D-025's accepted three-slot re-block quirk**: a
+known robot record is *changed* iff it holds an embedding present in **none** of
+the mapped person's stored photos (synthetic included) — not merely absent from
+the projected newest-3 window. Content the backend holds anywhere is known
+content, so one import always clears the gate, and a push may legitimately
+*collapse* several robot records (survivor plus inherited ids) into the single
+projected one. The sync layer resolves robot names through aliases and robot ids
+through `former_face_ids`; an attach under an alias keeps the primary link and
+records the fresh robot id as a former one, or the next diff would report that
+face as new again forever. Neither field is ever projected. **(4) D-013 is
+amended (operator-directed):** **one** posed snapshot per enrolled person, taken
+at the moment of explicit verbal enrollment — the person is knowingly posing into
+the still-pose hold — written to `<instance>/face_snapshots/<record_id>.jpg` by
+`face_snapshot.save_snapshot` through the ffmpeg binary the `imageio-ffmpeg`
+wheel already ships (D-018), atomic tmp+rename, overwritten per re-enroll.
+Recognition stays snapshot-free, no other path writes an image, and continuous
+capture remains rejected; "no image is ever persisted" now describes
+`faces.v1.json` itself, and the `remember_face` tool description says so. It is
+**fire-and-forget**: the first accepted sample's frame is copied, the write is
+scheduled into an owned task set and wrapped in `asyncio.to_thread` with a 10 s
+subprocess bound, and the tool result never awaits it — a snapshot may never
+fail, delay or raise into an enrollment. Realistic sizes: ~2.8–4 MB for the raw
+HD frame copy, low hundreds of KB for the JPEG, one scp per enrollment; nothing
+downscales, because this is the only photo of a person the system will ever have.
+**(5) An imported snapshot is a *display-only* photo.** The import best-effort
+scps the file for every face it applies (new, changed, attach) and stores it with
+`display_only=True` — an explicit persisted flag, never inferred from "has bytes
+and no embedding", which also describes an upload mid-embed. The projection skips
+the flag **structurally**, so a picture can never take one of the three
+recognition slots, and new bytes are sha256-deduped against every photo the
+person already has, so a re-import adds nothing. The robot record id is matched
+against the exact generated shape `^f_\d+_[a-z0-9]{6}$` **before** it is
+interpolated into the remote path — `faces.v1.json` is a plain file on a robot
+anyone can ssh into — and an id that fails, a missing file, or a failed transfer
+all skip the snapshot **only**, never the face. **Deliberately not done:** no
+cascade from `forget_face` (orphan files are harmless and overwritten on
+re-enroll, matching the existing no-cascade posture); no backfill — nobody
+enrolled before the deploy ever gets a picture; no downscale; no snapshot on any
+recognition path. **Consequences to hold:** `face_snapshots/` must join the
+`reachy-deploy` backup/restore manifest beside `people.v1.json` or the first
+reinstall wipes every picture, and merging is Mac-side so it works the moment the
+backend restarts, while snapshots need both the next deploy *and* a fresh
+enrollment. **Verified against the unit suites only** — backend 213 passed with
+ruff and `mypy --strict` clean, robot 1449 passed / 30 skipped, ruff and mypy
+strict clean — with `BACKEND-IMPORT` (extended) and the new `ENROLL-SNAPSHOT` row
+in `feature_list.json` as the live gate.

@@ -35,14 +35,27 @@ write the forgotten fact back.
 tool, so a face record can only ever appear or gain samples, never be dropped by
 a person talking to the robot.
 
-*Accepted behaviour (three sample slots).* A face record holds at most three
-embeddings and the projection emits a person's newest three. So samples imported
-from the robot can be pushed out of that window by photos added on the Mac
-afterwards; if the robot still holds them and anything else has drifted, the
-record reads as unknown content again and the push re-blocks until the operator
-imports once more. The alternative — keeping every sample the robot ever had —
-would mean the Mac quietly deciding which three the robot may use, and the
-window is three by the robot's own rule. One extra import is the accepted price.
+**Known content is what the store holds anywhere.** A face record counts as
+*changed* exactly when it carries an embedding that is in none of the mapped
+person's stored photos — not merely one that fell outside the newest-three window
+the projection emits. The two differ whenever the Mac holds more than three
+samples for someone, which a merge makes ordinary, and reading the window would
+mean a record that re-blocks the push on every diff with nothing left to import.
+The projection still emits three; what this test asks is only whether the robot
+is holding something the Mac has never seen.
+
+That is also why the push may legitimately *collapse* records. Two robot ids —
+the survivor's and one it inherited through a merge — both map to one person, and
+after the import neither holds anything unknown, so the push proceeds and writes
+the single projected record back over both.
+
+**A merged-away name is still a name.** Aliases and `former_face_ids` live only
+on the Mac and are never projected, but every resolution here reads them: a robot
+fact or face under "Lena" belongs to the person now called "Linna", and a record
+id the survivor used to carry is a known face rather than a stranger. When the
+robot re-enrolls under an alias it mints a *fresh* id; the survivor keeps its
+primary link and the new id is recorded as a former one, or the next diff would
+report the same face as new again, forever.
 
 **The promote is guarded.** The window between reading the robot's files and
 overwriting them is a real race — an enrollment can land inside it. So both
@@ -61,6 +74,11 @@ scheme was judged not worth its complexity for a POC.
 
 Nothing but these two JSON files ever leaves the Mac: photo bytes stay in
 `data_dir/photos`, and only the embeddings derived from them are projected.
+Traffic the other way carries one thing more — the single posed snapshot the
+robot keeps per enrolled person (the D-013 amendment of 2026-08-28). It is
+fetched best-effort beside every face an import applies and stored as a
+**display-only** photo, so the operator gets a face to look at and the projection
+still sends back exactly the samples the robot enrolled.
 """
 
 from __future__ import annotations
@@ -74,10 +92,11 @@ import subprocess
 from typing import Final
 from pathlib import Path
 from dataclasses import field, dataclass
+from collections.abc import Sequence
 
 import httpx
 
-from reachy_companion import faces, people
+from reachy_companion import faces, people, face_snapshot
 from backend import store, projection
 from backend.config import Settings
 
@@ -95,6 +114,18 @@ PEOPLE_KEY: Final[str] = "people"
 # Where a verified push keeps a copy of what it wrote, so the next diff can see
 # what the robot has since deleted.
 LAST_PUSH_DIRNAME: Final[str] = "last_push"
+
+# The robot's own snapshot directory name, taken from the module that writes it
+# rather than restated here — one string, one owner.
+SNAPSHOT_DIRNAME: Final[str] = face_snapshot.SNAPSHOT_DIRNAME
+
+# A robot record id becomes part of a remote path, so it is matched against the
+# exact shape `faces._make_id` generates — `f_<epoch ms>_<6 lowercase alnum>` —
+# and never merely checked for separators (Codex A2-5, A3-2). `faces.v1.json` is
+# a plain file on a robot anyone can ssh into: a hand-written id carrying a
+# space, a quote, a `$`, a `;` or a glob would otherwise reach scp's argument
+# list and, through it, the remote shell scp runs to open the file.
+_SNAPSHOT_RECORD_ID: Final[re.Pattern[str]] = re.compile(r"^f_\d+_[a-z0-9]{6}")
 
 # Every remote call is bounded. 20 s is generous for two ~40 KB files over the
 # robot's wifi and short enough that a wedged link fails a request instead of
@@ -397,6 +428,50 @@ def _drift_from(meta: store.SyncMeta, faces_sha: str | None, people_sha: str | N
     )
 
 
+def _by_face_id(people: Sequence[store.BackendPerson]) -> dict[str, store.BackendPerson]:
+    """Index every robot record id the backend accounts for, primary ids first.
+
+    A `former_face_id` is a record the survivor of a merge used to carry, so a
+    face the robot still holds under it is *known* content. Primary ids are
+    indexed in a first pass so that in a hand-edited store where one id appears
+    both ways, the person whose current link it is wins.
+    """
+    index: dict[str, store.BackendPerson] = {}
+    for person in people:
+        if person.face_id:
+            index.setdefault(person.face_id, person)
+    for person in people:
+        for former in person.former_face_ids:
+            index.setdefault(former, person)
+    return index
+
+
+def _by_name(people: Sequence[store.BackendPerson]) -> dict[str, store.BackendPerson]:
+    """Index every name the backend answers to, canonical names first, then aliases."""
+    index: dict[str, store.BackendPerson] = {}
+    for person in people:
+        index.setdefault(person.name.casefold(), person)
+    for person in people:
+        for alias in person.aliases:
+            index.setdefault(alias.casefold(), person)
+    return index
+
+
+def _stored_embeddings(person: store.BackendPerson) -> set[tuple[float, ...]]:
+    """Every embedding the backend holds for one person, projected or not (Codex A1-2).
+
+    Mirrors `projection.embeddings_for`: a display-only photo is a picture for
+    the operator, never a recognition sample, so an embedding on one — today
+    that never happens, but nothing stops a future bug or a hand-edited store
+    from putting one there — must not read as content the backend "knows".
+    """
+    return {
+        photo.embedding
+        for photo in person.photos
+        if photo.embedding is not None and not photo.display_only
+    }
+
+
 def _resolve(
     face_id: str | None,
     name: str,
@@ -408,7 +483,8 @@ def _resolve(
     The face link wins because it is the durable identity — `people._upserted`
     makes the same call on the robot ("the face store is the authority on which
     face a record belongs to"). Matching on name alone would import a person
-    renamed on the Mac as a second, duplicate person.
+    renamed on the Mac as a second, duplicate person. Both indexes carry what a
+    merge left behind, so an old id and an old name still resolve.
     """
     if face_id is not None and face_id in by_face_id:
         return by_face_id[face_id]
@@ -487,8 +563,8 @@ def _diff_from(settings: Settings, fetched_dir: Path) -> RobotDiff:
     too — a record we cannot see is a record the robot cannot use either.
     """
     backend_people = store.list_people(settings)
-    by_face_id = {person.face_id: person for person in backend_people if person.face_id}
-    by_name = {person.name.casefold(): person for person in backend_people}
+    by_face_id = _by_face_id(backend_people)
+    by_name = _by_name(backend_people)
 
     new_faces: list[RobotFace] = []
     changed_faces: list[RobotFace] = []
@@ -502,8 +578,12 @@ def _diff_from(settings: Settings, fetched_dir: Path) -> RobotDiff:
         # backend does not hold, not a sample it holds *extra*. Equality would
         # also flag the case where an operator added a Mac photo after the
         # enrollment, and that state could survive an import — a push that could
-        # never be unblocked.
-        if not set(entry.embeddings) <= set(projection.embeddings_for(person)):
+        # never be unblocked. Compared against every stored photo rather than the
+        # projected newest three (Codex A1-2): content the backend holds anywhere
+        # is content it knows, so a sample pushed out of the window by a later
+        # photo — or by a merge — does not re-block the push with nothing left to
+        # import.
+        if not set(entry.embeddings) <= _stored_embeddings(person):
             changed_faces.append(entry)
 
     new_person_facts: list[RobotPersonFacts] = []
@@ -711,21 +791,20 @@ def push(settings: Settings) -> PushResult:
 # --------------------------------------------------------------------------
 
 
-def _person_named(settings: Settings, name: str) -> store.BackendPerson | None:
-    """Find a backend person by the same name rule the robot's stores use."""
-    key = name.casefold()
-    return next((person for person in store.list_people(settings) if person.name.casefold() == key), None)
+def _person_for_name(settings: Settings, name: str) -> store.BackendPerson | None:
+    """Find the backend person that name reaches — their own, or one merged into them."""
+    return _by_name(store.list_people(settings)).get(name.casefold())
 
 
 def _person_with_face_id(settings: Settings, face_id: str) -> store.BackendPerson | None:
-    """Find the backend person carrying one robot face record id."""
-    return next((person for person in store.list_people(settings) if person.face_id == face_id), None)
+    """Find the backend person accounting for one robot face record id, current or former."""
+    return _by_face_id(store.list_people(settings)).get(face_id)
 
 
 def _person_for_record(settings: Settings, face_id: str | None, name: str) -> store.BackendPerson | None:
     """Resolve a robot record to a backend person exactly as `_diff_from` did: link, then name."""
     linked = None if face_id is None else _person_with_face_id(settings, face_id)
-    return linked if linked is not None else _person_named(settings, name)
+    return linked if linked is not None else _person_for_name(settings, name)
 
 
 def _add_embeddings(settings: Settings, person_id: str, embeddings: tuple[tuple[float, ...], ...]) -> None:
@@ -733,9 +812,8 @@ def _add_embeddings(settings: Settings, person_id: str, embeddings: tuple[tuple[
 
     Every sample is added, including ones the backend may already hold: the
     projection emits the newest ≤3 photos, so adding the robot's whole set is
-    what guarantees that window ends up holding exactly it. Skipping duplicates
-    would leave an older backend sample inside the window and the record would
-    read as "changed" forever.
+    what guarantees that window ends up holding exactly it, and the record the
+    next push writes back is the one the robot already has.
 
     The robot's embeddings run oldest-first and the store prepends, so replaying
     them in order leaves the newest-first photo list in the mirror image — which
@@ -743,6 +821,61 @@ def _add_embeddings(settings: Settings, person_id: str, embeddings: tuple[tuple[
     """
     for embedding in embeddings:
         store.add_synthetic_photo(settings, person_id, embedding)
+
+
+def _fetch_snapshot(settings: Settings, record_id: str) -> bytes | None:
+    """Fetch one enrollment snapshot off the robot, or return None. Never raises.
+
+    Best effort end to end. A missing file is the *normal* case — the person was
+    enrolled before this feature, or the robot has not been redeployed yet — and
+    an unreachable robot cannot matter either: the face itself is already in
+    hand, and refusing the import over a missing picture would strand real
+    content behind a nicety.
+    """
+    if not _SNAPSHOT_RECORD_ID.fullmatch(record_id):
+        logger.warning(
+            "Not fetching a snapshot for the robot record id %r: it is not the shape the robot generates.",
+            record_id,
+        )
+        return None
+    try:
+        remote = f"{_target(settings)}:{_remote_dir(settings)}/{SNAPSHOT_DIRNAME}/{record_id}.jpg"
+        with tempfile.TemporaryDirectory(prefix="companion-snapshot-") as raw:
+            destination = Path(raw) / f"{record_id}.jpg"
+            completed = _run(["scp", remote, str(destination)])
+            if completed.returncode != 0:
+                logger.info(
+                    "No enrollment snapshot for %s: %s",
+                    record_id,
+                    completed.stderr.strip() or f"scp exited {completed.returncode}",
+                )
+                return None
+            fetched = destination.read_bytes()
+    except (RobotError, OSError) as exc:
+        logger.warning("Could not fetch the enrollment snapshot for %s: %s", record_id, exc)
+        return None
+    if not fetched:
+        # Some scp builds create the local file before the remote open fails.
+        logger.info("The enrollment snapshot for %s arrived empty; ignoring it.", record_id)
+        return None
+    return fetched
+
+
+def _import_snapshot(settings: Settings, person_id: str, record_id: str) -> None:
+    """Store this record's enrollment snapshot as a display-only photo, if there is one.
+
+    Not counted in `applied` and never a conflict: the face it belongs to is the
+    content, and this is the picture beside it.
+    """
+    raw = _fetch_snapshot(settings, record_id)
+    if raw is None:
+        return
+    try:
+        photo = store.add_display_photo(settings, person_id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, raw)
+    except (ValueError, LookupError, OSError) as exc:
+        logger.warning("Could not store the enrollment snapshot for %s: %s", record_id, exc)
+        return
+    logger.info("The enrollment snapshot for %s is photo %s.", record_id, photo.id)
 
 
 def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
@@ -756,8 +889,12 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
             conflicts.append(f"The robot face record {entry.record_id} has no usable name; skipped.")
             continue
 
-        existing = _person_named(settings, name)
-        if existing is not None and existing.face_id not in (None, entry.record_id):
+        existing = _person_for_name(settings, name)
+        # An alias match is the robot enrolling someone under a name we merged
+        # away: the survivor already has a primary link and is *expected* to have
+        # a different one, so it is not the conflict below (Codex A1-1).
+        by_alias = existing is not None and existing.name.casefold() != name.casefold()
+        if existing is not None and not by_alias and existing.face_id not in (None, entry.record_id):
             # Codex R3-2: two faces under one name is the operator's call.
             conflicts.append(
                 f"{name}: the robot's face record {entry.record_id} does not match the face id "
@@ -774,10 +911,18 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
             # drop them from `faces.v1.json` and the robot would stop recognizing
             # someone it already knew.
             _add_embeddings(settings, person.id, entry.embeddings)
-            store.set_person_face_id(settings, person.id, entry.record_id)
+            if person.face_id in (None, entry.record_id):
+                store.set_person_face_id(settings, person.id, entry.record_id)
+            else:
+                # Codex A1-1: the primary link stays; the new id is remembered so
+                # the next diff reads this face as known. Without it the record
+                # would be re-reported as new on every diff and the push gate
+                # would never open again.
+                store.add_former_face_id(settings, person.id, entry.record_id)
         except (ValueError, LookupError) as exc:
             conflicts.append(f"{name}: could not import the robot's face record ({exc}).")
             continue
+        _import_snapshot(settings, person.id, entry.record_id)
         applied += 1
 
     for entry in diff.changed_faces:
@@ -793,6 +938,9 @@ def apply_import(settings: Settings, diff: RobotDiff) -> ImportResult:
         except (ValueError, LookupError) as exc:
             conflicts.append(f"{entry.name}: could not import the robot's new samples ({exc}).")
             continue
+        # A re-enrollment overwrites the robot's snapshot, so a changed face may
+        # carry a newer picture than the one already here.
+        _import_snapshot(settings, linked.id, entry.record_id)
         applied += 1
 
     for facts_entry in diff.new_person_facts:

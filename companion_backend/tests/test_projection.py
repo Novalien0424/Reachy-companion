@@ -136,6 +136,71 @@ def test_project_keeps_the_newest_three_embeddings_oldest_first(settings: Settin
     assert record.embeddings == (_vector(3), _vector(4), _vector(5))
 
 
+def test_a_merge_does_not_hide_the_survivors_newest_samples(settings: Settings, tmp_path: Path) -> None:
+    """Codex A3-1: merged photos interleave by `added_at`, so the window keeps the true newest.
+
+    The target already holds three enrollment samples and the source, merged in
+    afterwards, holds two newer ones. Appending the source's photos behind the
+    target's would leave the window full of the *older* three and the robot would
+    be pushed a face that predates the merge.
+    """
+    target = _person(settings, "Linna", embeddings=[1, 2, 3])
+    source = _person(settings, "Lena", embeddings=[8, 9])
+
+    store.merge_people(settings, target.id, source.id)
+    projection.project(settings, tmp_path / "out")
+
+    record = _projected_faces(tmp_path / "out")[0]
+    assert record.name == "Linna"
+    assert record.embeddings == (_vector(3), _vector(8), _vector(9))
+
+
+def test_a_display_only_photo_never_reaches_the_projected_window(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """An imported robot snapshot is a picture, not a sample — structurally, not by luck.
+
+    It carries no embedding today, so the filter alone would hide it; the flag is
+    checked as well because a hand-edited or later-embedded snapshot must still
+    never displace one of the robot's own three recognition samples.
+    """
+    person = _person(settings, "Lena", embeddings=[1])
+    snapshot = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+    store.set_photo_embedding(settings, person.id, snapshot.id, _vector(9), None)
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert projection.embeddings_for(reloaded) == (_vector(1),)
+
+    projection.project(settings, tmp_path / "out")
+
+    assert _projected_faces(tmp_path / "out")[0].embeddings == (_vector(1),)
+
+
+def test_a_merge_projects_the_true_newest_twenty_facts(settings: Settings, tmp_path: Path) -> None:
+    """Merged facts interleave by `created_at`, so the fact window keeps the newest of both.
+
+    The source's facts straddle the target's in time: five older, five newer.
+    Folding the whole source in ahead of the target — the shape a plain replay
+    leaves — would push five of the target's *newer* facts past the robot's cap
+    to make room for five of the source's older ones.
+    """
+    source = _person(settings, "Lena", facts=[f"source {index:02d}" for index in range(5)])
+    target = _person(settings, "Linna", embeddings=[1], facts=[f"target {index:02d}" for index in range(15)])
+    for index in range(5, 10):
+        store.add_fact(settings, source.id, f"source {index:02d}")
+
+    store.merge_people(settings, target.id, source.id)
+    projection.project(settings, tmp_path / "out")
+
+    projected = _projected_people(tmp_path / "out")[0]
+    assert len(projected.facts) == people.MAX_FACTS_PER_PERSON
+    assert [fact.text for fact in projected.facts] == [
+        *(f"source {index:02d}" for index in range(9, 4, -1)),
+        *(f"target {index:02d}" for index in range(14, -1, -1)),
+    ]
+
+
 def test_project_carries_embeddings_through_unchanged(settings: Settings, tmp_path: Path) -> None:
     """Stored vectors are the wire format already — projection must not re-round them."""
     _person(settings, "Lena", embeddings=[7])

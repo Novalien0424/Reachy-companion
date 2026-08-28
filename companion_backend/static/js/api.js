@@ -71,6 +71,15 @@ export const createPerson = (name) => request("POST", "/api/people", { json: { n
 export const renamePerson = (id, name) => request("PATCH", `/api/people/${encodeURIComponent(id)}`, { json: { name } });
 export const deletePerson = (id) => request("DELETE", `/api/people/${encodeURIComponent(id)}`);
 
+/**
+ * Fold one person into another; `id` is the survivor and answers with them.
+ *
+ * 404 for an unknown id, 400 for merging someone into themselves, 409 when a
+ * name the survivor would answer to already reaches somebody else.
+ */
+export const mergePerson = (id, sourceId) =>
+  request("POST", `/api/people/${encodeURIComponent(id)}/merge`, { json: { source_id: sourceId } });
+
 export const addFact = (id, text) =>
   request("POST", `/api/people/${encodeURIComponent(id)}/facts`, { json: { text } });
 export const deleteFact = (id, factId) =>
@@ -125,6 +134,7 @@ const MESSAGE_BY_KIND = Object.freeze({
   empty_value: "That value is empty once normalized — try something with letters in it.",
   not_found: "That is gone; reload the page.",
   invalid_request: "The backend rejected that request as malformed.",
+  invalid_merge: "A person cannot be merged into themselves.",
   sync_busy: "Another push or import is still running. Wait for it to finish.",
   offline: null, // its own message is already the right one
 });
@@ -134,8 +144,13 @@ export function describeError(error) {
   return MESSAGE_BY_KIND[error.kind] || error.message;
 }
 
-/** The per-photo status an operator reads: embedded, the failure, or "no image". */
+/** The per-photo status an operator reads: embedded, the failure, or why there is neither.
+ *
+ * `display_only` comes first: an imported enrollment snapshot has a picture and
+ * no embedding, which without the label reads as an upload that failed silently.
+ */
 export function photoStatus(photo) {
+  if (photo.display_only) return "robot snapshot — display only";
   if (photo.synthetic) return "synthetic — no image";
   if (photo.error) return photo.error;
   if (photo.has_embedding) return "embedded";
@@ -144,7 +159,7 @@ export function photoStatus(photo) {
 
 /** Which of the three status tones a photo is in. */
 export function photoTone(photo) {
-  if (photo.synthetic) return "muted";
+  if (photo.display_only || photo.synthetic) return "muted";
   if (photo.error) return "error";
   return photo.has_embedding ? "ok" : "warn";
 }

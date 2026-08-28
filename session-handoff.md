@@ -28,13 +28,16 @@ strict clean; backend **159 passed**, ruff clean, `mypy --strict` clean.
 
 ## Deploy note — do this first, at the next deploy session
 
-**`people.v1.json` must be added to the `.claude/skills/reachy-deploy`
-backup/restore manifest at the next deploy session.** It lives beside
-`faces.v1.json` inside site-packages and is therefore wiped by every reinstall,
-so without the manifest entry a redeploy silently destroys every person fact
-and the cross-session half of `PERSON-MEMORY-AUTO` can never hold. The skill
-file is deliberately **not** edited on this branch — do it in the deploy
-session, where the change is exercised the moment it is made.
+**`people.v1.json` and the `face_snapshots/` directory must be added to the
+`.claude/skills/reachy-deploy` backup/restore manifest at the next deploy
+session.** Both live beside `faces.v1.json` inside site-packages and are
+therefore wiped by every reinstall, so without the manifest entries a redeploy
+silently destroys every person fact — the cross-session half of
+`PERSON-MEMORY-AUTO` can never hold — and every enrollment snapshot (D-013
+amendment, 2026-08-28: one posed JPEG per enrolled person, written at explicit
+verbal enrollment, never regenerated without re-enrolling). The skill file is
+deliberately **not** edited on this branch — do it in the deploy session, where
+the change is exercised the moment it is made.
 
 ## Pending live verification (seven rows, operator, on the robot)
 

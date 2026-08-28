@@ -6,6 +6,7 @@ import {
   deletePhoto,
   describeError,
   listPeople,
+  mergePerson,
   photoFileUrl,
   photoStatus,
   photoTone,
@@ -70,12 +71,15 @@ function jpegName(name) {
 export async function mountPersonView({ outlet, signal, params, navigate }) {
   const personId = params.id;
   let person = null;
+  let everyone = [];
 
   const status = statusLine();
   const title = h("h1", { class: "view__title" }, "…");
   const subtitle = h("p", { class: "view__subtitle" });
+  const aliasRow = h("div", { class: "badges" });
   const photoPanel = h("div");
   const factPanel = h("div");
+  const mergePanel = h("div");
 
   outlet.replaceChildren(
     h(
@@ -83,10 +87,12 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
       { class: "view" },
       h("button", { type: "button", class: "link-button", onClick: () => navigate("#/people") }, "← All people"),
       title,
+      aliasRow,
       subtitle,
       status,
       photoPanel,
-      factPanel
+      factPanel,
+      mergePanel
     )
   );
 
@@ -96,7 +102,8 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
     let people;
     try {
       // There is no GET /api/people/{id}; the list route is the whole store and
-      // is small by construction (the robot itself only keeps twelve).
+      // is small by construction (the robot itself only keeps twelve). The whole
+      // list is kept: the merge control needs everyone else by name.
       people = await listPeople(signal);
     } catch (error) {
       if (signal.aborted) return;
@@ -104,12 +111,15 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
       return;
     }
     if (signal.aborted) return;
-    person = (Array.isArray(people) ? people : []).find((entry) => entry.id === personId) || null;
+    everyone = Array.isArray(people) ? people : [];
+    person = everyone.find((entry) => entry.id === personId) || null;
     if (!person) {
       title.textContent = "Not found";
       subtitle.textContent = `No person with id ${personId}. They may have been deleted.`;
+      aliasRow.replaceChildren();
       photoPanel.replaceChildren();
       factPanel.replaceChildren();
+      mergePanel.replaceChildren();
       return;
     }
     title.textContent = person.name;
@@ -117,8 +127,32 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
       `${count(person.photos.length, "photo")} · ${count(person.facts.length, "fact")} · ` +
       `created ${formatTime(person.created_at)}` +
       (person.face_id ? ` · robot face ${person.face_id}` : "");
+    const aliasBadges = renderAliases();
+    aliasRow.replaceChildren(...aliasBadges);
+    // Hidden rather than empty: `.badges` carries its own top margin, and an
+    // invisible one would push the subtitle down for everybody who has no alias.
+    aliasRow.hidden = aliasBadges.length === 0;
     photoPanel.replaceChildren(renderPhotos());
     factPanel.replaceChildren(renderFacts());
+    mergePanel.replaceChildren(renderMerge());
+  }
+
+  // -- aliases ------------------------------------------------------------
+
+  /** The other names a merge left this person answering to, as badges under the title. */
+  function renderAliases() {
+    const aliases = Array.isArray(person.aliases) ? person.aliases : [];
+    if (aliases.length === 0) return [];
+    return [
+      h("span", { class: "muted small" }, "also answers to"),
+      ...aliases.map((alias) =>
+        h(
+          "span",
+          { class: "badge badge--muted", title: "A name the robot may still use for this person" },
+          alias
+        )
+      ),
+    ];
   }
 
   // -- name ---------------------------------------------------------------
@@ -159,7 +193,9 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
         "p",
         { class: "muted" },
         "Each photo is embedded on upload; only the embedding is ever pushed to the robot. " +
-          "The robot keeps the newest three per person."
+          "The robot keeps the newest three per person. A photo marked “robot snapshot” came " +
+          "back from an enrollment on the robot: it is there to look at, and is never used to " +
+          "recognize anyone."
       ),
       fileInput,
       grid
@@ -336,6 +372,91 @@ export async function mountPersonView({ outlet, signal, params, navigate }) {
       return;
     }
     setStatus(status, "Fact forgotten.", "ok");
+    await reload();
+  }
+
+  // -- merge --------------------------------------------------------------
+
+  /**
+   * Fold another profile into this one.
+   *
+   * The robot mishears a name and enrols the same person twice ("Linna" as
+   * "Lena"); this is the operator saying so. THIS profile is always the
+   * survivor — the page you are on is the one that stays — which is why the
+   * control lives here rather than on the people list, where "which of the two
+   * survives" would have no answer the operator can see.
+   */
+  function renderMerge() {
+    const others = everyone.filter((entry) => entry.id !== personId);
+    const explanation = h(
+      "p",
+      { class: "muted" },
+      `Keeps this profile — its name, photos and facts — and folds another one into it. ` +
+        `The other profile's photos and facts move here, its name becomes an alias so the robot is still ` +
+        `understood when it uses the old one, and that profile is deleted. This cannot be undone.`
+    );
+
+    if (others.length === 0) {
+      return panel(
+        "合併其他檔案到這裡 / Merge another profile into this one",
+        explanation,
+        empty("There is nobody else on this Mac to merge in.")
+      );
+    }
+
+    const select = h(
+      "select",
+      { class: "input", "aria-label": "Profile to merge into this one" },
+      ...others.map((entry) => h("option", { value: entry.id }, describeCandidate(entry)))
+    );
+    const button = h("button", { type: "submit", class: "button button--danger" }, "Merge into this profile");
+    const form = h(
+      "form",
+      {
+        class: "inline-form",
+        onSubmit: (event) => {
+          event.preventDefault();
+          void onMerge(select.value, button);
+        },
+      },
+      select,
+      button
+    );
+
+    return panel("合併其他檔案到這裡 / Merge another profile into this one", explanation, form);
+  }
+
+  /** One option's label: the name, what it carries, and any aliases it already has. */
+  function describeCandidate(entry) {
+    const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+    const also = aliases.length === 0 ? "" : ` (also ${aliases.join(", ")})`;
+    return `${entry.name}${also} — ${count(entry.photos.length, "photo")}, ${count(entry.facts.length, "fact")}`;
+  }
+
+  async function onMerge(sourceId, button) {
+    const other = everyone.find((entry) => entry.id === sourceId);
+    if (!other || other.id === person.id) return;
+    const confirmed = window.confirm(
+      `Merge “${other.name}” into “${person.name}”?\n\n` +
+        `${count(other.photos.length, "photo")} and ${count(other.facts.length, "fact")} move to ` +
+        `“${person.name}”, which keeps its name. “${other.name}” becomes an alias of “${person.name}” ` +
+        `and that profile is deleted.\n\nThis cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    button.disabled = true;
+    setStatus(status, `Merging “${other.name}” into “${person.name}”…`);
+    try {
+      await mergePerson(person.id, other.id);
+    } catch (error) {
+      setStatus(status, describeError(error), "error");
+      return;
+    } finally {
+      button.disabled = false;
+    }
+    // The survivor is the person whose page this already is, so the reload below
+    // *is* the navigation to them — there is nowhere else to go.
+    setStatus(status, `Merged “${other.name}” into “${person.name}”.`, "ok");
     await reload();
   }
 
