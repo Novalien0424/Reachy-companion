@@ -125,7 +125,7 @@ SNAPSHOT_DIRNAME: Final[str] = face_snapshot.SNAPSHOT_DIRNAME
 # a plain file on a robot anyone can ssh into: a hand-written id carrying a
 # space, a quote, a `$`, a `;` or a glob would otherwise reach scp's argument
 # list and, through it, the remote shell scp runs to open the file.
-_SNAPSHOT_RECORD_ID: Final[re.Pattern[str]] = re.compile(r"^f_\d+_[a-z0-9]{6}$")
+_SNAPSHOT_RECORD_ID: Final[re.Pattern[str]] = re.compile(r"^f_\d+_[a-z0-9]{6}")
 
 # Every remote call is bounded. 20 s is generous for two ~40 KB files over the
 # robot's wifi and short enough that a wedged link fails a request instead of
@@ -458,8 +458,18 @@ def _by_name(people: Sequence[store.BackendPerson]) -> dict[str, store.BackendPe
 
 
 def _stored_embeddings(person: store.BackendPerson) -> set[tuple[float, ...]]:
-    """Every embedding the backend holds for one person, projected or not (Codex A1-2)."""
-    return {photo.embedding for photo in person.photos if photo.embedding is not None}
+    """Every embedding the backend holds for one person, projected or not (Codex A1-2).
+
+    Mirrors `projection.embeddings_for`: a display-only photo is a picture for
+    the operator, never a recognition sample, so an embedding on one — today
+    that never happens, but nothing stops a future bug or a hand-edited store
+    from putting one there — must not read as content the backend "knows".
+    """
+    return {
+        photo.embedding
+        for photo in person.photos
+        if photo.embedding is not None and not photo.display_only
+    }
 
 
 def _resolve(
@@ -822,7 +832,7 @@ def _fetch_snapshot(settings: Settings, record_id: str) -> bytes | None:
     hand, and refusing the import over a missing picture would strand real
     content behind a nicety.
     """
-    if not _SNAPSHOT_RECORD_ID.match(record_id):
+    if not _SNAPSHOT_RECORD_ID.fullmatch(record_id):
         logger.warning(
             "Not fetching a snapshot for the robot record id %r: it is not the shape the robot generates.",
             record_id,

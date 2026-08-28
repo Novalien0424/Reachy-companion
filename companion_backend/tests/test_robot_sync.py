@@ -959,6 +959,22 @@ def test_a_former_face_id_is_a_known_face_not_a_new_one(
     assert diff.empty
 
 
+def test_stored_embeddings_never_counts_a_display_only_photo(settings: Settings) -> None:
+    """Mirrors `projection.embeddings_for`: a display-only photo is never "known" content.
+
+    Nothing today gives a display-only photo an embedding, but if a future bug
+    or a hand-edited store ever did, it must not let a robot record carrying
+    that same sample read as already known — the picture was never enrolled.
+    """
+    person = _person(settings, "Lena", embeddings=[1])
+    snapshot = store.add_display_photo(settings, person.id, store.ROBOT_SNAPSHOT_DISPLAY_NAME, b"jpeg-bytes")
+    store.set_photo_embedding(settings, person.id, snapshot.id, _vector(9), None)
+
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert robot._stored_embeddings(reloaded) == {_vector(1)}
+
+
 def test_a_sample_outside_the_projected_window_is_still_known_content(
     settings: Settings, fake: FakeRobot, tmp_path: Path
 ) -> None:
@@ -1301,6 +1317,7 @@ def test_the_snapshot_follows_a_changed_face_and_an_alias_attach(
         "f_1700000000000_AB12CD",
         "f_notanepoch_ab12cd",
         "f_1700000000000_ab12cde",
+        "f_1700000000000_abc123\n",
     ],
 )
 def test_a_record_id_that_is_not_the_generated_shape_never_reaches_a_remote_path(
@@ -1320,7 +1337,10 @@ def test_a_record_id_that_is_not_the_generated_shape_never_reaches_a_remote_path
     assert _snapshot_calls(fake) == []
     assert _display_photos(settings, "Sam") == []
     person = next(item for item in store.list_people(settings) if item.name == "Sam")
-    assert person.face_id == record_id
+    # The store trims whitespace on any string field it persists (`_clean_str`),
+    # which only bites the trailing-newline id here — every other hostile shape
+    # round-trips unchanged.
+    assert person.face_id == record_id.strip()
 
 
 # --------------------------------------------------------------------------

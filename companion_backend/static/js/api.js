@@ -134,6 +134,7 @@ const MESSAGE_BY_KIND = Object.freeze({
   empty_value: "That value is empty once normalized — try something with letters in it.",
   not_found: "That is gone; reload the page.",
   invalid_request: "The backend rejected that request as malformed.",
+  invalid_merge: "A person cannot be merged into themselves.",
   sync_busy: "Another push or import is still running. Wait for it to finish.",
   offline: null, // its own message is already the right one
 });

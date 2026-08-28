@@ -98,9 +98,10 @@ Three shapes are worth knowing before writing a client:
 - **One error envelope**, always `{"error": <message>, "kind": <slug>}`:
   `duplicate_name` 409, `empty_value` 400, `not_found` 404, `no_photo_bytes`
   404, `sync_busy` 409, `photo_too_large` 413, `invalid_request` 422,
-  `robot_unreachable` 502 (carrying the ssh/scp stderr tail) and
-  `robot_not_verified` 502. `GET /api/sync/status` is the exception the UI
-  polls: an unreachable robot is `robot_reachable: false` there, never a 502.
+  `invalid_merge` 400, `robot_unreachable` 502 (carrying the ssh/scp stderr
+  tail) and `robot_not_verified` 502. `GET /api/sync/status` is the exception
+  the UI polls: an unreachable robot is `robot_reachable: false` there, never
+  a 502.
 
   Two of those are worth expanding. `robot_not_verified` is *not*
   `robot_unreachable`: the promote reported success and the robot then did not
