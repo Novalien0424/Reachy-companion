@@ -263,7 +263,95 @@ async def test_who_is_this_reports_a_recognized_person() -> None:
     assert result["status"] == "recognized"
     assert result["name"] == "小明"
     assert result["score"] == 0.71
+    # Recognized but nothing on file yet: the key is still there, empty. The
+    # shape of a recognition does not depend on how much has been remembered.
+    assert result["known_facts"] == []
     _assert_carries_no_image(result)
+
+
+# --- who_is_this recall and the person label --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_returns_known_facts_and_sets_person(tmp_path: Path) -> None:
+    """A recognition hands the model what it remembers and labels the session.
+
+    The label is what scopes `remember`/`forget` to this person afterwards, so
+    the tool call is a second entry point into person memory alongside the
+    boot greeting — a mid-conversation "do you know me" must not leave the
+    session anonymous.
+    """
+    add_person_fact(tmp_path, "Louis", "周末下围棋")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert result["known_facts"] == ["周末下围棋"]
+    assert deps.current_person == "Louis"
+    _assert_carries_no_image(result)
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_unknown_has_no_facts_and_keeps_person(instant_sleep: None, tmp_path: Path) -> None:
+    """An unrecognized glance carries no facts — and does not unset the label.
+
+    Someone leaning into frame, or the same person badly lit for three looks,
+    is not evidence that the person you were just talking to left. Clearing
+    the label on a miss would silently send their next remembered fact to the
+    global store.
+    """
+    deps = _deps(_FakeRecognizer(Identification(status="unknown", score=0.21, face_count=1)), instance_path=tmp_path)
+    deps.current_person = "Louis"
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "unknown"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_recall_is_bounded_by_the_greeting_knob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FACE_GREETING_FACTS` bounds this recall too, and 0 turns it off.
+
+    One knob for both recall moments: an operator who silences the greeting's
+    facts must not still get them through the tool. The name is unaffected.
+    """
+    add_person_fact(tmp_path, "Louis", "周末下围棋")
+    monkeypatch.setenv("FACE_GREETING_FACTS", "0")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_survives_an_unreadable_person_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken person store costs the facts, never the recognition itself."""
+
+    def _boom(*args: Any, **kwargs: Any) -> list[Any]:
+        raise OSError("people store unreadable")
+
+    monkeypatch.setattr("reachy_companion.tools.who_is_this.facts_for_person", _boom)
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert result["name"] == "Louis"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
 
 
 @pytest.mark.asyncio
@@ -1100,3 +1188,6 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     assert "NEVER" in camera  # ...and does so emphatically
     assert "instead of the camera tool" in who
     assert "not the camera tool" in remember
+    # The recall clause: without it the model receives `known_facts` and has no
+    # instruction to use them, so the recognition sounds like a stranger's.
+    assert "remembered facts" in who
