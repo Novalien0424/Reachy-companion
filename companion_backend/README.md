@@ -72,6 +72,7 @@ reference.
 | `POST /api/people` `{name}` | the person — 409 duplicate, 400 empty |
 | `PATCH /api/people/{id}` `{name}` | the renamed person |
 | `DELETE /api/people/{id}` | the removed person |
+| `POST /api/people/{id}/merge` `{source_id}` | the survivor — 404 unknown id, 400 same id, 409 name/alias clash |
 | `POST /api/people/{id}/facts` `{text}` | the fact (a duplicate returns the existing one) |
 | `DELETE /api/people/{id}/facts/{fact_id}` | the removed fact |
 | `POST /api/people/{id}/photos` (multipart `file`) | the photo, embedded synchronously |
@@ -87,6 +88,10 @@ Three shapes are worth knowing before writing a client:
 
 - **Embeddings never travel.** A photo carries `has_embedding: bool`, never its
   128 floats; a robot face in a diff carries `sample_count`.
+- **A photo says what kind of photo it is.** `synthetic: true` is an embedding
+  imported from a robot voice enrollment — no bytes, so the file route 404s.
+  `display_only: true` is the opposite: an enrollment snapshot fetched off the
+  robot, all bytes and no embedding, which the projection never sends back.
 - **A failed embedding is data, not an error.** An upload always returns 200
   with the photo record; `error` is one of `no_face`, `multiple_faces`,
   `too_far`, `decode_failed`, `internal_error`, or `null`.
@@ -138,6 +143,54 @@ from this store on every push. Three rules govern the round trip:
   preview — the gate errs toward keeping data it cannot prove you meant to drop
   — so delete them again after the import, then push; the preview always shows
   the record before anything is applied.
+- **An import brings the enrollment snapshot back with the face.** For every
+  face it applies, the import best-effort `scp`s
+  `face_snapshots/<record_id>.jpg` off the robot and stores it as a
+  **display-only** photo: it shows in the grid, it is never embedded, and the
+  projection skips it structurally, so it can never take one of the robot's three
+  recognition slots. Re-importing the same bytes adds nothing (sha256 dedupe
+  against every photo that person has, uploads included). A missing file is the
+  normal case — nobody enrolled before this shipped has one, and nothing
+  backfills — and neither a missing file nor a failed transfer ever fails the
+  face import. **Robot side, so it needs the next deploy *and* a fresh
+  enrollment.**
+
+## Merging two people
+
+The robot mishears. It heard "Lena" for Linna, enrolled her a second time, and
+now one person has two records — two faces, two sets of facts. `POST
+/api/people/{target_id}/merge` (the person page's merge control) folds one into
+the other, and the target survives:
+
+- **Facts** merge through the store's own case-insensitive dedupe; **photos**
+  move, records *and* bytes. Both lists interleave by time, newest first —
+  because the projection takes the newest three embeddings and twenty facts off
+  the front, a merge that simply appended would push the robot a face and a
+  memory older than the merge itself.
+- **The survivor keeps its own `face_id`** (adopting the source's only if it had
+  none). Every robot record id that does not end up primary is remembered in
+  `former_face_ids`, ids the source had inherited from an earlier merge
+  included.
+- **The source's name and aliases become the survivor's aliases** and show as
+  badges under the name. Uniqueness is checked over names *and* aliases
+  together, so one spelling always reaches exactly one person; a clash with a
+  third person is a 409. Renaming someone onto their own alias is the undo — the
+  two swap.
+- **Nothing of this is projected.** Aliases and former ids exist so the sync
+  layer can recognize what the robot still holds under the old name or the old
+  id as *known* content. After the first post-merge push the robot holds only
+  the survivor, and a voice re-enrollment under the merged-away name attaches to
+  them instead of creating a duplicate.
+
+Merging interacts with the two rules above in one way worth knowing. Deleting the
+duplicate instead of merging it is the lossy option *and* the one that fights the
+drift gate: the robot still holds that face, so it comes back in the next import
+preview. Merging keeps the content and teaches the sync layer the old name and id,
+which is why it is the answer to a mishearing. And because "changed" means an
+embedding this store holds **nowhere** — not merely one outside the projected
+newest-three window — a merged person carrying more than three samples imports
+once and then pushes cleanly, with the push collapsing both robot records into
+the survivor's single projected one.
 
 ## Tests
 
@@ -236,7 +289,7 @@ alike; `js/rpc.js` is that console's client pointed at
 | Route | What it does |
 |---|---|
 | `#/people` | every person, with photo/fact counts and per-photo error badges; create, delete |
-| `#/people/<id>` | photo grid with per-photo status, multi-upload, delete; facts with a 280-char counter |
+| `#/people/<id>` | photo grid with per-photo status, multi-upload, delete; facts with a 280-char counter; rename, and merge another profile into this one (aliases render as badges under the name) |
 | `#/sync` | drift, the guarded push (a 409 renders the diff and an "Import first" button), import preview + apply |
 | `#/control` | the robot app's lifecycle over REST, plus a live panel over `rpc.js` — mic, interrupt, say, transcript |
 
@@ -255,4 +308,8 @@ Three rules the UI is built around, all of them load-bearing:
   is unavailable or throws.
 - **Synthetic photos are never fetched.** A photo imported from the robot is an
   embedding with no bytes behind it, and its file route 404s by design, so those
-  tiles render a placeholder instead of a broken `<img>`.
+  tiles render a placeholder instead of a broken `<img>`. An imported enrollment
+  *snapshot* is the other half of that story — it has bytes and no embedding, so
+  its tile shows the picture and its badge reads "robot snapshot — display only",
+  which is what keeps it from looking like an upload that silently failed to
+  embed.

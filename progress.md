@@ -99,9 +99,34 @@ machine**: the 2026-08-28 run against the gray fixture blocks honestly at
 projection → `FaceRecognizer.match` half was proven separately with a synthetic
 128-d vector — plumbing evidence, not recognition evidence. **The operator must
 supply two different real photos of one person** for the real E2E run. Two things
-are owed at the first live push: adding `people.v1.json` to the `reachy-deploy`
-backup/restore manifest, and one manual check that a Mac-embedded vector and a
-robot voice enrollment of the same person score like a same-person pair.
+are owed at the first live push: adding `people.v1.json` **and the
+`face_snapshots/` directory** to the `reachy-deploy` backup/restore manifest, and
+one manual check that a Mac-embedded vector and a robot voice enrollment of the
+same person score like a same-person pair.
+
+**The merge + enrollment-snapshot addendum is on branch `merge-and-snapshots`**
+(off `main` @ `276c749`), operator-requested after the first live use of the
+backend: the robot misheard "Linna" as "Lena" and enrolled her twice, and an
+imported person had no picture. Plan (Codex-reviewed, three rounds, 12/12
+findings accepted): `docs/superpowers/plans/2026-08-28-merge-and-snapshots-addendum.md`;
+record `DECISIONS.md` **D-026**. **Merging is Mac-side only, so it is live the
+moment the backend restarts** — `POST /api/people/{id}/merge` and the person
+page's merge control fold facts, photo records *and* photo bytes onto the
+survivor, keep the survivor's `face_id`, and leave the source's name and ids
+behind as `aliases` + `former_face_ids` that the sync layer resolves through.
+Neither is ever projected; after the first post-merge push the robot holds only
+the survivor. That import path also redefines the changed-face test store-wide
+(unknown to *any* stored embedding, not merely absent from the projected
+newest-3), which retires the three-slot re-block quirk the main plan accepted.
+**Enrollment snapshots need a deploy *and* a fresh enrollment**: the robot only
+starts writing `face_snapshots/<record_id>.jpg` after the next install, and
+nothing backfills a picture for someone enrolled before it, so the first
+evidence is a new 「記住我」 followed by an import. Imported snapshots are
+display-only photos — visible in the UI, never embedded, structurally excluded
+from the projected sample window. Gate on that branch: robot suite **1449 passed
+/ 30 skipped**, ruff clean, mypy strict clean; backend **213 passed**, ruff and
+`mypy --strict` clean. Rows: `BACKEND-IMPORT` (extended) and the new
+`ENROLL-SNAPSHOT`.
 
 ## Wake-up / power diagnosis (2026-08-27)
 
@@ -142,9 +167,9 @@ boot's last line.
 
 ## Pending verification (operator)
 
-Seventeen `implemented-unverified` rows in `feature_list.json` still need live
-use. **Person memory + backend (seven, new, all gated on a deploy of the
-`person-memory-backend` branch):** `PERSON-GREET-KNOWN` (enrolled person seated
+Eighteen `implemented-unverified` rows in `feature_list.json` still need live
+use. **Person memory + backend (eight, gated on a deploy of the merged person
+memory work):** `PERSON-GREET-KNOWN` (enrolled person seated
 in frame at boot → `Wake face check: recognized …` then `Startup greeting
 personalized for <name> with K remembered fact(s).`, a named fact-referencing
 greeting and no self-introduction — and listen for the accepted edge: a
@@ -163,7 +188,12 @@ guess that has never met the real head); `BACKEND-PUSH-LIVE` (two real photos �
 `scripts/selftest.py` PASS ≥ 0.363 → push → recognized on a robot that was never
 restarted); `BACKEND-IMPORT` (voice-enroll on the robot → the blocked push, the
 import preview/apply, then a byte-identical re-push; plus one fact forgotten by
-voice on a person **under** the 20-fact cap). **Face (four, all gated on the
+voice on a person **under** the 20-fact cap; plus the merge cycle — merge the two
+records for the misheard person, import, push, and confirm the robot is left
+holding only the survivor); `ENROLL-SNAPSHOT` (**needs a fresh enrollment after
+the next deploy** — nothing backfills earlier people: one 「記住我」, then `ls`
+`face_snapshots/` over ssh for exactly one `<record_id>.jpg`, then an import that
+shows the picture once, labelled display-only). **Face (four, all gated on the
 deploy):** `FACE-ROUTING` (ask 「你記得
 我嗎」 and 「我是誰」 — journal must show `tool_name='who_is_this'` and no `camera`
 call on those turns, while a genuinely visual question still picks `camera`);
@@ -265,3 +295,6 @@ owns — every score is logged by `who_is_this` and the wake check.
   `face-recognition-fix` (not yet deployed).
 - **2026-08-28** — person memory + Mac management backend, fourteen tasks,
   **D-025**, on branch `person-memory-backend` (not yet deployed).
+- **2026-08-28** — first live use of the backend asks for two more things:
+  profile merge (Mac-side, live now) and one enrollment snapshot per person
+  (needs the deploy), **D-026**, on branch `merge-and-snapshots`.
