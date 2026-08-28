@@ -617,6 +617,21 @@ These are considered only after the core experience is proven.
 > face-recognition subsystem; it is one bounded check at wake time and two
 > conversational tools.
 
+> **Amended 2026-08-28.** Bounded per-person memory and a person-management
+> backend were promoted from this list ("a long-term memory architecture",
+> "complex user identity or profile systems") on an explicit product request,
+> under constraints in the US-12 shape: the robot gains **no new subsystem** —
+> only a sibling JSON store (`people.v1.json`, mirroring the `faces.v1.json`
+> idioms) read by the existing greeting and face tools; recognition stays one
+> bounded check at wake plus explicit requests, never a running loop; photos
+> never reach or persist on the robot. All management complexity (person
+> profiles, photo-based enrollment, memory curation, sync) lives in a Mac-side
+> backend that treats the robot's stores as a rebuildable projection, pushed
+> over the existing key-authenticated deploy channel. The Mac backend is a LAN
+> POC surface with the same standing as the §12.7 console ruling — not a
+> product, not exposed beyond the home network. Design:
+> `docs/superpowers/specs/2026-08-28-person-memory-and-backend-design.md`.
+
 ---
 
 ## 10. Implementation Philosophy
