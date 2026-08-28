@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reachy companion — management backend</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+  <body>
+    <header class="shell">
+      <div class="shell__brand">
+        <span class="shell__title">Reachy companion</span>
+        <span class="shell__host" id="robot-host">…</span>
+      </div>
+      <nav class="nav" id="nav" aria-label="Sections"></nav>
+    </header>
+    <main id="view-outlet" class="outlet"></main>
+    <noscript>
+      <p class="outlet">This operator UI is JavaScript. The API itself is at <code>/docs</code>.</p>
+    </noscript>
+    <script type="module" src="/static/js/main.js"></script>
+  </body>
+</html>

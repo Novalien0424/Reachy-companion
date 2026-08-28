@@ -52,6 +52,11 @@ class ToolDependencies:
     # group-conversation policy. Injected per handler build, same seam and same
     # optionality rationale as go_to_sleep.
     set_party_mode: Callable[[bool], dict[str, Any]] | None = None
+    # Person-scoped memory (spec §3.3): the name of the last face-recognized
+    # person this app run, set by the wake checks and who_is_this. A label for
+    # memory scoping only — never used to gate behavior. Optional for the same
+    # reason as face_recognizer: every other construction site keeps working.
+    current_person: str | None = None
 
 
 class ToolSpec(TypedDict):

@@ -1,6 +1,9 @@
+import asyncio
 import logging
 from typing import Any
 
+from reachy_companion.people import PERSON_FACTS_DEFAULT, facts_for_person
+from reachy_companion.audio.envparse import env_int
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 from reachy_companion.tools.face_support import identify_with_retries, recognizer_or_unavailable
 
@@ -18,7 +21,8 @@ class WhoIsThis(Tool):
         'IDENTITY: who someone is, "do you know me", "do you remember me", "what is my name", or who just '
         "arrived. Returns a status only: recognized (with the remembered name), unknown, ambiguous, no_face, "
         "too_far or unavailable. It never returns a picture. If the status is not recognized, "
-        "say plainly that you do not recognize them — never guess a name."
+        "say plainly that you do not recognize them — never guess a name. "
+        "When recognized, the result includes short remembered facts about that person — use them naturally."
     )
     parameters_schema: dict[str, Any] = {
         "type": "object",
@@ -33,10 +37,45 @@ class WhoIsThis(Tool):
             return refusal
 
         result = await identify_with_retries(deps, recognizer)
+        name = result.get("name")
+        if result.get("status") == "recognized" and isinstance(name, str) and name:
+            # A recognition labels the session, exactly as the boot greeting
+            # does: `remember` and `forget` scope to this person from here on.
+            # A miss deliberately leaves the label alone — a badly lit look is
+            # not evidence that the person you were talking to left the room.
+            deps.current_person = name
+            await self._attach_known_facts(deps, result, name)
         logger.info(
-            "Tool call: who_is_this status=%s name=%s score=%s",
+            "Tool call: who_is_this status=%s name=%s score=%s facts=%d",
             result.get("status"),
             result.get("name"),
             result.get("score"),
+            len(result.get("known_facts", ())),
         )
         return result
+
+    async def _attach_known_facts(self, deps: ToolDependencies, result: dict[str, Any], name: str) -> None:
+        """Add `known_facts` to a recognized result, or leave the result untouched.
+
+        The field lives on the result dict only: `Identification` and its closed
+        Literals stay a pure camera answer. A recognized person with nothing on
+        file still gets the key, empty — "I know you, I remember nothing yet" is
+        an answer. Reading the store is I/O, so it goes off the event loop, and
+        any failure — an unreadable file, the recall switched off — costs the
+        facts and never the recognition the caller is waiting on.
+        """
+        # How many facts one recognition may hand back: deliberately the same
+        # knob AND the same default object as the boot greeting's recall, which
+        # is why the number lives in `people` rather than being written out here
+        # too. Both are the same act — the robot recognizing someone and drawing
+        # on what it remembers — so an operator who turns the greeting's recall
+        # down or off must not still get facts through the tool.
+        limit = env_int("FACE_GREETING_FACTS", PERSON_FACTS_DEFAULT, lo=0, hi=20)
+        if limit <= 0:
+            return
+        try:
+            facts = await asyncio.to_thread(facts_for_person, deps.instance_path, name, limit=limit)
+        except Exception as e:
+            logger.warning("who_is_this: could not read person facts: %s: %s", type(e).__name__, e)
+            return
+        result["known_facts"] = [fact.text for fact in facts]

@@ -1,0 +1,552 @@
+/*
+ * Operator-tool CSS: one column, system fonts, no theming layer.
+ *
+ * This is a page one person opens on one Mac to look at photo errors and a
+ * sync diff. Everything here is in service of reading those quickly — dense
+ * rows, a colour per status, and enough contrast in dark mode that a red
+ * `no_face` badge still reads as a problem.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --border: #d8d8de;
+  --text: #1c1c1e;
+  --muted: #6b6b73;
+  --accent: #2f6fd0;
+  --ok: #1b7f4b;
+  --warn: #9a6400;
+  --error: #b3261e;
+  --ok-bg: #e4f4ea;
+  --warn-bg: #fdf0d8;
+  --error-bg: #fbe6e4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;
+    --surface: #1f1f25;
+    --border: #34343d;
+    --text: #ececf1;
+    --muted: #a0a0ab;
+    --accent: #7aa7ee;
+    --ok: #6cd39a;
+    --warn: #e5b767;
+    --error: #f28b82;
+    --ok-bg: #1d3527;
+    --warn-bg: #3a2f18;
+    --error-bg: #3a2120;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* -- shell ------------------------------------------------------------- */
+
+.shell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.9rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.shell__brand {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.shell__title {
+  font-weight: 600;
+}
+
+.shell__host {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell__host.is-warning {
+  color: var(--warn);
+}
+
+.nav {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.nav__link {
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.nav__link:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.nav__link.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.outlet {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* -- structure --------------------------------------------------------- */
+
+.view__title {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+
+.view__title--editable {
+  cursor: text;
+}
+
+.view__title--editable:hover {
+  text-decoration: underline dotted;
+}
+
+.view__subtitle {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+  max-width: 48rem;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.15rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel__title {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.stack > * + * {
+  margin-top: 0.6rem;
+}
+
+.row {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.row__label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.row__value {
+  /* min-width:0 so a long value (the daemon's whole JSON payload) wraps inside
+     the row instead of pushing the panel's own padding off the edge. */
+  min-width: 0;
+  text-align: right;
+  word-break: break-word;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.82rem;
+}
+
+.pre {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+/* -- controls ---------------------------------------------------------- */
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.6rem;
+}
+
+.input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.button {
+  padding: 0.45rem 0.85rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button--danger {
+  color: var(--error);
+}
+
+.button--small {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.82rem;
+}
+
+.link-button {
+  padding: 0;
+  margin-bottom: 0.75rem;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.counter {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter.is-full {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* -- status and badges -------------------------------------------------- */
+
+.status {
+  margin: 0.6rem 0 0;
+  min-height: 1.3em;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.status.is-ok {
+  color: var(--ok);
+}
+
+.status.is-warn {
+  color: var(--warn);
+}
+
+.status.is-error {
+  color: var(--error);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.badge--ok {
+  background: var(--ok-bg);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.badge--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.badge--error {
+  background: var(--error-bg);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.badge--muted {
+  color: var(--muted);
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.callout {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.callout h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.95rem;
+}
+
+.callout p {
+  margin: 0 0 0.4rem;
+}
+
+.callout--warn {
+  border-left-color: var(--warn);
+}
+
+.callout--danger {
+  border-left-color: var(--error);
+  background: var(--error-bg);
+}
+
+/* -- lists and tables --------------------------------------------------- */
+
+.cards {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.card__name {
+  padding: 0;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  word-break: break-word;
+}
+
+.card__name:hover {
+  color: var(--accent);
+}
+
+.card__meta {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+}
+
+.card__actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.plain-list {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.plain-list li {
+  word-break: break-word;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table td {
+  padding: 0.35rem 0.5rem 0.35rem 0;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.fact-list {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+}
+
+.fact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.fact__text {
+  flex: 1 1 20rem;
+  word-break: break-word;
+}
+
+/* -- photos ------------------------------------------------------------- */
+
+.photo-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  margin-top: 0.9rem;
+}
+
+.photo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.photo__thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.photo__thumb--none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+  border: 1px dashed var(--border);
+}
+
+.photo__caption {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+}
+
+.photo__name {
+  word-break: break-all;
+}
+
+/* -- transcript ---------------------------------------------------------- */
+
+.transcript {
+  margin-top: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  max-height: 22rem;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.line {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.line.is-partial {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.line__role {
+  flex: 0 0 3.5rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding-top: 0.15em;
+}
+
+.line--robot .line__role {
+  color: var(--accent);
+}
+
+.line__text {
+  word-break: break-word;
+}
+
+.route-error {
+  padding: 1rem;
+  color: var(--error);
+  background: var(--error-bg);
+  border-radius: 8px;
+}

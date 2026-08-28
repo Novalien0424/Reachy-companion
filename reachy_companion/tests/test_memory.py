@@ -17,9 +17,20 @@ from reachy_companion.memory import (
     format_memory_for_prompt,
     memory_path_for_instance,
 )
+from reachy_companion.people import add_person_fact, facts_for_person
 from reachy_companion.tools.forget import Forget
 from reachy_companion.tools.remember import Remember
 from reachy_companion.tools.core_tools import ToolDependencies
+
+
+def _deps(tmp_path: Path, *, current_person: str | None = None) -> ToolDependencies:
+    """Build tool dependencies backed by a temporary instance directory."""
+    return ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        instance_path=tmp_path,
+        current_person=current_person,
+    )
 
 
 def test_memory_store_adds_dedupes_caps_and_formats(tmp_path: Path) -> None:
@@ -90,6 +101,76 @@ async def test_memory_tools_use_instance_storage(tmp_path: Path) -> None:
     assert remember_result["saved"] == "Has a dog named Mochi"
     assert forget_result["removed"] == "Has a dog named Mochi"
     assert list_memory_facts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_remember_scopes_to_current_person(tmp_path: Path) -> None:
+    """With a recognized person, remember stores the fact on that person, not in global memory."""
+    deps = _deps(tmp_path, current_person="Lena")
+
+    result = await Remember()(deps, fact="Likes oolong tea")
+
+    assert result["scope"] == "person:Lena"
+    assert [fact.text for fact in facts_for_person(tmp_path, "Lena")] == ["Likes oolong tea"]
+    assert list_memory_facts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_remember_is_global_without_person(tmp_path: Path) -> None:
+    """Without a recognized person, remember keeps its existing global behavior."""
+    deps = _deps(tmp_path)
+
+    result = await Remember()(deps, fact="House wifi is flaky")
+
+    assert result["scope"] == "global"
+    assert [fact.text for fact in list_memory_facts(tmp_path)] == ["House wifi is flaky"]
+    assert facts_for_person(tmp_path, "Lena") == []
+
+
+@pytest.mark.asyncio
+async def test_forget_searches_person_scope_first_then_global(tmp_path: Path) -> None:
+    """Forget removes the recognized person's matching fact first, then falls back to global memory."""
+    add_memory_fact(tmp_path, "tea in the cupboard")
+    add_person_fact(tmp_path, "Lena", "tea every morning")
+    deps = _deps(tmp_path, current_person="Lena")
+
+    result = await Forget()(deps, query="tea")
+
+    assert result["scope"] == "person:Lena"
+    assert result["removed"] == "tea every morning"
+    assert facts_for_person(tmp_path, "Lena") == []
+    assert len(list_memory_facts(tmp_path)) == 1
+
+    result2 = await Forget()(deps, query="tea")
+
+    assert result2["scope"] == "global"
+    assert result2["removed"] == "tea in the cupboard"
+    assert list_memory_facts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_forget_reports_other_person_matches(tmp_path: Path) -> None:
+    """A person-scoped removal still surfaces the remaining matches for that person."""
+    add_person_fact(tmp_path, "Lena", "tea every morning")
+    add_person_fact(tmp_path, "Lena", "tea with ginger")
+    deps = _deps(tmp_path, current_person="Lena")
+
+    result = await Forget()(deps, query="tea")
+
+    assert result["scope"] == "person:Lena"
+    assert result["removed"] == "tea with ginger"
+    assert result["other_matches"] == ["tea every morning"]
+
+
+@pytest.mark.asyncio
+async def test_forget_without_person_match_reports_no_match(tmp_path: Path) -> None:
+    """When neither scope matches, forget still reports the unchanged no-match error."""
+    deps = _deps(tmp_path, current_person="Lena")
+
+    result = await Forget()(deps, query="tea")
+
+    assert "error" in result
+    assert "scope" not in result
 
 
 def test_prompt_includes_memory_fragment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

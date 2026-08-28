@@ -2,21 +2,26 @@
 
 Two invariants are asserted over and over here, because they are the feature's
 promises: **no tool result ever carries image bytes**, and **the startup
-greeting is never delayed or altered** unless a face was actually recognized.
+greeting is never delayed or lost** — the wake check may only choose which of
+the three greetings goes out (by name, to a stranger, or verbatim), and any
+failure inside it falls back to the verbatim one, on time.
 """
 
 import time
 import asyncio
 from typing import Any
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+import reachy_companion.tools.who_is_this as who_is_this_mod
 import reachy_companion.huggingface_realtime as hf_mod
+from reachy_companion import people
 from reachy_companion.faces import EMBEDDING_DIM, FaceRecord, list_faces
+from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import (
     ALIGNED_SIZE,
     IDENTIFICATION_REASONS,
@@ -32,6 +37,18 @@ from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 
 
 GREETING = "用一句简短自然的中文主动问候用户。"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_default_stores(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the `instance_path=None` cases off the developer's real stores.
+
+    The greeting path reads `people.v1.json` now, and with no instance path the
+    three stores resolve under `XDG_DATA_HOME`. Pointing that at a fresh tmp dir
+    makes every default-path test read an empty store instead of whatever the
+    machine happens to have enrolled.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg")))
 
 
 class _FakeRecognizer:
@@ -125,6 +142,26 @@ def _deps(
         camera_enabled=camera_enabled,
         face_recognizer=recognizer,
     )
+
+
+def _record_motion_calls(deps: ToolDependencies) -> list[str]:
+    """Record the hold/wobble/frame calls in one ordered list.
+
+    The still-pose bracket is an ordering promise — freeze before the first
+    frame, restore after the last — and only a single timeline can assert it.
+    """
+    calls: list[str] = []
+    frame = _frame()
+
+    def _grab_frame() -> NDArray[np.uint8]:
+        calls.append("frame")
+        return frame
+
+    deps.movement_manager.set_hold_still.side_effect = lambda hold: calls.append(f"hold={hold}")
+    deps.reachy_mini.disable_wobbling.side_effect = lambda: calls.append("disable_wobbling")
+    deps.reachy_mini.enable_wobbling.side_effect = lambda: calls.append("enable_wobbling")
+    deps.reachy_mini.media.get_frame.side_effect = _grab_frame
+    return calls
 
 
 def _stored_record(samples: int, name: str = "Lena") -> FaceRecord:
@@ -248,7 +285,110 @@ async def test_who_is_this_reports_a_recognized_person() -> None:
     assert result["status"] == "recognized"
     assert result["name"] == "小明"
     assert result["score"] == 0.71
+    # Recognized but nothing on file yet: the key is still there, empty. The
+    # shape of a recognition does not depend on how much has been remembered.
+    assert result["known_facts"] == []
     _assert_carries_no_image(result)
+
+
+# --- who_is_this recall and the person label --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_returns_known_facts_and_sets_person(tmp_path: Path) -> None:
+    """A recognition hands the model what it remembers and labels the session.
+
+    The label is what scopes `remember`/`forget` to this person afterwards, so
+    the tool call is a second entry point into person memory alongside the
+    boot greeting — a mid-conversation "do you know me" must not leave the
+    session anonymous.
+    """
+    add_person_fact(tmp_path, "Louis", "周末下围棋")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert result["known_facts"] == ["周末下围棋"]
+    assert deps.current_person == "Louis"
+    _assert_carries_no_image(result)
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_unknown_has_no_facts_and_keeps_person(instant_sleep: None, tmp_path: Path) -> None:
+    """An unrecognized glance carries no facts — and does not unset the label.
+
+    Someone leaning into frame, or the same person badly lit for three looks,
+    is not evidence that the person you were just talking to left. Clearing
+    the label on a miss would silently send their next remembered fact to the
+    global store.
+    """
+    deps = _deps(_FakeRecognizer(Identification(status="unknown", score=0.21, face_count=1)), instance_path=tmp_path)
+    deps.current_person = "Louis"
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "unknown"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_recall_is_bounded_by_the_greeting_knob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FACE_GREETING_FACTS` bounds this recall too, and 0 turns it off.
+
+    One knob for both recall moments: an operator who silences the greeting's
+    facts must not still get them through the tool. The name is unaffected.
+    """
+    add_person_fact(tmp_path, "Louis", "周末下围棋")
+    monkeypatch.setenv("FACE_GREETING_FACTS", "0")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
+
+
+def test_the_recall_default_has_exactly_one_definition() -> None:
+    """Final review, F2: the default `6` was written out twice, once per call site.
+
+    Two literals behind one env knob is a drift waiting to happen — an operator
+    reading `who_is_this`'s default would have had no way to know the greeting
+    carried its own copy. `people.PERSON_FACTS_DEFAULT` is now the single
+    definition and both call sites import it, so a change lands on both at once.
+    """
+    assert people.PERSON_FACTS_DEFAULT == 6
+    assert hf_mod.PERSON_FACTS_DEFAULT is people.PERSON_FACTS_DEFAULT
+    assert who_is_this_mod.PERSON_FACTS_DEFAULT is people.PERSON_FACTS_DEFAULT
+    assert not hasattr(hf_mod, "_FACE_GREETING_FACTS_DEFAULT")
+    assert not hasattr(who_is_this_mod, "_KNOWN_FACTS_DEFAULT")
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_survives_an_unreadable_person_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken person store costs the facts, never the recognition itself."""
+
+    def _boom(*args: Any, **kwargs: Any) -> list[Any]:
+        raise OSError("people store unreadable")
+
+    monkeypatch.setattr("reachy_companion.tools.who_is_this.facts_for_person", _boom)
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Louis", score=0.6, face_count=1))
+    deps = _deps(recognizer, instance_path=tmp_path)
+
+    result = await WhoIsThis()(deps)
+
+    assert result["status"] == "recognized"
+    assert result["name"] == "Louis"
+    assert "known_facts" not in result
+    assert deps.current_person == "Louis"
 
 
 @pytest.mark.asyncio
@@ -320,14 +460,24 @@ async def test_who_is_this_survives_a_recognizer_exception(
 
 
 @pytest.mark.asyncio
-async def test_remember_face_survives_an_enrollment_exception(caplog: pytest.LogCaptureFixture) -> None:
-    """The enrollment path sanitizes its failures exactly like who_is_this does."""
+async def test_remember_face_survives_an_enrollment_exception(
+    instant_sleep: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The enrollment path sanitizes its failures exactly like who_is_this does.
+
+    And it un-freezes on the way out: a raising recognizer must not leave the
+    robot's head parked and its wobbling off for the rest of the session.
+    """
+    deps = _deps(_FakeRecognizer(raises=RuntimeError("boom")))
+
     with caplog.at_level("ERROR", logger="reachy_companion.tools.remember_face"):
-        result = await RememberFace()(_deps(_FakeRecognizer(raises=RuntimeError("boom"))), name="小明")
+        result = await RememberFace()(deps, name="小明")
 
     assert result == {"status": "unavailable", "face_count": 0, "reason": "internal_error"}
     assert "boom" not in str(result)
     assert "boom" in caplog.text
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
+    deps.reachy_mini.enable_wobbling.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -351,13 +501,88 @@ async def test_a_camera_failure_is_reported_without_its_exception_text(
 
 @pytest.mark.asyncio
 async def test_remember_face_requires_a_name() -> None:
-    """An empty name enrolls nobody and touches no store."""
+    """An empty name enrolls nobody, touches no store, and moves nothing."""
     recognizer = _FakeRecognizer()
+    deps = _deps(recognizer)
 
-    result = await RememberFace()(_deps(recognizer), name="   ")
+    result = await RememberFace()(deps, name="   ")
 
     assert result == {"error": "name must be a non-empty string"}
     assert recognizer.frames_seen == 0
+    # The hold brackets the capture burst only: a refused call never stiffens.
+    deps.movement_manager.set_hold_still.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remember_face_holds_the_head_still_around_the_burst(instant_sleep: None) -> None:
+    """Freeze the head and stop wobbling before the first frame; restore after the last."""
+    recognizer = _FakeRecognizer(
+        record=_stored_record(3),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+    calls = _record_motion_calls(deps)
+
+    result = await RememberFace()(deps, name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 3}
+    assert calls[:3] == ["hold=True", "disable_wobbling", "frame"]
+    # The synchronous release goes first, so a cancellation landing on the
+    # wobbling await cannot skip it (see hold_still).
+    assert calls[-2:] == ["hold=False", "enable_wobbling"]
+    # Every one of the three looks happened inside the bracket.
+    assert calls.count("frame") == 3
+
+
+@pytest.mark.asyncio
+async def test_remember_face_releases_the_hold_when_it_is_cancelled() -> None:
+    """A cancellation during the settle must not leave the robot frozen for the session.
+
+    `background_tool_manager.cancel_tool` and the timeout sweep both `task.cancel()`
+    a running tool. `CancelledError` is a BaseException, so if the freeze and the
+    settle sat outside the guarded region the restore would never run and the head
+    would stay parked at weight 0.0 with wobbling off until the app restarted.
+    """
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+
+    task = asyncio.ensure_future(RememberFace()(deps, name="Lena"))
+    # Cancel inside the settle pause: once wobbling is off, the burst has not
+    # started yet (the settle is longer than this poll by an order of magnitude).
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if deps.reachy_mini.disable_wobbling.called:
+            break
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
+    deps.reachy_mini.enable_wobbling.assert_called_once_with()
+    # The cancellation landed before any enrollment work.
+    assert recognizer.frames_seen == 0
+
+
+@pytest.mark.asyncio
+async def test_remember_face_survives_a_motion_api_failure(instant_sleep: None) -> None:
+    """A slightly blurred enrollment beats a refused one: motion errors never fail the tool."""
+    recognizer = _FakeRecognizer(
+        record=_stored_record(1),
+        identification=Identification(status="unknown", face_count=1),
+    )
+    deps = _deps(recognizer)
+    deps.movement_manager.set_hold_still.side_effect = RuntimeError("no movement manager")
+    deps.reachy_mini.disable_wobbling.side_effect = RuntimeError("no wobble")
+    deps.reachy_mini.enable_wobbling.side_effect = RuntimeError("no wobble")
+
+    result = await RememberFace()(deps, name="Lena")
+
+    assert result == {"status": "saved", "name": "Lena", "samples": 1}
+    # Both edges were still attempted, so a transient failure does not stick.
+    assert deps.movement_manager.set_hold_still.call_args_list == [call(True), call(False)]
 
 
 @pytest.mark.asyncio
@@ -671,10 +896,16 @@ class _CapturingConnection:
         return self
 
 
-def _handler(recognizer: Any, monkeypatch: pytest.MonkeyPatch, *, camera_enabled: bool = True) -> Any:
+def _handler(
+    recognizer: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    camera_enabled: bool = True,
+    instance_path: Path | None = None,
+) -> Any:
     """Build a handler wired to a capturing connection and a fixed greeting prompt."""
     monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: GREETING)
-    handler = HuggingFaceRealtimeHandler(_deps(recognizer, camera_enabled=camera_enabled))
+    handler = HuggingFaceRealtimeHandler(_deps(recognizer, camera_enabled=camera_enabled, instance_path=instance_path))
     handler.connection = _CapturingConnection()
     handler.instance_path = None
     monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
@@ -705,22 +936,135 @@ async def test_greeting_prefixes_a_recognized_name(monkeypatch: pytest.MonkeyPat
 @pytest.mark.parametrize(
     "identification",
     [
-        Identification(status="unknown", score=0.1, face_count=1),
-        Identification(status="ambiguous", name="A", runner_up="B", score=0.5, face_count=1),
         Identification(status="no_face"),
         Identification(status="unavailable", reason="model_unavailable"),
     ],
 )
 @pytest.mark.asyncio
-async def test_greeting_is_untouched_unless_someone_is_recognized(
-    identification: Identification, monkeypatch: pytest.MonkeyPatch
+async def test_greeting_is_untouched_when_no_face_was_seen_at_all(
+    identification: Identification, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Anything short of a confident recognition sends the greeting verbatim."""
-    handler = _handler(_FakeRecognizer(identification), monkeypatch)
+    """Nobody in frame is the third branch: no name to use, and no stranger to meet."""
+    handler = _handler(_FakeRecognizer(identification), monkeypatch, instance_path=tmp_path)
 
     await handler._send_startup_greeting_prompt()
 
     assert _sent_text(handler) == GREETING
+    assert handler.deps.current_person is None
+
+
+@pytest.mark.parametrize(
+    "identification",
+    [
+        Identification(status="unknown", score=0.1, face_count=1),
+        Identification(status="ambiguous", name="A", runner_up="B", score=0.5, face_count=1),
+        Identification(status="too_far", face_count=1),
+        Identification(status="multiple_faces", face_count=2),
+    ],
+)
+@pytest.mark.asyncio
+async def test_greeting_introduces_reachy_to_a_face_it_cannot_place(
+    identification: Identification, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Someone is there but unrecognized: greet them as a new friend, never by a guess."""
+    handler = _handler(_FakeRecognizer(identification), monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    text = _sent_text(handler)
+    assert text.startswith(hf_mod._FACE_STRANGER_GREETING_PREFIX)
+    assert text.endswith(GREETING)
+    # A stranger is nobody to scope memory to; the label stays unset.
+    assert handler.deps.current_person is None
+
+
+@pytest.mark.asyncio
+async def test_greeting_recalls_what_it_remembers_about_a_recognized_person(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The payoff of the person store: the first sentence knows your name *and* your life."""
+    add_person_fact(tmp_path, "Lena", "在准备一场马拉松")
+    add_person_fact(tmp_path, "Lena", "喜欢喝美式咖啡")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    text = _sent_text(handler)
+    assert "Lena" in text
+    assert "在准备一场马拉松" in text
+    assert "喜欢喝美式咖啡" in text
+    assert text.endswith(GREETING)
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_greeting_names_a_recognized_person_with_nothing_stored_yet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A known face with no facts falls back to the plain name greeting, unchanged."""
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _sent_text(handler) == hf_mod._FACE_GREETING_PREFIX.format(name="Lena") + "\n" + GREETING
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_greeting_facts_are_capped_by_the_env_knob(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """FACE_GREETING_FACTS bounds the recall, and 0 turns it off without losing the name."""
+    for i in range(4):
+        add_person_fact(tmp_path, "Lena", f"事实{i}")
+    monkeypatch.setenv("FACE_GREETING_FACTS", "0")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _sent_text(handler) == hf_mod._FACE_GREETING_PREFIX.format(name="Lena") + "\n" + GREETING
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_greeting_recall_is_truncated_to_the_newest_facts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A non-zero cap keeps the newest facts and drops the rest — it is not all-or-nothing.
+
+    `FACE_GREETING_FACTS=0` already pins the off switch; this pins the truncation
+    itself, so the limit cannot silently become "every fact on file".
+    """
+    add_person_fact(tmp_path, "Lena", "在准备一场马拉松")
+    add_person_fact(tmp_path, "Lena", "喜欢喝美式咖啡")
+    monkeypatch.setenv("FACE_GREETING_FACTS", "1")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    text = _sent_text(handler)
+    assert "喜欢喝美式咖啡" in text
+    assert "在准备一场马拉松" not in text
+    assert text == hf_mod._FACE_KNOWN_WITH_FACTS_PREFIX.format(name="Lena", facts="喜欢喝美式咖啡") + "\n" + GREETING
+
+
+@pytest.mark.asyncio
+async def test_greeting_survives_an_unreadable_person_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A fact lookup that blows up costs the recall, never the greeting or the name."""
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("people.v1.json is on fire")
+
+    monkeypatch.setattr(hf_mod, "facts_for_person", _boom)
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="Lena", score=0.8, face_count=1))
+    handler = _handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._send_startup_greeting_prompt()
+
+    assert _sent_text(handler) == hf_mod._FACE_GREETING_PREFIX.format(name="Lena") + "\n" + GREETING
+    assert handler.deps.current_person == "Lena"
 
 
 @pytest.mark.asyncio
@@ -823,17 +1167,23 @@ async def test_wake_check_takes_a_second_look_and_the_first_hit_wins(monkeypatch
 
 @pytest.mark.asyncio
 async def test_wake_check_stops_after_the_attempt_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Nobody recognized in any round leaves the greeting exactly as it was, after N looks."""
+    """Nobody recognized in any round still ends the look after N of them.
+
+    The face is present but unplaceable every time, so the greeting gets the
+    stranger prefix — what must not happen is a sixth look.
+    """
     recognizer = _FakeRecognizer(Identification(status="unknown", score=0.2, face_count=1))
     handler = _handler(recognizer, monkeypatch)
 
     await handler._send_startup_greeting_prompt()
 
-    assert _sent_text(handler) == GREETING
-    assert recognizer.frames_seen == 3
+    text = _sent_text(handler)
+    assert text.startswith(hf_mod._FACE_STRANGER_GREETING_PREFIX)
+    assert text.endswith(GREETING)
+    assert recognizer.frames_seen == 5
 
 
-@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("5", 5), ("0", 1), ("77", 5), ("nonsense", 3)])
+@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("5", 5), ("0", 1), ("77", 5), ("nonsense", 5)])
 @pytest.mark.asyncio
 async def test_wake_attempt_count_is_env_tunable_and_clamped(
     raw: str, expected: int, monkeypatch: pytest.MonkeyPatch
@@ -960,3 +1310,6 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     assert "NEVER" in camera  # ...and does so emphatically
     assert "instead of the camera tool" in who
     assert "not the camera tool" in remember
+    # The recall clause: without it the model receives `known_facts` and has no
+    # instruction to use them, so the recognition sounds like a stranger's.
+    assert "remembered facts" in who

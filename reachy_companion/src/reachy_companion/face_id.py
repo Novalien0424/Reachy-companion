@@ -548,8 +548,27 @@ class FaceRecognizer:
 
     def identify(self, frame_bgr: NDArray[np.uint8] | None) -> Identification:
         """Return who is in front of the camera, as a status that is never an exception."""
-        _, identification = self._capture(frame_bgr, select_largest=True)
-        return identification
+        embedding, identification = self._capture(frame_bgr, select_largest=True)
+        if embedding is None:
+            return identification
+        return self._identified(embedding, identification.face_count)
+
+    def embedding_for_frame(
+        self,
+        frame_bgr: NDArray[Any] | None,
+    ) -> tuple[NDArray[np.float32] | None, Identification]:
+        """Return the embedding of the one face in `frame_bgr`, identifying nobody.
+
+        The extraction half of the pipeline on its own — detect, require exactly
+        one face large enough to embed honestly, align, embed — with neither the
+        store comparison `identify()` adds nor the store write `enroll()` adds.
+        On success the `Identification` is `status="unknown"` with
+        `face_count=1`: it reports *what was seen*, not *who it was*, because the
+        Mac-side backend embeds photos of people this robot has never met and
+        would read any name here as a claim about them. Every failure is the
+        same status vocabulary the tools already speak.
+        """
+        return self._capture(frame_bgr)
 
     def enroll(
         self,
@@ -562,9 +581,10 @@ class FaceRecognizer:
         identification, so a caller can tell *why* enrollment was refused and
         whether this face already matched someone.
         """
-        embedding, identification = self._capture(frame_bgr)
+        embedding, identification = self.embedding_for_frame(frame_bgr)
         if embedding is None:
             return None, identification
+        identification = self._identified(embedding, identification.face_count)
         try:
             record = upsert_face(self.instance_path, name, embedding)
         except ValueError as exc:
@@ -577,13 +597,33 @@ class FaceRecognizer:
             return None, Identification(status="unavailable", face_count=1, reason="invalid_name")
         return record, identification
 
+    def _identified(self, embedding: NDArray[np.float32], face_count: int) -> Identification:
+        """Match one extracted embedding against the store, as an `Identification`.
+
+        The store comparison is deliberately outside `_capture`'s try/except:
+        an unreadable store is not a camera failure, and masking it as
+        `internal_error` would hide it. `match()` is total over a tolerant read.
+        """
+        result = self.match(embedding)
+        return Identification(
+            status=result.status,
+            name=result.name,
+            score=result.score,
+            runner_up=result.runner_up,
+            face_count=face_count,
+        )
+
     def _capture(
         self,
-        frame_bgr: NDArray[np.uint8] | None,
+        frame_bgr: NDArray[Any] | None,
         *,
         select_largest: bool = False,
     ) -> tuple[NDArray[np.float32] | None, Identification]:
-        """Run the whole pipeline once, returning the embedding of the face it scored.
+        """Run the extraction pipeline once, returning the embedding of the face it chose.
+
+        Detection through embedding only: no store read, no store write. The
+        caller decides what the embedding means — `identify()` and `enroll()`
+        match it, `embedding_for_frame()` hands it straight to the backend.
 
         `select_largest` decides what a crowded frame means: identification
         picks the largest face, enrollment (the default) refuses anything but
@@ -633,14 +673,9 @@ class FaceRecognizer:
             logger.warning("Face identification failed: %s: %s", type(exc).__name__, exc)
             return None, Identification(status="unavailable", reason="internal_error")
 
-        result = self.match(embedding)
-        return embedding, Identification(
-            status=result.status,
-            name=result.name,
-            score=result.score,
-            runner_up=result.runner_up,
-            face_count=face_count,
-        )
+        # `unknown` because nothing has been compared yet: this is what was
+        # seen, and the caller decides whether to ask the store who it is.
+        return embedding, Identification(status="unknown", face_count=face_count)
 
 
 def _scale_face(face: Face5, factor: int) -> Face5:

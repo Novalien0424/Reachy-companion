@@ -9,7 +9,9 @@ never loads it as one.
 
 import asyncio
 import logging
+import contextlib
 from typing import Any
+from collections.abc import AsyncIterator
 
 from numpy.typing import NDArray
 
@@ -22,6 +24,11 @@ logger = logging.getLogger(__name__)
 # Statuses that carry evidence about a face the camera actually saw. `no_face`
 # and `unavailable` do not, so a scored miss always beats them as an answer.
 _INFORMATIVE_STATUSES = ("recognized", "ambiguous", "unknown", "too_far", "multiple_faces")
+
+# Time for the head to coast to a stop after tracking and wobbling are cut. The
+# daemon interpolates rather than braking, so a frame grabbed immediately still
+# carries the tail of the previous motion.
+_HOLD_STILL_SETTLE_S = 0.35
 
 
 def unavailable(reason: IdentificationReason) -> dict[str, Any]:
@@ -41,6 +48,52 @@ def recognizer_or_unavailable(deps: ToolDependencies) -> tuple[Any, dict[str, An
     if not deps.camera_enabled:
         return None, unavailable("camera_disabled")
     return recognizer, None
+
+
+@contextlib.asynccontextmanager
+async def hold_still(deps: ToolDependencies) -> AsyncIterator[None]:
+    """Hold the head and audio-reactive motion still around a capture burst.
+
+    Best-effort on both edges: a motion API failure must never fail the tool —
+    a slightly blurred enrollment beats a refused one.
+
+    The wobbling restore is deliberately unconditional. The SDK exposes no
+    wobble-state getter, so the prior state cannot be read back; the only state
+    in which wobbling is off is sleep, and an enrollment tool call cannot reach
+    the robot while it is asleep. Restoring is therefore always the right edge.
+
+    The freeze and the settle sit *inside* the guarded region on purpose.
+    `CancelledError` is a BaseException, and a tool task is cancellable at any
+    await (`background_tool_manager.cancel_tool`, the timeout sweep, shutdown);
+    with the freeze outside, a cancellation landing on the settle would skip the
+    restore entirely and leave the robot parked and wobble-less for the rest of
+    the session.
+    """
+    try:
+        try:
+            deps.movement_manager.set_hold_still(True)
+        except Exception as e:
+            logger.warning("hold_still: could not freeze head tracking: %s", e)
+        try:
+            await asyncio.to_thread(deps.reachy_mini.disable_wobbling)
+        except Exception as e:
+            logger.warning("hold_still: could not disable wobbling: %s", e)
+        # Let the head coast to a stop before the caller reads a frame.
+        await asyncio.sleep(_HOLD_STILL_SETTLE_S)
+        yield
+    finally:
+        # The synchronous release goes first: it is the restore that matters
+        # most (a parked head and suppressed breathing outlast the call), and
+        # putting it ahead of the await means a cancellation delivered inside
+        # this block cannot skip it.
+        try:
+            deps.movement_manager.set_hold_still(False)
+        except Exception as e:
+            logger.warning("hold_still: could not release head tracking: %s", e)
+        try:
+            await asyncio.to_thread(deps.reachy_mini.enable_wobbling)
+        except Exception as e:
+            logger.warning("hold_still: could not re-enable wobbling: %s", e)
 
 
 async def capture_frame(

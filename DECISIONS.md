@@ -572,3 +572,106 @@ of site-packages (the `reachy-deploy` backup/restore ritual covers it, and
 moving it is a deploy-wide change, not a face change). Written as verified
 against the unit suite and the RCA only — the four `FACE-*` rows in
 `feature_list.json` are the live gate.
+
+## D-025 — Person memory: a Mac-authoritative backend, a projected robot (2026-08-28)
+
+The PRD §9 amendment of 2026-08-28 promotes five non-goals into the POC:
+per-person memory, a recognition-aware boot greeting, still-pose enrollment, a
+Mac-side management backend with a UI, and photo-upload enrollment. Spec:
+`docs/superpowers/specs/2026-08-28-person-memory-and-backend-design.md`; plan
+and its three-round Codex log (22 findings, 20 accepted, 2 partially, 0 rejected
+outright): `docs/superpowers/plans/2026-08-28-person-memory-and-backend.md`.
+Seven decisions. **(1) Architecture option C — the Mac is the source of truth,
+the robot holds a projection.** `companion_backend/` (FastAPI plus a vanilla
+ES-module UI on `127.0.0.1:8710`, run out of `reachy_companion/.venv`, **no new
+dependency**) owns `data/people.json` — names, uploaded photos, the SFace
+vectors computed from them, per-person facts — and projects it onto the robot's
+`faces.v1.json` + `people.v1.json` **through the robot's own writers**
+(`faces._write_faces_file`, `people.upsert_person`/`add_person_fact`), so the
+`arcface5` marker, the 12/3/20 caps, the fact ordering and the eviction policy
+are right by construction rather than by a second serializer. The robot's copies
+are rebuildable and are wiped by every reinstall; this store is not — that
+inversion is the whole point. Sync is a **guarded remote promote** (scp both
+files to temp names, one ssh command re-checks the pre-push sha256s and `mv`s
+both into place, then a read-back verifies the robot's own bytes), drift is
+hash-based against the last verified push, and a push is **refused exactly when
+the robot holds content the backend does not know** — one import clears it. Push
+deliberately does **not** restart the app: both stores are re-read per use, so a
+pushed face and a pushed fact apply live; only the global memory prompt is
+session-scoped and this feature does not touch it. **(2) The boot greeting is
+three-way, on a 4 s wake budget.** `_send_startup_greeting_prompt` branches on
+the full `Identification`: *recognized* → a prefix carrying the name and up to
+`FACE_GREETING_FACTS` (default 6) of that person's facts, instructing a warm
+greeting by name with no self-introduction; *stranger present*
+(`unknown`/`ambiguous`/`multiple_faces`/`too_far` with `face_count > 0`) → a
+prefix saying someone unfamiliar is here; *nobody* → the profile greeting
+verbatim. All three are prefixes on the existing profile `greeting` (the
+`_FACE_GREETING_PREFIX` pattern), so no profile or persona schema field is
+added. `FACE_WAKE_BUDGET_MS` 1200 → **4000** and `FACE_WAKE_ATTEMPTS` 3 → **5**,
+on the unchanged single-shared-deadline mechanism, exiting early on the first
+confident hit; the facts read is off the loop under a 1 s bound with
+warn-and-continue, on both the greeting path and D-024's extended window (whose
+spawn condition becomes "unless the greeting already went to a recognized
+person"). Accepted edge: a `multiple_faces`/`too_far` boot speaks the **stranger**
+line even with an enrolled person among the faces — only `recognized` takes the
+named branch — and the extended window is the correction that arrives seconds
+later. **(3) Person scoping is one runtime label, cleared per session.**
+`ToolDependencies.current_person` is set on boot-wake recognition, on
+extended-window recognition and on every `who_is_this` → `recognized`; `remember`
+then writes into that person's `people.v1.json` record and returns
+`scope: "person:<name>"` (global store as the fallback when the person store
+refuses the name), `forget` searches that person before the global store, and
+`who_is_this` returns `known_facts`. It is cleared at handler init **and on
+reconnect** — per *session*, not per app run — and a non-recognized `who_is_this`
+deliberately does **not** clear it (R1-4: a blink or a `too_far` glance must not
+drop a valid label mid-conversation). It is a memory label only; nothing gates
+behaviour on it. **(4) Enrollment holds the head still.** `remember_face`
+brackets its capture burst in `tools/face_support.hold_still`: the head parks at
+its current pose on a weight-0 anchor, wobbling is disabled, 0.35 s of settle
+runs before the first frame, and the release lives in a `finally` inside the
+guarded region so a cancellation cannot leave the robot parked. Mid-hold,
+`set_speaking`/`set_head_tracking` update their flags but issue **no** robot
+calls — the state they demand is applied on release — and a queued move is
+dropped with a log line: the photo wins. The wobble re-enable is unconditional
+(no SDK getter, and the only wobble-off state is sleep, which enrollment cannot
+reach). **(5) `embedding_for_frame` is the shared seam.** The extraction half of
+the recognizer — detect, require exactly one face large enough to embed
+honestly, align, embed — with neither `identify()`'s store comparison nor
+`enroll()`'s store write, so the Mac embeds uploaded photos through the
+identical YuNet+SFace pipeline and a vector computed there is comparable to one
+enrolled by voice; `enroll()` keeps its already-matches return contract
+(extract → match → upsert). Photos still never reach the robot: the projection
+carries vectors only. **Unchecked on a real person:** that a Mac-embedded photo
+and a robot voice enrollment of the same face actually score like a same-person
+pair — `BACKEND-PUSH-LIVE` owns that measurement. **(6) Robot-side deletions are
+imported, not reverted.** Push snapshots the two projected files under
+`data_dir/last_push/`; a fact in that snapshot and absent on the robot now is a
+robot deletion — it blocks the push, and the import applies it to the Mac store.
+Two guards keep it conservative: the deletion is only honoured while the fact is
+still on the Mac, and never while the robot person sits at the 20-fact cap
+(indistinguishable from eviction). Consequence, accepted: a Mac person with ≥20
+facts always projects at exactly 20, so removals are never readable for them.
+`changed_faces` uses **subset** semantics (the robot holds an embedding the
+backend does not know), not set equality — equality would block pushes for the
+legitimate Mac-side edits the push exists to deliver. Face *removals* are not
+modelled at all: no robot-side person-deletion tool exists. **(7) The backend
+store is durable, so a corrupt one is never clobbered:** an unparseable
+`people.json` is renamed `people.json.corrupt.<epoch_ms>` with a WARNING naming
+the path and the store starts fresh, where the robot projection instead tolerates
+per-record damage (`faces.py` idiom). The backend is a **trusted-LAN POC
+surface** with the standing of the PRD §12.7 console ruling: `127.0.0.1` bind, no
+auth, no CSRF, no rate limiting; reach it from another machine by ssh tunnel,
+never by re-binding. **Deliberately not done:** a robot-side `people.*` RPC
+(option B — a wheel rebuild per change, and it widens the unauthenticated `:7860`
+surface); extending `memory.v1.json` / `MemoryFact.to_json` (a locked external
+contract, D-013 — person facts live in a sibling store); greeting or person
+fields in the profile/persona schema (both closed metadata field sets stay
+closed); any new conversational tool (the 41-tool array does not grow);
+mid-conversation automatic re-identification (D-013's privacy property holds —
+the wake check and its bounded extended window remain the only automatic hooks);
+face photos on or in transit to the robot; and deploy from the backend UI (D-009
+keeps a human in the loop). **Verified against the unit suites and one reduced,
+face-less Mac selftest run only** — the seven `PERSON-*` / `ENROLL-STILL` /
+`BACKEND-*` rows in `feature_list.json` are the live gate, and `people.v1.json`
+must join the `reachy-deploy` backup/restore manifest before any of it survives
+a reinstall.

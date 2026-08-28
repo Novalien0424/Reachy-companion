@@ -214,6 +214,11 @@ class MovementManager:
         self._is_listening = False
         # Speaking pauses tracking; the captured look-at pose anchors queued moves.
         self._is_speaking = False
+        # Photo hold: the head is parked at its current pose for a capture burst.
+        self._hold_still = False
+        # Tracking state when the hold was taken, so the release can tell a
+        # deferred "tracking off" apart from a hold that never tracked at all.
+        self._hold_entry_head_tracking = False
         self._track_anchor: NDArray[np.float64] | None = None
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
         self._listening_antennas: Tuple[float, float] = self._last_commanded_pose[1]
@@ -299,6 +304,21 @@ class MovementManager:
         """
         self._command_queue.put(("set_speaking", speaking))
 
+    def set_hold_still(self, hold: bool) -> None:
+        """Freeze the head for a photo capture; thread-safe via the command queue.
+
+        While held: face tracking is paused at the current pose (weight-0.0, the
+        set_speaking anchor pattern), idle breathing is suppressed and queued
+        moves are dropped, so an enrollment frame is not motion-blurred.
+
+        Commands that would re-arm motion mid-capture — `set_speaking`,
+        `set_head_tracking`, `queue_move` — are not simply ignored: the first
+        two update their flags and defer the robot call, and this release edge
+        applies whatever those flags then demand (hand back to tracking, stay
+        parked because speech resumed, or stop tracking outright).
+        """
+        self._command_queue.put(("set_hold_still", hold))
+
     def _poll_signals(self, current_time: float) -> None:
         """Apply queued commands."""
         while True:
@@ -311,7 +331,11 @@ class MovementManager:
     def _handle_command(self, command: str, payload: Any, current_time: float) -> None:
         """Handle a single cross-thread command."""
         if command == "queue_move":
-            if isinstance(payload, Move):
+            if self._hold_still:
+                # The photo wins: a dance or emotion starting mid-capture is
+                # exactly the motion the hold exists to prevent.
+                logger.info("Move dropped during still-pose hold: %s", type(payload).__name__)
+            elif isinstance(payload, Move):
                 self.move_queue.append(payload)
                 self.state.update_activity()
                 duration = getattr(payload, "duration", None)
@@ -375,6 +399,11 @@ class MovementManager:
             self._track_anchor = None
             # set_speaking is gated off while disabled, so its state would go stale across a toggle.
             self._is_speaking = False
+            if self._hold_still:
+                # Deferred: the flag is up to date, but the robot call would
+                # re-arm the head mid-capture. The release edge applies it.
+                logger.debug("Head-tracking toggle deferred by the still-pose hold: %s", enabled)
+                return
             try:
                 if enabled:
                     self.current_robot.start_head_tracking(weight=1.0)
@@ -389,6 +418,12 @@ class MovementManager:
             if self._is_speaking == speaking:
                 return
             self._is_speaking = speaking
+            if self._hold_still:
+                # Deferred, and this is the common collision: a short reply
+                # ending mid-burst would otherwise hand the head straight back
+                # to the daemon at full weight. The release edge applies it.
+                logger.debug("Speaking handoff deferred by the still-pose hold: %s", speaking)
+                return
             try:
                 if speaking and self.current_robot.get_tracked_face(wait=False).detected:
                     # Pause only once a face is locked, else speech blocks acquisition.
@@ -399,6 +434,44 @@ class MovementManager:
                     self.current_robot.start_head_tracking(weight=1.0)
             except Exception as e:
                 logger.warning("Head-tracking speaking handoff failed: %s", e)
+        elif command == "set_hold_still":
+            hold = bool(payload)
+            if self._hold_still == hold:
+                return
+            self._hold_still = hold
+            try:
+                if hold:
+                    # Any active move — breathing, a dance, an emotion — blurs
+                    # the capture; the person asked to be memorized, so the
+                    # photo wins. Same semantics as clear_queue.
+                    self.move_queue.clear()
+                    self.state.current_move = None
+                    self.state.move_start_time = None
+                    self._breathing_active = False
+                    self._hold_entry_head_tracking = self._head_tracking
+                    if self._head_tracking:
+                        self._track_anchor = self.current_robot.get_current_head_pose()
+                        self.current_robot.start_head_tracking(weight=0.0)
+                # Release: the tracking and speaking commands that arrived
+                # mid-hold moved their flags only, so this is where the robot
+                # catches up with whatever they now demand.
+                elif self._head_tracking:
+                    if self._is_speaking:
+                        # Speech owns the head again; re-anchor if a tracking
+                        # toggle dropped the pose captured on the way in.
+                        if self._track_anchor is None:
+                            self._track_anchor = self.current_robot.get_current_head_pose()
+                        self.current_robot.start_head_tracking(weight=0.0)
+                    else:
+                        self._track_anchor = None
+                        self.current_robot.start_head_tracking(weight=1.0)
+                elif self._hold_entry_head_tracking:
+                    # Tracking was switched off mid-hold: apply the deferred
+                    # stop. Guarded by the entry state so a hold taken with
+                    # tracking already off issues no robot call at all.
+                    self.current_robot.stop_head_tracking()
+            except Exception as e:
+                logger.warning("Hold-still toggle failed: %s", e)
         else:
             logger.warning("Unknown command received by MovementManager: %s", command)
 
@@ -426,6 +499,10 @@ class MovementManager:
 
     def _manage_breathing(self, current_time: float) -> None:
         """Manage automatic breathing when idle."""
+        # A capture burst owns the head: breathing must not restart mid-photo.
+        # It resumes on release through the normal idle timer.
+        if self._hold_still:
+            return
         if (
             self.state.current_move is None
             and not self.move_queue

@@ -1,6 +1,7 @@
 import time
 import asyncio
 from typing import Any
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ import reachy_companion.conversation_handler as conv_mod
 import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion.tools import core_tools
 from reachy_companion.config import config, get_default_voice
+from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import Identification
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
@@ -16,6 +18,19 @@ from reachy_companion.tools.background_tool_manager import ToolState, ToolCallRo
 
 
 HF_DEFAULT_VOICE = get_default_voice()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_default_stores(tmp_path_factory: pytest.TempPathFactory, monkeypatch: Any) -> None:
+    """Keep the `instance_path=None` cases off the developer's real stores.
+
+    The late-recognition path reads `people.v1.json`, and with no instance path
+    the stores resolve under `XDG_DATA_HOME`. Pointing that at a fresh tmp dir
+    makes every default-path test read an empty store instead of whatever the
+    machine happens to have enrolled. Same fixture, same reason, as
+    `tests/test_face_tools.py`.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg")))
 
 
 class _FakeEvent:
@@ -626,7 +641,13 @@ class _CapturingConnection:
         return self
 
 
-def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = True) -> Any:
+def _wake_handler(
+    recognizer: Any,
+    monkeypatch: Any,
+    *,
+    camera_enabled: bool = True,
+    instance_path: Any = None,
+) -> Any:
     """Build a handler wired to a capturing connection and a counting response sender."""
     # The real 0.7 s pause between looks is a robot-time value, not a test one.
     monkeypatch.setattr(hf_mod, "_FACE_WAKE_EXTENDED_PAUSE_S", 0.01)
@@ -637,6 +658,7 @@ def _wake_handler(recognizer: Any, monkeypatch: Any, *, camera_enabled: bool = T
         ToolDependencies(
             reachy_mini=reachy_mini,
             movement_manager=MagicMock(),
+            instance_path=instance_path,
             camera_enabled=camera_enabled,
             face_recognizer=recognizer,
         )
@@ -681,6 +703,91 @@ async def test_extended_wake_check_injects_late_recognition(monkeypatch: Any) ->
     assert "小明" in item["content"][0]["text"]
     assert handler._safe_response_create.await_count == 1
     assert recognizer.frames_seen == 2
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_carries_what_it_remembers(monkeypatch: Any, tmp_path: Path) -> None:
+    """A late hit on someone with a history greets them with it, not just by name.
+
+    Same payoff as the boot greeting, one window later: the person walked into
+    frame after the greeting went out, and the follow-up still knows them.
+    """
+    add_person_fact(tmp_path, "Lena", "在准备一场马拉松")
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="Lena", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._extended_wake_face_check()
+
+    (item,) = handler.connection.created_items
+    text = item["content"][0]["text"]
+    assert text == hf_mod._FACE_LATE_KNOWN_WITH_FACTS_PROMPT.format(name="Lena", facts="在准备一场马拉松")
+    assert "Lena" in text
+    assert "在准备一场马拉松" in text
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_without_facts_uses_the_plain_late_prompt(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Nothing on file is not a degraded case: the plain named prompt, unchanged."""
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="Lena", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._extended_wake_face_check()
+
+    (item,) = handler.connection.created_items
+    assert item["content"][0]["text"] == hf_mod._FACE_LATE_RECOGNITION_PROMPT.format(name="Lena")
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_survives_an_unreadable_person_store(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A fact lookup that blows up costs the recall, never the late greeting or the label."""
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("people.v1.json is on fire")
+
+    monkeypatch.setattr(hf_mod, "facts_for_person", _boom)
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="Lena", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch, instance_path=tmp_path)
+
+    await handler._extended_wake_face_check()
+
+    (item,) = handler.connection.created_items
+    assert item["content"][0]["text"] == hf_mod._FACE_LATE_RECOGNITION_PROMPT.format(name="Lena")
+    assert handler._safe_response_create.await_count == 1
+    assert handler.deps.current_person == "Lena"
+
+
+@pytest.mark.asyncio
+async def test_extended_wake_check_drops_a_hit_when_the_session_changes_mid_recall(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The recall is an await too, so the staleness re-check has to sit after it.
+
+    A label written once the session has been replaced would land in the session
+    that just cleared it — the one leak the per-session clear exists to prevent.
+    """
+    recognizer = _WakeRecognizer([Identification(status="recognized", name="Lena", score=0.8, face_count=1)])
+    handler = _wake_handler(recognizer, monkeypatch, instance_path=tmp_path)
+    original = handler.connection
+    replacement = _CapturingConnection()
+
+    def _reconnect_while_reading(*_args: Any, **_kwargs: Any) -> list[Any]:
+        handler.connection = replacement
+        return []
+
+    monkeypatch.setattr(hf_mod, "facts_for_person", _reconnect_while_reading)
+
+    await handler._extended_wake_face_check()
+
+    assert original.created_items == []
+    assert replacement.created_items == []
+    assert handler._safe_response_create.await_count == 0
+    assert handler.deps.current_person is None
 
 
 @pytest.mark.asyncio
@@ -859,15 +966,63 @@ async def test_extended_wake_check_aborts_on_reconnected_session(monkeypatch: An
 
 
 @pytest.mark.asyncio
-async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch: Any) -> None:
-    """The extension is spawned exactly when the quick check found nobody.
+async def test_current_person_is_cleared_for_every_new_session(monkeypatch: Any) -> None:
+    """The identity label lives one session, no longer (spec §3.3).
 
-    Three sub-cases in one test because they are one rule: a quick-check miss
-    spawns it once, a quick-check hit has nothing left to look for, and the
-    kill switch stops the spawn before a task is ever created.
+    A reconnect drops into a conversation whose recognition happened in a
+    session that is gone; whoever is in the room now must be re-established by
+    the wake checks or `who_is_this`, never inherited. Asserted at the moment
+    the session config is gathered — before the connection is published and so
+    before any tool of the new session could read the label.
     """
-    miss = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
-    handler = _wake_handler(miss, monkeypatch)
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    # A handler that has already greeted: this is the reconnect path, not a boot.
+    handler._startup_greeting_sent = True
+    deps.current_person = "Lena"
+
+    labels: list[str | None] = []
+
+    def _tool_specs() -> list[Any]:
+        labels.append(deps.current_person)
+        return []
+
+    monkeypatch.setattr(hf_mod, "get_tool_specs", _tool_specs)
+    handler.client = _make_fake_realtime_client(events=(_FakeEvent("input_audio_buffer.speech_started"),))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    await handler._run_realtime_session()
+
+    assert labels == [None]
+    assert deps.current_person is None
+
+
+@pytest.mark.asyncio
+async def test_current_person_starts_unset_on_a_fresh_handler() -> None:
+    """A handler build is a session boundary too: shared deps must not carry a label in."""
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    deps.current_person = "Lena"
+
+    HuggingFaceRealtimeHandler(deps)
+
+    assert deps.current_person is None
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch: Any, tmp_path: Path) -> None:
+    """The extension is spawned exactly when the quick check did not place anybody.
+
+    Four sub-cases in one test because they are one rule: an empty frame spawns
+    it once, a stranger spawns it too (they may yet be someone Reachy knows, seen
+    badly), a quick-check hit has nothing left to look for, and the kill switch
+    stops the spawn before a task is ever created.
+    """
+    empty = _WakeRecognizer([Identification(status="no_face")])
+    handler = _wake_handler(empty, monkeypatch, instance_path=tmp_path)
 
     await handler._send_startup_greeting_prompt()
 
@@ -881,8 +1036,21 @@ async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch
     assert handler._wake_face_task is spawned
     await _drop_task(spawned)
 
+    stranger = _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)])
+    met = _wake_handler(stranger, monkeypatch, instance_path=tmp_path)
+
+    await met._send_startup_greeting_prompt()
+
+    (stranger_item,) = met.connection.created_items
+    stranger_text = stranger_item["content"][0]["text"]
+    assert stranger_text.startswith(hf_mod._FACE_STRANGER_GREETING_PREFIX)
+    assert stranger_text.endswith(WAKE_GREETING)
+    stranger_task = met._wake_face_task
+    assert stranger_task is not None
+    await _drop_task(stranger_task)
+
     hit = _WakeRecognizer([Identification(status="recognized", name="小明", score=0.8, face_count=1)])
-    greeted = _wake_handler(hit, monkeypatch)
+    greeted = _wake_handler(hit, monkeypatch, instance_path=tmp_path)
 
     await greeted._send_startup_greeting_prompt()
 
@@ -894,6 +1062,7 @@ async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch
     silenced = _wake_handler(
         _WakeRecognizer([Identification(status="unknown", score=0.1, face_count=1)]),
         monkeypatch,
+        instance_path=tmp_path,
     )
 
     await silenced._send_startup_greeting_prompt()
