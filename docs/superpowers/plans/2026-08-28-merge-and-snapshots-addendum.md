@@ -27,22 +27,37 @@ Extends `docs/superpowers/plans/2026-08-28-person-memory-and-backend.md`
     `former_face_ids` (so the sync diff still knows the robot record).
   - Aliases: the source's name, and the source's aliases, join the target's
     `aliases` (deduped, case-insensitive, never duplicating the target's
-    own name). Alias name uniqueness: an alias may NOT collide with another
-    person's name or alias (`DuplicateNameError`) — one name must resolve to
-    at most one person.
+    own name). Aliases pass through `faces.normalize_face_name` exactly like
+    names (Codex A1-4).
   - Source person deleted (dir removed after files moved).
   - Single lock hold; one `_write_document`.
-- `create_person` / `rename_person` uniqueness checks now scan aliases too.
+- **One normalized-name index over `name` + `aliases`** (Codex A1-4): every
+  uniqueness check (`create_person`, `rename_person`, merge, import attach)
+  resolves against that index with a same-person exception. Rename onto your
+  OWN alias is allowed and swaps: the alias is removed, the old canonical
+  name becomes an alias. Rename/create onto another person's name or alias →
+  `DuplicateNameError`. One normalized string resolves to at most one person.
 
 ### Sync awareness (`companion_backend/backend/robot.py`)
 - Name resolution (import attach + facts matching + removals) resolves robot
   names through `aliases` as well as `name` — a robot fact or face under
   "Lena" matches the merged person "Linna" carrying alias "Lena".
 - "New face" test: a robot `record_id` counts as known when it equals any
-  person's `face_id` OR appears in any `former_face_ids`. A former-id record
-  maps to its absorbing person for the changed-subset check (one import cycle
-  may be required after a merge before push — acceptable, matches the
-  existing changed-faces flow).
+  person's `face_id` OR appears in any `former_face_ids`.
+- **The changed-subset test is redefined store-wide** (Codex A1-2, and it
+  retires the main plan's accepted 3-slot re-block quirk): a known robot
+  record is "changed" iff it holds an embedding that is not present in ANY
+  of the mapped person's stored photo embeddings (synthetic included) — not
+  merely absent from the projected newest-3 window. Content the backend
+  holds anywhere is known content; the push may collapse multiple robot
+  records (survivor + former ids) into the single projected record once
+  nothing unknown remains. Regression test: two robot ids mapping to one
+  survivor with >3 total samples import once and then push cleanly.
+- **Alias re-enrollment persists the new robot id** (Codex A1-1): when
+  `apply_import` attaches an alias-matched robot face to a person that
+  already has a different primary `face_id`, the primary is kept and the new
+  `record_id` is appended to `former_face_ids` — otherwise the next diff
+  re-reports it as a new face and the push gate can block forever.
 - Projection: aliases and former ids are Mac-side metadata only — never
   projected; after the first post-merge push the robot holds only the
   surviving person.
@@ -78,11 +93,16 @@ images; continuous capture remains rejected.
     -frames:v 1`), atomic tmp+rename, overwrite per re-enroll. Best-effort:
     any failure logs a warning and returns False — a snapshot must NEVER
     fail or delay an enrollment result.
-- `tools/remember_face.py`: after a successful enroll, fire the snapshot
-  from the FIRST accepted sample frame via `asyncio.to_thread`, inside the
-  existing `hold_still` bracket (the frame is already captured; encoding may
-  finish after release — hold only the frame reference, do not extend the
-  hold). Tool result unchanged.
+- `tools/remember_face.py`: after a successful enroll, schedule the snapshot
+  **fire-and-forget** (Codex A1-5): copy the FIRST accepted sample frame
+  first (`np.ascontiguousarray(frame, dtype=np.uint8)` — the appsink buffer
+  must not be aliased), then `asyncio.create_task` into a module-level task
+  set with a done-callback that discards the handle and logs any exception;
+  the tool result NEVER awaits it. The ffmpeg subprocess runs with a bounded
+  timeout (10 s, killed on expiry). The encode happens after the hold
+  releases; only the copied frame crosses. Tool `description` updated: it
+  now stores the name, the numeric signature, AND one enrollment snapshot
+  photo (the "never a picture" sentence is amended — D-013 amendment).
 - Lifecycle notes (docs): snapshots live in the instance dir → wiped on
   reinstall like every store; the deploy-manifest note in
   `session-handoff.md` extends to `face_snapshots/`. No cascade from
@@ -93,12 +113,14 @@ images; continuous capture remains rejected.
 - `robot.py` import: for every robot face it applies (new, changed, attach),
   best-effort scp of `face_snapshots/<record_id>.jpg` (missing file is
   normal — enrolled before this feature, or robot not yet redeployed).
-  Fetched bytes become a REGULAR backend photo on that person
-  (`display_name "robot-snapshot.jpg"`), embedded locally best-effort like
-  an upload (embedding failure keeps the photo as display-only with its
-  error). Re-import of an unchanged snapshot must not duplicate photos:
-  skip when the person already has a photo whose bytes hash matches
-  (sha256 compare, cheap at one file per person).
+  Fetched bytes become a **display-only** backend photo on that person
+  (`display_name "robot-snapshot.jpg"`, `embedding=None`, `error=None` — it
+  is deliberately NOT embedded, so it can never enter the projected sample
+  window and perturb the changed-subset test; Codex A1-3). The person's
+  recognition samples remain the robot's exact synthetic embeddings. UI
+  labels an un-embedded, error-free photo as a display photo rather than
+  "pending". Re-import of an unchanged snapshot must not duplicate photos:
+  skip when the person already has a photo whose bytes sha256-match.
 - UI: nothing new — the photo grid already renders real photos.
 
 ## Tests (same gates as the main plan)
@@ -115,6 +137,21 @@ robot-side); enrollment result unaffected when encoding fails (monkeypatched
 failure); snapshot fired only on successful enroll. API: merge route codes.
 UI: manual smoke.
 
+Additional tests (Codex A1): alias re-enrollment after a post-merge push;
+two robot ids → one survivor with >3 total samples (import once, push
+clean); removed facts under a former_face_id record; rename onto own alias
+(swap) and onto another's alias (409); alias-vs-alias merge collision;
+3-sample robot face + snapshot import then immediate push (clean); snapshot
+scp failure never fails the face import; sha256 dedupe against an existing
+real photo's bytes.
+
 ## Review log
 
-(Codex round(s) recorded here.)
+**Round 1 (2026-08-28, 5 findings, all accepted):** A1-1 attach-under-alias
+must persist the new robot id into `former_face_ids` (else permanent push
+block); A1-2 changed-subset test redefined to "unknown to ANY stored photo
+embedding" with multi-record collapse (also retires the 3-slot re-block
+quirk); A1-3 imported snapshots are display-only/non-projecting; A1-4 one
+normalized name+alias index, rename-onto-own-alias swaps; A1-5 snapshot is
+fire-and-forget with owned task set, bounded ffmpeg timeout, copied frame,
+amended tool description.
