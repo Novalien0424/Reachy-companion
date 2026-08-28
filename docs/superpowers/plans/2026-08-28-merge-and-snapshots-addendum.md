@@ -22,9 +22,11 @@ Extends `docs/superpowers/plans/2026-08-28-person-memory-and-backend.md`
     existing dedupe (case-insensitive within the person).
   - Photos: photo FILES move from the source dir to the target dir
     (`stored_as` is photo-id-based, collision-free); records (synthetic
-    included, embeddings intact) append to target, order preserved
-    (target's first, then source's — recency semantics stay honest because
-    the merge bumps target `updated_at` via `_mutate`).
+    included, embeddings intact) are **interleaved by `added_at`
+    newest-first with stable tie order** (Codex A3-1 — projection takes the
+    first ≤3 embeddings, so a source's newer enrollment samples must not
+    hide behind older target photos; regression test: target holds 3 older
+    embeddings, source newer ones, projection keeps the true newest three).
   - `face_id`: target keeps its own; if target has none, it adopts the
     source's. `former_face_ids` of the survivor = `target.former_face_ids ∪
     source.former_face_ids ∪ {unadopted source.face_id}`, deduped, excluding
@@ -128,10 +130,12 @@ images; continuous capture remains rejected.
   (they also carry no embedding), so the snapshot can never enter the
   projected sample window (Codex A1-3); the person's recognition samples
   remain the robot's exact synthetic embeddings. The API exposes the flag;
-  the UI labels from it. The robot `record_id` is validated with the same
-  no-separator/`Path(...).name` rule before it is ever interpolated into
-  the scp path (Codex A2-5); an invalid id skips only the snapshot, never
-  the face import. Re-import of an unchanged snapshot must not duplicate
+  the UI labels from it. The robot `record_id` is validated against the actual
+  generated shape — regex `^f_\d+_[a-z0-9]{6}$` — before it is ever
+  interpolated into the scp path (Codex A2-5 strengthened by A3-2: robot
+  JSON can be hand-edited, and mere no-separator admits spaces, quotes,
+  globs); an invalid id skips only the snapshot, never the face import
+  (tests cover separators, spaces, quotes, `$`, `;`, glob chars). Re-import of an unchanged snapshot must not duplicate
   photos: skip when the person already has a photo whose bytes sha256-match.
 - UI: nothing new — the photo grid already renders real photos.
 
@@ -158,6 +162,11 @@ scp failure never fails the face import; sha256 dedupe against an existing
 real photo's bytes.
 
 ## Review log
+
+**Round 3 (2026-08-28, 2 findings, both accepted — review closed at the
+3-round cap):** A3-1 merged photos interleave by `added_at` newest-first
+(projection window correctness); A3-2 record-id regex `^f_\d+_[a-z0-9]{6}$`
+before scp interpolation.
 
 **Round 2 (2026-08-28, 5 findings, all accepted):** A2-1 merge chains carry
 `former_face_ids` forward; A2-2 concrete exception classes so the API's
