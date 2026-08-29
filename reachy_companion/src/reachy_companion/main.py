@@ -310,6 +310,10 @@ def run(
             if go_to_sleep_requested.is_set():
                 return {"status": "already_requested"}
             go_to_sleep_requested.set()
+            # D-027: the ONLY writer of this flag. The handler's shutdown() also
+            # runs for settings/backend restarts (console.py:307, :697), which are
+            # mid-visit and must not summarize; going to sleep ends the visit.
+            deps.sleep_requested = True
 
             logger.info("Going to sleep before stopping conversation app.")
             sleep_error: str | None = None

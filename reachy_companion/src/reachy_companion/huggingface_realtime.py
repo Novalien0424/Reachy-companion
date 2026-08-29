@@ -48,7 +48,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
-from reachy_companion.sleep_summary import record_transcript
+from reachy_companion.sleep_summary import record_transcript, write_sleep_summaries
 from reachy_companion.audio.envparse import env_int, env_bool, env_float
 from reachy_companion.tools.core_tools import (
     ToolSpec,
@@ -500,6 +500,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_paused_response_id: str | None = None
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
+        # --- sleep-time engagement memory (D-027) ----------------------------
+        # One summary per visit: `shutdown()` can legitimately run twice (its own
+        # call site plus the session `finally`), and the second must be a no-op.
+        self._sleep_summary_done: bool = False
 
     # --- party mode ---------------------------------------------------------
     def set_party_mode(self, enabled: bool) -> dict[str, Any]:
@@ -2463,6 +2467,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def shutdown(self) -> None:
         """Shutdown the handler."""
+        # D-027: the visit's last-chat summary, written once, only when this
+        # shutdown is the one that follows `go_to_sleep` -- settings and backend
+        # restarts (console.py:307, :697) reach here mid-visit and must not
+        # summarize. `write_sleep_summaries` never raises and is timeout-bounded,
+        # and it builds (and closes) its own client, so it takes no argument here.
+        if self.deps.sleep_requested and not self._sleep_summary_done:
+            self._sleep_summary_done = True
+            written = await write_sleep_summaries(self.deps)
+            if written:
+                logger.info("Sleep summary: wrote last-chat fact for %d person(s).", written)
+
         # D-018 / R7 + finding 3: the daemon keeps playing a sound file after our
         # session dies, so a shutdown that leaves music running is a bug the user
         # hears -- and a confirmation left armed is one the next conversation

@@ -174,6 +174,9 @@ values.
 | `FACE_WAKE_BUDGET_MS`              | Time budget for the wake-time recognition check; an overrun greets normally, on time. |
 | `FACE_MATCH_THRESHOLD`             | Similarity a match must clear. Conservative by default.         |
 | `FACE_MATCH_MARGIN`                | Lead the best match needs over the runner-up; inside it, the answer is `ambiguous`, never a guess. |
+| `MEMORY_LAST_CHAT_ENABLED`         | Master switch for the sleep-time last-chat summary. Off writes no `上次聊天` fact. |
+| `MEMORY_LAST_CHAT_MODEL`           | Model that writes the one-line summary per person. Defaults to `gpt-5-mini`. |
+| `MEMORY_LAST_CHAT_TIMEOUT_S`       | Time budget for that summarizer call, `1.0`–`30.0`. Default `8.0`; an overrun leaves no fact. |
 | `NOTION_MCP_URL` / `NOTION_MCP_TOKEN` | Remote MCP endpoint and bearer token for the Notion integration. |
 | `HA_URL` / `HA_TOKEN`              | Home Assistant base URL and long-lived access token.            |
 | `HA_ENTITIES`                      | JSON map of spoken names to entity ids — the **only** devices the model may target. |

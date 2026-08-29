@@ -9,9 +9,11 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from reachy_companion import people, sleep_summary
+from reachy_companion import huggingface_realtime as hf_mod
 from reachy_companion.face_id import Identification
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.who_is_this import WhoIsThis
@@ -296,3 +298,44 @@ def test_format_last_chat_fact_has_prefix_and_date() -> None:
     text = sleep_summary.format_last_chat_fact("聊到考試")
     assert text.startswith("上次聊天（")
     assert "月" in text and text.endswith("聊到考試")
+
+
+class _WriterSpy:
+    """Stands in for `write_sleep_summaries`, recording how it was called."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> int:
+        """Record the call and report one fact written."""
+        self.calls.append(kwargs)
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_handler_shutdown_without_sleep_request_writes_nothing(tmp_path: Path, monkeypatch: Any) -> None:
+    """A settings/backend restart reaches shutdown() mid-visit: no summary then."""
+    spy = _WriterSpy()
+    monkeypatch.setattr(hf_mod, "write_sleep_summaries", spy)
+    handler = hf_mod.HuggingFaceRealtimeHandler(_visit_deps(tmp_path, "小諾"))
+
+    await handler.shutdown()
+
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_shutdown_after_sleep_request_summarizes_once(tmp_path: Path, monkeypatch: Any) -> None:
+    """Going to sleep summarizes, with its own client, and only on the first shutdown."""
+    spy = _WriterSpy()
+    monkeypatch.setattr(hf_mod, "write_sleep_summaries", spy)
+    deps = _visit_deps(tmp_path, "小諾")
+    deps.sleep_requested = True
+    handler = hf_mod.HuggingFaceRealtimeHandler(deps)
+
+    await handler.shutdown()
+    await handler.shutdown()  # the session `finally` can run this a second time
+
+    # No client argument: the writer builds one and closes it with `async with`,
+    # so a shared client handed in here would be closed out from under its owner.
+    assert spy.calls == [{}]
