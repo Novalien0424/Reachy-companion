@@ -1573,4 +1573,7 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     assert "not the camera tool" in remember
     # The recall clause: without it the model receives `known_facts` and has no
     # instruction to use them, so the recognition sounds like a stranger's.
-    assert "remembered facts" in who
+    # Since the fact-fidelity rewrite the promise is worded as reporting the
+    # facts *as returned*, paired with an explicit ban on inventing a name.
+    assert "facts as returned" in who
+    assert "never guess a name" in who
