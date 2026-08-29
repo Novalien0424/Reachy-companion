@@ -16,7 +16,10 @@ class Remember(Tool):
     description = (
         "Save ONE short fact about the user to long-term memory so it is available in future sessions. "
         "Use this for stable user information they explicitly shared: name, preferences, hobbies, recurring projects, "
-        "important people, or plans. Keep each fact atomic and under one sentence. Do not save sensitive data "
+        "important people, or plans. "
+        "Prefer ongoing threads — plans, upcoming events, things in progress — over static traits, "
+        "and the fact may mention other people you know by name. "
+        "Keep each fact atomic and under one sentence. Do not save sensitive data "
         "(passwords, addresses, payment info, health diagnoses) or fleeting details. "
         "When you have recognized who you are talking to, the fact is saved about that specific person. "
         "Use this silently in the "
