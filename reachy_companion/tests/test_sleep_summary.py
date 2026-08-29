@@ -130,6 +130,36 @@ def test_record_transcript_refreshes_the_current_person_stamp() -> None:
     assert deps.recognized_at["小諾"] == deps.session_transcript[-1][2]
 
 
+def test_record_transcript_falls_back_to_the_only_guest_after_a_reconnect() -> None:
+    """A cleared label does not stop the heartbeat when only one person is known.
+
+    `_run_realtime_session` clears `current_person` on EVERY session, reconnects
+    included (`huggingface_realtime.py:1982`), and the greeting/wake recognition
+    is one-shot per handler — so nothing re-establishes the label mid-visit. With
+    exactly one person on the guest list the talking can only be theirs.
+    """
+    deps = _deps()
+    deps.record_recognition("小諾")
+    deps.current_person = None  # the reconnect
+
+    sleep_summary.record_transcript(deps, "user", "我下週要考試")
+
+    assert deps.recognized_at["小諾"] == deps.session_transcript[-1][2]
+
+
+def test_record_transcript_refreshes_nobody_when_two_guests_share_a_cleared_label() -> None:
+    """Two known people and no label: guessing whose line this is would leak again."""
+    deps = _deps()
+    deps.record_recognition("小諾")
+    deps.record_recognition("雲霓")
+    deps.current_person = None
+    before = dict(deps.recognized_at)
+
+    sleep_summary.record_transcript(deps, "user", "我下週要考試")
+
+    assert deps.recognized_at == before
+
+
 def test_record_transcript_does_not_invent_a_guest() -> None:
     """A current person who was never recognized is not added to the guest list."""
     deps = _deps()
@@ -372,6 +402,25 @@ def test_write_sleep_summaries_keeps_the_speaker_of_a_long_visit(tmp_path: Path)
     client, _ = _client(json.dumps({"小諾": "聊到考試"}))
     deps = _long_visit_deps(tmp_path, "小諾")
     assert deps.recognized_at["小諾"] >= deps.session_transcript[0][2]
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    assert people.facts_for_person(tmp_path, "小諾") != []
+
+
+def test_write_sleep_summaries_survives_a_reconnect_mid_visit(tmp_path: Path) -> None:
+    """One person, one long visit, one dropped websocket: they still get their callback.
+
+    The reconnect clears `current_person` and nothing re-sets it — the wake
+    checks are one-shot per handler. Their recognition then scrolls out of the
+    tail while they keep talking, and without the sole-guest fallback in the
+    heartbeat the window would come back EMPTY and the whole visit would be
+    summarized for nobody.
+    """
+    client, _ = _client(json.dumps({"小諾": "聊到考試"}))
+    deps = _visit_deps(tmp_path, "小諾")
+    deps.current_person = None  # `_run_realtime_session` clears it on every session
+    for index in range(sleep_summary.TRANSCRIPT_MAX_ITEMS + 10):
+        sleep_summary.record_transcript(deps, "user" if index % 2 else "assistant", f"重連後第{index}句")
 
     assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
     assert people.facts_for_person(tmp_path, "小諾") != []

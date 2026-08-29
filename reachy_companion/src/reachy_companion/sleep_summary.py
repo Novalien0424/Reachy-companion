@@ -51,14 +51,25 @@ def record_transcript(deps: ToolDependencies, role: str, text: str) -> None:
     then talks past 40 lines, pushing their own recognition out of the retained
     tail. Only a person already on the guest list is refreshed — `current_person`
     is a label, and a label alone is not a sighting.
+
+    The label is not always there to follow. `_run_realtime_session` clears it on
+    **every** session, reconnects included (`huggingface_realtime.py:1982`), and
+    the wake checks that set it are one-shot per handler — so a dropped websocket
+    leaves a live visit with no label at all. When exactly ONE person is known
+    this run, the talking can only be theirs, so the heartbeat follows them
+    instead. With two or more known and no label it refreshes nobody: guessing
+    whose line this is would recreate the attribution leak the window closes.
     """
     cleaned = text.strip()
     if not cleaned or cleaned.startswith("[error]"):
         return
     stamp = time.monotonic()
     deps.session_transcript.append((role, cleaned, stamp))
-    if deps.current_person is not None and deps.current_person in deps.recognized_at:
-        deps.recognized_at[deps.current_person] = stamp
+    speaker = deps.current_person
+    if speaker is None and len(deps.recognized_at) == 1:
+        speaker = next(iter(deps.recognized_at))
+    if speaker is not None and speaker in deps.recognized_at:
+        deps.recognized_at[speaker] = stamp
 
 
 def _default_model() -> str:
@@ -81,17 +92,20 @@ def _people_in_window(deps: ToolDependencies, transcript: list[tuple[str, str, f
     their 上次聊天 fact gets somebody else's topics, and the next recognized
     greeting reads it back to them.
 
-    So the filter is the tail's own reach. While **nothing has scrolled out** the
-    tail *is* the whole run and nobody is filtered: every guest's own lines are
-    still in it. Once lines have been evicted, a guest is kept only if last seen
-    at-or-after the oldest surviving line — everything they said is otherwise
-    gone, and there is nothing left to summarize *for them*.
+    So the filter is the tail's own reach. While the tail is **not yet full** it
+    covers the whole run and nobody is filtered: every guest's own lines are
+    still in it. Once it is full, a guest is kept only if last seen at-or-after
+    the oldest retained line — everything they said is otherwise about to be, or
+    already, gone. The test is `len(transcript) == maxlen`, which is one line
+    *ahead* of the first real eviction: at exactly `maxlen` nothing has dropped
+    yet, but the next line will drop one, and starting to filter a line early is
+    the fail-closed direction — the mistake it avoids is somebody else's evening
+    written into a person's memory.
 
     Two deliberate softenings, both fail-open:
-      - `record_transcript` refreshes the current person's stamp, so the visit's
-        own speaker is never filtered out by the length of their own
-        conversation — the boot recognition scrolls out of a long visit, they do
-        not;
+      - `record_transcript` refreshes the speaker's stamp, so the visit's own
+        speaker is never filtered out by the length of their own conversation —
+        the boot recognition scrolls out of a long visit, they do not;
       - a name in the set with no stamp behind it is kept: no stamp is no
         evidence of staleness, and every production site stamps through
         `ToolDependencies.record_recognition`.

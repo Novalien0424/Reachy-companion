@@ -894,15 +894,24 @@ speak for: **once lines have been evicted**, a guest must have been last seen
 at-or-after the oldest surviving line; while nothing has scrolled out the tail
 *is* the whole run and nobody is filtered. An empty roster returns 0 before the
 client is built, so an all-stale run costs no token. Two deliberate softenings,
-both fail-open: `record_transcript` refreshes the current person's stamp
-(talking is presence — otherwise a long visit, the visit most worth a callback,
-would end with no summary at all, its boot recognition having scrolled out), and
-a name with no stamp behind it is kept, since no stamp is no evidence of
-staleness. **Residuals, deliberate:** a person whose recognition *and* every line
-of theirs has scrolled out of the 40-line tail gets **no** summary that run —
-there is nothing left to summarize for them; and in the other direction, while
-nothing has scrolled out an hours-old guest is still summarized, because their
-own lines are still in the transcript being summarized. **(b) The consolidation
+both fail-open: `record_transcript` refreshes the speaker's stamp (talking is
+presence — otherwise a long visit, the visit most worth a callback, would end
+with no summary at all, its boot recognition having scrolled out), and a name
+with no stamp behind it is kept, since no stamp is no evidence of staleness. The
+speaker is `current_person` when there is one, and otherwise the **sole** guest
+on the list: `_run_realtime_session` clears that label on *every* session
+including reconnects (`huggingface_realtime.py:1982`) and the wake checks that
+set it are one-shot per handler, so a dropped websocket leaves a live visit
+unlabelled — with exactly one person known this run the talking can only be
+theirs. With **two or more** known and no label, nobody's stamp refreshes:
+guessing whose line it is would recreate the very leak this closes. **Residuals,
+deliberate:** a guest is dropped once 40 transcript lines have elapsed since
+their last recognition *or* last heartbeat — **whether or not they are still in
+the room speaking**, because the heartbeat follows the label and there is no
+diarization (a second guest in an unlabelled multi-person visit is therefore the
+case that loses a callback); and in the other direction, while the tail is not
+yet full an hours-old guest is still summarized, because their own lines are
+still in the transcript being summarized. **(b) The consolidation
 guard now asks the kernel first.** §(5)'s probe list is a *guess* at addresses,
 and it missed the LAN bind: `COMPANION_BACKEND_HOST=192.168.x.x ./run.sh` in
 another shell puts that variable in *that* shell's environment, `tailscale ip
@@ -915,7 +924,7 @@ closed on an absent binary would strand operators and buy nothing, because the
 probes below are the floor and already fail closed. The README's §Consolidation
 carries both, plus the reminder to export `COMPANION_BACKEND_HOST` in the CLI's
 own shell when the server runs with a custom bind. Suites after the amendment:
-robot **1477 passed / 30 skipped** (`test_sleep_summary.py` 19 → **28**),
+robot **1480 passed / 30 skipped** (`test_sleep_summary.py` 19 → **31**),
 backend **271 passed** (`test_consolidate.py` 37 → **45**), ruff and
 `mypy --strict` clean on both sides. `mypy --strict tests/` on the backend moves
 17 → **25** against its known baseline, every new one the same `attr-defined`
