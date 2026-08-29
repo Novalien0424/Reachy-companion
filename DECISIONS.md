@@ -876,3 +876,50 @@ carries). The three `MEMORY-LAST-CHAT` / `MEMORY-OPEN-LOOPS` /
 `BACKEND-CONSOLIDATE` rows in `feature_list.json` are the live gate, and the
 robot half of it needs the **sixteenth install** — only the persona edit is live
 today.
+
+**Amendment (2026-08-30, final whole-branch review).** Both halves of the record
+above had a guard that was open, and both are now closed. **(a) The visit is a
+time window, not the whole app run.** §(2)'s two containers span different
+things — `recognized_people` is unbounded and spans the run, `session_transcript`
+is its last 40 lines — so a robot left awake all day gave *every* name it had
+ever recognized a summary of the *evening's* tail: the person greeted at 09:00
+got tonight's visitor's topics written into their 上次聊天 fact, and read back to
+them at the next greeting. So entries are now stamped with `time.monotonic()`
+(§(2)'s `deque[tuple[str, str]]` is `deque[tuple[str, str, float]]`),
+`ToolDependencies` gains `recognized_at: dict[str, float]`, and
+`record_recognition(name)` is the single sanctioned writer of both containers —
+all three recognition sites call it, and the LAST sighting wins. Before building
+the prompt, `write_sleep_summaries` keeps only the guests the tail can honestly
+speak for: **once lines have been evicted**, a guest must have been last seen
+at-or-after the oldest surviving line; while nothing has scrolled out the tail
+*is* the whole run and nobody is filtered. An empty roster returns 0 before the
+client is built, so an all-stale run costs no token. Two deliberate softenings,
+both fail-open: `record_transcript` refreshes the current person's stamp
+(talking is presence — otherwise a long visit, the visit most worth a callback,
+would end with no summary at all, its boot recognition having scrolled out), and
+a name with no stamp behind it is kept, since no stamp is no evidence of
+staleness. **Residuals, deliberate:** a person whose recognition *and* every line
+of theirs has scrolled out of the 40-line tail gets **no** summary that run —
+there is nothing left to summarize for them; and in the other direction, while
+nothing has scrolled out an hours-old guest is still summarized, because their
+own lines are still in the transcript being summarized. **(b) The consolidation
+guard now asks the kernel first.** §(5)'s probe list is a *guess* at addresses,
+and it missed the LAN bind: `COMPANION_BACKEND_HOST=192.168.x.x ./run.sh` in
+another shell puts that variable in *that* shell's environment, `tailscale ip
+-4` never reports a LAN address, and so every candidate refused and the guard
+failed **open** — the one direction it must never fail. `backend_objection` now
+runs `lsof -nP -iTCP:8710 -sTCP:LISTEN` **before** the HTTP probes (cheaper, and
+it sees every bind); any listener is an objection naming the command that holds
+the port. A missing or unhappy `lsof` is explicitly **not** a refusal — failing
+closed on an absent binary would strand operators and buy nothing, because the
+probes below are the floor and already fail closed. The README's §Consolidation
+carries both, plus the reminder to export `COMPANION_BACKEND_HOST` in the CLI's
+own shell when the server runs with a custom bind. Suites after the amendment:
+robot **1477 passed / 30 skipped** (`test_sleep_summary.py` 19 → **28**),
+backend **271 passed** (`test_consolidate.py` 37 → **45**), ruff and
+`mypy --strict` clean on both sides. `mypy --strict tests/` on the backend moves
+17 → **25** against its known baseline, every new one the same `attr-defined`
+monkeypatch-target complaint about `cli.shutil` / `cli.subprocess` the file
+already carried eight times. Still **no on-robot run**: both fixes ride the
+sixteenth install, and the visit window adds a second negative control to
+`MEMORY-LAST-CHAT` (two people hours apart, only the recent one summarized).

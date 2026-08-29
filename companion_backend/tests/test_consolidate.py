@@ -580,7 +580,18 @@ def test_full_sync_cycle_heals_stale_last_chat(
 
 
 @pytest.fixture
-def refused(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def no_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence the `lsof` half of the guard, so no test depends on this machine's port 8710.
+
+    The listener check runs before the HTTP probes and shortcuts them, so every
+    test that wants the probe path has to neutralize it first — including the
+    ones that hand `_probe` an answer.
+    """
+    monkeypatch.setattr(cli, "_port_listeners", lambda: "")
+
+
+@pytest.fixture
+def refused(monkeypatch: pytest.MonkeyPatch, no_listener: None) -> list[str]:
     """Make every probe report a refused connection, and hand back the URLs probed.
 
     This is the *only* verdict that lets a run touch the store, so almost every
@@ -722,7 +733,7 @@ def test_cli_reports_a_refused_answer_and_still_exits_zero(
 
 
 def test_cli_refuses_while_the_backend_answers(
-    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], no_listener: None
 ) -> None:
     """A backend that answers anything at all stops the run before it reads the store."""
     _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
@@ -760,6 +771,7 @@ def test_cli_refuses_when_it_cannot_prove_the_backend_is_stopped(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     failure: Exception,
+    no_listener: None,
 ) -> None:
     """Anything but a refused connection is unproven, and unproven fails closed.
 
@@ -805,7 +817,7 @@ def test_cli_probes_loopback_the_configured_bind_and_the_tailnet(
 
 
 def test_cli_stops_at_the_first_host_that_answers(
-    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], no_listener: None
 ) -> None:
     """Loopback refusing is not a verdict while the tailnet bind still answers."""
     _person(cli_settings, "雲霓", ["喜歡寫歌"])
@@ -822,6 +834,98 @@ def test_cli_stops_at_the_first_host_that_answers(
     assert cli.main([], client=client) == 3
     assert "100.64.0.7" in capsys.readouterr().out
     assert spy.calls == []
+
+
+_LSOF_REPORT = (
+    "COMMAND   PID  USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n"
+    "python  40321  nova    7u  IPv4 0x1f2a3b4c5d6e7f80      0t0  TCP 192.168.1.9:8710 (LISTEN)\n"
+)
+
+
+def test_cli_refuses_when_a_process_is_listening_on_the_port(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A LAN bind the HTTP probes cannot see is still a running backend.
+
+    `COMPANION_BACKEND_HOST=192.168.1.9 ./run.sh` in another shell binds an
+    address this process never learns: the env var belongs to that shell, and
+    `tailscale ip -4` does not report a LAN address. The probes would refuse on
+    every candidate and the guard would fail OPEN — the one direction it must
+    never fail. Asking the kernel who holds the port catches every bind.
+    """
+    _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
+    before = store.people_path(cli_settings).read_bytes()
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=_LSOF_REPORT, stderr=""),
+    )
+
+    def unreachable(url: str) -> None:
+        raise AssertionError("the listener check must answer before any HTTP probe")
+
+    monkeypatch.setattr(cli, "_probe", unreachable)
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--apply"], client=client)
+
+    out = capsys.readouterr().out
+    assert code == 3
+    assert "listening on port 8710" in out and "python" in out
+    assert spy.calls == []
+    assert store.people_path(cli_settings).read_bytes() == before
+
+
+def test_cli_falls_back_to_the_http_probes_without_lsof(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No `lsof` is not a refusal: the HTTP probes are the floor and still decide.
+
+    Failing closed on a missing binary would strand every operator whose machine
+    does not ship one, and buy nothing — the probes below already fail closed.
+    """
+    probed: list[str] = []
+
+    def refuse(url: str) -> None:
+        probed.append(url)
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)  # no lsof, no tailscale
+    monkeypatch.setattr(cli, "_probe", refuse)
+    monkeypatch.delenv(cli.BACKEND_HOST_ENV, raising=False)
+
+    assert cli.backend_objection() is None
+    assert probed == ["http://127.0.0.1:8710/api/config"]
+
+
+def test_port_listeners_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing or unhappy `lsof` reports no listener and never raises."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli._port_listeners() == ""
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/sbin/lsof")
+
+    def completed(returncode: int, stdout: str) -> Any:
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: completed(0, _LSOF_REPORT))
+    assert cli._port_listeners() == _LSOF_REPORT.strip()
+
+    # lsof exits 1 when nothing matched — the port is free, which is not an objection.
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: completed(1, ""))
+    assert cli._port_listeners() == ""
+
+    def raise_oserror(*args: Any, **kwargs: Any) -> None:
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(cli.subprocess, "run", raise_oserror)
+    assert cli._port_listeners() == ""
+
+
+def test_listener_objection_names_the_processes_it_found() -> None:
+    """The refusal says who holds the port, so the operator knows what to stop."""
+    assert cli._listener_summary(_LSOF_REPORT) == "python"
+    assert cli._listener_summary("COMMAND PID\n") == ""  # a header alone names nobody
+    assert cli._listener_summary("") == ""
 
 
 def test_tailscale_hosts_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:

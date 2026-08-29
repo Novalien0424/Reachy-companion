@@ -1,6 +1,7 @@
 import abc
 import sys
 import json
+import time
 import asyncio
 import inspect
 import logging
@@ -59,16 +60,38 @@ class ToolDependencies:
     # reason as face_recognizer: every other construction site keeps working.
     current_person: str | None = None
     # Whole-app-run engagement memory (sleep_summary.py): every name ever
-    # recognized this run, and a bounded tail of final user/assistant text.
+    # recognized this run, when each was last seen, and a bounded tail of final
+    # user/assistant text stamped the same way.
     # Deliberately NOT cleared on session reconnect — the unit is the visit.
     # The maxlen literal must stay equal to sleep_summary.TRANSCRIPT_MAX_ITEMS;
     # importing it here would be a cycle (Tool classes import core_tools).
+    #
+    # The two spans differ, and that is the whole reason for the stamps: the set
+    # is unbounded and spans the entire app run, the transcript is only its last
+    # 40 lines. Without a clock on both, a person recognized this morning would
+    # be summarized against tonight's conversation. Stamps are `time.monotonic()`
+    # — comparable within one run, which is all this needs, and immune to the
+    # wall clock moving. `write_sleep_summaries` keeps only the people whose last
+    # sighting is at-or-after the oldest retained transcript line.
     recognized_people: set[str] = field(default_factory=set)
-    session_transcript: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=40))
+    recognized_at: dict[str, float] = field(default_factory=dict)
+    session_transcript: deque[tuple[str, str, float]] = field(default_factory=lambda: deque(maxlen=40))
     # Set only by the go_to_sleep closure in main.py; gates the sleep summary so
     # settings/backend restarts (console.py:307/:697 also reach shutdown()) don't
     # write mid-visit.
     sleep_requested: bool = False
+
+    def record_recognition(self, name: str) -> None:
+        """Note that `name` is in front of the robot right now.
+
+        The single sanctioned way onto the visit's guest list: the set and its
+        clock are written together, so they cannot drift. Every recognition site
+        calls it (the boot wake check, the extended wake window, `who_is_this`),
+        and a re-sighting moves the stamp forward — the LAST sighting is what the
+        sleep summary's window is measured against, never the first.
+        """
+        self.recognized_people.add(name)
+        self.recognized_at[name] = time.monotonic()
 
 
 class ToolSpec(TypedDict):

@@ -26,6 +26,14 @@ so probing `127.0.0.1` alone would clear a run against the exact deployment the
 README recommends. The candidates are loopback, `COMPANION_BACKEND_HOST` when
 set, and whatever `tailscale ip -4` reports.
 
+Guessing addresses is still guessing, though, so the guard asks the kernel
+first: `lsof -nP -iTCP:8710 -sTCP:LISTEN` sees *every* bind, including the LAN
+one no candidate list can reach — `COMPANION_BACKEND_HOST=192.168.x.x ./run.sh`
+in another shell puts that variable in *that* shell's environment, and the
+tailnet query does not report LAN addresses. A listener is an objection on the
+spot. A missing or unhappy `lsof` is not: it falls through to the probes, which
+remain the floor and already fail closed.
+
 `--import-first` and `--push-after` exist because the UI's import and push need
 the server this guard forbids. Together they make the whole round trip runnable
 with the backend stopped, in the one order that is safe: import (the robot's
@@ -88,6 +96,7 @@ LOOPBACK: Final[str] = "127.0.0.1"
 PROBE_PATH: Final[str] = "/api/config"
 PROBE_TIMEOUT_SECONDS: Final[float] = 2.0
 TAILSCALE_TIMEOUT_SECONDS: Final[float] = 5.0
+LSOF_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 def _say(message: str = "") -> None:
@@ -108,6 +117,45 @@ def _probe(url: str) -> None:
     """
     with httpx.Client(timeout=PROBE_TIMEOUT_SECONDS) as client:
         client.get(url)
+
+
+def _port_listeners() -> str:
+    """Return `lsof`'s LISTEN report for the backend port, or "" when it cannot answer.
+
+    Best effort, exactly like `_tailscale_hosts`: a missing binary, a non-zero
+    exit (`lsof` exits 1 when nothing matched, which is the free-port case) or a
+    hang all read as "" — no listener was proven. That is a *weaker* guard, never
+    a cleared run: the HTTP probes below still have to refuse on every candidate
+    host. Failing closed on a missing `lsof` would strand every operator whose
+    machine does not ship one and buy nothing, because the probes are the floor.
+    """
+    if shutil.which("lsof") is None:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{BACKEND_PORT}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=LSOF_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _listener_summary(report: str) -> str:
+    """Name the commands in an `lsof` report, deduped — best effort, never raises."""
+    names: list[str] = []
+    for line in report.splitlines():
+        parts = line.split()
+        if not parts or parts[0] == "COMMAND":  # the header row names nobody
+            continue
+        if parts[0] not in names:
+            names.append(parts[0])
+    return ", ".join(names)
 
 
 def _tailscale_hosts() -> list[str]:
@@ -149,11 +197,28 @@ def candidate_hosts() -> list[str]:
 def backend_objection() -> str | None:
     """Return why this run must not touch the store, or None when it is safe to.
 
+    Two questions, cheapest first. **Who holds the port**: `lsof` sees every
+    bind, including the one the probes are blind to — a server started in another
+    shell with `COMPANION_BACKEND_HOST=192.168.x.x ./run.sh` binds an address
+    this process cannot guess, because that env var belongs to that shell and
+    `tailscale ip -4` never reports a LAN address. Then **does anything answer**,
+    which stands on its own when `lsof` is absent or unhelpful.
+
     Fails closed twice over: an answer from any candidate host is a refusal, and
     so is any outcome that is not an outright connection refused. The loop stops
     at the first host that does not refuse — the others cannot make an answered
     probe safe.
     """
+    listeners = _port_listeners()
+    if listeners:
+        who = _listener_summary(listeners)
+        held_by = f" ({who})" if who else ""
+        return (
+            f"a process is listening on port {BACKEND_PORT}{held_by} — stop the "
+            "backend (and anything else on that port), then run this again. The "
+            "store lock is per-process, so a write from here while the server "
+            "serves is a lost update."
+        )
     for host in candidate_hosts():
         url = f"http://{host}:{BACKEND_PORT}{PROBE_PATH}"
         try:

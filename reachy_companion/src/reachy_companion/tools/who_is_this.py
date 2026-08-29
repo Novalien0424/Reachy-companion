@@ -47,10 +47,10 @@ class WhoIsThis(Tool):
             # not evidence that the person you were talking to left the room.
             deps.current_person = name
             # The visit's guest list (sleep_summary.py) is the other half: the
-            # label above is one slot the next recognition overwrites, this set
-            # keeps everyone met this run so the sleep summary can write each of
-            # them a 上次聊天 fact.
-            deps.recognized_people.add(name)
+            # label above is one slot the next recognition overwrites, this list
+            # keeps everyone met this run — stamped, so the sleep summary can
+            # tell tonight's visitor from this morning's before writing 上次聊天.
+            deps.record_recognition(name)
             await self._attach_known_facts(deps, result, name)
         logger.info(
             "Tool call: who_is_this status=%s name=%s score=%s facts=%d",

@@ -43,11 +43,22 @@ _SYSTEM_PROMPT: Final[str] = (
 
 
 def record_transcript(deps: ToolDependencies, role: str, text: str) -> None:
-    """Append one finalized utterance to the bounded session tail."""
+    """Append one finalized utterance, stamped, to the bounded session tail.
+
+    Recording also refreshes the current person's sighting stamp, because talking
+    is presence. Without that, `write_sleep_summaries`' window would exclude the
+    commonest case it should keep: one person recognized at the boot greeting who
+    then talks past 40 lines, pushing their own recognition out of the retained
+    tail. Only a person already on the guest list is refreshed — `current_person`
+    is a label, and a label alone is not a sighting.
+    """
     cleaned = text.strip()
     if not cleaned or cleaned.startswith("[error]"):
         return
-    deps.session_transcript.append((role, cleaned))
+    stamp = time.monotonic()
+    deps.session_transcript.append((role, cleaned, stamp))
+    if deps.current_person is not None and deps.current_person in deps.recognized_at:
+        deps.recognized_at[deps.current_person] = stamp
 
 
 def _default_model() -> str:
@@ -61,15 +72,57 @@ def format_last_chat_fact(summary: str) -> str:
     return f"{LAST_CHAT_PREFIX}（{stamp}）：{summary.strip()}"
 
 
+def _people_in_window(deps: ToolDependencies, transcript: list[tuple[str, str, float]]) -> list[str]:
+    """Return the guests the retained transcript can honestly speak for.
+
+    `recognized_people` spans the whole app run; `session_transcript` holds only
+    its last `TRANSCRIPT_MAX_ITEMS` lines. Summarizing the second against the
+    first attributes whoever is here tonight to whoever was here this morning —
+    their 上次聊天 fact gets somebody else's topics, and the next recognized
+    greeting reads it back to them.
+
+    So the filter is the tail's own reach. While **nothing has scrolled out** the
+    tail *is* the whole run and nobody is filtered: every guest's own lines are
+    still in it. Once lines have been evicted, a guest is kept only if last seen
+    at-or-after the oldest surviving line — everything they said is otherwise
+    gone, and there is nothing left to summarize *for them*.
+
+    Two deliberate softenings, both fail-open:
+      - `record_transcript` refreshes the current person's stamp, so the visit's
+        own speaker is never filtered out by the length of their own
+        conversation — the boot recognition scrolls out of a long visit, they do
+        not;
+      - a name in the set with no stamp behind it is kept: no stamp is no
+        evidence of staleness, and every production site stamps through
+        `ToolDependencies.record_recognition`.
+    """
+    maxlen = deps.session_transcript.maxlen
+    if maxlen is None or len(transcript) < maxlen:
+        return sorted(deps.recognized_people)
+    oldest = transcript[0][2]
+    return sorted(name for name in deps.recognized_people if deps.recognized_at.get(name, oldest) >= oldest)
+
+
 async def write_sleep_summaries(deps: ToolDependencies, *, client: Any | None = None) -> int:
-    """Summarize the visit for every recognized person. Never raises."""
+    """Summarize the visit for everyone the retained tail still covers. Never raises."""
     try:
         if not env_bool("MEMORY_LAST_CHAT_ENABLED", True):
             logger.info("Sleep summary disabled by MEMORY_LAST_CHAT_ENABLED.")
             return 0
-        names = sorted(deps.recognized_people)
         transcript = list(deps.session_transcript)
-        if not names or not transcript:
+        if not transcript:
+            return 0
+        names = _people_in_window(deps, transcript)
+        if len(names) < len(deps.recognized_people):
+            # Said out loud, because the on-robot check for this is a journal
+            # read: a visitor from earlier today going unsummarized is the guard
+            # working, and it must not look like a lost fact.
+            logger.info(
+                "Sleep summary: %d of %d recognized people are outside the retained transcript window.",
+                len(deps.recognized_people) - len(names),
+                len(deps.recognized_people),
+            )
+        if not names:
             return 0
         if client is None:
             from reachy_companion.hanova.images import build_client
@@ -78,7 +131,7 @@ async def write_sleep_summaries(deps: ToolDependencies, *, client: Any | None = 
         if client is None:
             logger.info("Sleep summary skipped: no OpenAI client available.")
             return 0
-        lines = "\n".join(f"{'user' if role == 'user' else 'reachy'}: {text}" for role, text in transcript)
+        lines = "\n".join(f"{'user' if role == 'user' else 'reachy'}: {text}" for role, text, _ in transcript)
         user_prompt = f"在場的人：{'、'.join(names)}\n\n對話記錄：\n{lines}"
         timeout_s = env_float("MEMORY_LAST_CHAT_TIMEOUT_S", 8.0, lo=1.0, hi=30.0)
         async with client:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import time
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -59,12 +60,17 @@ def _face_deps(recognizer: Any, instance_path: Path) -> ToolDependencies:
     )
 
 
-def test_record_transcript_appends_role_and_text() -> None:
-    """Each finalized utterance lands in the tail as a (role, text) pair, in order."""
+def test_record_transcript_appends_role_text_and_stamp() -> None:
+    """Each finalized utterance lands in the tail as (role, text, monotonic stamp), in order."""
     deps = _deps()
+    before = time.monotonic()
     sleep_summary.record_transcript(deps, "user", "你好")
     sleep_summary.record_transcript(deps, "assistant", "嘿！")
-    assert list(deps.session_transcript) == [("user", "你好"), ("assistant", "嘿！")]
+    after = time.monotonic()
+    assert [(role, text) for role, text, _ in deps.session_transcript] == [("user", "你好"), ("assistant", "嘿！")]
+    stamps = [stamp for _, _, stamp in deps.session_transcript]
+    assert stamps == sorted(stamps)
+    assert all(before <= stamp <= after for stamp in stamps)
 
 
 def test_record_transcript_skips_blank_and_error_text() -> None:
@@ -81,15 +87,55 @@ def test_record_transcript_is_bounded() -> None:
     for i in range(sleep_summary.TRANSCRIPT_MAX_ITEMS + 10):
         sleep_summary.record_transcript(deps, "user", f"line {i}")
     assert len(deps.session_transcript) == sleep_summary.TRANSCRIPT_MAX_ITEMS
-    assert deps.session_transcript[0] == ("user", "line 10")
+    assert deps.session_transcript[0][:2] == ("user", "line 10")
 
 
 def test_recognized_people_defaults_empty_per_deps() -> None:
-    """Every ToolDependencies gets its own empty set — no shared mutable default."""
+    """Every ToolDependencies gets its own empty containers — no shared mutable default."""
     assert _deps().recognized_people == set()
+    assert _deps().recognized_at == {}
     a, b = _deps(), _deps()
-    a.recognized_people.add("小諾")
+    a.record_recognition("小諾")
     assert b.recognized_people == set()  # no shared default object
+    assert b.recognized_at == {}
+
+
+def test_record_recognition_stamps_the_guest_list() -> None:
+    """A recognition joins the set and gets a monotonic stamp; a re-sighting moves it forward."""
+    deps = _deps()
+    before = time.monotonic()
+    deps.record_recognition("小諾")
+    first = deps.recognized_at["小諾"]
+    assert deps.recognized_people == {"小諾"}
+    assert before <= first <= time.monotonic()
+
+    deps.record_recognition("小諾")
+    assert deps.recognized_at["小諾"] >= first  # last sighting wins, never the first
+
+
+def test_record_transcript_refreshes_the_current_person_stamp() -> None:
+    """Talking is presence: each recorded line moves the current person's stamp forward.
+
+    Without this a long visit would summarize nobody — the recognition happens at
+    the boot greeting and scrolls out of the 40-line tail long before sleep.
+    """
+    deps = _deps()
+    deps.record_recognition("小諾")
+    deps.current_person = "小諾"
+    seen_at = deps.recognized_at["小諾"]
+
+    sleep_summary.record_transcript(deps, "user", "我下週要考試")
+
+    assert deps.recognized_at["小諾"] >= seen_at
+    assert deps.recognized_at["小諾"] == deps.session_transcript[-1][2]
+
+
+def test_record_transcript_does_not_invent_a_guest() -> None:
+    """A current person who was never recognized is not added to the guest list."""
+    deps = _deps()
+    deps.current_person = "小諾"  # e.g. a label without a recognition behind it
+    sleep_summary.record_transcript(deps, "user", "你好")
+    assert deps.recognized_at == {} and deps.recognized_people == set()
 
 
 def test_who_is_this_records_recognized_person(tmp_path: Path) -> None:
@@ -103,7 +149,7 @@ def test_who_is_this_records_recognized_person(tmp_path: Path) -> None:
     identification = Identification(status="recognized", name="小諾", score=0.7, face_count=1)
     deps = _face_deps(_FakeRecognizer(identification), tmp_path)
     deps.current_person = "Louis"
-    deps.recognized_people.add("Louis")
+    deps.record_recognition("Louis")
 
     result = asyncio.run(WhoIsThis()(deps))
 
@@ -111,6 +157,8 @@ def test_who_is_this_records_recognized_person(tmp_path: Path) -> None:
     assert deps.current_person == "小諾"
     assert "小諾" in deps.recognized_people
     assert deps.recognized_people == {"Louis", "小諾"}
+    # And stamped, or the sleep summary's visit window cannot place them in time.
+    assert deps.recognized_at["小諾"] >= deps.recognized_at["Louis"]
 
 
 class _FakeCompletions:
@@ -151,12 +199,37 @@ def _client(payload: str | Exception) -> tuple[_FakeClient, _FakeCompletions]:
 
 
 def _visit_deps(tmp_path: Path, *names: str) -> ToolDependencies:
-    """Build deps for a finished visit: these people were seen, this was said."""
+    """Build deps for a finished visit: these people were seen, this was said.
+
+    Every recognition site sets `current_person` as well as the guest list, so
+    the fixture does too — the sleep summary's window leans on that pairing.
+    """
     deps = _deps(instance_path=str(tmp_path))
-    deps.recognized_people.update(names)
+    for name in names:
+        deps.record_recognition(name)
+        deps.current_person = name
     sleep_summary.record_transcript(deps, "user", "我下週要考試")
     sleep_summary.record_transcript(deps, "assistant", "加油！考完跟我說")
     return deps
+
+
+def _long_visit_deps(tmp_path: Path, *names: str) -> ToolDependencies:
+    """Build the same visit, talked past the tail's bound so the opening lines scrolled out."""
+    deps = _visit_deps(tmp_path, *names)
+    for index in range(sleep_summary.TRANSCRIPT_MAX_ITEMS):
+        sleep_summary.record_transcript(deps, "user" if index % 2 else "assistant", f"第{index}句")
+    assert len(deps.session_transcript) == sleep_summary.TRANSCRIPT_MAX_ITEMS
+    return deps
+
+
+def _seen_hours_ago(deps: ToolDependencies, name: str, hours: float) -> None:
+    """Backdate one guest's last sighting, relative to the tail's oldest retained line.
+
+    Stamps are `time.monotonic()`, so a test moves the clock by editing the stamp
+    rather than by sleeping: nothing here waits on a real hour.
+    """
+    deps.recognized_people.add(name)
+    deps.recognized_at[name] = deps.session_transcript[0][2] - hours * 3600.0
 
 
 def test_write_sleep_summaries_writes_prefixed_fact(tmp_path: Path) -> None:
@@ -266,6 +339,99 @@ def test_write_sleep_summaries_no_people_or_transcript_is_noop(tmp_path: Path) -
     deps = _deps(instance_path=str(tmp_path))  # nobody recognized
     assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 0
     assert not fake.calls
+
+
+def test_write_sleep_summaries_skips_a_guest_from_hours_before_the_tail(tmp_path: Path) -> None:
+    """A visitor from this morning is not summarized with tonight's topics.
+
+    `recognized_people` spans the whole app run, `session_transcript` only its
+    last 40 lines. Somebody recognized at 09:00 whose lines scrolled out hours
+    ago must not be handed the 20:00 conversation — that writes another person's
+    evening into their 上次聊天 fact, and the next greeting reads it back to them.
+    """
+    client, fake = _client(json.dumps({"小諾": "聊到考試", "雲霓": "聊到考試"}))
+    deps = _long_visit_deps(tmp_path, "小諾")  # here now, and talking: the tail is hers
+    _seen_hours_ago(deps, "雲霓", 11.0)  # this morning; nothing of hers survives
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+
+    assert people.facts_for_person(tmp_path, "雲霓") == []
+    assert people.facts_for_person(tmp_path, "小諾") != []
+    # And she is not even named to the model: the roster it summarizes is the filtered one.
+    assert "雲霓" not in fake.calls[0]["messages"][1]["content"]
+
+
+def test_write_sleep_summaries_keeps_the_speaker_of_a_long_visit(tmp_path: Path) -> None:
+    """The one person here all evening is summarized even though their greeting scrolled out.
+
+    They were recognized once, at the boot greeting, hundreds of lines ago. What
+    keeps them inside the window is the talking itself — `record_transcript`
+    refreshes the current person — and without that a long visit, the very visit
+    most worth a callback, would end with no summary at all.
+    """
+    client, _ = _client(json.dumps({"小諾": "聊到考試"}))
+    deps = _long_visit_deps(tmp_path, "小諾")
+    assert deps.recognized_at["小諾"] >= deps.session_transcript[0][2]
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    assert people.facts_for_person(tmp_path, "小諾") != []
+
+
+def test_write_sleep_summaries_keeps_a_guest_recognized_inside_the_tail(tmp_path: Path) -> None:
+    """Someone recognized after the oldest retained line is inside the window, and is written."""
+    client, _ = _client(json.dumps({"雲霓": "聊到考試"}))
+    deps = _long_visit_deps(tmp_path, "小諾")
+    deps.recognized_people.add("雲霓")
+    deps.recognized_at["雲霓"] = deps.session_transcript[-1][2]  # walked in mid-conversation
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    assert people.facts_for_person(tmp_path, "雲霓") != []
+
+
+def test_write_sleep_summaries_with_every_guest_stale_makes_no_call(tmp_path: Path) -> None:
+    """Nobody left inside the window: no model call at all, and nothing written.
+
+    The filter runs before the client is built, so an all-stale run costs no
+    token and no network — it is the same no-op as an empty guest list.
+    """
+    client, fake = _client(json.dumps({"小諾": "聊到考試"}))
+    deps = _long_visit_deps(tmp_path, "小諾")
+    _seen_hours_ago(deps, "小諾", 11.0)
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 0
+    assert not fake.calls
+    assert people.facts_for_person(tmp_path, "小諾") == []
+
+
+def test_write_sleep_summaries_keeps_an_unstamped_guest(tmp_path: Path) -> None:
+    """A name added to the set with no stamp behind it is not silently dropped.
+
+    Every production site stamps (`ToolDependencies.record_recognition`), so this
+    is the fail-open edge for anything else that only knows about the set: no
+    stamp is no evidence of staleness, and the old behavior stands.
+    """
+    client, _ = _client(json.dumps({"雲霓": "聊到考試"}))
+    deps = _long_visit_deps(tmp_path, "小諾")
+    deps.recognized_people.add("雲霓")  # set only, no stamp
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    assert people.facts_for_person(tmp_path, "雲霓") != []
+
+
+def test_write_sleep_summaries_filters_nobody_while_the_tail_covers_the_whole_visit(tmp_path: Path) -> None:
+    """Nothing has scrolled out: every guest stays, because their own lines are still here.
+
+    The window is the tail's reach, not a clock. A short run keeps the whole
+    conversation, this morning's included, so the person it belongs to is still
+    summarizable from it — the filter only starts dropping people once the lines
+    that would speak for them are gone.
+    """
+    client, _ = _client(json.dumps({"雲霓": "聊到考試"}))
+    deps = _visit_deps(tmp_path, "小諾")  # two lines, nothing evicted
+    _seen_hours_ago(deps, "雲霓", 11.0)
+
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    assert people.facts_for_person(tmp_path, "雲霓") != []
 
 
 def test_write_sleep_summaries_survives_client_failure(tmp_path: Path) -> None:

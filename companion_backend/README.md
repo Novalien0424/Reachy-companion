@@ -223,14 +223,25 @@ OpenAI client, `3` the backend is running or could not be proven stopped.
 
 **The backend must be stopped.** The store lock is a `threading.RLock` in one
 process, so a CLI write while the server serves is a lost update — both read
-`people.json`, both write it back, and the loser's changes are gone. The script
-therefore probes `:8710/api/config` on every plausible bind (`127.0.0.1`,
-`COMPANION_BACKEND_HOST`, and whatever `tailscale ip -4` reports — the
-documented production bind is the *tailnet IP*, so loopback alone proves
-nothing) and **fails closed**: only a refused connection on every one of them
-lets the run continue. An answer stops it, and so does a timeout or any other
-unclear outcome. A false refusal costs you a minute; the other mistake costs
-somebody's memory.
+`people.json`, both write it back, and the loser's changes are gone. The guard
+therefore asks two questions and **fails closed** on either.
+
+1. **Who holds the port**: `lsof -nP -iTCP:8710 -sTCP:LISTEN`. This sees every
+   bind, including ones no address list can guess. If `lsof` is missing or
+   unhappy the guard says nothing and falls through — the probes below are the
+   floor.
+2. **Does anything answer**: `:8710/api/config` on every plausible bind
+   (`127.0.0.1`, `COMPANION_BACKEND_HOST`, and whatever `tailscale ip -4`
+   reports — the documented production bind is the *tailnet IP*, so loopback
+   alone proves nothing). Only a refused connection on every one of them lets
+   the run continue. An answer stops it, and so does a timeout or any other
+   unclear outcome.
+
+A false refusal costs you a minute; the other mistake costs somebody's memory.
+Note that `COMPANION_BACKEND_HOST` is read from **this** shell: if you start the
+server with a custom bind (`COMPANION_BACKEND_HOST=192.168.1.9 ./run.sh`),
+export the same value in the shell you run the CLI from, so the probe half of
+the guard covers that address too. The listener check catches it either way.
 
 That leaves two ways to run the round trip, because the UI's import and push
 need the server the guard forbids:

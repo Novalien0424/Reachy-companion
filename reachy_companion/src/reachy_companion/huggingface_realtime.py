@@ -1596,9 +1596,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # replaced this one and already cleared it.
                         self.deps.current_person = name
                         # Whole-run guest list for the sleep summary: the label
-                        # above is overwritten by the next recognition, this set
-                        # is not — it is what the visit is summarized against.
-                        self.deps.recognized_people.add(name)
+                        # above is overwritten by the next recognition, this one
+                        # is not — it is what the visit is summarized against,
+                        # stamped so an old sighting cannot claim a new visit.
+                        self.deps.record_recognition(name)
                         late_prompt = (
                             _FACE_LATE_KNOWN_WITH_FACTS_PROMPT.format(name=name, facts="；".join(facts))
                             if facts
@@ -1676,9 +1677,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # Person-scoped memory label (spec §3.3): set on recognition,
             # cleared per session.
             self.deps.current_person = identification.name
-            # And onto the visit's guest list, which outlives the label and the
-            # session it was set in (sleep_summary.py).
-            self.deps.recognized_people.add(identification.name)
+            # And onto the visit's guest list, stamped: it outlives the label and
+            # the session it was set in (sleep_summary.py).
+            self.deps.record_recognition(identification.name)
             logger.info(
                 "Startup greeting personalized for %s with %d remembered fact(s).",
                 identification.name,
