@@ -48,6 +48,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
+from reachy_companion.sleep_summary import record_transcript
 from reachy_companion.audio.envparse import env_int, env_bool, env_float
 from reachy_companion.tools.core_tools import (
     ToolSpec,
@@ -1590,6 +1591,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # so a label can never be written into the session that
                         # replaced this one and already cleared it.
                         self.deps.current_person = name
+                        # Whole-run guest list for the sleep summary: the label
+                        # above is overwritten by the next recognition, this set
+                        # is not — it is what the visit is summarized against.
+                        self.deps.recognized_people.add(name)
                         late_prompt = (
                             _FACE_LATE_KNOWN_WITH_FACTS_PROMPT.format(name=name, facts="；".join(facts))
                             if facts
@@ -1667,6 +1672,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # Person-scoped memory label (spec §3.3): set on recognition,
             # cleared per session.
             self.deps.current_person = identification.name
+            # And onto the visit's guest list, which outlives the label and the
+            # session it was set in (sleep_summary.py).
+            self.deps.recognized_people.add(identification.name)
             logger.info(
                 "Startup greeting personalized for %s with %d remembered fact(s).",
                 identification.name,
@@ -2213,6 +2221,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                         self._emit_transcript("user", transcript, True)
+                        # Engagement memory (sleep_summary.py): only turns that
+                        # got this far. A party-gate denial above and a rolled-
+                        # back solo barge both `continue` before here on purpose
+                        # — speech the robot decided was not addressed to it is
+                        # not part of the conversation it will summarize.
+                        record_transcript(self.deps, "user", transcript)
 
                         if self._party_mode:
                             # create_response is off in party mode: this turn was
@@ -2242,6 +2256,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             AdditionalOutputs({"role": "assistant", "content": event.transcript})
                         )
                         self._emit_transcript("assistant", event.transcript or "", True)
+                        record_transcript(self.deps, "assistant", event.transcript or "")
 
                     # Handle audio delta
                     if event.type == "response.output_audio.delta":
