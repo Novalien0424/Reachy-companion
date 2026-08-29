@@ -750,3 +750,129 @@ enrollment. **Verified against the unit suites only** — backend 213 passed wit
 ruff and `mypy --strict` clean, robot 1449 passed / 30 skipped, ruff and mypy
 strict clean — with `BACKEND-IMPORT` (extended) and the new `ENROLL-SNAPSHOT` row
 in `feature_list.json` as the live gate.
+
+## D-027 — Engagement memory: a last-chat callback, and a consolidation pass (2026-08-29)
+
+Operator direction after the first family session on the fifteenth install: the
+robot remembers *facts* but not *conversations*, so a recognized person is
+greeted with trivia instead of a follow-up. Plan and its three-round Codex log
+(23 findings, 22 accepted, 1 accepted as a recorded limitation):
+`docs/plans/2026-08-29-engagement-memory-plan.md` §Review Log. Six decisions.
+**(1) Engagement is a prompt problem first.** The persona's `### remember`
+section and the `remember` tool description now rank the *open loop* — a plan, a
+coming exam, a song being written — above the stable trait, and explicitly allow
+a fact to name another enrolled person (「牙牙是雲霓的女兒」); `### who_is_this`
+gains one line telling the model to follow up on 「上次聊天」 or an ongoing thing
+rather than reciting the memory list. No code path changes — facts are free text
+already. The persona half is synced to the robot instance ahead of the wheel
+(D-016); the `remember` description rides the next install. The identity-routing
+tripwire (`test_identity_routing_clauses_pin_camera_vs_face_tools`) was re-pinned
+onto the fact-fidelity wording (`facts as returned` / `never guess a name`) that
+the same day's prompt fix introduced. **(2) The unit of memory is the visit, not
+the session.** `ToolDependencies` gains `recognized_people: set[str]`,
+`session_transcript: deque[tuple[str, str]]` (maxlen 40 =
+`sleep_summary.TRANSCRIPT_MAX_ITEMS`, restated because importing it into
+`core_tools` would be a cycle) and `sleep_requested: bool`. Neither container is
+cleared on reconnect — deliberately unlike `current_person`, which is
+per-session (D-025 §3): a dropped websocket is not a new visitor. Every site
+that sets `current_person` (boot wake, the extended window, every recognized
+`who_is_this`) also adds the name to `recognized_people`. Transcript recording
+happens at exactly **two** sites — the accepted user final and the assistant
+final — and two neighbouring pushes are excluded on purpose: the party-mode
+**denied** ambient turn (speech the robot decided was not addressed to it) and
+the solo-barge **rolled-back** backchannel (a 「嗯」 the barge logic
+un-committed). Both exclusions came out of the Codex rounds; neither is
+conversation. **(3) `上次聊天` is a text convention, not a schema field.**
+`PersonFact` gets no `kind` — one would ripple through `backend/store.py`,
+`projection.py` and the sync diff, and D-013's `memory.v1.json` contract is
+locked. The fact reads `上次聊天（M月D日）：<summary>` and the **prefix alone is
+the supersession key**. Being newest-first it lands inside the
+`FACE_GREETING_FACTS` (6) facts the boot greeting and `who_is_this` already
+inject, so the callback needed **zero** greeting-code change. Supersession is
+ADD-then-FORGET, so a failure between the two leaves a duplicate and never zero
+— with a FORGET-first branch in exactly two cases: at the 20-fact cap
+(add-first would evict a *real* fact) and when an old fact's key is contained in
+the new one. The second is not theoretical: `forget_person_fact` matches on a
+**case-insensitive, whitespace-collapsed substring, newest-first**
+(`people.py:394, 405`), so a same-day re-sleep — and every case- or
+whitespace-only variant of it — was a proven silent delete of the fact just
+written. Every guard is therefore keyed through
+`normalize_memory_text(text).lower()`, the exact key `forget` matches on, and
+all four variants are regression-tested. **(4) The summary runs at shutdown,
+gated on sleep, and never raises.** `HuggingFaceRealtimeHandler.shutdown()` is
+awaited on a live loop, so async work completes there — but it also runs for
+settings and backend restarts (`console.py:307`, `:697`), which are mid-visit.
+So the `go_to_sleep` closure in `main.py` is the **only** writer of
+`deps.sleep_requested`, and the summary runs only under it, once
+(`_sleep_summary_done`: `shutdown()` can legitimately run twice, its own call
+site plus the session `finally`). It is placed **after** `on_session_shutdown`
+and before `connection.close()` — the call can take seconds and the daemon would
+play music through all of them with Reachy already in the sleep pose — and that
+ordering is pinned by a test, not by a comment. One `gpt-5-mini` call
+(`MEMORY_LAST_CHAT_MODEL`), `MEMORY_LAST_CHAT_TIMEOUT_S` 8.0 s clamped 1–30,
+`MEMORY_LAST_CHAT_ENABLED` as the kill switch, and the client is built **and
+closed** by the writer itself through `hanova.images.build_client` rather than
+borrowed, so it cannot close a client out from under its owner. Every failure —
+no client, timeout, non-object JSON, a name off the list — logs an exception
+*type* and returns 0: memory must never break going to sleep. **(5)
+Consolidation is an operator command, not a service.**
+`companion_backend/scripts/consolidate.py` over `backend/consolidate.py` hands
+the model one person's whole fact list and takes back a merged, de-contradicted
+(「以前…，現在…」), usefulness-ranked one. Dry run by default, and the printed
+unified diff **is** the write: `after` is normalized and deduped through the
+store's own rules, so a preview can never show three items where two land. A
+model answer is validated whole or refused whole — half a rewrite applied over
+somebody's memory deletes the other half — and a refusal costs that person
+nothing. Writes go through the new `store.replace_facts(...,
+preserve_updated_at=True)`, the store's only **in-place** writer: a background
+pass over everybody must not reshuffle projection's top-12 recency ranking
+(`projection.py:104`), and the stored *position* matters as much as the
+timestamp because that sort is stable. `texts[0]` is the newest and that
+ordering is pinned by a round-trip test through projection into the robot's
+prepending writer. The Mac store stays uncapped; only projection trims to 20.
+**No scheduler** (YAGNI; launchd is a later choice). And because `store`'s lock
+is process-local (`store.py:93`), the CLI **fails closed**: it probes
+`:8710/api/config` on every plausible bind — loopback, `COMPANION_BACKEND_HOST`,
+and the live `tailscale ip -4`, because the documented production bind is the
+*tailnet IP* and loopback alone proves nothing — and only a refused connection
+on all of them lets the run continue; an answer, a timeout, a TLS error all exit
+3. Exit codes are 0 done / 1 refused or failed / 2 no OpenAI client / 3 backend
+up-or-unproven. `--import-first` and `--push-after` reuse `backend/robot.py`
+directly so the whole round trip runs with the backend stopped, in the only safe
+order (import, consolidate, push); an empty store is never pushed, because a
+push projects and would clear the robot's faces. **(6) The callback fact is not
+the model's business — and that rule is also a repair.** Every `上次聊天` fact is
+popped before the prompt is built, any the model hands back carrying that prefix
+is dropped (an invented callback is a callback to a conversation that never
+happened), and only the newest popped one is put back at position 0, the body
+taking the rest of the robot's 20 slots. That keep-newest dedupe heals a real
+sync hole: robot-side removal detection is disabled at the 20-fact cap
+(`backend/robot.py:548`, where eviction and deletion are indistinguishable), so
+the Mac can retain a stale callback and push it straight back — and
+`test_full_sync_cycle_heals_stale_last_chat` pins the whole cycle. One boundary
+restated here because it bit twice: `reachy_companion.config` runs
+`load_dotenv(override=True)` at **import** time (`config.py:305`), so backend
+and CLI code must never import a robot module that reaches it — `LAST_CHAT_PREFIX`
+is restated in `backend/consolidate.py` rather than imported, and a test pins the
+restatement to the robot's own constant. **Accepted limitations:** a stop issued
+from the dashboard or the mobile app writes **no** summary — only the voice
+`go_to_sleep` sets `sleep_requested`, and voice sleep is the normal end of a
+visit; a multi-person visit gets **topic-level** summaries only, because the
+transcript carries no speaker identity and the prompt forbids attributing an
+utterance to anyone the transcript does not name (diarization is a non-goal);
+cross-person links written into facts surface **one-sided**, since retrieval is
+per-person by design (PRD non-goals); and `consolidate.run` assumes **exclusive**
+store access — the CLI's probe guard is what provides it, and nothing else may
+call `run` while the server serves. **Deliberately not done:** SQLite or any
+embedding retrieval / `recall_about_person` tool; a scheduler; Mem0/Zep/Letta; a
+`kind` field on `PersonFact`; raising the 12-people or 20-fact caps; a new
+conversational tool (the 41-tool array does not grow); speaker diarization. All
+of it is post-POC per the plan's §Non-goals and PRD §9. **Verified against the
+unit suites only** — robot **1468 passed / 30 skipped**, backend **267 passed**,
+ruff and `mypy --strict` clean on both sides; `mypy tests/` on the backend runs
+against a known baseline (12 errors on `main`, 17 here, the five new ones the
+same `attr-defined` monkeypatch-target class `test_robot_sync.py` already
+carries). The three `MEMORY-LAST-CHAT` / `MEMORY-OPEN-LOOPS` /
+`BACKEND-CONSOLIDATE` rows in `feature_list.json` are the live gate, and the
+robot half of it needs the **sixteenth install** — only the persona edit is live
+today.

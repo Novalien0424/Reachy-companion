@@ -5,6 +5,24 @@ history of this file.
 
 ## Current state
 
+**Branch `engagement-memory` is IMPLEMENTED AND REVIEWED, not yet merged and
+not yet on the robot.** Nine tasks off
+`docs/plans/2026-08-29-engagement-memory-plan.md` (three Codex review rounds,
+23 findings, 22 accepted): the last-chat callback written at sleep, open-loop
+prompt guidance, and a Mac-side consolidation CLI. Design record: **D-027**.
+Gates on the branch: robot suite **1468 passed / 30 skipped**, backend **267
+passed**, `ruff check` and `mypy --strict` clean on both sides (`mypy tests/`
+on the backend runs against a known baseline — 12 errors on `main`, 17 here,
+the five new ones the same `attr-defined` monkeypatch-target class
+`test_robot_sync.py` already carries). What is live TODAY: only the persona
+half of Task 1 — `persona.md` was scp'd to the robot instance 2026-08-29 and
+sha256-verified (`1ce532f3…`), loading at the next app start. **Everything
+else needs the sixteenth install**: `sleep_summary.py`, the ToolDependencies
+containers, the shutdown hook, and the `remember`/`who_is_this` description
+edits all ride the next wheel. The backend half (`store.replace_facts`,
+`backend/consolidate.py`, `scripts/consolidate.py`) is Mac-side and works the
+moment the backend is restarted from this branch.
+
 **Fifteenth install BOOTED AND VERIFIED on the robot (2026-08-29 00:41, after
 the operator's reboot).** The reboot cleared the daemon app-state wedge
 (`current-app-status` back to `null`), the app started via the sanctioned
@@ -53,7 +71,14 @@ merge + aliases are live Mac-side and already used (Linna/Lena merged and
 pushed — that data is what the restore preserved). Operator-authorized bind:
 `COMPANION_BACKEND_HOST="$(tailscale ip -4)" ./run.sh` serves the tailnet at
 port 8710. **The process is currently stopped** (operator stopped the session
-background task); restart with that one-liner from `companion_backend/`.
+background task); restart with that one-liner from `companion_backend/`. New
+on the `engagement-memory` branch: `scripts/consolidate.py`, an operator-run
+LLM tidy-up of the store's facts — dry run by default, `--apply` to write,
+`--import-first --apply --push-after` for the whole round trip. It **refuses
+to run while the backend answers** (the store lock is process-local), probing
+loopback, `COMPANION_BACKEND_HOST` and the live `tailscale ip -4` and failing
+closed on anything but a refused connection. Usage and exit codes are in
+`companion_backend/README.md` §Consolidation.
 
 ## Wake-up / power diagnosis (2026-08-27)
 
@@ -76,12 +101,42 @@ Live check: `vcgencmd get_throttled` (0x0 at idle 2026-08-27; re-read after a
 loud motors+speaker session). Habit: robot "hard to wake" → look at the power
 LED first; dark = power event, not software.
 
+## Next action
+
+1. Merge `engagement-memory` into `main`.
+2. Deploy the **sixteenth install** via the `reachy-deploy` ritual — that is
+   what puts Tasks 2–5 (the transcript containers, the record sites, the
+   summarizer, the shutdown hook) and the two tool-description edits on the
+   robot. Manifest must still cover `people.v1.json` + `face_snapshots/`.
+3. Then the three new live rows: `MEMORY-LAST-CHAT` (two-session on-robot
+   test), `MEMORY-OPEN-LOOPS` (live listening), `BACKEND-CONSOLIDATE` (real
+   store dry-run → `--apply` → push, backend stopped).
+
 ## Pending verification (operator)
 
-Eighteen `implemented-unverified` rows in `feature_list.json` still need live
-use — **all robot-side rows are DEPLOYED and BOOTED (fifteenth install,
-first boot verified 2026-08-29); everything left needs a human in front of
-the camera / a listener in the room.**
+Twenty-one `implemented-unverified` rows in `feature_list.json` still need
+live use. **All rows except the three engagement-memory ones are DEPLOYED and
+BOOTED (fifteenth install, first boot verified 2026-08-29) and need only a
+human in front of the camera / a listener in the room; the three new rows
+additionally need the sixteenth install.**
+
+**Engagement memory (three, D-027 — NOT yet on the robot):**
+`MEMORY-LAST-CHAT` (recognized session about an ongoing thing → 「請進入睡眠
+模式」 → journal shows `Sleep summary: wrote last-chat fact for 1 person(s).`
+*after* the session-shutdown lines, `people.v1.json` holds exactly one
+`上次聊天（M月D日）：…` fact, and the next recognized boot calls back to it;
+negative control: a dashboard stop writes no summary. **Watch on that run:** a
+daemon force-kill during sleep can race the ≤8 s summarizer call, and the
+failure is silent by design — judge it by the missing journal line, not by an
+error); `MEMORY-OPEN-LOOPS` (live listening: does `remember` favour the open
+loop over the static trait, does a cross-person fact land, and does Reachy ask
+a follow-up rather than reciting the list — the persona half is testable now,
+the tool descriptions after the deploy); `BACKEND-CONSOLIDATE` (backend
+stopped, seed a duplicate + a contradiction on a real person, read the dry-run
+diff, `--apply`, confirm `updated_at` and store position unchanged, restart the
+backend and confirm the guard exits 3 on the **tailnet** bind, then the
+one-shot `--import-first --apply --push-after` — that whole flow is
+monkeypatch-verified only and has never driven the real robot).
 
 **Person memory + backend (eight):** `PERSON-GREET-KNOWN` (enrolled person in
 frame at boot → `Wake face check: recognized …` then `Startup greeting
@@ -138,8 +193,9 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   result; say the name as written, add nothing, re-verify when corrected)
   plus the who_is_this description ending rewritten ("state as returned",
   replacing "use them naturally"). Persona synced to the robot (sha
-  94d87bb0, loads at next wake); the description edit rides the next wheel.
-  Live re-test owed.
+  94d87bb0, then re-synced 2026-08-29 at **1ce532f3** with the D-027
+  guidance on top — that is what the robot holds; loads at next wake); the
+  description edit rides the sixteenth install. Live re-test owed.
 - Same session: 「請進入睡眠模式」 misrouted to `party_mode` instead of
   `go_to_sleep` (06:01:25); a later retry slow-walked; a still-later plain
   retry worked (06:07). FIXED 2026-08-29 (prompt): both tool descriptions
@@ -147,8 +203,10 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   the interaction entirely; party_mode = stay awake, change participation;
   each names the other as the wrong choice. Deliberately no keyword/phrase
   lists (operator direction: the model judges intent; enumeration is
-  brittle). Persona half live at next wake; descriptions ride the next
-  wheel. Live re-test owed.
+  brittle). Persona half live at next wake; descriptions ride the sixteenth
+  install. Live re-test owed. **Now load-bearing beyond routing:** the
+  last-chat summary (D-027) is written only when `go_to_sleep` runs, so a
+  misroute to `party_mode` also costs that visit its memory.
 - Same night 06:06 boot: the documented too_far edge played out live —
   wake check rounds ended `too_far` (face visible, person seated across the
   room), stranger intro spoken, extended window then recognized 小諾 (0.454)
@@ -176,6 +234,21 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   site-packages and is wiped by every reinstall — survives only via the
   `reachy-deploy` backup/restore ritual. **The manifest now covers all of it**
   (extended this session; first exercised in the fifteenth install).
+- Engagement memory (D-027), accepted limitations: a stop issued from the
+  dashboard or the mobile app writes **no** last-chat summary — only the voice
+  `go_to_sleep` sets `sleep_requested`, because `shutdown()` also runs for
+  settings/backend restarts mid-visit; a multi-person visit gets **topic-level**
+  summaries only (the transcript carries no speaker identity, and the prompt
+  forbids attributing an utterance to anyone it does not name); cross-person
+  links written into facts surface **one-sided**, retrieval being per-person by
+  design; and `consolidate.run` assumes **exclusive** store access — the CLI's
+  probe guard is the only thing providing it, so nothing else may call it while
+  the server serves.
+- Import-time boundary that bit twice (D-027): `reachy_companion.config` runs
+  `load_dotenv(override=True)` at **import** time, so backend and CLI code must
+  never import a robot module that reaches it — it would rewrite the process's
+  own `OPENAI_API_KEY` as a side effect of a constant lookup. `LAST_CHAT_PREFIX`
+  is restated in `backend/consolidate.py` and pinned to the robot's by a test.
 - Backend sync, deliberate holes: a Mac person with ≥ 20 facts always
   projects at exactly 20, so their robot-side voice-forgets are never
   imported back; face removals are not modelled at all; re-enrollment adds a
@@ -226,4 +299,11 @@ email send with a dictated address; the five **PRD §8** demo gates; the
 - **2026-08-29** — operator reboot cleared the wedge; **fifteenth install's
   first boot verified** (persona, 41 tools, 4 people, 2107 ms wake check,
   empty-room greeting branch, boot gate released, 0 tracebacks); app left
-  running; PERSON-GREET-EMPTY journal half recorded as passed.
+  running; PERSON-GREET-EMPTY journal half recorded as passed. First family
+  session found two prompt defects (fact infidelity, sleep/party misroute),
+  both fixed in prompt and the persona re-synced. Then the **engagement-memory
+  wave**, 9 tasks on branch `engagement-memory`, **D-027** (1468/30 + 267):
+  last-chat callback written at sleep, open-loop prompt guidance, and the
+  operator-run backend consolidation CLI — implemented and reviewed, **not
+  merged and not deployed**; the sixteenth install is what puts the robot half
+  on the device.
