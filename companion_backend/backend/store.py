@@ -302,6 +302,25 @@ def _normalized_fact(text: str) -> str:
     return normalized
 
 
+def _normalized_facts(texts: Sequence[str]) -> tuple[str, ...]:
+    """Normalize a whole fact list through the same rule, dropping what it cannot keep.
+
+    The normalizer and the case-insensitive dedupe are `add_fact`'s, so a
+    rewritten list is stored in exactly the form projection would have emitted
+    for the same facts added one at a time. A text that normalizes to nothing is
+    *dropped* rather than raised on, which is the one deliberate difference:
+    `add_fact` is an operator typing one fact, where an empty one is a mistake
+    worth a 400, while this takes a whole list from a rewriter and a blank entry
+    in it is simply nothing to store.
+    """
+    kept: list[str] = []
+    for text in texts:
+        normalized: str = memory.normalize_memory_text(text)
+        if normalized:
+            kept.append(normalized)
+    return _deduped(kept)
+
+
 def _photo_extension(display_name: str) -> str:
     """Return a whitelisted extension for the upload, or the neutral fallback."""
     suffix = Path(display_name).suffix.lower()
@@ -642,6 +661,45 @@ def _mutate(
         return updated
 
 
+def _rewrite_in_place(
+    settings: Settings,
+    person_id: str,
+    change: Callable[[BackendPerson], BackendPerson],
+) -> BackendPerson:
+    """Apply one change to one person, leaving `updated_at` and their position alone.
+
+    The deliberate opposite of `_mutate`, and the only writer allowed to be: it
+    exists for the one edit that is not *news* about the person. The
+    consolidation pass rewrites everybody's facts in the background, and neither
+    half of `_mutate`'s touch may happen there — a bumped `updated_at` would let
+    a background rewrite outrank someone the operator actually talked about, and
+    the move to the front would do the same thing more quietly, because
+    projection's ranking sort is stable and the stored position is its tie-break.
+    Both have to stay put, so this writes the person where they already are.
+
+    `updated_at` is pinned from the existing record rather than trusted from
+    `change`, exactly as `_mutate` pins it from the clock: what the caller may
+    change here is the person's content, never their standing.
+    """
+    path = people_path(settings)
+    with _STORE_LOCK:
+        document = _read_document(path)
+        existing = _require(document, person_id)
+        updated = replace(change(existing), id=existing.id, updated_at=existing.updated_at)
+        # Everyone keeps their index, including the person written. A hand-edited
+        # store can hold one id twice; `_require` resolved the first of them and
+        # only that one survives, which is the collapse `_mutate` performs too by
+        # rebuilding the list around the single person it touched.
+        rewritten: list[BackendPerson] = []
+        for item in document.people:
+            if item.id != person_id:
+                rewritten.append(item)
+            elif item is existing:
+                rewritten.append(updated)
+        _write_document(path, _Document(people=tuple(rewritten), sync=document.sync))
+        return updated
+
+
 # --------------------------------------------------------------------------
 # people
 # --------------------------------------------------------------------------
@@ -917,6 +975,58 @@ def add_fact(settings: Settings, person_id: str, text: str) -> BackendFact:
 
     _mutate(settings, person_id, change)
     return stored[0]
+
+
+def replace_facts(
+    settings: Settings,
+    person_id: str,
+    texts: Sequence[str],
+    *,
+    preserve_updated_at: bool = False,
+) -> BackendPerson:
+    """Replace one person's whole fact list in a single write; `texts[0]` is the newest.
+
+    The bulk counterpart of `add_fact`, written for the consolidation pass: an
+    LLM rewrites a person's memory and hands back the list it wants stored, most
+    useful first. That order is stored as-is, because the store keeps facts
+    newest-first and projection replays them oldest-first into the robot's
+    prepending writer — so what the caller puts first is what the robot answers
+    with first. There is **no cap**: the Mac holds everything (see the module
+    docstring), and only projection trims to the robot's newest 20.
+
+    A text this person already has keeps its existing record — same id, same
+    `created_at` — for the reason `add_fact` returns a fact already stored rather
+    than storing it twice: it is the same fact, and re-minting it would move a
+    date the operator never changed and break a fact id a client is holding to
+    delete by. Only genuinely new texts get a new record, and the surviving
+    spelling is the stored one, as `add_fact`'s duplicate check also leaves it.
+    The consequence is that the list's order is the caller's order and no longer
+    necessarily `created_at`-descending; `_merged_facts` sorts by `created_at`,
+    so a later merge restores chronological order for the people it touches.
+
+    `preserve_updated_at=True` leaves the person exactly where they were — the
+    timestamp *and* their place in the stored list, via `_rewrite_in_place`. A
+    background pass over everybody must not reshuffle projection's ranking, and
+    the position matters as much as the timestamp because that sort is stable.
+    The default is `False`: an ordinary edit, touched and moved to the front like
+    every other one.
+    """
+    normalized = _normalized_facts(texts)
+    now = _now_ms()
+
+    def change(person: BackendPerson) -> BackendPerson:
+        held = {fact.text.casefold(): fact for fact in person.facts}
+        facts: list[BackendFact] = []
+        for text in normalized:
+            kept = held.get(text.casefold())
+            if kept is None:
+                kept = BackendFact(id=_make_id(_FACT_ID_PREFIX), text=text, created_at=now)
+            facts.append(kept)
+        return replace(person, facts=tuple(facts))
+
+    if preserve_updated_at:
+        return _rewrite_in_place(settings, person_id, change)
+    return _mutate(settings, person_id, lambda person, _: change(person))
 
 
 def delete_fact(settings: Settings, person_id: str, fact_id: str) -> BackendFact:

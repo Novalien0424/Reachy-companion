@@ -552,6 +552,164 @@ def test_no_fact_or_person_cap(settings: Settings) -> None:
 
 
 # --------------------------------------------------------------------------
+# facts: the bulk rewrite (consolidation)
+# --------------------------------------------------------------------------
+
+
+def test_replace_facts_replaces_the_whole_list_newest_first(settings: Settings) -> None:
+    """`texts[0]` is the newest fact, which is the order the whole stack is stored in."""
+    person = store.create_person(settings, "小諾")
+    store.add_fact(settings, person.id, "舊事實")
+
+    updated = store.replace_facts(settings, person.id, ["最新的事", "第二新"])
+
+    assert [fact.text for fact in updated.facts] == ["最新的事", "第二新"]
+    reloaded = store.get_person(settings, person.id)
+    assert reloaded is not None
+    assert reloaded.facts == updated.facts
+
+
+def test_replace_facts_with_no_texts_clears_the_list(settings: Settings) -> None:
+    """An empty rewrite is a legitimate outcome — this person has nothing worth keeping."""
+    person = store.create_person(settings, "Lena")
+    store.add_fact(settings, person.id, "likes tea")
+
+    assert store.replace_facts(settings, person.id, []).facts == ()
+    assert store.get_person(settings, person.id).facts == ()  # type: ignore[union-attr]
+
+
+def test_replace_facts_normalizes_dedupes_and_stays_uncapped(settings: Settings) -> None:
+    """`add_fact`'s normalization over a whole list; blanks drop, and nothing is capped."""
+    person = store.create_person(settings, "小諾")
+    texts = ["  a  ", "", "A", *[f"f{index}" for index in range(25)]]
+
+    updated = store.replace_facts(settings, person.id, texts)
+
+    # "  a  " normalizes to "a", "" is dropped rather than raised on, and "A" is
+    # the same fact as "a" — the store's own case-insensitive rule.
+    assert [fact.text for fact in updated.facts][0] == "a"
+    assert len(updated.facts) == 26  # a + f0..f24 — the Mac store is uncapped.
+
+
+def test_replace_facts_keeps_the_record_of_a_fact_that_survives(settings: Settings) -> None:
+    """A fact the person already has keeps its id and `created_at`, as `add_fact` would.
+
+    The rewrite reorders and rewords; it does not re-learn. Minting a fresh record
+    for text that did not change would move a date the operator never changed and
+    break a fact id a client is holding to delete by.
+    """
+    person = store.create_person(settings, "Lena")
+    kept = store.add_fact(settings, person.id, "likes tea")
+    store.add_fact(settings, person.id, "has a dog")
+
+    updated = store.replace_facts(settings, person.id, ["walks at dawn", "  Likes   TEA  "])
+
+    assert [fact.text for fact in updated.facts] == ["walks at dawn", "likes tea"]
+    assert updated.facts[1] == kept
+    assert updated.facts[0].id.startswith("bf_")
+    assert updated.facts[0].id != kept.id
+
+
+def test_replace_facts_touches_the_record_like_any_other_edit_by_default(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without `preserve_updated_at` this is an ordinary edit: bumped and moved to the front."""
+    clock = count(1_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(clock))
+
+    lena = store.create_person(settings, "Lena")
+    mo = store.create_person(settings, "Mo")
+    before = store.get_person(settings, lena.id)
+    assert before is not None
+    assert [item.id for item in store.list_people(settings)] == [mo.id, lena.id]
+
+    updated = store.replace_facts(settings, lena.id, ["likes tea"])
+
+    assert updated.updated_at > before.updated_at
+    assert [item.id for item in store.list_people(settings)] == [lena.id, mo.id]
+
+
+def test_replace_facts_can_leave_the_record_exactly_where_it_was(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`preserve_updated_at=True` keeps the timestamp *and* the position in the list.
+
+    Projection ranks by `updated_at` and its sort is stable, so the stored
+    position is the tie-break: a bulk pass that moved people to the front would
+    reshuffle the robot's top twelve without anything having been said.
+    """
+    clock = count(1_000)
+    monkeypatch.setattr(store, "_now_ms", lambda: next(clock))
+
+    lena = store.create_person(settings, "Lena")
+    store.create_person(settings, "Mo")
+    before = store.get_person(settings, lena.id)
+    assert before is not None
+    order_before = [item.id for item in store.list_people(settings)]
+
+    updated = store.replace_facts(settings, lena.id, ["likes tea"], preserve_updated_at=True)
+
+    assert updated.updated_at == before.updated_at
+    assert updated.created_at == before.created_at
+    assert [fact.text for fact in updated.facts] == ["likes tea"]
+    assert [item.id for item in store.list_people(settings)] == order_before
+    reloaded = store.get_person(settings, lena.id)
+    assert reloaded == updated
+
+
+def test_replace_facts_in_place_leaves_everyone_elses_position_alone(settings: Settings) -> None:
+    """The person written keeps their index, not merely their distance from the front."""
+    _write_people(settings, [_row("bp_1", "Lena"), _row("bp_2", "Mo"), _row("bp_3", "Ada")])
+
+    store.replace_facts(settings, "bp_2", ["likes tea"], preserve_updated_at=True)
+
+    reloaded = store.list_people(settings)
+    assert [item.id for item in reloaded] == ["bp_1", "bp_2", "bp_3"]
+    assert [item.updated_at for item in reloaded] == [1, 1, 1]
+
+
+def test_replace_facts_in_place_collapses_a_hand_written_duplicate_id(settings: Settings) -> None:
+    """One id held twice is a broken store; writing it leaves one record, as `_mutate` would."""
+    _write_people(settings, [_row("bp_1", "Lena"), _row("bp_1", "Lena Two"), _row("bp_2", "Mo")])
+
+    store.replace_facts(settings, "bp_1", ["likes tea"], preserve_updated_at=True)
+
+    assert [item.id for item in store.list_people(settings)] == ["bp_1", "bp_2"]
+    # The record `_require` resolved is the one that survives.
+    assert store.get_person(settings, "bp_1").name == "Lena"  # type: ignore[union-attr]
+
+
+def test_replace_facts_raises_for_an_unknown_person(settings: Settings) -> None:
+    """An unknown id is the same error every other id-addressed mutator raises."""
+    with pytest.raises(store.PersonNotFoundError):
+        store.replace_facts(settings, "bp_nope", ["likes tea"])
+    with pytest.raises(store.PersonNotFoundError):
+        store.replace_facts(settings, "bp_nope", ["likes tea"], preserve_updated_at=True)
+
+
+def test_replace_facts_projects_to_the_robot_newest_first(settings: Settings, tmp_path: Path) -> None:
+    """The ordering oracle: `texts` comes back off the robot in exactly that order.
+
+    Two conventions have to agree for this to hold — the store's newest-first
+    stack and projection's oldest-first replay into the robot's prepending
+    writer — so it is pinned end to end rather than in either half alone.
+    """
+    # Imported here, not at module scope: these store contracts do not otherwise
+    # depend on the projection layer, and this one test is deliberately the
+    # exception that pins both sides together.
+    from reachy_companion import people as robot_people
+    from backend import projection
+
+    person = store.create_person(settings, "小諾")
+    store.replace_facts(settings, person.id, ["最新", "其次", "最舊"])
+
+    projection.project(settings, tmp_path / "out")
+
+    facts = robot_people.facts_for_person(tmp_path / "out", "小諾")
+    assert [fact.text for fact in facts] == ["最新", "其次", "最舊"]
+
+
+# --------------------------------------------------------------------------
 # photos
 # --------------------------------------------------------------------------
 
@@ -788,6 +946,7 @@ def test_set_person_face_id(settings: Settings) -> None:
 _MUTATIONS: dict[str, Callable[[Settings, str], object]] = {
     "rename": lambda s, pid: store.rename_person(s, pid, "Renamed"),
     "add_fact": lambda s, pid: store.add_fact(s, pid, "likes tea"),
+    "replace_facts": lambda s, pid: store.replace_facts(s, pid, ["likes tea"]),
     "delete_fact": lambda s, pid: store.delete_fact(s, pid, store.add_fact(s, pid, "temporary").id),
     "add_photo": lambda s, pid: store.add_photo(s, pid, "face.jpg", b"bytes"),
     "set_photo_embedding": lambda s, pid: store.set_photo_embedding(
