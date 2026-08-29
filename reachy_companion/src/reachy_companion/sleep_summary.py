@@ -13,6 +13,7 @@ import logging
 from typing import Any, Final
 from pathlib import Path
 
+from reachy_companion.memory import normalize_memory_text
 from reachy_companion.people import (
     MAX_FACTS_PER_PERSON,
     add_person_fact,
@@ -109,25 +110,36 @@ async def write_sleep_summaries(deps: ToolDependencies, *, client: Any | None = 
         return 0
 
 
-def _replace_last_chat_fact(instance_path: str | Path | None, name: str, summary: str) -> int:
-    """ADD first, then forget the old copies — a failure can never leave zero last-chat facts.
+def _forget_key(text: str) -> str:
+    """Return the exact key `forget_person_fact` matches on (people.py:394, 405)."""
+    return normalize_memory_text(text).lower()
 
-    forget_person_fact is substring-match, newest-candidate-first (people.py:381-405):
-    passing an OLD fact's full text selects that fact and cannot match the new one
-    (different date/summary). New text identical to an old one is returned unstored
-    by add_person_fact's duplicate check — then there is nothing to forget.
+
+def _replace_last_chat_fact(instance_path: str | Path | None, name: str, summary: str) -> int:
+    """Leave exactly one 上次聊天 fact for this person: today's.
+
+    The default order is ADD first, then forget the stale copies — a failure
+    between the two leaves a duplicate 上次聊天 fact, never zero of them.
+
+    Every guard below is keyed through `_forget_key`, because that is what
+    `forget_person_fact` itself matches on: a case-insensitive, whitespace-
+    collapsed SUBSTRING test that removes the NEWEST candidate
+    (people.py:394, 405). Comparing raw text instead misses case- and
+    whitespace-only variants, and the post-add forget then deletes the fact we
+    just wrote.
     """
     facts = facts_for_person(instance_path, name)
     old_texts = [f.text for f in facts if f.text.startswith(LAST_CHAT_PREFIX)]
-    new_text = format_last_chat_fact(summary)
-    # forget_person_fact is SUBSTRING match, newest-candidate-first (people.py:405).
+    new_text = format_last_chat_fact(summary)  # stamped once: never re-read the clock here
+    new_key = _forget_key(new_text)
     # Two cases force forget-FIRST (tiny failure window; worst loss = last week's
     # callback, never a real fact):
     #  - at the 20-fact cap, add-first would evict a REAL fact;
-    #  - an old text that is a substring of the new one (same-day re-sleep) would
-    #    make the post-add forget delete the NEW fact instead of the old.
+    #  - an old fact whose key is contained in the new one (same-day re-sleep,
+    #    identical text being the degenerate case) would make the post-add
+    #    forget delete the NEW fact instead of the old.
     forget_first = bool(old_texts) and (
-        len(facts) >= MAX_FACTS_PER_PERSON or any(old in new_text for old in old_texts)
+        len(facts) >= MAX_FACTS_PER_PERSON or any(_forget_key(old) in new_key for old in old_texts)
     )
     if forget_first:
         for old in old_texts:
@@ -136,7 +148,8 @@ def _replace_last_chat_fact(instance_path: str | Path | None, name: str, summary
     if stored is None:
         return 0
     if not forget_first:
+        stored_key = _forget_key(stored.text)
         for old in old_texts:
-            if old != stored.text and old not in stored.text:
+            if _forget_key(old) not in stored_key:
                 forget_person_fact(instance_path, name, query=old)
     return 1

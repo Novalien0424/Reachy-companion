@@ -195,6 +195,36 @@ def test_write_sleep_summaries_replaces_same_day_substring_summary(tmp_path: Pat
     assert texts == [sleep_summary.format_last_chat_fact("聊到考試和音樂")]
 
 
+def test_write_sleep_summaries_replaces_case_variant_summary(tmp_path: Path) -> None:
+    """A case-only difference must not slip past the guards and delete the NEW fact.
+
+    `forget_person_fact` matches case-insensitively (people.py:394, 405), so a raw
+    `in` check reports "no collision", the post-add forget then matches the new
+    fact first (newest-candidate-first) and removes it — leaving only the stale one.
+    """
+    people.add_person_fact(tmp_path, "小諾", sleep_summary.format_last_chat_fact("聊到 AI"))
+    client, _ = _client(json.dumps({"小諾": "聊到 ai 和音樂"}))
+    deps = _visit_deps(tmp_path, "小諾")
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    texts = [f.text for f in people.facts_for_person(tmp_path, "小諾")]
+    assert texts == [sleep_summary.format_last_chat_fact("聊到 ai 和音樂")]
+
+
+def test_write_sleep_summaries_replaces_whitespace_variant_summary(tmp_path: Path) -> None:
+    """Whitespace the store collapses must not leave two 上次聊天 facts behind.
+
+    `forget_person_fact` keys on `normalize_memory_text(query)`, which collapses
+    runs of whitespace; a raw comparison sees a mismatch, fires neither forget,
+    and the exactly-one invariant breaks.
+    """
+    people.add_person_fact(tmp_path, "小諾", sleep_summary.format_last_chat_fact("聊到 A B"))
+    client, _ = _client(json.dumps({"小諾": "聊到 A  B 和音樂"}))
+    deps = _visit_deps(tmp_path, "小諾")
+    assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+    texts = [f.text for f in people.facts_for_person(tmp_path, "小諾")]
+    assert texts == [sleep_summary.format_last_chat_fact("聊到 A B 和音樂")]
+
+
 def test_write_sleep_summaries_at_fact_cap_keeps_real_facts(tmp_path: Path) -> None:
     """At the per-person cap the stale 上次聊天 fact goes first, so no real fact is evicted.
 
