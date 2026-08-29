@@ -10,7 +10,8 @@ import importlib.util
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Callable, ClassVar, Sequence, TypedDict
 from pathlib import Path
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import field, dataclass
 
 from reachy_mini import ReachyMini
 from reachy_companion.config import config, list_tool_module_names
@@ -57,6 +58,17 @@ class ToolDependencies:
     # memory scoping only — never used to gate behavior. Optional for the same
     # reason as face_recognizer: every other construction site keeps working.
     current_person: str | None = None
+    # Whole-app-run engagement memory (sleep_summary.py): every name ever
+    # recognized this run, and a bounded tail of final user/assistant text.
+    # Deliberately NOT cleared on session reconnect — the unit is the visit.
+    # The maxlen literal must stay equal to sleep_summary.TRANSCRIPT_MAX_ITEMS;
+    # importing it here would be a cycle (Tool classes import core_tools).
+    recognized_people: set[str] = field(default_factory=set)
+    session_transcript: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=40))
+    # Set only by the go_to_sleep closure in main.py; gates the sleep summary so
+    # settings/backend restarts (console.py:307/:697 also reach shutdown()) don't
+    # write mid-visit.
+    sleep_requested: bool = False
 
 
 class ToolSpec(TypedDict):
