@@ -245,6 +245,33 @@ def test_run_apply_writes_through_replace_facts(settings: Settings) -> None:
     assert results[0].after == tuple(_texts(settings, person.id))
 
 
+def test_run_reports_after_exactly_as_the_store_will_hold_it(settings: Settings) -> None:
+    """`after` is the preview the operator approves, so it has to be what lands.
+
+    `store.replace_facts` collapses whitespace and dedupes case-insensitively on
+    the way in. Reporting the model's raw strings would show three facts where
+    two get stored — and an answer differing from the current list only in
+    spacing would read as a change and provoke a write that changes nothing.
+    """
+    person = _person(settings, "Lena", ["likes tea", "plays cello"])
+    client, _ = _client(_payload("likes   tea", "plays cello", "Plays Cello"))
+
+    results = consolidate.run(settings, apply=True, client=client)
+
+    assert results[0].after == ("likes tea", "plays cello")  # collapsed, and deduped by case
+    assert list(results[0].after) == _texts(settings, person.id)
+
+    # The same list again, sloppier: normalizing before the comparison is what
+    # makes this the no-op it is.
+    unchanged = store.people_path(settings).read_bytes()
+    again, _ = _client(_payload("likes  tea", " plays cello "))
+
+    second = consolidate.run(settings, apply=True, client=again)
+
+    assert second[0].changed is False
+    assert store.people_path(settings).read_bytes() == unchanged
+
+
 def test_run_apply_preserves_updated_at(settings: Settings) -> None:
     """A background rewrite must not reshuffle the projection's recency ranking."""
     person = _person(settings, "雲霓", ["喜歡寫歌", "是外科醫師", "想當舞者"])
@@ -377,6 +404,9 @@ def test_run_drops_a_last_chat_fact_the_model_invented(settings: Settings) -> No
 
     assert "上次聊天（1月1日）：偽造" not in results[0].after
     assert results[0].after == (_NEW_CHAT, "喜歡寫歌")
+    # The invention is the *only* thing the model added, so once it is dropped
+    # this rewrite is a no-op — and a no-op must not read as a change.
+    assert results[0].changed is False
     assert _texts(settings, results[0].person_id) == [_NEW_CHAT, "喜歡寫歌"]
 
 
@@ -415,6 +445,29 @@ def test_run_keeps_newest_last_chat_fact_first_and_dedupes(settings: Settings) -
     assert after[0].startswith("上次聊天（8月29日）")
     assert sum(text.startswith(LAST_CHAT_PREFIX) for text in after) == 1
     assert after == (_NEW_CHAT, "是外科醫師", "喜歡寫歌")
+    assert _texts(settings, person.id) == list(after)
+
+
+def test_run_caps_the_stored_list_at_the_robot_s_twenty_facts(settings: Settings) -> None:
+    """The callback fact spends one of the robot's twenty slots; the body gets the rest.
+
+    A twenty-first fact would be stored here and never reach the robot — the
+    projection emits the newest twenty — so every run would re-send it to the
+    model and every projection would drop it again, a difference that could
+    never settle.
+    """
+    person = _person(settings, "雲霓", ["喜歡寫歌", _NEW_CHAT])
+    body = [f"第{index}條" for index in range(consolidate.MAX_FACTS)]
+    client, _ = _client(_payload(*body))
+
+    results = consolidate.run(settings, apply=True, client=client)
+
+    after = results[0].after
+    assert consolidate.MAX_FACTS == people.MAX_FACTS_PER_PERSON == 20
+    assert len(after) == consolidate.MAX_FACTS
+    assert after[0] == _NEW_CHAT
+    assert list(after[1:]) == body[: consolidate.MAX_FACTS - 1]
+    assert body[-1] not in after  # the model's lowest-ranked fact is the one that goes
     assert _texts(settings, person.id) == list(after)
 
 

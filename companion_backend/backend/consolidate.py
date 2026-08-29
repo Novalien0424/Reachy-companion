@@ -135,12 +135,24 @@ def default_model() -> str:
 
 
 def _validated(parsed: object) -> list[str] | None:
-    """Return the model's fact list, or None when the payload is not one.
+    """Return the model's fact list *as the store will hold it*, or None when it is not one.
 
-    Blank items are dropped rather than refused — they are nothing to store, and
-    the store's own normalizer would drop them anyway. A list left empty by that
-    is refused: applying it would erase every fact the model was asked to
-    *organize*, on the strength of the one answer that says least.
+    The surviving items go through `memory.normalize_memory_text` and a
+    case-insensitive dedupe — `store._normalized_facts` and `store._deduped`, the
+    two rules `replace_facts` applies on the way in. Doing it here rather than
+    leaving it to the write is what makes the dry run honest: `after` is the list
+    that will actually be stored, so a preview cannot show three items where two
+    land, and an answer that differs from the current facts only in whitespace
+    reads as the no-op it is instead of provoking a write that changes nothing.
+
+    The raw length test comes **first**, before normalizing: the normalizer
+    *truncates* at the cap rather than refusing, so an over-long item checked
+    afterwards would be quietly accepted as a shortened one.
+
+    Blank items are dropped rather than refused — they are nothing to store. A
+    list left empty by that is refused: applying it would erase every fact the
+    model was asked to *organize*, on the strength of the one answer that says
+    least.
     """
     if not isinstance(parsed, dict):
         return None
@@ -148,12 +160,16 @@ def _validated(parsed: object) -> list[str] | None:
     if not isinstance(values, list) or len(values) > MAX_FACTS:
         return None
     texts: list[str] = []
+    seen: set[str] = set()
     for item in values:
         if not isinstance(item, str) or len(item) > MAX_FACT_CHARS:
             return None
-        cleaned = item.strip()
-        if cleaned:
-            texts.append(cleaned)
+        normalized: str = memory.normalize_memory_text(item)
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        texts.append(normalized)
     return texts or None
 
 
@@ -213,6 +229,13 @@ def run(
 
     One row is returned per selected person, in the store's own order, whether
     the pass rewrote them, left them alone, or skipped them.
+
+    **Assumes exclusive access to the store.** The people are read once, up
+    front, and every write is computed from that read — a model call takes
+    seconds, and re-reading each person at write time would only narrow a window
+    it cannot close. `store`'s lock is process-local (`store.py:93`), so keeping
+    the backend off the store while this runs is the caller's job: Task 8's CLI
+    does it with a probe against the backend's port.
     """
     selected = _selected(settings, only)
     if client is None:
@@ -248,7 +271,12 @@ def run(
                 # so an empty result is a refusal, never an instruction to erase.
                 after, error = before, INVALID_RESPONSE
             else:
-                after = (*last_chat[:1], *body)
+                # The callback fact spends one of the twenty slots the robot has
+                # (`projection.MAX_PROJECTED_FACTS`), so the body gets the rest.
+                # A twenty-first fact stored here would be one the robot never
+                # sees, re-sent to the model on every run and re-trimmed by every
+                # projection — a difference that could never settle.
+                after = (*last_chat[:1], *body[: MAX_FACTS - len(last_chat[:1])])
 
         changed = after != before
         if apply and changed and error is None:
