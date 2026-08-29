@@ -303,12 +303,14 @@ def test_format_last_chat_fact_has_prefix_and_date() -> None:
 class _WriterSpy:
     """Stands in for `write_sleep_summaries`, recording how it was called."""
 
-    def __init__(self) -> None:
+    def __init__(self, order: list[str] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.order = order if order is not None else []
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> int:
         """Record the call and report one fact written."""
         self.calls.append(kwargs)
+        self.order.append("summary")
         return 1
 
 
@@ -327,8 +329,14 @@ async def test_handler_shutdown_without_sleep_request_writes_nothing(tmp_path: P
 @pytest.mark.asyncio
 async def test_handler_shutdown_after_sleep_request_summarizes_once(tmp_path: Path, monkeypatch: Any) -> None:
     """Going to sleep summarizes, with its own client, and only on the first shutdown."""
-    spy = _WriterSpy()
+    order: list[str] = []
+    spy = _WriterSpy(order)
+
+    async def record_music_stop(_deps: Any, _token: int) -> None:
+        order.append("music_stop")
+
     monkeypatch.setattr(hf_mod, "write_sleep_summaries", spy)
+    monkeypatch.setattr(hf_mod, "on_session_shutdown", record_music_stop)
     deps = _visit_deps(tmp_path, "小諾")
     deps.sleep_requested = True
     handler = hf_mod.HuggingFaceRealtimeHandler(deps)
@@ -339,3 +347,6 @@ async def test_handler_shutdown_after_sleep_request_summarizes_once(tmp_path: Pa
     # No client argument: the writer builds one and closes it with `async with`,
     # so a shared client handed in here would be closed out from under its owner.
     assert spy.calls == [{}]
+    # The summarizer call can take seconds: the daemon's speaker must already be
+    # stopped when it starts, or music plays on with Reachy asleep.
+    assert order == ["music_stop", "summary", "music_stop"]

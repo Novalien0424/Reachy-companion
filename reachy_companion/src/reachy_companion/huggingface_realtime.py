@@ -2467,17 +2467,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     async def shutdown(self) -> None:
         """Shutdown the handler."""
-        # D-027: the visit's last-chat summary, written once, only when this
-        # shutdown is the one that follows `go_to_sleep` -- settings and backend
-        # restarts (console.py:307, :697) reach here mid-visit and must not
-        # summarize. `write_sleep_summaries` never raises and is timeout-bounded,
-        # and it builds (and closes) its own client, so it takes no argument here.
-        if self.deps.sleep_requested and not self._sleep_summary_done:
-            self._sleep_summary_done = True
-            written = await write_sleep_summaries(self.deps)
-            if written:
-                logger.info("Sleep summary: wrote last-chat fact for %d person(s).", written)
-
         # D-018 / R7 + finding 3: the daemon keeps playing a sound file after our
         # session dies, so a shutdown that leaves music running is a bug the user
         # hears -- and a confirmation left armed is one the next conversation
@@ -2487,6 +2476,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # a no-op by construction, and makes a shutdown() that arrives after a
         # reconnect unable to close the reconnected session.
         await on_session_shutdown(self.deps, self._hanova_session)
+
+        # D-027: the visit's last-chat summary, written once, only when this
+        # shutdown is the one that follows `go_to_sleep` -- settings and backend
+        # restarts (console.py:307, :697) reach here mid-visit and must not
+        # summarize. `write_sleep_summaries` never raises and is timeout-bounded,
+        # and it builds (and closes) its own client, so it takes no argument here.
+        # Deliberately AFTER the music stop above and before `connection.close()`:
+        # the summarizer call can take seconds, and the daemon would keep playing
+        # through all of them if this ran first -- audible, with Reachy already in
+        # the sleep pose.
+        if self.deps.sleep_requested and not self._sleep_summary_done:
+            self._sleep_summary_done = True
+            written = await write_sleep_summaries(self.deps)
+            if written:
+                logger.info("Sleep summary: wrote last-chat fact for %d person(s).", written)
 
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()
