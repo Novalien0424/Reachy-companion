@@ -23,8 +23,10 @@ from itertools import count
 from dataclasses import field, dataclass
 from collections.abc import Sequence
 
+import httpx
 import pytest
 
+from scripts import consolidate as cli
 from reachy_companion import people
 from backend import robot, store, projection, consolidate
 from backend.config import Settings
@@ -570,3 +572,406 @@ def test_full_sync_cycle_heals_stale_last_chat(
     assert sum(text.startswith(LAST_CHAT_PREFIX) for text in texts) == 1
     assert texts[0] == _NEW_CHAT
     assert _OLD_CHAT not in texts
+
+
+# --------------------------------------------------------------------------
+# the operator CLI (scripts/consolidate.py)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def refused(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make every probe report a refused connection, and hand back the URLs probed.
+
+    This is the *only* verdict that lets a run touch the store, so almost every
+    CLI test needs it; the guard's own tests replace it with something else.
+    """
+    probed: list[str] = []
+
+    def refuse(url: str) -> None:
+        probed.append(url)
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(cli, "_probe", refuse)
+    monkeypatch.setattr(cli, "_tailscale_hosts", list)
+    monkeypatch.delenv(cli.BACKEND_HOST_ENV, raising=False)
+    return probed
+
+
+class _OrderedCompletions(_FakeCompletions):
+    """A completions stub that also records *when* the model was called."""
+
+    def __init__(self, payload: str, order: list[str]) -> None:
+        super().__init__(payload)
+        self.order = order
+
+    def create(self, **kwargs: Any) -> Any:
+        """Note the call in the shared order log, then answer as `_FakeCompletions` does."""
+        self.order.append("consolidate")
+        return super().create(**kwargs)
+
+
+class _OrderedClient:
+    """A fake OpenAI client whose calls interleave into a shared order log."""
+
+    def __init__(self, payload: str, order: list[str]) -> None:
+        self.chat = SimpleNamespace(completions=_OrderedCompletions(payload, order))
+
+
+@pytest.fixture
+def cli_settings(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Point `load_settings()` — which the CLI calls itself — at the test's data dir."""
+    monkeypatch.setenv("COMPANION_BACKEND_DATA", str(settings.data_dir))
+    return settings
+
+
+def test_cli_dry_run_prints_diff_and_exits_zero(
+    cli_settings: Settings, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """The default run prints a unified diff per changed person and writes nothing."""
+    person = _person(cli_settings, "雲霓", ["想當舞者", "是外科醫師", "喜歡寫歌"])
+    before = store.people_path(cli_settings).read_bytes()
+    client, _ = _client(_MERGED)
+
+    code = cli.main([], client=client)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "雲霓" in out and "-" in out and "+" in out
+    assert "-想當舞者" in out and "+以前想當舞者，現在是外科醫師" in out
+    assert "1 person(s), 1 changed, applied: no" in out
+    assert store.people_path(cli_settings).read_bytes() == before
+    assert _texts(cli_settings, person.id) == ["喜歡寫歌", "是外科醫師", "想當舞者"]
+
+
+def test_cli_apply_writes_the_consolidated_facts(
+    cli_settings: Settings, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """`--apply` writes exactly the `after` list the dry run showed."""
+    person = _person(cli_settings, "雲霓", ["想當舞者", "是外科醫師", "喜歡寫歌"])
+    client, _ = _client(_MERGED)
+
+    code = cli.main(["--apply"], client=client)
+
+    assert code == 0
+    assert "1 person(s), 1 changed, applied: yes" in capsys.readouterr().out
+    assert _texts(cli_settings, person.id) == ["以前想當舞者，現在是外科醫師", "喜歡寫歌"]
+
+
+def test_cli_person_filter_reaches_one_person(
+    cli_settings: Settings, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """`--person` narrows the pass through the store's own name rule."""
+    person = _person(cli_settings, "雲霓", ["想當舞者", "是外科醫師", "喜歡寫歌"])
+    other = _person(cli_settings, "Lena", ["likes tea"])
+    client, _ = _client(_MERGED)
+
+    code = cli.main(["--apply", "--person", "  雲霓  "], client=client)
+
+    assert code == 0
+    assert "1 person(s), 1 changed, applied: yes" in capsys.readouterr().out
+    assert _texts(cli_settings, person.id) == ["以前想當舞者，現在是外科醫師", "喜歡寫歌"]
+    assert _texts(cli_settings, other.id) == ["likes tea"]
+
+
+def test_cli_reports_a_person_nobody_answers_to(
+    cli_settings: Settings, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """A `--person` that matches nobody is a mistyped name, not a silent success."""
+    _person(cli_settings, "雲霓", ["喜歡寫歌"])
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--person", "nobody"], client=client)
+
+    assert code == 1
+    assert "nobody" in capsys.readouterr().out
+    assert spy.calls == []
+
+
+def test_cli_returns_two_when_there_is_no_client(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """Every person skipped for want of a client is its own exit code, not a success."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    person = _person(cli_settings, "雲霓", ["喜歡寫歌"])
+
+    code = cli.main(["--apply"])
+
+    assert code == 2
+    assert consolidate.NO_CLIENT in capsys.readouterr().out
+    assert _texts(cli_settings, person.id) == ["喜歡寫歌"]
+
+
+def test_cli_reports_a_refused_answer_and_still_exits_zero(
+    cli_settings: Settings, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """One unusable model answer is a skipped person, not a failed run."""
+    person = _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
+    client, _ = _client("不是 JSON")
+
+    code = cli.main(["--apply"], client=client)
+
+    assert code == 0
+    assert consolidate.INVALID_RESPONSE in capsys.readouterr().out
+    assert _texts(cli_settings, person.id) == ["想當舞者", "喜歡寫歌"]
+
+
+# --------------------------------------------------------------------------
+# the CLI's probe guard: the store lock is process-local, so fail CLOSED
+# --------------------------------------------------------------------------
+
+
+def test_cli_refuses_while_the_backend_answers(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A backend that answers anything at all stops the run before it reads the store."""
+    _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
+    before = store.people_path(cli_settings).read_bytes()
+
+    monkeypatch.setattr(cli, "_probe", lambda url: None)
+    monkeypatch.setattr(cli, "_tailscale_hosts", list)
+    monkeypatch.delenv(cli.BACKEND_HOST_ENV, raising=False)
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("the guard must return before anything reads the store")
+
+    monkeypatch.setattr(store, "list_people", boom)
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--apply"], client=client)
+
+    assert code == 3
+    assert "stop it first" in capsys.readouterr().out
+    assert spy.calls == []
+    assert store.people_path(cli_settings).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectTimeout("timed out"),
+        httpx.ReadTimeout("timed out"),
+        httpx.ReadError("reset"),
+        RuntimeError("something else entirely"),
+    ],
+)
+def test_cli_refuses_when_it_cannot_prove_the_backend_is_stopped(
+    cli_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: Exception,
+) -> None:
+    """Anything but a refused connection is unproven, and unproven fails closed.
+
+    A timeout is the case worth naming: a backend under load answers late, and a
+    guard that read "no answer yet" as "not running" would hand two processes the
+    same store — the lost update the guard exists to prevent.
+    """
+    person = _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
+
+    def fail(url: str) -> None:
+        raise failure
+
+    monkeypatch.setattr(cli, "_probe", fail)
+    monkeypatch.setattr(cli, "_tailscale_hosts", list)
+    monkeypatch.delenv(cli.BACKEND_HOST_ENV, raising=False)
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--apply"], client=client)
+
+    assert code == 3
+    assert "cannot prove" in capsys.readouterr().out
+    assert spy.calls == []
+    assert _texts(cli_settings, person.id) == ["想當舞者", "喜歡寫歌"]
+
+
+def test_cli_probes_loopback_the_configured_bind_and_the_tailnet(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, refused: list[str]
+) -> None:
+    """The documented production bind is the tailnet IP, so loopback alone proves nothing."""
+    monkeypatch.setenv(cli.BACKEND_HOST_ENV, "192.168.1.9")
+    monkeypatch.setattr(cli, "_tailscale_hosts", lambda: ["100.64.0.7", "127.0.0.1"])
+
+    assert cli.candidate_hosts() == ["127.0.0.1", "192.168.1.9", "100.64.0.7"]
+
+    _person(cli_settings, "雲霓", ["喜歡寫歌"])
+    client, _ = _client(_MERGED)
+    assert cli.main([], client=client) == 0
+    assert refused == [
+        "http://127.0.0.1:8710/api/config",
+        "http://192.168.1.9:8710/api/config",
+        "http://100.64.0.7:8710/api/config",
+    ]
+
+
+def test_cli_stops_at_the_first_host_that_answers(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Loopback refusing is not a verdict while the tailnet bind still answers."""
+    _person(cli_settings, "雲霓", ["喜歡寫歌"])
+    monkeypatch.delenv(cli.BACKEND_HOST_ENV, raising=False)
+    monkeypatch.setattr(cli, "_tailscale_hosts", lambda: ["100.64.0.7"])
+
+    def probe(url: str) -> None:
+        if "127.0.0.1" in url:
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(cli, "_probe", probe)
+    client, spy = _client(_MERGED)
+
+    assert cli.main([], client=client) == 3
+    assert "100.64.0.7" in capsys.readouterr().out
+    assert spy.calls == []
+
+
+def test_tailscale_hosts_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing or unhappy `tailscale` contributes no hosts and never raises."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli._tailscale_hosts() == []
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tailscale")
+
+    def completed(returncode: int, stdout: str) -> Any:
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: completed(0, "100.64.0.7\n 100.64.0.8 \n\n"))
+    assert cli._tailscale_hosts() == ["100.64.0.7", "100.64.0.8"]
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: completed(1, "100.64.0.7"))
+    assert cli._tailscale_hosts() == []
+
+    def raise_oserror(*args: Any, **kwargs: Any) -> None:
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(cli.subprocess, "run", raise_oserror)
+    assert cli._tailscale_hosts() == []
+
+
+# --------------------------------------------------------------------------
+# the one-shot flow: import -> consolidate -> push, with the backend stopped
+# --------------------------------------------------------------------------
+
+
+def test_cli_runs_import_then_consolidate_then_push(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """The whole round trip in one process, in the only order that is safe."""
+    person = _person(cli_settings, "雲霓", ["想當舞者", "是外科醫師", "喜歡寫歌"])
+    order: list[str] = []
+
+    def fake_import(settings: Settings) -> robot.RobotDiff:
+        order.append("import")
+        return robot.RobotDiff(new_faces=[], changed_faces=[], new_person_facts=[])
+
+    def fake_apply(settings: Settings, diff: robot.RobotDiff) -> robot.ImportResult:
+        order.append("apply_import")
+        return robot.ImportResult(applied=0, conflicts=[])
+
+    def fake_push(settings: Settings) -> robot.PushResult:
+        order.append("push")
+        return robot.PushResult(pushed=True, faces_count=1, people_count=1, blocked_by=None)
+
+    monkeypatch.setattr(robot, "import_from_robot", fake_import)
+    monkeypatch.setattr(robot, "apply_import", fake_apply)
+    monkeypatch.setattr(robot, "push", fake_push)
+
+    code = cli.main(["--import-first", "--apply", "--push-after"], client=_OrderedClient(_MERGED, order))
+
+    assert code == 0
+    assert order == ["import", "apply_import", "consolidate", "push"]
+    assert _texts(cli_settings, person.id) == ["以前想當舞者，現在是外科醫師", "喜歡寫歌"]
+    assert "push" in capsys.readouterr().out
+
+
+def test_cli_refuses_push_after_without_apply(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """A dry run has nothing to push, so the combination is refused before anything runs."""
+    _person(cli_settings, "雲霓", ["喜歡寫歌"])
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("nothing may run when the flags are refused")
+
+    monkeypatch.setattr(robot, "push", boom)
+    monkeypatch.setattr(store, "list_people", boom)
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--push-after"], client=client)
+
+    assert code == 1
+    assert "--push-after" in capsys.readouterr().out
+    assert spy.calls == []
+    assert refused == []  # refused before the probe, which costs two seconds a host
+
+
+def test_cli_does_not_push_when_nothing_was_consolidated(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """No client means no rewrite, and a push of an unchanged store is not what was asked for."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _person(cli_settings, "雲霓", ["喜歡寫歌"])
+
+    def boom(settings: Settings) -> robot.PushResult:
+        raise AssertionError("the push must not run when the pass consolidated nothing")
+
+    monkeypatch.setattr(robot, "push", boom)
+
+    code = cli.main(["--apply", "--push-after"])
+
+    assert code == 2
+    assert "Skipping the push" in capsys.readouterr().out
+
+
+def test_cli_reports_a_refused_push(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """A push the sync gate blocks is a nonzero exit, not a quiet line in the log."""
+    _person(cli_settings, "雲霓", ["想當舞者", "是外科醫師", "喜歡寫歌"])
+    blocked = robot.RobotDiff(new_faces=[], changed_faces=[], new_person_facts=[])
+    monkeypatch.setattr(
+        robot,
+        "push",
+        lambda settings: robot.PushResult(pushed=False, faces_count=0, people_count=0, blocked_by=blocked),
+    )
+    client, _ = _client(_MERGED)
+
+    code = cli.main(["--apply", "--push-after"], client=client)
+
+    assert code == 1
+    assert "refused" in capsys.readouterr().out.casefold()
+
+
+def test_cli_reports_a_failed_import_without_consolidating(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """An unreachable robot stops the run at the import; the facts are left alone."""
+    person = _person(cli_settings, "雲霓", ["喜歡寫歌", "想當舞者"])
+
+    def fail(settings: Settings) -> robot.RobotDiff:
+        raise robot.RobotError("the robot is not configured")
+
+    monkeypatch.setattr(robot, "import_from_robot", fail)
+    client, spy = _client(_MERGED)
+
+    code = cli.main(["--import-first", "--apply"], client=client)
+
+    assert code == 1
+    assert "the robot is not configured" in capsys.readouterr().out
+    assert spy.calls == []
+    assert _texts(cli_settings, person.id) == ["想當舞者", "喜歡寫歌"]
+
+
+def test_cli_never_pushes_an_empty_store(
+    cli_settings: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], refused: list[str]
+) -> None:
+    """A push projects this store onto the robot, so an empty one must never travel."""
+
+    def boom(settings: Settings) -> robot.PushResult:
+        raise AssertionError("pushing an empty store would clear the robot's faces")
+
+    monkeypatch.setattr(robot, "push", boom)
+
+    code = cli.main(["--apply", "--push-after"], client=_FakeClient(_MERGED))
+
+    assert code == 0
+    assert "nobody to consolidate" in capsys.readouterr().out

@@ -193,6 +193,65 @@ newest-three window — a merged person carrying more than three samples imports
 once and then pushes cleanly, with the push collapsing both robot records into
 the survivor's single projected one.
 
+## Consolidation
+
+Facts accumulate the way a conversation produces them — one line at a time, with
+duplicates, near-duplicates and things that were true last year. The robot
+answers from the newest twenty, so a memory nobody tidies decays into trivia.
+`scripts/consolidate.py` hands each person's whole list to the model and takes
+back a merged, contradiction-resolved, usefulness-ranked one.
+
+```sh
+cd companion_backend
+export OPENAI_API_KEY=sk-...                                   # required; nothing runs without it
+../reachy_companion/.venv/bin/python scripts/consolidate.py            # review the diff
+../reachy_companion/.venv/bin/python scripts/consolidate.py --apply    # keep it
+```
+
+The default is a **dry run**: every changed person is printed as a unified diff
+and not one byte of `people.json` is written. What is printed is what will be
+stored — normalized and deduped exactly as `replace_facts` holds it — so the
+preview is the write rather than an approximation of it. `--person NAME` narrows
+the pass to one person (name or alias, through the store's own name rule).
+
+Model: `COMPANION_CONSOLIDATE_MODEL`, default `gpt-5-mini` — this is a batch job
+over everybody, not a conversational turn. One person's unusable answer is
+reported as a skip and costs them nothing; they keep exactly the facts they had.
+Exit codes: `0` done, `1` refused or failed (bad flags, an unknown `--person`, a
+robot error, a blocked push), `2` nothing consolidated because there was no
+OpenAI client, `3` the backend is running or could not be proven stopped.
+
+**The backend must be stopped.** The store lock is a `threading.RLock` in one
+process, so a CLI write while the server serves is a lost update — both read
+`people.json`, both write it back, and the loser's changes are gone. The script
+therefore probes `:8710/api/config` on every plausible bind (`127.0.0.1`,
+`COMPANION_BACKEND_HOST`, and whatever `tailscale ip -4` reports — the
+documented production bind is the *tailnet IP*, so loopback alone proves
+nothing) and **fails closed**: only a refused connection on every one of them
+lets the run continue. An answer stops it, and so does a timeout or any other
+unclear outcome. A false refusal costs you a minute; the other mistake costs
+somebody's memory.
+
+That leaves two ways to run the round trip, because the UI's import and push
+need the server the guard forbids:
+
+- **UI flow** — backend **up**: import from the robot in the UI. Backend
+  **down**: `scripts/consolidate.py`, review, `--apply`. Backend **up** again:
+  push from the UI.
+- **One-shot CLI flow** — backend **down** throughout:
+
+  ```sh
+  ../reachy_companion/.venv/bin/python scripts/consolidate.py \
+      --import-first --apply --push-after
+  ```
+
+  `--import-first` runs `robot.import_from_robot` + `apply_import` before the
+  pass, `--push-after` runs `robot.push` after it — the same functions the UI
+  calls, in the only order that is safe: import first so the robot's own writes
+  are part of what the model organizes, push last. `--push-after` without
+  `--apply` is refused (a dry run has nothing to push), and the push is skipped
+  when the pass consolidated nothing.
+
 ## Tests
 
 ```sh
