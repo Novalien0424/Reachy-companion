@@ -22,7 +22,9 @@ class WhoIsThis(Tool):
         "arrived. Returns a status only: recognized (with the remembered name), unknown, ambiguous, no_face, "
         "too_far or unavailable. It never returns a picture. If the status is not recognized, "
         "say plainly that you do not recognize them — never guess a name. "
-        "When recognized, the result includes short remembered facts about that person — use them naturally."
+        "When recognized, the result includes the remembered name and short facts about that person: say the "
+        "name exactly as returned and state the facts as returned — do not add, alter, or guess details the "
+        "result does not contain."
     )
     parameters_schema: dict[str, Any] = {
         "type": "object",

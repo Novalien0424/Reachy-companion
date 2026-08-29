@@ -5,8 +5,21 @@ history of this file.
 
 ## Current state
 
-**Fifteenth install is ON the robot; its first boot is pending an operator
-reboot.** Deployed 2026-08-28 ~22:35–22:45 local (Mac), commit `ad5fe3e`
+**Fifteenth install BOOTED AND VERIFIED on the robot (2026-08-29 00:41, after
+the operator's reboot).** The reboot cleared the daemon app-state wedge
+(`current-app-status` back to `null`), the app started via the sanctioned
+start API and reached `running`, and the boot journal shows every expected
+line: `persona: instance persona.md`, 41 tools registered, `Face memory
+ready: … 4 people enrolled` (1337 ms), wake check 5 rounds / 2107 ms (≤ the
+4000 ms budget) ending in the empty-room branch (`Queued startup greeting
+prompt`), `boot gate released (greeting played)` at +6.6 s, extended wake
+window closed at its bound after 6 rounds, zero tracebacks. One benign
+warning: TURN credential fetch failed (`turn.fastrtc.org` DNS) — WebRTC
+console path only, greeting and audio unaffected. **The app was left
+RUNNING.** All remaining verification is live/human (see Pending
+verification).
+
+Deploy record: deployed 2026-08-28 ~22:35–22:45 local (Mac), commit `ad5fe3e`
 (main: the person-memory wave + the merge/snapshots addendum together), wheel
 sha `068e6b81…` verified end to end, two-step `--no-deps` install,
 manifest-driven backup/restore at
@@ -18,19 +31,12 @@ operator's merged "Linna" push), persona sha `4c87d2ec` preserved,
 index + google-workspace-mcp restored, `people.py` + `face_snapshot.py`
 confirmed present in site-packages, assets preloaded, app discovered.
 
-**Why boot verification did not run:** the daemon's app tracker was wedged —
-`current-app-status` stuck at `state: "stopping"` with **no app process
-running** (verified over ssh), start refused ("an app is already running"),
-stop/restart answered "no app is currently running", app lock free, daemon
-itself healthy (control loop ~50 Hz, motors disabled/asleep, uptime 2 days).
-Likely the residue of the fourteenth install's odd stop (`Motor communication
-error` on the stop API). Per D-009 the daemon is untouchable; Pollen's own
-troubleshooting prescribes OFF → 5 s → ON. **The operator is rebooting over
-ssh; the next session verifies the boot journal** — expected lines: `persona:
-instance persona.md`, 41 tools, `Face memory ready: … 4 people enrolled`, the
-new ~4 s wake check (`FACE_WAKE_BUDGET_MS=4000`, 5 attempts), and one of the
-three greeting branches (`Startup greeting personalized for …` /
-stranger-intro prefix / profile greeting verbatim).
+Daemon app-state wedge history: after the fifteenth install (2026-08-28) the
+tracker was stuck at `state: "stopping"` with no app process — start/stop/
+restart all refused, daemon otherwise healthy. The operator's ssh reboot
+(2026-08-29) cleared it, consistent with Pollen's OFF → 5 s → ON
+prescription. Watch whether it recurs after clean stops (it followed the
+fourteenth install's `Motor communication error` stop).
 
 What this build ships (first time on the device): the three-way boot greeting
 with per-person facts, `people.v1.json` person-scoped `remember`/`forget` and
@@ -73,8 +79,9 @@ LED first; dark = power event, not software.
 ## Pending verification (operator)
 
 Eighteen `implemented-unverified` rows in `feature_list.json` still need live
-use — **all robot-side rows are now DEPLOYED (fifteenth install) and gated
-only on the post-reboot boot + a human in front of the camera.**
+use — **all robot-side rows are DEPLOYED and BOOTED (fifteenth install,
+first boot verified 2026-08-29); everything left needs a human in front of
+the camera / a listener in the room.**
 
 **Person memory + backend (eight):** `PERSON-GREET-KNOWN` (enrolled person in
 frame at boot → `Wake face check: recognized …` then `Startup greeting
@@ -119,6 +126,38 @@ email send with a dictated address; the five **PRD §8** demo gates; the
 `move_head` body-yaw fix (`a5f682d`, unit-covered only).
 
 ## Known defects / open edges
+
+- Live session 2026-08-29 06:00 (first family session on the fifteenth
+  install): the realtime model SPOKE person facts wrong while the tool data
+  was right — `who_is_this` returned 雲霓 / 「女外科醫師…興趣是自己創作歌曲」
+  (score 0.679, correct), but Reachy said 「雲玲…有趣的舞蹈老師」 (wrong name
+  rendering + invented "dance teacher"), then falsely blamed "先前系統給的資
+  料". Storage, recognition and retrieval all correct; this is generation
+  infidelity on `gpt-realtime-2.1`. FIXED 2026-08-29 (prompt): one
+  grounding principle in persona.md (person info has one source — the tool
+  result; say the name as written, add nothing, re-verify when corrected)
+  plus the who_is_this description ending rewritten ("state as returned",
+  replacing "use them naturally"). Persona synced to the robot (sha
+  94d87bb0, loads at next wake); the description edit rides the next wheel.
+  Live re-test owed.
+- Same session: 「請進入睡眠模式」 misrouted to `party_mode` instead of
+  `go_to_sleep` (06:01:25); a later retry slow-walked; a still-later plain
+  retry worked (06:07). FIXED 2026-08-29 (prompt): both tool descriptions
+  and persona sections rewritten as an intent contrast — go_to_sleep = end
+  the interaction entirely; party_mode = stay awake, change participation;
+  each names the other as the wrong choice. Deliberately no keyword/phrase
+  lists (operator direction: the model judges intent; enumeration is
+  brittle). Persona half live at next wake; descriptions ride the next
+  wheel. Live re-test owed.
+- Same night 06:06 boot: the documented too_far edge played out live —
+  wake check rounds ended `too_far` (face visible, person seated across the
+  room), stranger intro spoken, extended window then recognized 小諾 (0.454)
+  on round 4 and delivered the late named greeting ~5 s later. Works as
+  designed (D-025 accepted edge); operator flagged the
+  generic-greeting-first feel as undesirable — design judgement pending.
+  Note: the 5-attempt cap ends the wake check at ~2.1 s, well inside
+  FACE_WAKE_BUDGET_MS=4000 — attempts, not the budget, are the binding
+  limit.
 
 - Solo barge-in, two residual edges (recorded, not fixed): a barge starting
   during the tail drain of a done response captures no paused-response id (a
@@ -184,3 +223,7 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   install** deployed (`ad5fe3e`, extended manifest, 4 faces + 4 people
   survived) — first boot blocked by the daemon app-state wedge, operator
   rebooting; boot verification owed next session.
+- **2026-08-29** — operator reboot cleared the wedge; **fifteenth install's
+  first boot verified** (persona, 41 tools, 4 people, 2107 ms wake check,
+  empty-room greeting branch, boot gate released, 0 tracebacks); app left
+  running; PERSON-GREET-EMPTY journal half recorded as passed.

@@ -13,8 +13,10 @@ class GoToSleep(Tool):
 
     name = "go_to_sleep"
     description = (
-        "Use when you are sure the user wants Reachy to go to sleep, stop the current app, shut down this app, "
-        "or end the conversation. Do not use for idle turns, sleepy emotions, silence, or ambiguous requests."
+        "End the interaction entirely: Reachy says goodbye, stops, and rests. Use when you are sure the user "
+        "wants Reachy gone, off, asleep, or the conversation over — in any wording or language. The judgment: "
+        "they want you to STOP being active, not to keep participating in a different way (that is party_mode). "
+        "Do not use for idle turns, sleepy emotions, silence, or ambiguous requests."
     )
     needs_response = False
     parameters_schema = {

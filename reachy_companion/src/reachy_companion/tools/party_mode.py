@@ -22,7 +22,11 @@ class PartyMode(Tool):
     """Switch the group-conversation policy on or off by voice."""
 
     name = "party_mode"
-    description = "Switch party mode. 多人聊天場合開啟派對模式：只回應叫名字的話；結束時關閉。"
+    description = (
+        "Change how Reachy participates while it STAYS awake: in a group conversation it answers only when "
+        "addressed by name and otherwise listens quietly. 多人聊天場合開啟；結束時關閉。 "
+        "Not for ending the interaction or sleeping — that is go_to_sleep."
+    )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
