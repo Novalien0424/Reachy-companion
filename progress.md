@@ -5,8 +5,24 @@ history of this file.
 
 ## Current state
 
-**Branch `engagement-memory` is IMPLEMENTED AND REVIEWED, not yet merged and
-not yet on the robot.** Nine tasks off
+**SIXTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-30 00:03 robot time).**
+`engagement-memory` was merged to `main` (fast-forward to `e4a40b1`, pushed)
+and deployed via the full ritual: wheel sha `0f95e9ff…` verified end to end,
+version gate passed (daemon 1.10.0rc5), two-step `--no-deps` install,
+manifest backup/restore at `/tmp/reachy_companion_backup/20260829T230203Z-12174`
+(faces 4 + people 4 read back, persona sha `1ce532f3` intact,
+`memory.v1.json` + `face_snapshots/` recorded absent, google-oauth + nas
+index + google-workspace-mcp restored, modes reasserted), `sleep_summary.py`
+confirmed in site-packages, assets preloaded, app discovered. First boot
+clean: `persona: instance persona.md`, 41 tools with the NEW fact-fidelity
+`who_is_this` description visible in the registration log, `Face memory
+ready … 4 people enrolled` (777 ms), wake check 5 rounds / 2083 ms
+(empty room), `boot gate released (greeting played)`, extended window
+closed after 7 rounds, zero tracebacks. **App left RUNNING.** The
+engagement-memory features now await their live rows (`MEMORY-LAST-CHAT`
+needs a recognized session ending in a voice 「進入睡眠模式」).
+
+Branch history (merged): Nine tasks off
 `docs/plans/2026-08-29-engagement-memory-plan.md` (three Codex review rounds,
 23 findings, 22 accepted): the last-chat callback written at sleep, open-loop
 prompt guidance, and a Mac-side consolidation CLI. Design record: **D-027**.

@@ -1,54 +1,48 @@
-# Session handoff — 2026-08-29 (post-boot-verification)
+# Session handoff — 2026-08-30 (sixteenth install deployed and booted)
 
-The **fifteenth install's first boot is VERIFIED** (2026-08-29 00:41). The
-operator's reboot cleared the daemon app-state wedge; the app was started via
-`POST /api/apps/start-app/reachy_companion`, reached `running`, and the boot
-journal showed every expected line: `persona: instance persona.md`, 41 tools,
-`Face memory ready: … 4 people enrolled`, wake check 5 rounds / 2107 ms
-(budget 4000 ms) → empty-room greeting branch, `boot gate released (greeting
-played)`, extended window closed after 6 rounds, zero tracebacks. **The app
-was left RUNNING on the robot.** No redeploy was needed — the wheel from
-`ad5fe3e` was already installed.
+`engagement-memory` (9 tasks, D-027) is **merged to `main`** (fast-forward to
+`e4a40b1`, pushed) and the **sixteenth install is on the robot with a clean
+first boot** (2026-08-30 00:03 robot time; wheel `0f95e9ff…`; backup/restore
+manifest `20260829T230203Z-12174`; 4 faces + 4 people survived; persona sha
+`1ce532f3`; 41 tools; new who_is_this fact-fidelity description confirmed in
+the registration log; 0 tracebacks). **App left RUNNING.**
 
-## Next actions
+## Next actions (operator + a human)
 
-1. **Walk the live rows** (operator + a human face): `PERSON-GREET-*`
-   (EMPTY's journal half is now recorded as passed; the by-ear verbatim
-   greeting + pause judgement remain), `PERSON-MEMORY-AUTO`, `ENROLL-STILL`,
-   `ENROLL-SNAPSHOT` (needs a FRESH 「記住我」), `BACKEND-PUSH-LIVE` /
-   `BACKEND-IMPORT`, then the older `FACE-*` and voice rows — full
-   definitions in `progress.md` → Pending verification.
-2. **Mac backend is STOPPED.** Restart when wanted, from
-   `companion_backend/`:
-   `COMPANION_BACKEND_HOST="$(tailscale ip -4)" ./run.sh`
-   → serves the tailnet at `http://<tailscale-ip>:8710`.
-3. Owed measurements at first live contact: Mac-embed vs robot
-   voice-enrollment cosine comparability (one person, both sources,
-   `who_is_this` logs every score), and the by-ear judgement of the ~2 s
-   pre-greeting wake pause.
+1. **MEMORY-LAST-CHAT live row:** get recognized, mention an ongoing thing,
+   say 「請進入睡眠模式」 (must be the VOICE tool — a dashboard stop writes no
+   summary, that's the negative control). Journal must show `Sleep summary:
+   wrote last-chat fact for 1 person(s).` after the session-shutdown lines;
+   `people.v1.json` gains exactly one 「上次聊天（M月D日）：…」 fact; next
+   recognized boot weaves it in. **Measure the summarizer latency** on this
+   first run — gpt-5-mini under the 8 s `MEMORY_LAST_CHAT_TIMEOUT_S` budget
+   is unproven on-device; raise the knob if it times out. Second negative
+   control: two people hours apart → only the recent one gets a summary.
+2. **MEMORY-OPEN-LOOPS:** listen for `remember` preferring ongoing threads.
+3. **BACKEND-CONSOLIDATE:** with the backend STOPPED, run
+   `companion_backend/scripts/consolidate.py` (dry-run) → review diff →
+   `--apply` → push. One-shot flow: `--import-first --apply --push-after`.
+   The CLI refuses (exit 3) while anything listens on :8710.
+4. Older pending rows unchanged — see `progress.md` → Pending verification.
 
 ## Watch items
 
-- Daemon app-state wedge: cleared by this reboot; if it recurs after a clean
-  stop it is a pattern worth an upstream report.
-- One benign boot warning: TURN credential fetch failed
-  (`turn.fastrtc.org` DNS) — WebRTC console path only; greeting and audio
-  unaffected. Re-check if the web console misbehaves.
-- Power: robot "hard to wake" → look at the power LED first (undervoltage
-  history, triage procedure in `progress.md`).
+- Daemon force-kill racing the ≤8 s sleep-summary write (benign loss; watch
+  the journal line's absence).
+- Daemon app-state wedge (recurred once, cleared by reboot 2026-08-29).
+- Power/undervoltage triage procedure in `progress.md`.
 
-## Robot access (D-020, operator-authorized in a tracked file)
+## Robot access (D-020)
 
 ```
 REACHY_HOST=10.0.0.96
 REACHY_SSH_USER=pollen
 ```
 
-`REACHY_SSH_PASSWORD` and `REACHY_HOSTKEY` are never tracked — repo-root `.env`
-(gitignored) only. Deploy procedure: `.claude/skills/reachy-deploy/SKILL.md`.
+Secrets in gitignored repo-root `.env` only. Deploy procedure:
+`.claude/skills/reachy-deploy/SKILL.md`.
 
 ## Repo sync
 
-`main` pushed to `origin/main`. Working-tree residue, both deliberate:
-`.gitignore` carries the operator's uncommitted `.gstack/` line;
-`reachy_companion/uv.lock` stays untracked (does not re-resolve).
+`main` @ `e4a40b1` + this session's docs commit, pushed. Deliberate residue:
+`.gitignore` operator line, untracked `reachy_companion/uv.lock`.
