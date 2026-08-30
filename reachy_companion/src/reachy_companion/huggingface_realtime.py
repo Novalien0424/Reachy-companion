@@ -552,6 +552,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # time — the answer it would kill is the one the commit asked for
         # (Codex round 2, finding 2). Consumed by the completed handler.
         self._barge_partial_committed_item: str | None = None
+        # The reply a rollback put back on the speaker, so a late interrupt can
+        # tell it apart from a *newer* response that is already the answer to
+        # the turn now being decided (2026-08-30 plan, Task 4). Scoped to the
+        # utterance that caused the rollback: cleared once that turn is decided,
+        # never on `response.created` (Codex round 2, finding 1).
+        self._barge_resumed_response_id: str | None = None
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
         # --- sleep-time engagement memory (D-027) ----------------------------
@@ -804,6 +810,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         task that cancels itself never reaches its own release (the same reason
         `_finish_boot_gate` guards it).
         """
+        # Captured before the field is cleared below: a rollback hands the id on
+        # to `_barge_resumed_response_id`, which is what the late interrupt
+        # (Task 4) compares a live response against.
+        resumed_id = self._barge_paused_response_id
         self._barge_paused = False
         self._barge_pending = False
         audio_drain.note_paused(False)
@@ -816,6 +826,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not rolled_back:
             self._held_audio.clear()
             return
+        # The reply is speaking again over a voice that was never judged: if the
+        # transcript for that voice turns out to address us after all, Task 4's
+        # late interrupt silences exactly this response.
+        self._barge_resumed_response_id = resumed_id
         self._notify_response_started()
         # The rolled-back turn produces no response of its own, so nothing else
         # would ever lift the duck `on_user_speech_candidate` applied — the same
@@ -850,6 +864,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_speech_open = False
         self._barge_paused_response_id = None
         self._barge_partial_committed_item = None
+        self._barge_resumed_response_id = None
         self._held_audio.clear()
         audio_drain.note_paused(False)
 
@@ -1082,6 +1097,37 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._barge_response_seen = False
             self._arm_barge_watchdog()
 
+    async def _late_solo_interrupt(self) -> None:
+        """Silence a reply the transcript proved the user was talking over.
+
+        The pause machinery already resolved (rolled back, cooled down, or was
+        never armed), but the committed turn addresses the robot while it is
+        audible. The newer-answer guard applies only when we actually have a
+        resumed id to compare against (Codex round 1, finding 6): with no
+        resumed id, an active response is simply the reply being talked over —
+        refusing to cancel it would make the robot unsilenceable during the
+        post-barge cooldown. The rare mis-cancel of a racing answer self-heals
+        through the watchdog below.
+        """
+        resumed = self._barge_resumed_response_id
+        answer_already_live = (
+            resumed is not None and self._active_response_id is not None and self._active_response_id != resumed
+        )
+        if answer_already_live:
+            logger.info("late solo interrupt: a newer response is live; leaving it be")
+            return
+        await self._cancel_active_response()
+        if self._clear_queue:
+            self._clear_queue()
+        self._barge_resumed_response_id = None
+        self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
+        # The addressed turn must not end in silence (Codex round 1, finding 5):
+        # its auto-response may have been rejected against the reply we just
+        # cancelled, so give the watchdog the repair duty, exactly as a
+        # committed barge does.
+        self._barge_response_seen = False
+        self._arm_barge_watchdog()
+
     async def _maybe_commit_on_partial(self, partial: str, item_id: str) -> None:
         """Commit a pending pause the moment a partial transcript addresses us.
 
@@ -1139,6 +1185,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             await self._commit_solo_barge()
             return False
         self._resume_playback(rolled_back=True)
+        # This transcript IS the verdict on the utterance that paused the reply,
+        # so the resumed id the resume just recorded has already served its
+        # purpose — and the caller `continue`s before the completed handler's
+        # own clear (Codex round 3, finding 1). Left set, it would only suppress
+        # the newer-answer guard on some future turn.
+        self._barge_resumed_response_id = None
         if transcript:
             kind = "unaddressed" if _solo_name_gate() and is_substantive(transcript) else "backchannel"
             logger.info("solo barge rolled back (%s)", kind)
@@ -1149,7 +1201,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         return True
 
     def _resolve_solo_barge_failure(self) -> None:
-        """Roll a pause back when transcription failed: no verdict will ever come."""
+        """Roll a pause back when transcription failed: no verdict will ever come.
+
+        The late-interrupt fields are cleared first, ahead of the pending guard:
+        the common shape here is a turn whose pause was already resolved (a
+        max-pause rollback, or a partial-transcript commit) and whose transcript
+        then failed. Nothing about that turn can be decided any more, so neither
+        its resumed id nor its committed-item marker may outlive it (Codex round
+        3, findings 1 and 2).
+        """
+        self._barge_resumed_response_id = None
+        self._barge_partial_committed_item = None
         if not self._barge_pending:
             return
         logger.info("solo barge rolled back (transcription failed)")
@@ -2241,6 +2303,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # while a tool call is still in flight -- a tool turn is
                         # always followed by a second, speaking response (finding 1).
                         on_assistant_turn_ended(self.deps, self._in_flight_tool_calls)
+                        # Task 4: the resumed reply finishing naturally is the
+                        # end of that id's meaning — the bounded cleanup for a
+                        # timer rollback whose speech never produced a
+                        # transcript at all (Codex round 3, finding 1).
+                        done_id = getattr(getattr(event, "response", None), "id", None)
+                        if done_id is not None and done_id == self._barge_resumed_response_id:
+                            self._barge_resumed_response_id = None
                         self._active_response_id = None
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()
@@ -2304,8 +2373,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # empty-transcript `continue` below, which would
                         # otherwise leak the pause (Codex round 1, finding 9). A
                         # rolled-back turn is handled entirely in there.
-                        if self._barge_pending and await self._resolve_solo_barge(transcript):
-                            continue
+                        # `pause_committed` then keeps the late path (below)
+                        # from interrupting a second time on the same turn: the
+                        # reply now playing is the answer that commit asked for.
+                        pause_committed = False
+                        if self._barge_pending:
+                            if await self._resolve_solo_barge(transcript):
+                                continue
+                            pause_committed = True
+                        if event.item_id == self._barge_partial_committed_item:
+                            # This turn already interrupted via its partial
+                            # transcript; the reply now playing is its answer.
+                            self._barge_partial_committed_item = None
+                            pause_committed = True
 
                         if not transcript:
                             logger.debug("Ignoring empty user transcript")
@@ -2322,6 +2402,28 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                             self._emit_transcript("user", transcript, True)
                             continue
+
+                        # Task 4 (2026-08-30 plan): the pause is over — rolled
+                        # back at the max pause, swallowed by the cooldown, or
+                        # never armed — but this committed turn addresses the
+                        # robot while it is still audible. Silence it now, or
+                        # the name gate's worst case is Reachy talking over the
+                        # person who called its name.
+                        if (
+                            not self._party_mode
+                            and _solo_client_barge()
+                            and not pause_committed
+                            and self._robot_audible()
+                        ):
+                            accepted, reason = _gate_text_accepts(transcript)
+                            if accepted and (reason == "control phrase" or _solo_name_gate()):
+                                logger.info("late solo interrupt (%s) on committed turn", reason)
+                                await self._late_solo_interrupt()
+                        if not self._party_mode:
+                            # The rollback's utterance is now decided either way;
+                            # a lingering resumed-id would suppress a future real
+                            # interrupt (round 2, finding 1 lifecycle).
+                            self._barge_resumed_response_id = None
 
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None

@@ -45,6 +45,7 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_response_seen = False
     handler._barge_paused_response_id = None
     handler._barge_partial_committed_item = None
+    handler._barge_resumed_response_id = None
     handler._held_audio = deque()
     # `_pause_playback` captures the live response id; a handler built for the
     # emit path alone has no party state, so fill it in without clobbering a
@@ -1156,6 +1157,105 @@ def test_the_max_pause_default_outlasts_a_sentence() -> None:
     assert hf_mod._barge_max_pause_s() > _barge_confirm_s()
 
 
+# --------------------------------------------------------------------------
+# Late interrupt on an addressed committed turn (2026-08-30 plan, Task 4)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_late_addressed_transcript_silences_resumed_reply() -> None:
+    """Name in a committed turn while the reply is audible → cancel + flush + watchdog."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    # Max-pause rollback happened; the reply is audible again.
+    h._barge_pending = False
+    h._resume_playback(rolled_back=True)
+    assert h._barge_resumed_response_id == "resp_123"
+    await h._late_solo_interrupt()
+    h.connection.response.cancel.assert_awaited_once()
+    h._clear_queue_callback.assert_called()
+    assert h._barge_watchdog_task is not None  # the addressed turn must get an answer
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_late_interrupt_with_no_resumed_id_still_silences() -> None:
+    """Cooldown swallowed the pause: no resumed id, but the name must still stop the reply."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    assert h._barge_resumed_response_id is None
+    await h._late_solo_interrupt()
+    h.connection.response.cancel.assert_awaited_once()
+    h._clear_queue_callback.assert_called()
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_late_interrupt_keeps_a_newer_response() -> None:
+    """A live response newer than the resumed one IS the answer — do not kill it."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._barge_resumed_response_id = "resp_old"
+    h._active_response_id = "resp_new"
+    await h._late_solo_interrupt()
+    h.connection.response.cancel.assert_not_awaited()
+    h._clear_queue_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_transcript_decided_rollback_clears_the_resumed_id() -> None:
+    """`_resolve_solo_barge` fully decides the utterance, so it owns the cleanup.
+
+    Its caller `continue`s before the completed handler's trailing clear, so a
+    resumed id left behind here would sit through later turns and suppress the
+    next real late interrupt.
+    """
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert await h._resolve_solo_barge("我們晚餐要吃什麼呢這麼晚了") is True
+    assert h._barge_resumed_response_id is None
+
+
+def test_transcription_failure_clears_the_late_interrupt_state() -> None:
+    """A failed transcript decides nothing, so both late-path fields must reset.
+
+    The clears sit ahead of the `_barge_pending` guard on purpose: the common
+    case here is a max-pause rollback that already ended the pause, and its
+    resumed id would otherwise outlive the turn that produced it.
+    """
+    h = _solo_handler()
+    h._barge_resumed_response_id = "resp_123"
+    h._barge_partial_committed_item = "item_1"
+    assert h._barge_pending is False
+    h._resolve_solo_barge_failure()
+    assert h._barge_resumed_response_id is None
+    assert h._barge_partial_committed_item is None
+
+
+def test_external_interrupt_clears_the_resumed_id() -> None:
+    """An operator RPC takes over the turn: no late interrupt may fire for it."""
+    h = _solo_handler()
+    h._barge_resumed_response_id = "resp_123"
+    h.on_external_interrupt()
+    assert h._barge_resumed_response_id is None
+
+
+def test_the_late_interrupt_is_wired_into_the_session_loop() -> None:
+    """A late path nothing calls is the same bug as no late path at all."""
+    import inspect
+
+    source = inspect.getsource(HuggingFaceRealtimeHandler._run_realtime_session)
+    assert "_late_solo_interrupt(" in source
+    assert "_barge_resumed_response_id = None" in source
+    assert "_barge_partial_committed_item" in source
+
+
 def test_the_gate_silences_the_confirm_race_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1200,6 +1300,7 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_barge_cooldown_until",
         "_barge_response_seen",
         "_barge_partial_committed_item",
+        "_barge_resumed_response_id",
         "_held_audio",
     ):
         assert field in source, field
