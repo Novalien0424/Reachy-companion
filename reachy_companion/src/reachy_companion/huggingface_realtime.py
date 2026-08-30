@@ -126,6 +126,32 @@ def _solo_client_barge() -> bool:
     return env_bool("REALTIME_SOLO_CLIENT_BARGE", True)
 
 
+def _solo_name_gate() -> bool:
+    """Whether solo barge-in requires being addressed by name (2026-08-30 plan).
+
+    The operator's ask: like a person telling a story, Reachy should stop for
+    「瑞奇…」 or 「停」, and keep talking through speech aimed at someone else.
+    `0` restores the substantive-transcript rule. Only meaningful when
+    `REALTIME_SOLO_CLIENT_BARGE` is on — the legacy path never sees it.
+    """
+    return env_bool("REALTIME_SOLO_NAME_GATE", True)
+
+
+def _gate_text_accepts(text: str) -> tuple[bool, str]:
+    """Whether *text* addresses the robot: (accepted, reason).
+
+    Control phrases beat everything (the party gate's first rule); then any
+    address name (`REALTIME_PARTY_ADDRESS_NAMES` — the same list party mode and
+    the transcription keyword bias use). Everything else is unaddressed.
+    """
+    folded = text.casefold()
+    if _PARTY_CONTROL_RE.search(folded):
+        return True, "control phrase"
+    if any(name in folded for name in _party_names()):
+        return True, "name"
+    return False, "unaddressed"
+
+
 def _vad_silence_duration_ms() -> int:
     """Silence the server VAD needs before it will report `speech_stopped`.
 
@@ -1029,19 +1055,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # gate's first rule, review round finding 2). 「停」 is one character, so
         # `is_substantive` rejects it against REALTIME_MIN_TURN_CHARS=2 and the
         # reply would roll back and keep talking over the person telling it to
-        # stop. Control phrases are checked first, exactly as in `_party_gate_accepts`.
-        control = bool(_PARTY_CONTROL_RE.search(transcript.casefold()))
-        if control or is_substantive(transcript):
-            logger.info(
-                "solo barge-in confirmed by transcript (%s, %d chars)",
-                "control phrase" if control else "substantive",
-                len(transcript),
-            )
+        # stop. Control phrases are checked first, exactly as in `_party_gate_accepts`,
+        # and that ordering holds in both branches below: with the name gate on
+        # only an address name or a control phrase commits, and with it off the
+        # pre-gate substantive rule comes back unchanged.
+        if _solo_name_gate():
+            accepted, reason = _gate_text_accepts(transcript)
+        else:
+            control = bool(_PARTY_CONTROL_RE.search(transcript.casefold()))
+            accepted = control or is_substantive(transcript)
+            reason = "control phrase" if control else "substantive"
+        if accepted:
+            logger.info("solo barge-in confirmed by transcript (%s, %d chars)", reason, len(transcript))
             await self._commit_solo_barge()
             return False
         self._resume_playback(rolled_back=True)
         if transcript:
-            logger.info("solo barge rolled back (backchannel)")
+            kind = "unaddressed" if _solo_name_gate() and is_substantive(transcript) else "backchannel"
+            logger.info("solo barge rolled back (%s)", kind)
             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
             self._emit_transcript("user", transcript, True)
         else:

@@ -95,6 +95,8 @@ def _clean_barge_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_ONSET_RAMP_MS",
         "REALTIME_VAD_TYPE",
         "REALTIME_VAD_SILENCE_DURATION_MS",
+        "REALTIME_SOLO_NAME_GATE",
+        "REALTIME_BARGE_MAX_PAUSE_MS",
     ):
         monkeypatch.delenv(name, raising=False)
     audio_drain.reset()
@@ -245,13 +247,18 @@ async def test_a_control_phrase_confirms_even_though_it_is_too_short() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_commit_never_cancels_the_answer_to_the_barged_turn() -> None:
+async def test_a_commit_never_cancels_the_answer_to_the_barged_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     """The reply the barge asked for must survive the barge that asked for it.
 
     Review round, finding 4: when the paused reply ends and the server accepts
     the barged turn's own auto-response before the transcript reaches us,
     `_active_response_id` is the ANSWER, not the reply being interrupted.
+
+    Pinned to the pre-name-gate rule: what is under test is the commit path's
+    response-id bookkeeping, and 「幫我開燈」 only reaches it while a substantive
+    transcript is enough to commit.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -273,13 +280,15 @@ async def test_a_commit_never_cancels_the_answer_to_the_barged_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_silent_floor_still_arms_the_watchdog() -> None:
+async def test_a_silent_floor_still_arms_the_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
     """No response live at all is not "the answer already started".
 
     The paused reply may have ended without the turn's auto-response being
     accepted — the exact silence the watchdog exists to repair — so the `None`
-    case must not be mistaken for finding 4's keep-the-answer case.
+    case must not be mistaken for finding 4's keep-the-answer case. Pinned to
+    the pre-name-gate rule so 「幫我開燈」 still reaches the commit path.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -296,8 +305,13 @@ async def test_a_silent_floor_still_arms_the_watchdog() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_commit_still_cancels_the_reply_it_paused() -> None:
-    """The other side of finding 4: the paused reply is still cancelled normally."""
+async def test_a_commit_still_cancels_the_reply_it_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other side of finding 4: the paused reply is still cancelled normally.
+
+    Pinned to the pre-name-gate rule; the name-gated commit path is covered by
+    `test_resolve_commits_on_name`.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -533,8 +547,14 @@ async def test_empty_transcript_rolls_back_instead_of_leaking_the_pause() -> Non
 
 
 @pytest.mark.asyncio
-async def test_substantive_transcript_confirms() -> None:
-    """Real content means the user really was talking to the robot."""
+async def test_substantive_transcript_confirms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real content means the user really was talking to the robot.
+
+    The pre-name-gate rule, kept under `REALTIME_SOLO_NAME_GATE=0`: with the
+    gate on, unaddressed content rolls back instead
+    (`test_resolve_rolls_back_unaddressed_substantive_transcript`).
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -830,6 +850,61 @@ async def test_the_watchdog_stands_down_when_a_response_arrived(monkeypatch: pyt
 
     assert h._barge_response_seen is True
     assert h._pending_responses.qsize() == 0
+
+
+# --------------------------------------------------------------------------
+# Name gate (2026-08-30 plan, Task 1)
+# --------------------------------------------------------------------------
+
+
+def test_gate_text_accepts_name_and_control() -> None:
+    """Names and control phrases pass; substantive unaddressed speech does not."""
+    assert hf_mod._gate_text_accepts("瑞奇你說錯了") == (True, "name")
+    assert hf_mod._gate_text_accepts("Hey Reachy, stop there") == (True, "control phrase")
+    assert hf_mod._gate_text_accepts("停") == (True, "control phrase")
+    accepted, reason = hf_mod._gate_text_accepts("我們晚餐要吃什麼呢")
+    assert not accepted and reason == "unaddressed"
+
+
+@pytest.mark.asyncio
+async def test_resolve_rolls_back_unaddressed_substantive_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate ON: substantive speech without a name resumes the reply."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert h._barge_pending
+    resumed = await h._resolve_solo_barge("我們晚餐要吃什麼呢這麼晚了")
+    assert resumed is True
+    assert not h._barge_paused
+    h.connection.response.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_commits_on_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate ON: the robot's name in the transcript commits the barge."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    resumed = await h._resolve_solo_barge("瑞奇我想先問一件事")
+    assert resumed is False
+    h.connection.response.cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gate_off_restores_substantive_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REALTIME_SOLO_NAME_GATE=0: substantive speech commits, as before."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    resumed = await h._resolve_solo_barge("我們晚餐要吃什麼呢這麼晚了")
+    assert resumed is False
+    h.connection.response.cancel.assert_awaited_once()
 
 
 def test_barge_state_defaults_exist_on_the_base_handler() -> None:
