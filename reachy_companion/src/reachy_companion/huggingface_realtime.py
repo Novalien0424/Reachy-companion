@@ -184,6 +184,18 @@ def _barge_confirm_s() -> float:
     return env_int("REALTIME_BARGE_CONFIRM_MS", 1400, lo=0) / 1000.0
 
 
+def _barge_max_pause_s() -> float:
+    """Longest a reply stays paused for speech that never addresses the robot.
+
+    Gate mode only. A name can only arrive by transcript, so sustained speech
+    proves nothing; but an unaddressed 30-second side conversation must not
+    hold the reply hostage either. When this cap fires, the reply resumes —
+    Reachy keeps talking while the room talks past it — and a name that lands
+    later is still honored by the late-interrupt path (plan Task 4).
+    """
+    return env_int("REALTIME_BARGE_MAX_PAUSE_MS", 4000, lo=0) / 1000.0
+
+
 def _barge_rollback_timeout_s() -> float:
     """How long a pause waits for a transcript before it rolls itself back."""
     return env_float("REALTIME_BARGE_ROLLBACK_TIMEOUT_S", 2.0, lo=0.0)
@@ -214,9 +226,20 @@ def warn_if_barge_confirm_races_vad() -> None:
     the rollback path is dead. That is a silent misconfiguration — the robot
     simply goes back to being interruptible by a cough — so it gets a warning
     at session-config build rather than nothing at all.
+
+    Two configurations have no such branch to warn about, and warning anyway
+    was noise: with the name gate on the confirm timer no longer commits at all
+    (it is a max pause that rolls back), and under `REALTIME_VAD_TYPE=
+    semantic_vad` the server ignores `REALTIME_VAD_SILENCE_DURATION_MS`
+    entirely, so the comparison was against a value with no effect (recorded
+    known edge in `progress.md`).
     """
     global _BARGE_CONFIRM_WARNED
     if _BARGE_CONFIRM_WARNED or not _solo_client_barge():
+        return
+    if _solo_name_gate():
+        return
+    if os.getenv("REALTIME_VAD_TYPE", "server_vad").strip().lower() == "semantic_vad":
         return
     confirm_ms = _barge_confirm_s() * 1000.0
     silence_ms = _vad_silence_duration_ms()
@@ -931,9 +954,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         )
 
     async def _confirm_solo_barge(self, seq: int) -> None:
-        """After the confirm delay, commit the barge iff the speech persisted."""
+        """Resolve a pause whose speech outlasted the confirm/max-pause window.
+
+        Gate off: sustained speech IS the proof — commit (pre-plan behavior).
+        Gate on: sustained speech proves nothing about address — roll back and
+        resume; the transcript paths (partial, completed, late) keep the final
+        say. The mode is read once, before the sleep, so the delay and the
+        outcome can never come from two different rules.
+        """
+        gate = _solo_name_gate()
         try:
-            await asyncio.sleep(_barge_confirm_s())
+            await asyncio.sleep(_barge_max_pause_s() if gate else _barge_confirm_s())
         except asyncio.CancelledError:
             return
         # Re-verify everything: the mode may have flipped, a newer utterance may
@@ -942,6 +973,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if self._party_mode or seq != self._party_utterance_seq:
             return
         if not self._barge_pending or not self._barge_speech_open:
+            return
+        if gate:
+            # `_barge_speech_open` is still True on purpose: Reachy keeps
+            # telling its story over speech that never addressed it. A name
+            # arriving later still lands, on the transcript paths.
+            logger.info("solo barge pause hit its cap with no address; resuming reply")
+            self._barge_pending = False
+            self._resume_playback(rolled_back=True)
             return
         logger.info("solo barge-in confirmed by sustained speech; cancelling the active reply")
         await self._commit_solo_barge()

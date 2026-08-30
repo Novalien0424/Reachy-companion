@@ -133,7 +133,14 @@ async def test_solo_speech_start_pauses_instead_of_flushing() -> None:
 
 @pytest.mark.asyncio
 async def test_sustained_speech_confirms_and_cancels(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Speech that outlasts the confirm window is a real interruption."""
+    """Speech that outlasts the confirm window is a real interruption.
+
+    Gate-OFF semantics (`REALTIME_SOLO_NAME_GATE=0`): sustained speech is only
+    proof of a barge while address is not required. Under the gate the same
+    timer is a max pause that rolls back — pinned by
+    `test_sustained_unaddressed_speech_resumes_at_max_pause`.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "30")
     h = _solo_handler()
     _make_audible()
@@ -161,6 +168,10 @@ def test_the_confirm_window_outlasts_the_vad_silence_window() -> None:
     therefore confirms EVERY onset, including a 100 ms cough, and the rollback,
     backchannel and timeout branches become dead code. This pins the
     relationship, not the number.
+
+    The race it describes only exists with `REALTIME_SOLO_NAME_GATE=0`, where
+    the confirm timer still commits; under the gate the same timer is a max
+    pause. The relationship stays pinned because the legacy path stays shipped.
     """
     assert _barge_confirm_s() * 1000 > _vad_silence_duration_ms()
 
@@ -168,8 +179,13 @@ def test_the_confirm_window_outlasts_the_vad_silence_window() -> None:
 def test_a_confirm_window_inside_the_vad_window_warns(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A confirm window that can never lose the race is a silent misconfiguration."""
+    """A confirm window that can never lose the race is a silent misconfiguration.
+
+    Gate-OFF semantics: the confirm-commit branch the warning is about only
+    exists with `REALTIME_SOLO_NAME_GATE=0`.
+    """
     monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "250")
     with caplog.at_level("WARNING"):
         hf_mod.warn_if_barge_confirm_races_vad()
@@ -186,8 +202,13 @@ def test_a_confirm_window_inside_the_vad_window_warns(
 def test_the_shipped_defaults_do_not_warn(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The defaults we ship must be a configuration we would not warn about."""
+    """The defaults we ship must be a configuration we would not warn about.
+
+    Pinned to gate OFF so it keeps testing the numbers rather than the gate's
+    early return (`test_the_gate_silences_the_confirm_race_warning` covers that).
+    """
     monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     with caplog.at_level("WARNING"):
         hf_mod.warn_if_barge_confirm_races_vad()
     assert caplog.text == ""
@@ -200,8 +221,10 @@ async def test_a_cough_rolls_back_with_the_real_event_ordering(monkeypatch: pyte
     Review round, finding 1: `speech_stopped` trails the cough by the VAD's
     silence window, so the confirm timer has to still be pending when it lands.
     Timings are scaled down but keep the real relationship
-    (confirm > silence > blip).
+    (confirm > silence > blip). Pinned to gate OFF, where that race is a real
+    one: under the gate the timer waits `REALTIME_BARGE_MAX_PAUSE_MS` instead.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "140")
     monkeypatch.setenv("REALTIME_VAD_SILENCE_DURATION_MS", "80")
     monkeypatch.setenv("REALTIME_BARGE_ROLLBACK_TIMEOUT_S", "0.05")
@@ -386,7 +409,11 @@ async def test_confirm_keeps_speech_open_through_the_real_console_flush(
     watchdog's "never answer over a talking user" guard inert: any interrupting
     utterance longer than the watchdog delay got a response fired at it
     mid-sentence. Wired through the REAL console here, not a bare mock.
+
+    Gate OFF: the confirm timer only reaches a commit — the flush under test —
+    on the legacy path.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "30")
     monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
     h = _solo_handler()
@@ -431,8 +458,10 @@ async def test_a_pause_is_resolved_only_once(monkeypatch: pytest.MonkeyPatch) ->
     """A transcript landing inside the cancel round trip must not commit twice.
 
     Fix round, finding 2: `_barge_pending` used to survive the whole
-    `response.cancel` await, and the event loop runs inside that await.
+    `response.cancel` await, and the event loop runs inside that await. Driven
+    from the confirm timer, so gate OFF.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
     h = _solo_handler()
     _make_audible()
@@ -458,7 +487,12 @@ async def test_a_pause_is_resolved_only_once(monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.mark.asyncio
 async def test_a_cancelled_commit_cannot_strand_the_pause(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A commit cancelled mid-round-trip must still end the pause it claimed."""
+    """A commit cancelled mid-round-trip must still end the pause it claimed.
+
+    Gate OFF: the commit under test is the confirm timer's, which only commits
+    on the legacy path.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
     h = _solo_handler()
     _make_audible()
@@ -484,7 +518,12 @@ async def test_a_cancelled_commit_cannot_strand_the_pause(monkeypatch: pytest.Mo
 
 @pytest.mark.asyncio
 async def test_short_blip_rolls_back_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A blip with no transcript at all resumes the reply and re-arms the onset ramp."""
+    """A blip with no transcript at all resumes the reply and re-arms the onset ramp.
+
+    Gate OFF: `REALTIME_BARGE_CONFIRM_MS` is what the rollback timer has to
+    beat here, and it only governs the timer on the legacy path.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "300")
     monkeypatch.setenv("REALTIME_BARGE_ROLLBACK_TIMEOUT_S", "0.05")
     h = _solo_handler()
@@ -813,7 +852,12 @@ async def test_session_start_resets_barge_state() -> None:
 
 @pytest.mark.asyncio
 async def test_a_stale_confirm_timer_never_fires(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A newer utterance owns the floor; the old timer must stand down."""
+    """A newer utterance owns the floor; the old timer must stand down.
+
+    Gate OFF so the timer really would commit if the sequence guard failed —
+    under the gate it would roll back and prove nothing.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "30")
     h = _solo_handler()
     _make_audible()
@@ -1038,6 +1082,107 @@ def test_partial_committed_item_is_cleared_by_an_external_interrupt() -> None:
     h._barge_partial_committed_item = "item_1"
     h.on_external_interrupt()
     assert h._barge_partial_committed_item is None
+
+
+# --------------------------------------------------------------------------
+# Confirm timer as a bounded max pause (2026-08-30 plan, Task 3)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sustained_unaddressed_speech_resumes_at_max_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate ON: long speech with no name rolls the pause back instead of committing."""
+    monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert h._barge_confirm_task is not None
+    await asyncio.wait_for(h._barge_confirm_task, timeout=1.0)
+    assert not h._barge_paused and not h._barge_pending
+    h.connection.response.cancel.assert_not_awaited()
+    # The reply really came back: its audio is still accounted for, and nothing
+    # is left holding the pause open.
+    assert audio_drain.is_audible() is True
+    assert h._barge_speech_open is True, "the room is still talking; Reachy talks on"
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_sustained_speech_still_commits_with_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate OFF: the same timer keeps its pre-plan meaning — sustained speech commits."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await asyncio.wait_for(h._barge_confirm_task, timeout=1.0)
+    h.connection.response.cancel.assert_awaited_once()
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_max_pause_arms_no_orphan_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the cap fires, `speech_stopped` must not arm a second, orphan pause.
+
+    The rollback already ended the pause, so `_solo_speech_stopped` has nothing
+    left to decide — it must return without arming a rollback timer that would
+    later resume a reply nobody paused.
+    """
+    monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await asyncio.wait_for(h._barge_confirm_task, timeout=1.0)
+
+    h._solo_speech_stopped()
+
+    assert h._barge_rollback_task is None
+    assert h._barge_confirm_task is None
+    assert h._barge_speech_open is False
+
+
+def test_the_max_pause_default_outlasts_a_sentence() -> None:
+    """The cap is patience, not a second confirm window: seconds, not milliseconds."""
+    assert hf_mod._barge_max_pause_s() == 4.0
+    assert hf_mod._barge_max_pause_s() > _barge_confirm_s()
+
+
+def test_the_gate_silences_the_confirm_race_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With the gate on there is no confirm-commit branch left to warn about."""
+    monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "250")
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert caplog.text == ""
+
+
+def test_semantic_vad_silences_the_confirm_race_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning compares against a `server_vad` knob semantic VAD ignores.
+
+    Recorded known edge (`progress.md`): under `REALTIME_VAD_TYPE=semantic_vad`
+    the server never reads `REALTIME_VAD_SILENCE_DURATION_MS`, so warning about
+    the confirm window racing it was noise about a value with no effect.
+    """
+    monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    monkeypatch.setenv("REALTIME_VAD_TYPE", "Semantic_VAD")
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "250")
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert caplog.text == ""
 
 
 def test_barge_state_defaults_exist_on_the_base_handler() -> None:
