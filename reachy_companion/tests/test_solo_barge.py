@@ -44,6 +44,7 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_cooldown_until = 0.0
     handler._barge_response_seen = False
     handler._barge_paused_response_id = None
+    handler._barge_partial_committed_item = None
     handler._held_audio = deque()
     # `_pause_playback` captures the live response id; a handler built for the
     # emit path alone has no party state, so fill it in without clobbering a
@@ -907,6 +908,138 @@ async def test_gate_off_restores_substantive_rule(monkeypatch: pytest.MonkeyPatc
     h.connection.response.cancel.assert_awaited_once()
 
 
+# --------------------------------------------------------------------------
+# Partial-transcript fast commit (2026-08-30 plan, Task 2)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_partial_transcript_with_name_commits_early() -> None:
+    """A delta containing the name resolves the pause without waiting for completed."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert h._barge_pending
+    await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    assert not h._barge_pending
+    assert h._barge_partial_committed_item == "item_1"
+    h.connection.response.cancel.assert_awaited_once()
+    # A later delta must not double-commit.
+    await h._maybe_commit_on_partial("欸瑞奇你聽我說", "item_1")
+    h.connection.response.cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_partial_transcript_without_name_keeps_pause() -> None:
+    """Unaddressed speech proves nothing: the pause stays pending for `completed`."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._maybe_commit_on_partial("我們晚餐", "item_1")
+    assert h._barge_pending
+    h.connection.response.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_control_phrase_commits_even_with_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A robot you cannot silence is worse than any false positive: 「停」 always commits."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._maybe_commit_on_partial("停", "item_1")
+    assert not h._barge_pending
+    assert h._barge_partial_committed_item == "item_1"
+    h.connection.response.cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_partial_name_does_not_commit_with_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate OFF: the name path is gate-mode only, so the pause waits for the transcript."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    assert h._barge_pending
+    assert h._barge_partial_committed_item is None
+    h.connection.response.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_commit_is_inert_in_party_mode() -> None:
+    """Party mode owns its own barge decision; the partial path must not touch it."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._party_mode = True
+    await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    assert h._barge_pending
+    h.connection.response.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_incremental_deltas_accumulate_and_commit_split_name() -> None:
+    """GA deltas are incremental: 瑞 + 奇 across two deltas must still match (round 2, finding 3)."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    chunks = hf_mod.InputTranscriptChunksByItem(item_id=None, deltas=[])
+    h._record_partial_transcript_delta(chunks, "item_1", "欸瑞")
+    h._record_partial_transcript_delta(chunks, "item_1", "奇你聽我說")
+    joined = "".join(chunks.deltas)
+    assert joined == "欸瑞奇你聽我說"
+    await h._maybe_commit_on_partial(joined, "item_1")
+    assert not h._barge_pending
+    assert h._barge_partial_committed_item == "item_1"
+    # A new item resets the accumulator.
+    h._record_partial_transcript_delta(chunks, "item_2", "另一句")
+    assert chunks.deltas == ["另一句"]
+
+
+def test_base_handler_partial_deltas_stay_snapshots() -> None:
+    """The HF-compatible server sends snapshots; only the OpenAI subclass appends."""
+    chunks = hf_mod.InputTranscriptChunksByItem(item_id=None, deltas=[])
+    base = HuggingFaceRealtimeHandler.__new__(HuggingFaceRealtimeHandler)
+    base._record_partial_transcript_delta(chunks, "item_1", "欸瑞")
+    base._record_partial_transcript_delta(chunks, "item_1", "欸瑞奇")
+    assert chunks.deltas == ["欸瑞奇"]
+
+
+@pytest.mark.asyncio
+async def test_partial_commit_survives_the_flush_that_resets_barge_state() -> None:
+    """In production `_clear_queue` IS `console.clear_audio_queue`, which resets everything.
+
+    `_commit_solo_barge` flushes through it, so the committed item can only be
+    recorded *after* that call returns — recording it first would be wiped.
+    """
+    h = _solo_handler()
+    h._clear_queue = h.on_external_interrupt
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    assert h._barge_partial_committed_item == "item_1"
+
+
+def test_partial_committed_item_is_cleared_by_an_external_interrupt() -> None:
+    """An operator RPC taking over the turn must not leave a stale committed item."""
+    h = _solo_handler()
+    h._barge_partial_committed_item = "item_1"
+    h.on_external_interrupt()
+    assert h._barge_partial_committed_item is None
+
+
 def test_barge_state_defaults_exist_on_the_base_handler() -> None:
     """The real __init__ must define every field the loop and tests touch."""
     import inspect
@@ -921,6 +1054,7 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_barge_watchdog_task",
         "_barge_cooldown_until",
         "_barge_response_seen",
+        "_barge_partial_committed_item",
         "_held_audio",
     ):
         assert field in source, field

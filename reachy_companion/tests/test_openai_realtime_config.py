@@ -146,6 +146,48 @@ def test_transcription_model_env_override_drops_new_fields_for_legacy(
     assert "keywords" not in tr and "prompt" not in tr  # legacy model, legacy shape
 
 
+def test_transcription_delay_is_absent_by_default(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`delay` is opt-in: an unset env var must not change the shipped session shape."""
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_DELAY", raising=False)
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert "delay" not in tr
+
+
+@pytest.mark.parametrize("value", ["minimal", "low", "medium", "high", "xhigh"])
+def test_transcription_delay_from_env(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """REALTIME_TRANSCRIPTION_DELAY lands in the transcription params (Task 2)."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_DELAY", f"  {value.upper()} ")
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert tr["delay"] == value
+
+
+def test_invalid_transcription_delay_warns_and_is_dropped(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A bad .env value must warn and degrade, never send a malformed session."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_DELAY", "instant")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+
+    assert "delay" not in tr
+    assert "REALTIME_TRANSCRIPTION_DELAY" in caplog.text
+
+
+def test_transcription_delay_is_not_sent_to_a_legacy_model(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`delay` is a new-model extra, on the same guard as keywords/prompt."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_DELAY", "low")
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert "delay" not in tr
+
+
 @pytest.mark.asyncio
 async def test_session_update_falls_back_to_legacy_transcription_on_rejection(
     monkeypatch: pytest.MonkeyPatch,

@@ -524,6 +524,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # The response that was speaking when the pause began, so a commit can
         # tell it apart from the answer to the turn being barged in with.
         self._barge_paused_response_id: str | None = None
+        # The item whose *partial* transcript already committed a pause, so the
+        # `completed` transcript for that same item cannot interrupt a second
+        # time — the answer it would kill is the one the commit asked for
+        # (Codex round 2, finding 2). Consumed by the completed handler.
+        self._barge_partial_committed_item: str | None = None
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
         # --- sleep-time engagement memory (D-027) ----------------------------
@@ -821,6 +826,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_pending = False
         self._barge_speech_open = False
         self._barge_paused_response_id = None
+        self._barge_partial_committed_item = None
         self._held_audio.clear()
         audio_drain.note_paused(False)
 
@@ -1036,6 +1042,30 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not answer_already_live:
             self._barge_response_seen = False
             self._arm_barge_watchdog()
+
+    async def _maybe_commit_on_partial(self, partial: str, item_id: str) -> None:
+        """Commit a pending pause the moment a partial transcript addresses us.
+
+        Latency lever for the name gate (`research-realtime-api-2026-08.md`
+        §5, and `REALTIME_TRANSCRIPTION_DELAY`): with a streaming
+        transcriber the name arrives in a delta long before `completed`. Only
+        ever commits — a partial can prove address, never prove its absence.
+        Control phrases commit regardless of the name-gate flag (Codex round 1,
+        finding 12: a robot you cannot silence is worse than any false
+        positive); the name path is gate-mode only.
+        """
+        if self._party_mode or not self._barge_pending:
+            return
+        accepted, reason = _gate_text_accepts(partial)
+        if not accepted:
+            return
+        if reason == "name" and not _solo_name_gate():
+            return
+        logger.info("solo barge-in confirmed by partial transcript (%s)", reason)
+        await self._commit_solo_barge()
+        # The completed transcript for this item must not re-interrupt the
+        # answer this commit is about to produce (Codex round 2, finding 2).
+        self._barge_partial_committed_item = item_id
 
     async def _resolve_solo_barge(self, transcript: str) -> bool:
         """Decide a pending pause from the transcript the turn committed.
@@ -2208,6 +2238,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         current_partial = "".join(input_transcript.deltas)
                         sequence_counter = len(input_transcript.deltas) - 1
+
+                        # Task 2 (2026-08-30 plan): the name or a 「停」 showing up
+                        # in a partial resolves a pending pause now, rather than
+                        # waiting for `transcription.completed`.
+                        await self._maybe_commit_on_partial(current_partial, item_id)
 
                         await self._cancel_partial_transcript_task()
 

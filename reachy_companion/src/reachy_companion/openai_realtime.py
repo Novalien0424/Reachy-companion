@@ -42,6 +42,7 @@ from reachy_companion.tools.core_tools import ToolSpec
 from reachy_companion.conversation_handler import HandlerOutput
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
+    InputTranscriptChunksByItem,
     _party_names,
     _solo_client_barge,
     _vad_silence_duration_ms,
@@ -94,6 +95,11 @@ def _noise_reduction() -> NoiseReduction | None:
 _LEGACY_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
 _DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
 _DEFAULT_TRANSCRIBE_PROMPT = "與家用陪伴機器人的台灣中文對話"
+# How long the streaming transcriber may buffer before emitting a partial. Left
+# unset by default (the server's own default stands); the knob exists for the
+# `gpt-live-transcribe` A/B, where a shorter delay is what makes the name
+# reach `_maybe_commit_on_partial` before `transcription.completed` does.
+_TRANSCRIBE_DELAY_VALUES = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def _transcription() -> dict[str, Any]:
@@ -122,6 +128,12 @@ def _transcription() -> dict[str, Any]:
     prompt = _DEFAULT_TRANSCRIBE_PROMPT if prompt is None else prompt.strip()
     if prompt:
         params["prompt"] = prompt
+    delay = (os.getenv("REALTIME_TRANSCRIPTION_DELAY") or "").strip().lower()
+    if delay:
+        if delay in _TRANSCRIBE_DELAY_VALUES:
+            params["delay"] = delay
+        else:
+            logger.warning("Ignoring invalid REALTIME_TRANSCRIPTION_DELAY=%r", delay)
     return params
 
 
@@ -385,6 +397,28 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             {"model": "gpt-4o-transcribe", "language": config.REALTIME_TRANSCRIPTION_LANGUAGE},
         )
         return fallback
+
+    def _record_partial_transcript_delta(
+        self,
+        input_transcript: InputTranscriptChunksByItem,
+        item_id: str,
+        delta: str,
+    ) -> None:
+        """GA transcription deltas are incremental chunks, not snapshots — append.
+
+        The base implementation (`huggingface_realtime.py:1322-1331`) stores
+        `deltas = [delta]`, which is right for the HF-compatible server: each
+        delta there is the whole partial so far. OpenAI's GA realtime API sends
+        the *new* text only, so replacing would leave the accumulated partial at
+        the latest fragment — a name split across deltas (`瑞` + `奇`) would
+        never match the barge gate, and the debounced UI partial would show one
+        stray syllable (Codex round 1, finding 3).
+        """
+        if input_transcript.item_id == item_id:
+            input_transcript.deltas.append(delta)
+        else:
+            input_transcript.item_id = item_id
+            input_transcript.deltas = [delta]
 
     async def _push_turn_detection_update(self) -> None:
         """Apply the current mode's turn detection to the live session.
