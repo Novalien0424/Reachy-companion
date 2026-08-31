@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final, Tuple, Optional
 from collections import deque
+from collections.abc import Callable
 
 import httpx
 import numpy as np
@@ -43,6 +44,7 @@ from reachy_companion.config import (
 from reachy_companion.hanova import audio_drain
 from reachy_companion.people import PERSON_FACTS_DEFAULT, facts_for_person
 from reachy_companion.prompts import (
+    mode_rules_block,
     get_session_voice,
     get_session_instructions,
     get_session_greeting_prompt,
@@ -640,6 +642,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Monotonic coalescing token for session updates (Task 3, decision 9):
         # a snapshot queued behind a newer flip is dropped rather than sent.
         self._mode_update_seq: int = 0
+        # The ordered, acknowledged, single-flight session-update mechanism
+        # (Task 3, decision 9). One lock spans ticket check, payload build,
+        # waiter install, send and acknowledgement wait, so no two updates can
+        # be on the wire at once — which is what makes an uncorrelated
+        # `session.updated` safe to match positionally.
+        self._session_update_lock: asyncio.Lock = asyncio.Lock()
+        self._session_update_event_id: str | None = None
+        self._session_update_waiter: asyncio.Future[bool] | None = None
+        # Acknowledgements the server still owes us that nobody is waiting on:
+        # the connect-time session config (sent before the receive loop exists),
+        # its fallback retry, any pre-receive-loop push, and any update whose
+        # ack wait timed out. Each one still produces a `session.updated`
+        # eventually, and each must be consumed before a live waiter can be
+        # (Codex round 3, findings 5 and 6).
+        self._session_update_ack_debt: int = 0
+        # Whether the receive loop is running and can therefore observe an
+        # acknowledgement at all (Codex round 3, finding 1).
+        self._receive_loop_active: bool = False
         # --- party mode (multi-person hardening, 2026-08-24) -----------------
         # monotonic() of the last gate-ACCEPTED user turn; the only thing that
         # opens the follow-up window (Codex round 1, finding 3 — greeting and
@@ -738,8 +758,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         no mode state at all emits the solo config, exactly as it did before
         this wave. A real handler always has `_conversation_mode` set.
         """
-        mode = getattr(self, "_conversation_mode", ConversationMode.ONE_ON_ONE)
-        return mode is not ConversationMode.ONE_ON_ONE
+        return self._current_mode() is not ConversationMode.ONE_ON_ONE
+
+    def _current_mode(self) -> ConversationMode:
+        """Return the live conversation mode, readable on a partially-built handler.
+
+        The one place the `__new__`-safe default lives, so `_party_mode` and the
+        prompt/tool emission that Task 3 added cannot drift apart about what a
+        handler with no mode state at all is.
+        """
+        return getattr(self, "_conversation_mode", ConversationMode.ONE_ON_ONE)
 
     # --- conversation modes -------------------------------------------------
     async def set_conversation_mode(self, mode: str | ConversationMode) -> dict[str, Any]:
@@ -803,10 +831,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._turn_mode = target
         logger.info("conversation mode: %s -> %s", previous.value, target.value)
         if self.connection is not None:
-            # Task 3 replaces this with `await self._push_mode_update()`, which
-            # additionally carries the mode's instructions and tool list. The
-            # await is established here so the signature never changes again.
-            await self._push_turn_detection_update()
+            if not await self._push_mode_update():
+                # The local mode still stands: the answer gate, the barge policy
+                # and the record log are all enforced client-side. What is lost
+                # is the model's own knowledge of the mode and its tool surface,
+                # which the next reconnect restores.
+                logger.warning("conversation mode %s applied locally only", target.value)
         # Re-read AFTER the await (Codex round 3, finding 4). A second
         # `set_conversation_mode` can land while this one is waiting for its
         # acknowledgement, and the model speaks this result out loud: reporting
@@ -863,6 +893,110 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         finding 2).
         """
         return None
+
+    def _mode_instructions(self) -> str:
+        """Session instructions plus the current mode's rules block.
+
+        One resolver for both the session-config build and the live mode update,
+        so a flip and a reconnect can never disagree about what the model was
+        told.
+        """
+        return f"{get_session_instructions(self.instance_path)}\n\n{mode_rules_block(self._current_mode())}"
+
+    def _mode_tool_exclusions(self) -> list[str]:
+        """Tool names hidden from the session in the current mode. Base: none."""
+        return []
+
+    async def _apply_session_update(
+        self,
+        build_session: Callable[[], RealtimeSessionCreateRequestParam | None],
+        *,
+        what: str,
+    ) -> bool:
+        """Send one session update, reporting whether it left the client.
+
+        The base has no ordering or acknowledgement machinery: the Hugging Face
+        compatible server does not echo `session.updated` in a shape we can
+        correlate, and there is no client-driven mode surface here to keep in
+        step. What it does have is the three live-session updates that predate
+        the modes work — `change_voice`, `apply_personality` and (on the
+        subclass) turn detection — and those must keep reaching the server
+        exactly as they did before, so this sends and reports the send.
+
+        `OpenAIRealtimeHandler` overrides it with the real ordered,
+        acknowledged, single-flight mechanism (design decision 9). A builder
+        returning None means "superseded, send nothing", which is success:
+        the newer update is the one that should land.
+        """
+        if not self.connection:
+            return False
+        session = build_session()
+        if session is None:
+            return True
+        try:
+            await self.connection.session.update(session=session)
+        except Exception as exc:  # noqa: BLE001 - a failed update must not kill the caller
+            logger.warning("Failed to send the %s session update: %s", what, exc)
+            return False
+        logger.info("session updated (%s)", what)
+        return True
+
+    async def _push_mode_update(self) -> bool:
+        """Apply the current mode to the live session. Base: no-op returning True.
+
+        The mode's instructions and tool surface are an OpenAI-backend concern
+        (D-002 locks the backend); the subclass overrides this. Reporting True
+        keeps `set_conversation_mode` from warning about a push that was never
+        going to happen here.
+        """
+        return True
+
+    def _note_session_updated(self) -> None:
+        """Handle one `session.updated`, paying older debts before the waiter.
+
+        `session.updated` does not echo the client `event_id`, so it can only be
+        matched positionally — and positional matching is wrong unless every
+        acknowledgement the server still owes us is accounted for first.
+        Precedence, and both arms are load-bearing (Codex round 3, findings 5
+        and 6):
+
+        1. **Unmatched acks first.** `_session_update_ack_debt` counts updates
+           that were sent with nobody waiting on them: the session-config update
+           at connect (sent before the receive loop exists, so its
+           acknowledgement necessarily arrives later), its legacy-transcription
+           retry, any pre-receive-loop push, and any update whose ack wait timed
+           out. Every one of those still produces exactly one `session.updated`
+           at some point. Letting one of them resolve a LIVE waiter would tell a
+           mode flip its payload had been applied when what the server actually
+           acknowledged was the connect config — the exact false-positive the
+           whole acknowledged-update design exists to prevent.
+        2. **Then the waiter**, which is by definition the only update in flight
+           (the lock guarantees single flight).
+        """
+        if self._session_update_ack_debt > 0:
+            self._session_update_ack_debt -= 1
+            logger.debug(
+                "session.updated matched an unwaited update; %d still outstanding",
+                self._session_update_ack_debt,
+            )
+            return
+        self._resolve_session_update(True, None)
+
+    def _resolve_session_update(self, applied: bool, detail: str | None) -> None:
+        """Resolve the in-flight session update's waiter, exactly once.
+
+        Called from `_note_session_updated` once older debts are paid, and from
+        the `error` branch when the error names the update's own `event_id` —
+        that path is correlated, so it bypasses the debt entirely. Safe to call
+        when nothing is in flight.
+        """
+        waiter, self._session_update_waiter = self._session_update_waiter, None
+        self._session_update_event_id = None
+        if waiter is None or waiter.done():
+            return
+        if not applied:
+            logger.warning("session update rejected by the server: %s", detail)
+        waiter.set_result(applied)
 
     # --- boot gate (Task 6) -------------------------------------------------
     async def _finish_boot_gate(self, reason: str, conn: Any | None = None) -> None:
@@ -1753,7 +1887,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Return the Hugging Face OpenAI-compatible session config."""
         return RealtimeSessionCreateRequestParam(
             type="realtime",
-            instructions=get_session_instructions(self.instance_path),
+            # The mode's rules block rides along, so a reconnect brings the
+            # session up in the mode the handler is actually in (Task 3).
+            instructions=self._mode_instructions(),
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     # The OpenAI SDK type only includes 24 kHz PCM, but the HF
@@ -1808,21 +1944,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         )
         self._voice_override = resolved_voice
         if self.connection is not None:
-            try:
-                await self.connection.session.update(
-                    session=RealtimeSessionCreateRequestParam(
-                        type="realtime",
-                        audio=RealtimeAudioConfigParam(
-                            output=RealtimeAudioConfigOutputParam(
-                                voice=resolved_voice,
-                            ),
+            # Through the one ordered update mechanism, like every other live
+            # update (Task 3, Codex round 2, 2a-2): an uncorrelated
+            # `session.updated` is only safe to match while exactly one update
+            # can be in flight, and a voice change sent around the mechanism
+            # would have its acknowledgement resolve somebody else's waiter.
+            def _build() -> RealtimeSessionCreateRequestParam | None:
+                return RealtimeSessionCreateRequestParam(
+                    type="realtime",
+                    audio=RealtimeAudioConfigParam(
+                        output=RealtimeAudioConfigOutputParam(
+                            voice=resolved_voice,
                         ),
                     ),
                 )
+
+            if await self._apply_session_update(_build, what=f"voice {resolved_voice}"):
                 return f"Voice changed to {resolved_voice}."
-            except Exception as e:
-                logger.warning("Failed to update live session for voice change: %s", e)
-                return "Voice change failed. Will take effect on next connection."
+            return "Voice change failed. Will take effect on next connection."
         return "Voice changed. Will take effect on next connection."
 
     def get_current_voice(self) -> str:
@@ -1836,7 +1975,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         previous_profile = config.REACHY_MINI_CUSTOM_PROFILE
         set_custom_profile(profile)
         try:
-            instructions = get_session_instructions(self.instance_path)
+            instructions = self._mode_instructions()
             voice = self.get_current_voice()
             core_tools.initialize_tools(force=True)
         except Exception as exc:
@@ -1845,21 +1984,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return f"Failed to apply personality: {exc}"
 
         if self.connection is not None:
-            try:
-                await self.connection.session.update(
-                    session=RealtimeSessionCreateRequestParam(
-                        type="realtime",
-                        instructions=instructions,
-                        audio=RealtimeAudioConfigParam(
-                            output=RealtimeAudioConfigOutputParam(
-                                voice=voice,
-                            ),
+            # Same single-flight mechanism as every other live update (Task 3).
+            def _build() -> RealtimeSessionCreateRequestParam | None:
+                return RealtimeSessionCreateRequestParam(
+                    type="realtime",
+                    instructions=instructions,
+                    audio=RealtimeAudioConfigParam(
+                        output=RealtimeAudioConfigOutputParam(
+                            voice=voice,
                         ),
                     ),
                 )
+
+            if await self._apply_session_update(_build, what=f"personality {profile or 'default'}"):
                 logger.info("Applied personality via live update: %s", profile or "default")
-            except Exception as exc:
-                logger.warning("Live update failed; will restart session: %s", exc)
+            else:
+                logger.warning("Live update failed; will restart session")
 
             try:
                 await self._restart_session()
@@ -2601,6 +2741,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Solo barge session-boundary reset (Task 8): a pause, its held audio and
         # its timers belong to the session that opened them.
         self._barge_reset_for_new_session()
+        # Session-update bookkeeping is per session too (Task 3). Debt is a
+        # promise THIS websocket made to send a `session.updated`; carried into
+        # the next one it would eat that session's first real acknowledgement
+        # and leave a live mode flip waiting out its whole timeout.
+        self._session_update_ack_debt = 0
+        self._receive_loop_active = False
         # Person-scoped memory label (spec §3.3): set on recognition, cleared
         # per session. Cleared here, before the session config is built and
         # therefore before the connection is published, so nothing in the new
@@ -2621,6 +2767,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 session_config = self._get_session_config(tool_specs)
                 try:
                     await conn.session.update(session=session_config)
+                    # Sent before the receive loop exists, so its
+                    # `session.updated` arrives with nobody waiting on it and
+                    # must not be allowed to resolve a later waiter
+                    # (Codex round 3, finding 5).
+                    self._session_update_ack_debt += 1
                 except Exception:
                     fallback = self._session_config_fallback(session_config)
                     if fallback is None:
@@ -2628,6 +2779,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         raise
                     logger.warning("session.update rejected; retrying with legacy transcription shape")
                     await conn.session.update(session=fallback)
+                    # Same reasoning as the update it replaces: pre-loop, so its
+                    # acknowledgement is owed to nobody.
+                    self._session_update_ack_debt += 1
                 logger.info(
                     "Realtime session initialized with profile=%r voice=%r",
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
@@ -2687,8 +2841,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         _boot_gate_timeout(conn), name="boot-gate-timeout"
                     )
 
+                # From here on an acknowledgement can actually be observed, so a
+                # live session update may wait for one (Codex round 3,
+                # finding 1). Everything sent before this point — the connect
+                # config, its retry, the no-greeting boot-gate release — books
+                # debt instead of waiting.
+                self._receive_loop_active = True
+
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
+                    if event.type == "session.updated":
+                        # The server applied a `session.update`. Which one is
+                        # positional, not correlated: the event carries no
+                        # client event_id. `_note_session_updated` is where that
+                        # is made safe.
+                        self._note_session_updated()
+
                     if event.type == "input_audio_buffer.speech_started":
                         self._stamp_turn_mode(getattr(event, "item_id", None))
                         self._user_has_spoken = True
@@ -3136,6 +3304,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         msg = getattr(err, "message", str(err) if err else "unknown error")
                         code = getattr(err, "code", "") or getattr(err, "type", "")
 
+                        if (
+                            self._session_update_event_id is not None
+                            and getattr(err, "event_id", None) == self._session_update_event_id
+                        ):
+                            # This error belongs to our in-flight session update,
+                            # not to any response. Resolve the update's waiter and
+                            # keep it out of the response-create synchronization
+                            # path entirely — every non-response error below sets
+                            # `_response_started_or_rejected_event`, which would
+                            # falsely wake `_response_sender_loop` mid-
+                            # `response.create` (Codex round 1, P1-3).
+                            self._resolve_session_update(False, f"{code}: {msg}")
+                            continue
+
                         if code == "conversation_already_has_active_response":
                             # response.create was rejected.  The sender worker
                             # is waiting on _response_done_event; when the active
@@ -3159,6 +3341,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 AdditionalOutputs({"role": "assistant", "content": f"[error] {msg}"})
                             )
             finally:
+                # Session updates (Task 3): no acknowledgement can be observed
+                # once this loop is over. An update still waiting is told so
+                # now rather than being left to burn its whole timeout, and the
+                # debt this websocket owed dies with it.
+                self._receive_loop_active = False
+                self._session_update_ack_debt = 0
+                self._resolve_session_update(False, "the realtime session ended")
+
                 # Solo barge-in (Task 8): a pause must never outlive the session
                 # that opened it — it would hold audio the next session cannot
                 # play and keep the drain tracker reporting a robot that speaks.

@@ -7,6 +7,7 @@ Replaces the `_party_mode` boolean that used to be the whole mode system
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from collections import deque
 from unittest.mock import MagicMock
 
@@ -45,6 +46,10 @@ def _mode_handler(mode: ConversationMode = ConversationMode.ONE_ON_ONE) -> OpenA
     # pre-receive-loop tests set this back to False explicitly.
     h._receive_loop_active = True
     h._handler_loop = None
+    # `_push_turn_detection_update` rebuilds the whole session config, and the
+    # base builder resolves the output voice through `_voice_override` — an
+    # `__init__`-only field a `__new__`-built handler would otherwise lack.
+    h._voice_override = None
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0
@@ -512,3 +517,387 @@ def test_restamping_one_item_does_not_evict_another_turn() -> None:
 
     assert h._turn_modes["item_0"] is ConversationMode.GROUP, "an unrelated turn's stamp was evicted"
     assert len(h._turn_modes) == _TURN_MODE_MAX_ITEMS
+
+
+# --------------------------------------------------------------------------
+# The live mode update (2026-08-31 plan, Task 3)
+# --------------------------------------------------------------------------
+
+
+def _acking_connection(handler: OpenAIRealtimeHandler) -> SimpleNamespace:
+    """Return a connection whose `session.update` immediately acks, as the server does.
+
+    The real acknowledgement arrives asynchronously as a `session.updated` event
+    on the receive loop; here the send itself resolves the waiter, which is the
+    same contract from `_apply_session_update`'s point of view.
+
+    It also records whether the update lock was held at send time, so the
+    "one uninterrupted locked region" property is asserted where it actually
+    matters — at the send, not only at the build (Codex round 3, finding 9).
+    """
+    calls: list[dict[str, Any]] = []
+    locked_at_send: list[bool] = []
+
+    async def _update(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        locked_at_send.append(handler._session_update_lock.locked())
+        handler._note_session_updated()
+
+    connection = SimpleNamespace(
+        session=SimpleNamespace(update=_update), calls=calls, locked_at_send=locked_at_send
+    )
+    return connection
+
+
+@pytest.mark.asyncio
+async def test_push_mode_update_sends_instructions_tools_and_turn_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One narrow session.update carries the whole mode, never `model`/`voice`."""
+    h = _mode_handler(ConversationMode.RECORD)
+    h._boot_gate_active = False
+    h.instance_path = None
+    h.connection = _acking_connection(h)
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS-RECORD")
+    monkeypatch.setattr(
+        h,
+        "_get_session_config",
+        lambda tool_specs: {"audio": {"input": {"turn_detection": {"type": "server_vad"}}}},
+    )
+    assert await h._push_mode_update() is True
+    assert len(h.connection.calls) == 1
+    session = h.connection.calls[0]["session"]
+    assert session["type"] == "realtime"
+    assert session["instructions"] == "INSTRUCTIONS-RECORD"
+    assert isinstance(session["tools"], list)
+    assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    assert "model" not in session and "voice" not in session
+    # Every update carries a client event_id, which is what an error is
+    # correlated against.
+    assert isinstance(h.connection.calls[0]["event_id"], str)
+    assert h._session_update_event_id is None  # cleared once acknowledged
+
+
+@pytest.mark.asyncio
+async def test_push_mode_update_passes_the_mode_exclusion_list_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool list must come from `_mode_tool_exclusions()` (Task 8's contract).
+
+    Without this, an implementation that calls `get_tool_specs()` bare still
+    passes every other assertion here and silently breaks Task 8 before it
+    starts (Codex round 1, P1-8).
+    """
+    from reachy_companion import openai_realtime as oai_mod
+
+    seen: list[list[str] | None] = []
+
+    def _fake_specs(exclusion_list: list[str] | None = None) -> list[dict[str, Any]]:
+        seen.append(exclusion_list)
+        return [{"type": "function", "name": "sentinel", "description": "d", "parameters": {}}]
+
+    h = _mode_handler()
+    h._boot_gate_active = True  # skip the audio half; this test is about tools
+    h.instance_path = None
+    h.connection = _acking_connection(h)
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+    monkeypatch.setattr(h, "_mode_tool_exclusions", lambda: ["camera", "dance"])
+    monkeypatch.setattr(oai_mod, "get_tool_specs", _fake_specs)
+    assert await h._push_mode_update() is True
+    assert seen == [["camera", "dance"]]
+    assert [tool["name"] for tool in h.connection.calls[0]["session"]["tools"]] == ["sentinel"]
+
+
+@pytest.mark.asyncio
+async def test_push_mode_update_defers_turn_detection_while_the_boot_gate_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate owns turn detection until it opens; instructions may still go."""
+    h = _mode_handler(ConversationMode.GROUP)
+    h._boot_gate_active = True
+    h.instance_path = None
+    h.connection = _acking_connection(h)
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS-GROUP")
+    assert await h._push_mode_update() is True
+    session = h.connection.calls[0]["session"]
+    assert "audio" not in session
+    assert session["instructions"] == "INSTRUCTIONS-GROUP"
+
+
+@pytest.mark.asyncio
+async def test_push_mode_update_survives_a_send_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed send must not kill the handler; it warns and reports False."""
+    from unittest.mock import AsyncMock
+
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h.instance_path = None
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=AsyncMock(side_effect=RuntimeError("nope"))))
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+    assert await h._push_mode_update() is False
+    assert h._session_update_event_id is None
+    assert h._session_update_waiter is None
+
+
+@pytest.mark.asyncio
+async def test_a_server_error_for_the_in_flight_update_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`session.update` rejection arrives later as an `error` event (P1-3)."""
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h.instance_path = None
+
+    async def _update(**kwargs: Any) -> None:
+        h._resolve_session_update(False, "invalid_session_parameter")
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+    assert await h._push_mode_update() is False
+
+
+@pytest.mark.asyncio
+async def test_an_unacknowledged_update_times_out_and_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that never answers must not hang the tool call."""
+    from reachy_companion import openai_realtime as oai_mod
+
+    monkeypatch.setattr(oai_mod, "_SESSION_UPDATE_ACK_TIMEOUT_S", 0.05)
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h.instance_path = None
+
+    async def _update(**kwargs: Any) -> None:
+        return None  # sent, never acknowledged
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+    assert await h._push_mode_update() is False
+    assert h._session_update_event_id is None
+
+
+@pytest.mark.asyncio
+async def test_the_connect_ack_never_resolves_a_live_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect-time config's `session.updated` is not a mode flip's ack.
+
+    `session.updated` carries no client event_id, so it can only be matched
+    positionally — and the connect config is acknowledged AFTER the receive loop
+    starts, by which time a mode flip may already be waiting. Resolving that
+    waiter would tell the flip its instructions and tool list were applied when
+    what the server acknowledged was the connect config (Codex round 3,
+    finding 5).
+    """
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h._receive_loop_active = True
+    h.instance_path = None
+    h._session_update_ack_debt = 1  # the connect config, still unacknowledged
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+
+    acks: list[str] = []
+
+    async def _update(**kwargs: Any) -> None:
+        # The connect config's late acknowledgement arrives while this update is
+        # already waiting for its own.
+        acks.append("connect")
+        h._note_session_updated()
+        assert h._session_update_waiter is not None, "the flip's waiter was resolved by the wrong ack"
+        assert h._session_update_ack_debt == 0
+        acks.append("mine")
+        h._note_session_updated()
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
+    assert await h._push_mode_update() is True
+    assert acks == ["connect", "mine"]
+    assert h._session_update_waiter is None
+
+
+@pytest.mark.asyncio
+async def test_a_late_ack_pays_its_own_debt_not_the_next_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Update A times out, B is sent, A's ack finally arrives (round 3, finding 6).
+
+    A's acknowledgement is late, not absent. Letting it resolve B's waiter would
+    report B applied on the strength of A's ack.
+    """
+    from reachy_companion import openai_realtime as oai_mod
+
+    monkeypatch.setattr(oai_mod, "_SESSION_UPDATE_ACK_TIMEOUT_S", 0.05)
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h._receive_loop_active = True
+    h.instance_path = None
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+
+    async def _silent(**kwargs: Any) -> None:
+        return None  # A: sent, never acknowledged in time
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_silent))
+    assert await h._push_mode_update() is False
+    assert h._session_update_ack_debt == 1
+
+    async def _b(**kwargs: Any) -> None:
+        # A's late ack lands first; it must pay A's debt, not resolve B.
+        h._note_session_updated()
+        assert h._session_update_waiter is not None
+        assert h._session_update_ack_debt == 0
+        h._note_session_updated()  # B's own ack
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_b))
+    assert await h._push_mode_update() is True
+    assert h._session_update_ack_debt == 0
+
+
+@pytest.mark.asyncio
+async def test_an_ack_with_nothing_outstanding_is_a_silent_no_op() -> None:
+    """A `session.updated` nobody asked for must not raise or book anything."""
+    h = _mode_handler()
+    h._note_session_updated()
+    assert h._session_update_waiter is None
+    assert h._session_update_ack_debt == 0
+
+
+@pytest.mark.asyncio
+async def test_an_update_sent_before_the_receive_loop_does_not_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-greeting startup path releases the boot gate before the loop runs.
+
+    Waiting there burns the whole ack timeout and logs a failure for an update
+    that was fine (Codex round 3, finding 1).
+    """
+    from reachy_companion import openai_realtime as oai_mod
+
+    monkeypatch.setattr(oai_mod, "_SESSION_UPDATE_ACK_TIMEOUT_S", 30.0)
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h._receive_loop_active = False
+    h.instance_path = None
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+
+    async def _update(**kwargs: Any) -> None:
+        return None  # sent; the loop is not running, so no ack can be seen
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
+    started = asyncio.get_running_loop().time()
+    assert await h._push_mode_update() is True
+    assert asyncio.get_running_loop().time() - started < 1.0
+    # Booked, so the ack it eventually produces cannot resolve a later waiter.
+    assert h._session_update_ack_debt == 1
+    assert h._session_update_waiter is None
+
+
+@pytest.mark.asyncio
+async def test_a_blank_startup_greeting_releases_the_boot_gate_without_stalling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the no-greeting path itself (Codex round 3, finding 1)."""
+    from reachy_companion import openai_realtime as oai_mod
+    from reachy_companion import huggingface_realtime as hf_mod
+
+    monkeypatch.setattr(oai_mod, "_SESSION_UPDATE_ACK_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "   ")
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h._boot_gate_task = None
+    h._startup_greeting_sent = False
+    h._receive_loop_active = False
+    h.instance_path = None
+    monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+
+    async def _update(**kwargs: Any) -> None:
+        return None
+
+    async def _clear() -> None:
+        return None
+
+    h.connection = SimpleNamespace(
+        session=SimpleNamespace(update=_update),
+        input_audio_buffer=SimpleNamespace(clear=_clear),
+    )
+    started = asyncio.get_running_loop().time()
+    await h._send_startup_greeting_prompt()
+    assert asyncio.get_running_loop().time() - started < 1.0
+    assert h._boot_gate_active is False
+
+
+@pytest.mark.asyncio
+async def test_every_live_update_path_goes_through_the_mechanism() -> None:
+    """Single flight is the invariant the uncorrelated ack depends on (2a-2).
+
+    A caller that sent its own `session.update` around `_apply_session_update`
+    would have its acknowledgement resolve somebody else's waiter.
+    """
+    import inspect
+
+    from reachy_companion import openai_realtime as oai_mod
+    from reachy_companion import huggingface_realtime as hf_mod
+
+    for method in (
+        hf_mod.HuggingFaceRealtimeHandler.change_voice,
+        hf_mod.HuggingFaceRealtimeHandler.apply_personality,
+        oai_mod.OpenAIRealtimeHandler._push_turn_detection_update,
+        oai_mod.OpenAIRealtimeHandler._push_mode_update,
+    ):
+        source = inspect.getsource(method)
+        assert "_apply_session_update" in source, method.__qualname__
+        assert "session.update(" not in source, method.__qualname__
+
+
+@pytest.mark.asyncio
+async def test_the_send_happens_inside_the_lock_that_built_the_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No gap between snapshot and send (Codex round 2, 2a-1).
+
+    The builder must run while the lock is held, or a newer flip can overtake an
+    older payload on the wire.
+    """
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h.instance_path = None
+    locked_during_build: list[bool] = []
+
+    def _instructions() -> str:
+        locked_during_build.append(h._session_update_lock.locked())
+        return "INSTRUCTIONS"
+
+    h.connection = _acking_connection(h)
+    monkeypatch.setattr(h, "_mode_instructions", _instructions)
+    assert await h._push_mode_update() is True
+    assert locked_during_build == [True]
+    # And still held at send time — the region is one, not two (round 3, #9).
+    assert h.connection.locked_at_send == [True]
+
+
+@pytest.mark.asyncio
+async def test_rapid_flips_coalesce_to_the_latest_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A snapshot queued behind a newer flip is dropped, not sent (P1-4)."""
+    h = _mode_handler()
+    h._boot_gate_active = True
+    h.instance_path = None
+    h.connection = _acking_connection(h)
+    monkeypatch.setattr(h, "_mode_instructions", lambda: f"INSTRUCTIONS-{h._conversation_mode.value}")
+    first = asyncio.create_task(h.set_conversation_mode("group"))
+    second = asyncio.create_task(h.set_conversation_mode("record"))
+    await asyncio.gather(first, second)
+    assert h._conversation_mode is ConversationMode.RECORD
+    # Whatever reached the wire last describes the mode the handler is in.
+    assert h.connection.calls[-1]["session"]["instructions"] == "INSTRUCTIONS-record"
+    assert len(h.connection.calls) <= 2
+
+
+def test_mode_instructions_append_the_mode_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One resolver: a flip and a reconnect tell the model the same thing."""
+    from reachy_companion import huggingface_realtime as hf_mod
+
+    h = _mode_handler(ConversationMode.RECORD)
+    h.instance_path = None
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda instance_path: "BASE")
+    text = h._mode_instructions()
+    assert text.startswith("BASE\n\n")
+    assert "紀錄模式" in text

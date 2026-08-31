@@ -15,6 +15,7 @@ from reachy_companion.config import config, get_default_voice
 from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import Identification
 from reachy_companion.tools.core_tools import ToolDependencies
+from reachy_companion.conversation_mode import MODE_LABELS
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 from reachy_companion.tools.background_tool_manager import ToolState, ToolCallRoutine, ToolNotification
 
@@ -523,7 +524,11 @@ async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(m
 
     assert "restarted realtime session" in result.lower()
     session = captured_update["session"]
-    assert session["instructions"] == "new instructions"
+    # Since the 2026-08-31 modes work the live instructions are the profile's
+    # plus the current mode's rules block, from the one resolver a reconnect
+    # uses — a personality swap must not silently drop the mode the robot is in.
+    assert session["instructions"].startswith("new instructions\n\n")
+    assert MODE_LABELS[handler._conversation_mode] in session["instructions"]
     assert session["audio"]["output"]["voice"] == "marin"
 
 

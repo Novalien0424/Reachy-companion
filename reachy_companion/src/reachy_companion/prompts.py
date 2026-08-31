@@ -1,6 +1,7 @@
 """Resolve active profile prompts and voice settings."""
 
 import logging
+from typing import Final
 from pathlib import Path
 
 from reachy_companion.config import config, get_default_voice
@@ -13,6 +14,7 @@ from reachy_companion.profile_store import (
     read_packaged_default_profile,
 )
 from reachy_companion.audio.envparse import env_bool
+from reachy_companion.conversation_mode import ConversationMode
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,42 @@ def hardening_block() -> str:
     if not env_bool("REALTIME_PROMPT_HARDENING", True):
         return ""
     return _HARDENING_BLOCK
+
+
+# --- per-mode rules (2026-08-31 plan) ---------------------------------------
+# Party mode never told the model it was in party mode: the flip only changed
+# turn detection, and the gate lived entirely client-side. RECORD cannot live
+# like that — "stay quiet, only summarize when called" is behavior the model
+# itself must know about — so every mode now ships its own rules block,
+# appended to the session instructions and re-sent on every flip.
+_MODE_BLOCKS: Final[dict[ConversationMode, str]] = {
+    ConversationMode.ONE_ON_ONE: """
+### 目前模式：一對一聊天模式
+- 現在只有一個人在跟你說話。對方不需要叫你的名字，你就正常回應。
+- 你講話講到一半聽到別的聲音時，只有聽到自己的名字或「停」才停下來；其他的繼續講完。
+""".strip(),
+    ConversationMode.GROUP: """
+### 目前模式：多人聊天模式
+- 現在房間裡有好幾個人，大部分的話不是對你說的。
+- 只有聽到自己的名字、或明顯是在問你的時候才開口；其他時候安靜聽著。
+- 有人叫過你之後的一小段時間內可以直接接著聊，不用每一句都被點名。
+""".strip(),
+    ConversationMode.RECORD: """
+### 目前模式：紀錄模式
+- 你正在幫忙做記錄：安靜聽，把在場的人說的話都記下來。不要插話、不要附和、不要主動開口。
+- 只有聽到自己的名字或「停」才回應，回應也要短。
+- 有人請你總結、回顧、唸重點的時候，呼叫 summarize_conversation，然後照它回傳的
+  summary_text 一字不差地唸出來，不要改寫也不要補話。
+- 這個模式下你能做的事只有四件：set_conversation_mode 換模式、summarize_conversation 唸摘要、
+  go_to_sleep 去睡覺、wait_for_user 安靜聽著。（task_status 和 task_cancel 也還在，
+  用來追蹤還沒跑完的工作。）要做別的事，請先用 set_conversation_mode 切回其他模式。
+""".strip(),
+}
+
+
+def mode_rules_block(mode: ConversationMode) -> str:
+    """Return the rules block for *mode*, appended to the session instructions."""
+    return _MODE_BLOCKS[mode]
 
 
 def _active_profile() -> ProfileDefinition:

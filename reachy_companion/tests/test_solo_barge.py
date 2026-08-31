@@ -850,7 +850,7 @@ async def test_party_mode_flip_mid_pause_resumes_the_reply(monkeypatch: pytest.M
     # A real connection, so the truncate assertion below is not vacuous; the
     # session update the flip schedules is stubbed out (it would rebuild the
     # whole session config on a `__new__`-built handler).
-    monkeypatch.setattr(OpenAIRealtimeHandler, "_push_turn_detection_update", AsyncMock())
+    monkeypatch.setattr(OpenAIRealtimeHandler, "_push_mode_update", AsyncMock(return_value=True))
     h = _truncating_handler()
     truncate = h.connection.conversation.item.truncate
     _make_audible()

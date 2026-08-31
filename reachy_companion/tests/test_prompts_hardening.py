@@ -41,3 +41,21 @@ def test_hardening_kill_switch(monkeypatch, tmp_path):
     """REALTIME_PROMPT_HARDENING=0 removes the block entirely."""
     monkeypatch.setenv("REALTIME_PROMPT_HARDENING", "0")
     assert "wait_for_user" not in prompts.get_session_instructions(tmp_path)
+
+
+def test_mode_rules_block_covers_every_mode() -> None:
+    """Party mode never told the model it was in party mode; modes must."""
+    from reachy_companion.prompts import mode_rules_block
+    from reachy_companion.conversation_mode import ConversationMode
+
+    one = mode_rules_block(ConversationMode.ONE_ON_ONE)
+    group = mode_rules_block(ConversationMode.GROUP)
+    record = mode_rules_block(ConversationMode.RECORD)
+    assert "一對一聊天模式" in one
+    assert "多人聊天模式" in group
+    assert "紀錄模式" in record
+    assert "summarize_conversation" in record
+    assert "set_conversation_mode" in record
+    # Each block names its own mode and no other, so a live update cannot leave
+    # two postures in the instructions at once.
+    assert "紀錄模式" not in one and "紀錄模式" not in group

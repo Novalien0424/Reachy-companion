@@ -69,6 +69,12 @@ class _FakeConnection:
     # --- recorded calls ---------------------------------------------------
     async def _session_update(self, **kwargs: Any) -> None:
         self.log.append(("session.update", kwargs.get("session")))
+        # The server answers every accepted `session.update` with a
+        # `session.updated` on the event stream, and since the 2026-08-31 modes
+        # work the ordered update mechanism WAITS for it. A fake that stayed
+        # silent made every live update sit out its whole acknowledgement
+        # timeout.
+        self.events.put_nowait(_FakeEvent("session.updated"))
 
     async def _clear(self, **_kwargs: Any) -> None:
         self.log.append(("input_audio_buffer.clear", None))

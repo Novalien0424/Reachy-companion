@@ -14,9 +14,11 @@ peak error at the chunk seams (about -40 dB SNR) plus length drift. See
 
 import os
 import copy
+import uuid
 import base64
+import asyncio
 import logging
-from typing import Any, Tuple, cast
+from typing import Any, Final, Tuple, cast
 from collections.abc import Callable
 
 import soxr
@@ -24,7 +26,7 @@ import numpy as np
 from openai import AsyncOpenAI
 from numpy.typing import NDArray
 from typing_extensions import Literal
-from openai.types.realtime import RealtimeSessionCreateRequestParam
+from openai.types.realtime import RealtimeAudioConfigParam, RealtimeSessionCreateRequestParam
 from openai.types.realtime.noise_reduction_type import NoiseReductionType
 from openai.types.realtime.realtime_audio_formats_param import AudioPCM
 from openai.types.realtime.realtime_audio_config_input_param import NoiseReduction
@@ -38,7 +40,7 @@ from reachy_companion.config import config
 from reachy_companion.streaming import audio_to_int16
 from reachy_companion.audio.voicefx import VoiceFX
 from reachy_companion.audio.envparse import env_int, env_float
-from reachy_companion.tools.core_tools import ToolSpec
+from reachy_companion.tools.core_tools import ToolSpec, get_tool_specs
 from reachy_companion.conversation_handler import HandlerOutput
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
@@ -46,6 +48,7 @@ from reachy_companion.huggingface_realtime import (
     _party_names,
     _solo_client_barge,
     _vad_silence_duration_ms,
+    to_realtime_tools_config,
     warn_if_barge_confirm_races_vad,
 )
 
@@ -54,6 +57,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gpt-realtime-2.1-mini"
 ROBOT_RATE = 16000
+
+# How long an ordered session update waits for `session.updated` (or a matching
+# `error`) before giving up. The tool call that triggered it is holding a turn
+# open, so this has to be short enough not to feel like a hang and long enough
+# to cover a normal round trip.
+_SESSION_UPDATE_ACK_TIMEOUT_S: Final[float] = 5.0
 
 
 def realtime_model() -> str:
@@ -486,6 +495,108 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             input_transcript.item_id = item_id
             input_transcript.deltas = [delta]
 
+    async def _apply_session_update(
+        self,
+        build_session: Callable[[], RealtimeSessionCreateRequestParam | None],
+        *,
+        what: str,
+    ) -> bool:
+        """Build, send and confirm one session update, all under one lock.
+
+        The single ordered, single-flight update mechanism (design decision 9;
+        Codex round 1 P1-1/P1-3/P1-4/P2-9, tightened in round 2 2a-1/2a-2).
+
+        Two properties, and both need the lock to be held across the WHOLE
+        operation — which is why this takes a BUILDER rather than a payload:
+
+        * **Ordering.** `build_session()` runs here, inside the lock, so the
+          snapshot it takes cannot go stale between being built and being sent.
+          An earlier design released the lock between the two and a newer flip
+          could overtake the older one on the wire (round 2, 2a-1).
+        * **Single flight.** `session.updated` does not echo the client
+          `event_id`, so "resolve the update in flight" is only sound while
+          exactly one can be in flight. Every live-session caller —
+          `_push_mode_update`, `_push_turn_detection_update`, `change_voice`,
+          `apply_personality` — comes through here for that reason. The one
+          exemption is the initial `session.update` in `_run_realtime_session`,
+          which runs before the receive loop exists and therefore before any
+          waiter can be installed.
+
+        The `event_id` is still stamped, because an `error` names the event it
+        rejected and that is how a rejection is told apart from an unrelated
+        server error.
+
+        `build_session()` returning None means the caller was superseded while
+        it queued: nothing is sent and the call reports success, because the
+        newer update is the one that should land.
+
+        **No ack to wait for before the receive loop runs** (Codex round 3,
+        finding 1). The no-greeting startup path releases the boot gate — and so
+        pushes turn detection — from `_send_startup_greeting_prompt`, which runs
+        before `async for event in self.connection`. Waiting there would burn the
+        full five seconds and log a failure for an update that was fine. So when
+        the loop is not yet active the update is sent and reported applied, and
+        the acknowledgement it will eventually produce is recorded as debt.
+        """
+        if not self.connection:
+            return False
+        async with self._session_update_lock:
+            session = build_session()
+            if session is None:
+                return True
+            event_id = f"appupd_{uuid.uuid4().hex}"
+            waiting = self._receive_loop_active
+            waiter: asyncio.Future[bool] | None = None
+            if waiting:
+                loop = asyncio.get_running_loop()
+                waiter = loop.create_future()
+                self._session_update_event_id = event_id
+                self._session_update_waiter = waiter
+            try:
+                await self.connection.session.update(session=session, event_id=event_id)
+            except Exception as exc:  # noqa: BLE001 - a failed update must not kill the caller
+                logger.warning("Failed to send the %s session update: %s", what, exc)
+                self._session_update_event_id = None
+                self._session_update_waiter = None
+                return False
+            if waiter is None:
+                # Sent before the receive loop could observe an acknowledgement.
+                # It will arrive once the loop starts, with nobody waiting on
+                # it, so it is booked as debt rather than allowed to resolve
+                # whichever waiter happens to exist by then.
+                self._session_update_ack_debt += 1
+                logger.info("session updated (%s, sent before the receive loop)", what)
+                return True
+            try:
+                applied = await asyncio.wait_for(waiter, timeout=_SESSION_UPDATE_ACK_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                # The acknowledgement is late, not absent: it will still arrive,
+                # and if it were allowed to resolve the NEXT update's waiter that
+                # update would be told it had been applied on the strength of
+                # this one's ack (Codex round 3, finding 6). One unit of debt
+                # makes the next `session.updated` pay for this update instead.
+                self._session_update_ack_debt += 1
+                logger.warning(
+                    "The %s session update was never acknowledged within %.1fs; "
+                    "the server may still be running the previous session shape",
+                    what,
+                    _SESSION_UPDATE_ACK_TIMEOUT_S,
+                )
+                return False
+            finally:
+                # Cleared on every exit, cancellation included — and safely,
+                # because the lock is still held, so nothing newer can have been
+                # installed. The boot-gate release waits here and IS cancelled
+                # at session teardown; a waiter left behind would be resolved by
+                # whatever `session.updated` the next session produced first.
+                # (The acknowledged path has already cleared both; this is
+                # idempotent.)
+                self._session_update_event_id = None
+                self._session_update_waiter = None
+            if applied:
+                logger.info("session updated (%s)", what)
+            return applied
+
     async def _push_turn_detection_update(self) -> None:
         """Apply the current mode's turn detection to the live session.
 
@@ -506,14 +617,70 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             # calls this, so the release rebuilds and sends the current mode.
             logger.debug("boot gate is closed; deferring the turn-detection push to its release")
             return
-        audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
-        try:
-            await self.connection.session.update(
-                session={"type": "realtime", "audio": {"input": audio_input}}
+
+        def _build() -> RealtimeSessionCreateRequestParam | None:
+            audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
+            return {"type": "realtime", "audio": RealtimeAudioConfigParam(input=audio_input)}
+
+        await self._apply_session_update(_build, what="turn detection")
+
+    async def _push_mode_update(self) -> bool:
+        """Apply the current conversation mode to the live session.
+
+        One narrow update carrying the three things a mode owns: its rules block
+        (`instructions`), its tool surface (`tools`) and its turn detection
+        (`audio.input`). Narrow for the reason `_push_turn_detection_update`
+        is — never `model` (immutable) or `voice` (rejected once audio has been
+        produced) — and the whole `audio.input` block is sent rather than
+        `turn_detection` alone so a server treating the nested object as a
+        replacement cannot strip the format, transcription or noise-reduction
+        settings.
+
+        While the boot gate is closed the turn-detection half is left out
+        entirely: the gate owns turn detection until it opens, and
+        `_finish_boot_gate` rebuilds and sends the current mode's VAD on
+        release. The instructions and tools still go now — they are what the
+        model needs before it speaks.
+
+        Coalescing (Codex round 1, P1-4): each call takes a ticket from
+        `_mode_update_seq` before queueing on the update lock, and the builder —
+        which `_apply_session_update` runs INSIDE that lock (round 2, 2a-1) —
+        drops itself if a newer call took a ticket while this one waited. The
+        payload is built from live state in the same locked region that sends
+        it, so an older snapshot can never land on top of a newer one.
+        """
+        if not self.connection:
+            return False
+        self._mode_update_seq += 1
+        ticket = self._mode_update_seq
+        mode = self._current_mode()
+
+        def _build() -> RealtimeSessionCreateRequestParam | None:
+            if ticket != self._mode_update_seq:
+                logger.debug("mode update %d superseded by %d; dropping", ticket, self._mode_update_seq)
+                return None
+            # `mode` captured above is still correct here: a flip since then
+            # would have taken a newer ticket and the guard above would have
+            # returned None.
+            tool_specs = get_tool_specs(exclusion_list=self._mode_tool_exclusions())
+            session: RealtimeSessionCreateRequestParam = {
+                "type": "realtime",
+                "instructions": self._mode_instructions(),
+                "tools": to_realtime_tools_config(tool_specs),
+            }
+            if getattr(self, "_boot_gate_active", False):
+                logger.debug("boot gate is closed; deferring the mode update's turn detection to its release")
+            else:
+                audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
+                session["audio"] = RealtimeAudioConfigParam(input=audio_input)
+            logger.info(
+                "Tools in session (%s): %s",
+                mode.value,
+                [spec["name"] for spec in tool_specs],
             )
-            logger.info("session turn_detection updated: party=%s", self._party_mode)
-        except Exception as exc:  # noqa: BLE001 - a failed update must not kill the receive loop
-            logger.warning("Failed to update session turn_detection: %s", exc)
+            return session
+
+        return await self._apply_session_update(_build, what=f"conversation mode {mode.value}")
 
     # Microphone receive — adapted from huggingface_realtime.py:947-982,
     # added: upsample the robot's 16 kHz mic to the model's 24 kHz.
