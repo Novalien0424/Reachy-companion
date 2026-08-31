@@ -237,7 +237,7 @@ def test_vad_tuning_from_env(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRea
     # False since Task 8: the client owns the interrupt decision in solo mode
     # too (tests/test_solo_barge.py covers the flag itself).
     assert td["interrupt_response"] is False
-    # All three differ from the built-in defaults (800 / 0.5 / 300).
+    # All three differ from the built-in defaults (1000 / 0.5 / 300).
     assert td["silence_duration_ms"] == 1200
     assert td["threshold"] == pytest.approx(0.72)
     assert td["prefix_padding_ms"] == 450
@@ -255,7 +255,9 @@ def test_vad_defaults_when_env_is_unset(monkeypatch: pytest.MonkeyPatch, handler
 
     td = handler._get_session_config(tool_specs=[])["audio"]["input"]["turn_detection"]
 
-    assert td["silence_duration_ms"] == 800  # raised from the API's 500 for mid-sentence pauses
+    # Raised from the API's 500 for mid-sentence pauses; 1000 since the 2026-08-30
+    # patience wave (was 800 from D-023).
+    assert td["silence_duration_ms"] == 1000
     assert td["threshold"] == pytest.approx(0.5)
     assert td["prefix_padding_ms"] == 300
 
@@ -263,7 +265,7 @@ def test_vad_defaults_when_env_is_unset(monkeypatch: pytest.MonkeyPatch, handler
 @pytest.mark.parametrize(
     ("env_name", "key", "expected"),
     [
-        ("REALTIME_VAD_SILENCE_DURATION_MS", "silence_duration_ms", 800),
+        ("REALTIME_VAD_SILENCE_DURATION_MS", "silence_duration_ms", 1000),
         ("REALTIME_VAD_PREFIX_PADDING_MS", "prefix_padding_ms", 300),
         ("REALTIME_VAD_THRESHOLD", "threshold", 0.5),
     ],
@@ -324,6 +326,82 @@ def test_invalid_eagerness_warns_and_falls_back_to_auto(
 
     assert td["eagerness"] == "auto"
     assert "REALTIME_VAD_EAGERNESS" in caplog.text
+
+
+# --------------------------------------------------------------------------
+# reasoning.effort — pinned so a server-side default change cannot silently
+# add pre-speech latency (2026-08-30 patience wave, Task 6).
+#
+# Every test here clears REALTIME_REASONING_EFFORT first: the autouse fixture in
+# this file only scrubs VOICEFX_*, so an exported shell value would otherwise
+# decide what the "default" assertions see.
+# --------------------------------------------------------------------------
+
+
+def test_session_config_pins_reasoning_effort_to_low(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """Unconfigured, the session ships the documented voice-agent effort."""
+    monkeypatch.delenv("REALTIME_REASONING_EFFORT", raising=False)
+
+    cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["reasoning"] == {"effort": "low"}  # type: ignore[typeddict-item]
+
+
+def test_reasoning_effort_off_omits_the_field(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """`off` means "say nothing" — the server default stands, unpinned."""
+    monkeypatch.setenv("REALTIME_REASONING_EFFORT", "off")
+
+    assert "reasoning" not in handler._get_session_config(tool_specs=[])
+
+
+def test_reasoning_effort_env_override(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """A supported effort passes through for the on-robot A/B."""
+    monkeypatch.setenv("REALTIME_REASONING_EFFORT", "minimal")
+
+    cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["reasoning"] == {"effort": "minimal"}  # type: ignore[typeddict-item]
+
+
+def test_invalid_reasoning_effort_warns_and_falls_back_to_low(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, handler: OpenAIRealtimeHandler
+) -> None:
+    """A bad .env value degrades with a warning rather than reaching the API."""
+    monkeypatch.setenv("REALTIME_REASONING_EFFORT", "ludicrous")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["reasoning"] == {"effort": "low"}  # type: ignore[typeddict-item]
+    assert "REALTIME_REASONING_EFFORT" in caplog.text
+
+
+def test_the_transcription_fallback_config_strips_reasoning(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """A rejected session.update must not be retried with the same unknown field.
+
+    `reasoning` is not in the installed SDK stub, so it rides the runtime-dict
+    cast; if the server is what rejected it, retrying with it still attached
+    would fail again and leave the robot mute at boot.
+    """
+    monkeypatch.delenv("REALTIME_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
+
+    cfg = handler._get_session_config(tool_specs=[])
+    assert "reasoning" in cfg  # precondition: there is something to strip
+
+    fallback = handler._session_config_fallback(cfg)
+
+    assert fallback is not None
+    assert "reasoning" not in fallback
+    assert "reasoning" in cfg  # the retry is a copy; the original is untouched
 
 
 # --------------------------------------------------------------------------

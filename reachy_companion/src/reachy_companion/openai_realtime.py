@@ -73,6 +73,25 @@ def _eagerness() -> Literal["low", "medium", "high", "auto"]:
     return cast(Literal["low", "medium", "high", "auto"], raw)
 
 
+_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def _reasoning_effort() -> str | None:
+    """Session `reasoning.effort`; `low` is the documented voice-agent default.
+
+    gpt-realtime-2.x reasons before speaking; unpinned, a future server-side
+    default change silently adds pre-speech latency. `off` omits the field
+    entirely (server default). Research doc §1.
+    """
+    raw = (os.getenv("REALTIME_REASONING_EFFORT") or "low").strip().lower()
+    if raw == "off":
+        return None
+    if raw not in _REASONING_EFFORTS:
+        logger.warning("Ignoring invalid REALTIME_REASONING_EFFORT=%r; using low.", raw)
+        return "low"
+    return raw
+
+
 def _noise_reduction() -> NoiseReduction | None:
     """Read `REALTIME_NOISE_REDUCTION`; far_field is the default for this robot.
 
@@ -377,6 +396,14 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         # (openai.types.realtime.audio_transcription_param), same precedent as
         # `_native_rate_audio_pcm()` above (huggingface_realtime.py:397).
         cfg["audio"]["input"]["transcription"] = cast(Any, _transcription())
+        effort = _reasoning_effort()
+        if effort is not None:
+            # The installed 2.28.0 TypedDict predates `reasoning` (verified:
+            # RealtimeSessionCreateRequestParam has no such key), but the field
+            # is documented GA for gpt-realtime-2.x and TypedDicts are plain
+            # dicts at runtime — same precedent as `keywords` and the 16 kHz
+            # format. Codex round 1, finding 1.
+            cast(dict[str, Any], cfg)["reasoning"] = {"effort": effort}
         return cfg
 
     def _session_config_fallback(
@@ -387,6 +414,15 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         Returns None (no retry) when the config already used a legacy model —
         a legacy config being rejected is a real failure, not something this
         fallback can fix.
+
+        The retry also drops `reasoning`, because a rejection tells us nothing
+        about *which* field the server refused and that one is the other field
+        the installed SDK stub does not know about: it rides a runtime-dict
+        cast, so if it is what was rejected, retrying with it still attached
+        would fail again and leave the robot mute at boot (Codex round 1,
+        finding 1). Losing the effort pin on a degraded session costs latency,
+        not speech. `max_output_tokens` needs no such treatment — it IS in the
+        installed stub.
         """
         current_model = cfg["audio"]["input"]["transcription"].get("model")
         if current_model in _LEGACY_TRANSCRIBE_MODELS:
@@ -396,6 +432,8 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             Any,
             {"model": "gpt-4o-transcribe", "language": config.REALTIME_TRANSCRIPTION_LANGUAGE},
         )
+        # The TypedDict has no `reasoning` key for mypy (Codex round 2, finding 8).
+        cast(dict[str, Any], fallback).pop("reasoning", None)
         return fallback
 
     def _record_partial_transcript_delta(

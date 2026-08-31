@@ -166,14 +166,21 @@ def _vad_silence_duration_ms() -> int:
 def _barge_confirm_s() -> float:
     """How long speech must persist during a pause before it is a real barge.
 
+    **Gate-off knob only.** With `REALTIME_SOLO_NAME_GATE` on — the default —
+    this timer no longer commits anything; the confirm window is
+    `REALTIME_BARGE_MAX_PAUSE_MS`, after which an unaddressed pause rolls back
+    and the reply resumes. This value still governs the legacy
+    `REALTIME_SOLO_NAME_GATE=0` path, which stays shipped.
+
     **The default must outlast `REALTIME_VAD_SILENCE_DURATION_MS`** (review
     round, finding 1). `_confirm_solo_barge` confirms iff `_barge_speech_open`
     is still True when it fires, and that flag can only go False on
     `speech_stopped` — which the server does not send until its whole silence
     window has elapsed. At the old 250 ms default the flag was therefore still
     True for *every* onset, including a 100 ms cough: every pause confirmed,
-    and the rollback, backchannel and timer branches were unreachable. 1400 ms
-    clears the 800 ms window plus the cough itself with margin.
+    and the rollback, backchannel and timer branches were unreachable. 1600 ms
+    clears the 1000 ms window plus the cough itself with margin (bumped in step
+    with the 2026-08-30 patience default, from 1400 over an 800 ms window).
 
     This costs no perceived stop latency: the pause already silences the robot
     at the onset, so the user hears an immediate stop either way. What the
@@ -181,7 +188,7 @@ def _barge_confirm_s() -> float:
     properly — which is now the common path, with this timer as the backstop
     for speech so long it needs no transcript.
     """
-    return env_int("REALTIME_BARGE_CONFIRM_MS", 1400, lo=0) / 1000.0
+    return env_int("REALTIME_BARGE_CONFIRM_MS", 1600, lo=0) / 1000.0
 
 
 def _barge_max_pause_s() -> float:
@@ -220,7 +227,12 @@ _BARGE_RESPONSE_WATCHDOG_S: Final[float] = 1.5
 # truncate.
 _TRUNCATE_SLACK_MS: Final[int] = 300
 # The server-VAD default this project ships; shared with `_turn_detection`.
-_VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 800
+# The API's own default is 500 ms; 800 shipped from D-023 onward. 1000 is the
+# operator's "don't rush me" request (2026-08-30) — a Mandarin mid-sentence
+# pause of about a second must not commit the turn — and still sits under the
+# ~1100 ms knee where the robot starts to feel sluggish instead of patient
+# (research doc §1).
+_VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 1000
 _BARGE_CONFIRM_WARNED = False
 
 

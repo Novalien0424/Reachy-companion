@@ -191,6 +191,22 @@ def test_the_confirm_window_outlasts_the_vad_silence_window() -> None:
     assert _barge_confirm_s() * 1000 > _vad_silence_duration_ms()
 
 
+def test_the_patience_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 2026-08-30 patience numbers, pinned as numbers.
+
+    The operator's ask was "don't rush me": a Mandarin mid-sentence pause of
+    about a second must not commit the turn. 1000 ms is the server's 500 ms
+    default nearly doubled and still under the ~1100 ms knee where the robot
+    starts feeling sluggish; the confirm window is bumped in step so it keeps
+    its ≥400 ms margin over the silence window.
+    """
+    monkeypatch.delenv("REALTIME_VAD_SILENCE_DURATION_MS", raising=False)
+    monkeypatch.delenv("REALTIME_BARGE_CONFIRM_MS", raising=False)
+
+    assert _vad_silence_duration_ms() == 1000
+    assert _barge_confirm_s() == pytest.approx(1.6)
+
+
 def test_a_confirm_window_inside_the_vad_window_warns(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
