@@ -268,3 +268,143 @@ def _noop_async():
         return None
 
     return _inner
+
+
+# --------------------------------------------------------------------------
+# summarize_conversation (2026-08-31 plan, Task 5)
+# --------------------------------------------------------------------------
+
+
+class _FakeChatClient:
+    """Minimal async stand-in for `hanova.images.build_client()`'s AsyncOpenAI."""
+
+    def __init__(self, content: str | None = "會議重點：下週三再開一次。", raises: bool = False) -> None:
+        self._content = content
+        self._raises = raises
+        self.seen_prompt: str | None = None
+        self.seen_model: str | None = None
+        self.closed = False
+
+        async def _create(**kwargs: object) -> object:
+            if self._raises:
+                raise RuntimeError("summarizer down")
+            messages = kwargs["messages"]
+            self.seen_prompt = messages[1]["content"]  # type: ignore[index]
+            self.seen_model = kwargs["model"]  # type: ignore[assignment]
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))])
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+    async def __aenter__(self) -> "_FakeChatClient":
+        """Enter the client context, exactly as AsyncOpenAI does."""
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """Record that the caller closed the connection pool."""
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_summarize_returns_the_friendly_line_for_an_empty_log() -> None:
+    """Nothing recorded is a sayable sentence, not an error and not silence."""
+    from reachy_companion.record_mode import RECORD_EMPTY_SUMMARY, summarize_record_log
+
+    deps = _deps()
+    assert await summarize_record_log(deps, client=_FakeChatClient()) == RECORD_EMPTY_SUMMARY
+
+
+@pytest.mark.asyncio
+async def test_summarize_feeds_every_logged_line_to_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both roles reach the prompt, on the small model, with the pool closed after."""
+    from reachy_companion.record_mode import summarize_record_log
+
+    monkeypatch.delenv("MEMORY_LAST_CHAT_MODEL", raising=False)
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+    record_room_transcript(deps, "assistant", "好的")
+    client = _FakeChatClient()
+    summary = await summarize_record_log(deps, client=client)
+    assert summary == "會議重點：下週三再開一次。"
+    assert "下週三再開一次" in (client.seen_prompt or "")
+    assert "reachy: 好的" in (client.seen_prompt or "")
+    assert client.seen_model == "gpt-5-mini"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_summarize_never_raises_when_the_call_fails() -> None:
+    """A dead summarizer costs one spoken sentence, never the conversation."""
+    from reachy_companion.record_mode import RECORD_SUMMARY_FAILED, summarize_record_log
+
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+    assert await summarize_record_log(deps, client=_FakeChatClient(raises=True)) == RECORD_SUMMARY_FAILED
+
+
+@pytest.mark.asyncio
+async def test_summarize_treats_an_empty_answer_as_a_failure() -> None:
+    """A model that returns nothing must not make Reachy say nothing."""
+    from reachy_companion.record_mode import RECORD_SUMMARY_FAILED, summarize_record_log
+
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+    assert await summarize_record_log(deps, client=_FakeChatClient(content="   ")) == RECORD_SUMMARY_FAILED
+    assert await summarize_record_log(deps, client=_FakeChatClient(content=None)) == RECORD_SUMMARY_FAILED
+
+
+@pytest.mark.asyncio
+async def test_summarize_handles_a_missing_client() -> None:
+    """No OPENAI_API_KEY means `build_client()` returns None; that is still sayable."""
+    from reachy_companion.record_mode import RECORD_SUMMARY_FAILED, summarize_record_log
+
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+    assert await summarize_record_log(deps, client=None) == RECORD_SUMMARY_FAILED
+
+
+@pytest.mark.asyncio
+async def test_summarize_respects_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A summarizer that hangs must not hang the turn behind it."""
+    from reachy_companion.record_mode import RECORD_SUMMARY_FAILED, summarize_record_log
+
+    monkeypatch.setenv("RECORD_SUMMARY_TIMEOUT_S", "1.0")
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+
+    class _SlowClient(_FakeChatClient):
+        """A client whose completion never lands inside the budget."""
+
+        def __init__(self) -> None:
+            super().__init__()
+
+            async def _create(**kwargs: object) -> object:
+                await asyncio.sleep(5.0)
+                return None
+
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+    assert await summarize_record_log(deps, client=_SlowClient()) == RECORD_SUMMARY_FAILED
+
+
+@pytest.mark.asyncio
+async def test_tool_returns_the_verbatim_envelope() -> None:
+    """The tool hands back the text plus the instruction to read it as written."""
+    from reachy_companion.tools.summarize_conversation import SummarizeConversation
+
+    deps = _deps()
+    record_room_transcript(deps, "user", "下週三再開一次")
+    result = await SummarizeConversation()(deps, client=_FakeChatClient())
+    assert result == {
+        "summary_text": "會議重點：下週三再開一次。",
+        "speak_verbatim": True,
+        "lines": 1,
+    }
+
+
+def test_tool_description_names_the_envelope_and_the_triggers() -> None:
+    """The mini tier follows the description or nothing; both halves must be in it."""
+    from reachy_companion.tools.summarize_conversation import SummarizeConversation
+
+    description = SummarizeConversation.description
+    for phrase in ("speak_verbatim", "summary_text", "幫我總結", "Do NOT use when", "紀錄模式"):
+        assert phrase in description

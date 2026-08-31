@@ -47,6 +47,7 @@ EXPECTED_TOOLS = (
     "nas_skip",
     "go_to_sleep",
     "set_conversation_mode",
+    "summarize_conversation",
     "remember",
     "forget",
     "remember_face",
