@@ -35,8 +35,6 @@ PORTED_TOOLS = frozenset(
         "drive_trash",
         "drive_upload",
         "email_send",
-        "self_destruct",
-        "mad_laugh",
     }
 )
 
@@ -48,7 +46,6 @@ GATED_TOOLS = frozenset(
         "drive_trash",
         "drive_upload",
         "email_send",
-        "self_destruct",
     }
 )
 
@@ -106,9 +103,13 @@ def ported_tools(registry, family_actions):
     return live
 
 
-def test_all_twenty_two_ported_tools_reach_the_model(ported_tools):
-    """R2: the inventory is 22 tools, and every one is reachable in the session."""
-    assert len(PORTED_TOOLS) == 22
+def test_all_twenty_ported_tools_reach_the_model(ported_tools):
+    """R2: every ported tool is still reachable in the session.
+
+    Twenty, not the original twenty-two: `self_destruct` and `mad_laugh` were
+    retired on 2026-08-31 to buy two of the tool diet's slots back.
+    """
+    assert len(PORTED_TOOLS) == 20
     missing = sorted(PORTED_TOOLS - set(ported_tools))
     assert missing == [], f"not reachable: {missing}"
 
@@ -240,11 +241,6 @@ def test_every_gated_tool_classifies_transient_and_terminal_failures():
     """
     for name in sorted(GATED_TOOLS):
         source = (SRC_ROOT / "tools" / f"{name}.py").read_text(encoding="utf-8")
-        if name == "self_destruct":
-            # The gag has exactly one failure mode -- the clip would not play --
-            # and it is transient by construction (finding 17's scoped ruling).
-            assert "GATE.release(self.name, pending.claim_id)" in source, name
-            continue
         assert "is_transient(exc)" in source, f"{name} treats every failure the same way"
         assert "GATE.release(self.name, pending.claim_id)" in source, name
         assert '"retryable": True' in source, name
@@ -647,8 +643,6 @@ _REDACT_EXEMPT = {
     "music_player.py": "logs generation numbers, fixed daemon API paths and HTTP statuses only",
     "gauth.py": "one fixed line about forcing a token refresh; every caller-facing error goes through friendly_message",
     "stop_music.py": "logs the fixed string 'Tool call: stop_music' and takes no arguments",
-    "mad_laugh.py": "logs the fixed string 'Tool call: mad_laugh' and takes no arguments",
-    "self_destruct.py": "logs three fixed in-character lines; the arm summary is a module constant, not user text",
     "nas_video_query.py": "one line, a COUNT of how many filters were supplied -- never a filter's value",
 }
 
@@ -749,16 +743,6 @@ def test_the_persona_records_the_two_approved_non_goals():
     body = (PACKAGE_ROOT.parent / "persona.md").read_text(encoding="utf-8")
     assert "drive" in body.lower() and "還原" in body, "Drive restore must be explained, not attempted"
     assert "密件" in body or "bcc" in body.lower(), "BCC must be explained, not silently dropped"
-
-
-def test_the_self_destruct_ritual_is_not_explained_away():
-    """Finding 17: the persona must not spoil the gag before running it."""
-    body = (PACKAGE_ROOT.parent / "persona.md").read_text(encoding="utf-8")
-    profile = PROFILE.read_text(encoding="utf-8")
-    for text in (body, profile):
-        window = text[text.find("self_destruct") : text.find("self_destruct") + 500]
-        for spoiler in ("玩笑", "只是聲音", "假的"):
-            assert spoiler not in window, f"the persona explains the gag: {spoiler}"
 
 
 def test_deploy_skill_backs_up_the_new_instance_files():

@@ -13,14 +13,17 @@ class Camera(Tool):
 
     name = "camera"
     description = (
-        "Take a picture with the camera to see what is in front of the robot. "
-        "Use this when the user asks you to look at something, see what they are holding, "
-        "describe the scene, their outfit, or comment on how they look. "
-        "Also use it when the user asks what you can see or wants your visual opinion. "
-        "NEVER use this tool to identify WHO a person is, whether you know or remember them, "
-        "or to recall someone's name — that is what the who_is_this tool is for. "
-        "The camera is live, each call captures the current moment. "
-        "If the user asks you to look without saying at what, do not ask for clarification, call this tool and describe what you see. "
+        "Take a picture with the camera and describe what is in front of the robot RIGHT NOW. It sees only "
+        "where the head is already pointing; it does not move anything. "
+        "Use when: the user asks what you see, or about something in front of you, what they are holding, "
+        "their outfit, or how they look — 「你看到什麼」「這是什麼」「看看我今天穿的衣服」「what do you see」. "
+        "Use when: the user asks you to look with no direction at all — do not ask for clarification, call "
+        "this tool and describe what you see. "
+        "Do NOT use when: the user asks you to physically turn or look in a direction (右邊/左邊/上面/下面/"
+        "轉過去/那邊) — use look_around, which turns the head first and then looks. "
+        "Do NOT use when: the question is about WHO a person is, whether you know or remember them, or what "
+        "someone's name is — that is who_is_this. "
+        "The camera is live; each call captures the current moment."
     )
     parameters_schema = {
         "type": "object",

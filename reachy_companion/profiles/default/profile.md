@@ -9,7 +9,6 @@ default_tools = [
   "idle_do_nothing",
   "move_head",
   "go_to_sleep",
-  "sweep_look",
   "remember",
   "forget",
   "head_tracking",

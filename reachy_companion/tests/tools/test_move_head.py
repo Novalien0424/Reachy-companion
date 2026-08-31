@@ -20,7 +20,7 @@ def _deps() -> ToolDependencies:
     reachy_mini = MagicMock()
     reachy_mini.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
     # get_current_joint_positions() -> (head_joints, antenna_joints); body yaw is
-    # head_joints[0] (sweep_look.py:34-35), NOT an antenna angle.
+    # head_joints[0], NOT an antenna angle.
     reachy_mini.get_current_joint_positions.return_value = (
         np.array([CURRENT_BODY_YAW, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         np.array(CURRENT_ANTENNAS),

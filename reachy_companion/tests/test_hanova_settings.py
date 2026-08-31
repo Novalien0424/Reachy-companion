@@ -152,8 +152,12 @@ def test_timezone_is_validated_against_the_tz_database(monkeypatch):
 
 # --- per-tool prerequisites (finding 10) ----------------------------------
 def test_every_ported_tool_declares_prerequisites():
-    """All 22 names are covered; a new tool cannot be silently ungated."""
-    assert len(settings.TOOL_PREREQS) == 22
+    """All 20 names are covered; a new tool cannot be silently ungated.
+
+    Twenty since 2026-08-31: `self_destruct` and `mad_laugh` were retired, and
+    their two clip-id prerequisites left `_PREREQS` with them.
+    """
+    assert len(settings.TOOL_PREREQS) == 20
     for family, names in settings.FAMILY_TOOLS.items():
         assert family in settings.FAMILIES
         for name in names:
@@ -246,17 +250,6 @@ def test_index_only_nas_query_does_not_need_smb_credentials(monkeypatch, tmp_pat
     monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(index))
     assert settings.tool_available("nas_video_query") is True
     assert settings.tool_status("play_nas_video") == (False, "HANOVA_NAS_HOST")
-
-
-def test_gag_tools_need_their_own_clip_ids(monkeypatch):
-    """Finding 10: "music enabled" said nothing about whether a gag can play."""
-    monkeypatch.setattr(settings, "_music_wheels_ready", lambda: (True, ""))
-    assert settings.tool_status("self_destruct") == (False, "HANOVA_SELF_DESTRUCT_YT_ID")
-    assert settings.tool_status("mad_laugh") == (False, "HANOVA_MAD_LAUGH_YT_ID")
-    monkeypatch.setenv("HANOVA_SELF_DESTRUCT_YT_ID", "sd")
-    monkeypatch.setenv("HANOVA_MAD_LAUGH_YT_ID", "ml")
-    assert settings.tool_available("self_destruct") is True
-    assert settings.tool_available("mad_laugh") is True
 
 
 def test_unknown_tool_is_reported_not_raised():

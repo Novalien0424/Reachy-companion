@@ -15,7 +15,17 @@ class MoveHead(Tool):
     """Move head in a given direction."""
 
     name = "move_head"
-    description = "Move your head in a given direction: left, right, up, down or front."
+    description = (
+        "Move the head in a given direction and leave it there. Movement only: it takes no picture and tells "
+        "you nothing about what is there. "
+        "Use when: the user asks for the movement itself and wants no description — 「抬頭」「低頭」"
+        "「頭轉過去」「看鏡頭」「head up」「face front」. "
+        "Use when: you want to point the head somewhere as body language while you keep talking. "
+        "Do NOT use when: the user wants to KNOW who or what is in that direction — use look_around, which "
+        "turns the head and then looks. "
+        "Do NOT use when: the user asks what you see without naming a direction — use camera. "
+        "NEVER say you saw anything after this tool: it returns no picture."
+    )
     needs_response = False
     parameters_schema = {
         "type": "object",
@@ -53,8 +63,8 @@ class MoveHead(Tool):
             movement_manager = deps.movement_manager
 
             # Get current state for interpolation. get_current_joint_positions()
-            # returns (head_joints, antenna_joints) and body_yaw is head_joints[0],
-            # exactly as sweep_look.py:34-35 reads it.
+            # returns (head_joints, antenna_joints) and body_yaw is head_joints[0]
+            # — NOT an antenna angle.
             current_head_pose = deps.reachy_mini.get_current_head_pose()
             head_joints, antenna_joints = deps.reachy_mini.get_current_joint_positions()
             current_body_yaw = head_joints[0]

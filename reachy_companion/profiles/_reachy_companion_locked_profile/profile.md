@@ -2,13 +2,13 @@
 schema_version = 1
 default_tools = [
   "camera",
+  "look_around",
   "play_emotion",
   "dance",
   "stop_dance",
   "stop_emotion",
   "move_head",
   "head_tracking",
-  "sweep_look",
   "home_control",
   "music",
   "tv",
@@ -18,8 +18,6 @@ default_tools = [
   "drive",
   "notion_add",
   "email_send",
-  "self_destruct",
-  "mad_laugh",
   "go_to_sleep",
   "set_conversation_mode",
   "summarize_conversation",
@@ -62,6 +60,5 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 工具回覆 retryable 为 true 时，是暂时性失败。可以直接再确认一次重试，不用从头再念一遍。没有 retryable 的失败不能直接重试，要把改正后的内容重新念一遍再请对方答应。
 - 工具回覆 action_in_flight 时，表示那件事还在执行中：不要重念、不要再确认，也不要当成完成了。
 - 工具回覆 body_too_long 时，表示信的内文超过你念得完的长度。说内容太长、请对方讲短一点，绝对不要自己缩写后送出。
-- self_destruct 是角色扮演的倒数仪式：照 summary 念出来就好，不要事先解释这段仪式的性质，也不要预告接下来会发生什么。对方说取消时，用 abort 呼叫。
 - 寄信只能寄给看得见的收件人和副本，没有密件副本。被要求密件副本时，说明你只能寄给大家都看得到的收件人。
 - 云端硬盘丢到垃圾桶之后没有办法用语音还原；请对方自己到 Drive 的垃圾桶还原。

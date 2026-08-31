@@ -60,7 +60,7 @@ def test_packaged_default_tools_load_with_external_profiles_root(
     core_tools_mod = _reload_core_tools()
 
     assert not (external_profiles_root / "default").exists()
-    assert "sweep_look" in core_tools_mod.ALL_TOOLS
+    assert "move_head" in core_tools_mod.ALL_TOOLS
 
 
 def test_missing_profile_raises_runtime_error_instead_of_exiting(
@@ -151,10 +151,10 @@ def test_external_tools_fail_on_duplicate_tool_names(tmp_path: Path, monkeypatch
         _reload_core_tools()
 
 
-def test_builtin_profile_can_load_shared_sweep_tool(
+def test_builtin_profile_can_load_a_shared_motion_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A built-in profile can enable the shared sweep tool from its profile document."""
+    """A built-in profile can enable a shared application tool from its profile document."""
     monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "default")
     monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
     monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
@@ -162,30 +162,42 @@ def test_builtin_profile_can_load_shared_sweep_tool(
 
     core_tools_mod = _reload_core_tools()
 
-    assert "sweep_look" in core_tools_mod.ALL_TOOLS
+    assert "move_head" in core_tools_mod.ALL_TOOLS
 
 
-def test_tool_registry_reloads_when_profile_changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runtime profile changes should refresh enabled tools without restarting Python."""
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "default")
-    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
+def test_tool_registry_reloads_when_profile_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime profile changes should refresh enabled tools without restarting Python.
+
+    The two profiles are written here rather than picked from the bundled set:
+    since `sweep_look` was retired into `look_around` every bundled persona
+    enables the same locally-loadable tools, so no pair of them can show a tool
+    appearing and then disappearing. `head_tracking` is the discriminator for
+    the same reason `sweep_look` was — a real shared tool the registry has to
+    load and then drop.
+    """
+    external_profiles_root = tmp_path / "external_profiles"
+    write_profile("wide", external_profiles_root / "wide", "Wide.", ["camera", "move_head", "head_tracking"])
+    write_profile("narrow", external_profiles_root / "narrow", "Narrow.", ["camera", "move_head"])
+
+    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "wide")
+    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", external_profiles_root)
     monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
     monkeypatch.setattr(config_mod.config, "AUTOLOAD_EXTERNAL_TOOLS", False)
 
     core_tools_mod = _reload_core_tools()
 
     initial_tool_names = {spec["name"] for spec in core_tools_mod.get_tool_specs()}
-    assert "sweep_look" in initial_tool_names
+    assert "head_tracking" in initial_tool_names
     assert "camera" in initial_tool_names
 
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "mars_rover")
+    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "narrow")
 
     reloaded_tool_names = {spec["name"] for spec in core_tools_mod.get_tool_specs()}
     assert "camera" in reloaded_tool_names
     assert "move_head" in reloaded_tool_names
-    assert "sweep_look" not in reloaded_tool_names
+    assert "head_tracking" not in reloaded_tool_names
     assert "camera" in core_tools_mod.ALL_TOOLS
-    assert "sweep_look" not in core_tools_mod.ALL_TOOLS
+    assert "head_tracking" not in core_tools_mod.ALL_TOOLS
 
 
 def test_forced_tool_registry_reload_does_not_duplicate_shared_tool(
@@ -200,15 +212,25 @@ def test_forced_tool_registry_reload_does_not_duplicate_shared_tool(
     core_tools_mod = _reload_core_tools()
     core_tools_mod.initialize_tools(force=True)
 
-    assert "sweep_look" in core_tools_mod.ALL_TOOLS
+    assert "move_head" in core_tools_mod.ALL_TOOLS
 
 
 def test_tool_registry_reads_wait_for_forced_reload(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Spec readers should observe one complete registry generation during reload."""
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "default")
-    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", config_mod.DEFAULT_PROFILES_DIRECTORY)
+    """Spec readers should observe one complete registry generation during reload.
+
+    Written profiles, for the same reason as the test above: the bundled
+    personas no longer differ by a locally-loadable tool, so a bundled pair
+    could not prove the reload landed on the second profile at all.
+    """
+    external_profiles_root = tmp_path / "external_profiles"
+    write_profile("wide", external_profiles_root / "wide", "Wide.", ["camera", "move_head", "head_tracking"])
+    write_profile("narrow", external_profiles_root / "narrow", "Narrow.", ["camera", "move_head"])
+
+    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "wide")
+    monkeypatch.setattr(config_mod.config, "PROFILES_DIRECTORY", external_profiles_root)
     monkeypatch.setattr(config_mod.config, "TOOLS_DIRECTORY", None)
     monkeypatch.setattr(config_mod.config, "AUTOLOAD_EXTERNAL_TOOLS", False)
     core_tools_mod = _reload_core_tools()
@@ -229,7 +251,7 @@ def test_tool_registry_reads_wait_for_forced_reload(
         return core_tools_mod.get_tool_specs()
 
     monkeypatch.setattr(core_tools_mod, "_read_profile_tool_names", pause_profile_read)
-    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "mars_rover")
+    monkeypatch.setattr(config_mod.config, "REACHY_MINI_CUSTOM_PROFILE", "narrow")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         reload_future = executor.submit(core_tools_mod.initialize_tools, force=True)
@@ -245,5 +267,5 @@ def test_tool_registry_reads_wait_for_forced_reload(
         spec_names = {spec["name"] for spec in read_future.result(timeout=1.0)}
 
     assert "move_head" in spec_names
-    assert "sweep_look" not in spec_names
+    assert "head_tracking" not in spec_names
     assert spec_names == set(core_tools_mod.get_tools())

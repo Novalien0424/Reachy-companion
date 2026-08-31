@@ -360,16 +360,6 @@ def ytdlp_download_timeout_s() -> int:
     return env_int("HANOVA_YTDLP_DOWNLOAD_TIMEOUT_S", 120, minimum=5, maximum=1800)
 
 
-def self_destruct_yt_id() -> str:
-    """YouTube id of the self-destruct gag clip."""
-    return env_str("HANOVA_SELF_DESTRUCT_YT_ID")
-
-
-def mad_laugh_yt_id() -> str:
-    """YouTube id of the mad-laugh gag clip."""
-    return env_str("HANOVA_MAD_LAUGH_YT_ID")
-
-
 # --- behaviour knobs -------------------------------------------------------
 def confirm_ttl_s() -> float:
     """Seconds a pending confirmation stays valid (R3, upstream default 90).
@@ -472,7 +462,7 @@ FAMILY_TOOLS: Dict[str, Tuple[str, ...]] = {
     "email": ("email_send",),
     "nas": ("nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"),
     "media-cast": ("play_video", "show_on_tv"),
-    "music": ("play_music", "stop_music", "self_destruct", "mad_laugh"),
+    "music": ("play_music", "stop_music"),
 }
 
 
@@ -544,8 +534,6 @@ _PREREQS: Dict[str, Any] = {
     "HANOVA_NAS_SHARE": lambda: bool(nas_share()),
     "HANOVA_NAS_SUBPATH": lambda: bool(nas_subpath()),
     "HANOVA_NAS_CAST_SUBPATH": lambda: bool(nas_cast_subpath()),
-    "HANOVA_SELF_DESTRUCT_YT_ID": lambda: bool(self_destruct_yt_id()),
-    "HANOVA_MAD_LAUGH_YT_ID": lambda: bool(mad_laugh_yt_id()),
     "MUSIC_WHEELS": lambda: _music_wheels_ready()[0],
 }
 
@@ -574,8 +562,6 @@ TOOL_PREREQS: Dict[str, Tuple[str, ...]] = {
     # that must answer even when nothing else can (review finding 10).
     "play_music": ("MUSIC_WHEELS",),
     "stop_music": (),
-    "self_destruct": ("MUSIC_WHEELS", "HANOVA_SELF_DESTRUCT_YT_ID"),
-    "mad_laugh": ("MUSIC_WHEELS", "HANOVA_MAD_LAUGH_YT_ID"),
     # media-cast -- play_video hands HA an id and serves nothing, so it needs
     # neither the LAN base nor a live media mount.
     "play_video": ("MUSIC_WHEELS",) + _HA_BASE + ("HANOVA_HA_SCRIPT_YOUTUBE",),

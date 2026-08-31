@@ -1150,3 +1150,16 @@ async def test_startup_greeting_spawns_extended_check_only_on_a_miss(monkeypatch
     (silenced_item,) = silenced.connection.created_items
     assert silenced_item["content"][0]["text"] == WAKE_GREETING
     assert silenced._wake_face_task is None
+
+
+def test_any_tool_result_with_an_image_is_sanitized() -> None:
+    """The image path keys on the payload, not on the tool's name."""
+    sanitize = HuggingFaceRealtimeHandler._sanitize_tool_result_for_model
+    for name in ("camera", "look_around", "some_future_tool"):
+        out = sanitize(name, {"b64_im": "AAAA", "direction_requested": "right"})
+        assert "b64_im" not in out
+        assert out["image_attached"] is True
+        assert out["direction_requested"] == "right"
+    # Results with no picture are returned untouched.
+    passthrough = {"ok": True, "status": "waiting"}
+    assert sanitize("wait_for_user", passthrough) is passthrough

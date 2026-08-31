@@ -1568,7 +1568,14 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     remember = RememberFace.description
 
     assert "who_is_this" in camera  # camera redirects identity asks
-    assert "NEVER" in camera  # ...and does so emphatically
+    # Task 7 rewrote the description into the symmetric "Use when / Do NOT use
+    # when" form, so the emphatic redirect is that block's own wording now
+    # rather than the bare "NEVER" it used to carry. Pinned in full — a stronger
+    # tripwire than the single word — so the clause cannot be softened to a hint.
+    assert (
+        "Do NOT use when: the question is about WHO a person is, whether you know or remember them, "
+        "or what someone's name is — that is who_is_this."
+    ) in camera
     assert "instead of the camera tool" in who
     assert "not the camera tool" in remember
     # The recall clause: without it the model receives `known_facts` and has no

@@ -1897,8 +1897,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
-        """Remove bulky transport-only fields before echoing tool output back to the model."""
-        if tool_name == "camera" and "b64_im" in tool_result:
+        """Remove bulky transport-only fields before echoing tool output back to the model.
+
+        Keyed on the payload, not the tool's name: `look_around` returns a
+        picture too, and a name list would have to be maintained for every tool
+        that ever does (Codex round 1, P2-1). `tool_name` stays in the signature
+        for the log line and for future per-tool rules.
+        """
+        if "b64_im" in tool_result:
             sanitized = dict(tool_result)
             sanitized.pop("b64_im", None)
             sanitized["image_attached"] = True
@@ -2738,7 +2744,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 ),
             )
 
-            if model_result_submitted and completed_tool.tool_name == "camera" and "b64_im" in tool_result:
+            # Any tool result carrying a picture is attached, not just `camera`'s
+            # — `look_around` returns one too (Codex round 1, P2-1).
+            if model_result_submitted and "b64_im" in tool_result:
                 # use raw base64, don't json.dumps (which adds quotes)
                 b64_im = tool_result["b64_im"]
                 if not isinstance(b64_im, str):

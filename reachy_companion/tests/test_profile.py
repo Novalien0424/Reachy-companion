@@ -21,13 +21,16 @@ from reachy_companion.tools.calendar import Calendar
 
 EXPECTED_TOOLS = (
     "camera",
+    # 2026-08-31 conversation modes: the move_head → camera composite the mini
+    # model would not chain for itself. Listed right after `camera` because the
+    # two are read together — one looks, the other turns and then looks.
+    "look_around",
     "play_emotion",
     "dance",
     "stop_dance",
     "stop_emotion",
     "move_head",
     "head_tracking",
-    "sweep_look",
     "home_control",
     # Ported HomeAssistant-Nova capabilities (D-018). Each porting task adds its
     # own names here in the same order the profile lists them, so this stays a
@@ -44,8 +47,6 @@ EXPECTED_TOOLS = (
     "drive",
     "notion_add",
     "email_send",
-    "self_destruct",
-    "mad_laugh",
     "go_to_sleep",
     "set_conversation_mode",
     "summarize_conversation",
@@ -187,6 +188,11 @@ _RETIRED_TOOL_NAMES = (
     "nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip",
     "play_music", "stop_music", "play_video", "show_on_tv",
     "party_mode",
+    # 2026-08-31 conversation modes: `sweep_look` is subsumed by `look_around`
+    # (one directional look the model actually reaches for, instead of a fixed
+    # left-right-centre sweep it never called); the two gags gave their slots
+    # back to the diet.
+    "sweep_look", "self_destruct", "mad_laugh",
 )
 
 FAMILY_NAMES = ("music", "tv", "nas", "calendar", "tasks", "drive")
@@ -284,7 +290,8 @@ def test_no_retired_tool_name_survives_in_any_bundled_profile() -> None:
     Conflicting instructions between the prompt and the registered tool schemas
     measurably degrade selection (research doc §A2), the front matter is only
     half the file, and the locked profile is only one of fifteen — `default`
-    ships `sweep_look` in its own tool list (Codex round 2, 2b-7).
+    shipped `sweep_look` in its own tool list until the composite retired it
+    (Codex round 2, 2b-7).
     """
     files = _bundled_profile_files()
     assert files, "no bundled profiles found"
