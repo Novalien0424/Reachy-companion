@@ -56,6 +56,13 @@ from reachy_companion.tools.core_tools import (
     get_tool_specs,
 )
 from reachy_companion.audio.backchannel import is_backchannel, is_substantive
+from reachy_companion.conversation_mode import (
+    MODE_LABELS,
+    MODE_VALUES,
+    DEFAULT_MODE,
+    ConversationMode,
+    parse_mode,
+)
 from reachy_companion.hanova.music_hooks import (
     on_response_audio,
     on_session_started,
@@ -95,8 +102,39 @@ _PARTY_NAMES_DEFAULT = "reachy,richie,ritchie,瑞奇,里奇,小瑞,瑞曲"
 _PARTY_CONTROL_RE = re.compile(r"停|閉嘴|闭嘴|安靜|安静|睡覺|睡觉|別唱|别唱|stop|quiet|shut\s*up", re.IGNORECASE)
 
 
-def _party_default_on() -> bool:
-    return (os.getenv("REALTIME_PARTY_DEFAULT") or "").strip().lower() in ("1", "true", "on", "yes")
+def _boot_conversation_mode() -> ConversationMode:
+    """Return the mode a fresh handler starts in (operator amendment, 2026-08-31).
+
+    `GROUP` by default, deliberately. The robot sits in a room with several
+    people in it, and a robot that boots ready to answer every overheard
+    sentence is the exact failure the party-mode wave was built to fix — so a
+    fresh session answers only when addressed by name, and 一對一聊天模式 is
+    one spoken sentence away.
+
+    `REALTIME_PARTY_DEFAULT` (the 2026-08-24 knob) is deliberately no longer
+    read, and an instance `.env` still carrying it keeps working: the only mode
+    it could ever select was `GROUP`, which is now the default, so
+    `REALTIME_PARTY_DEFAULT=1` lands in exactly the mode it asked for. The one
+    case that changes is `REALTIME_PARTY_DEFAULT=0`, which now boots into
+    `GROUP` rather than solo — that IS the operator amendment, and
+    `REALTIME_DEFAULT_MODE=one_on_one` says it in the new vocabulary.
+
+    Degrades with a warning rather than raising, like every other mode knob.
+    """
+    raw = (os.getenv("REALTIME_DEFAULT_MODE") or "").strip()
+    if not raw:
+        return DEFAULT_MODE
+    mode = parse_mode(raw)
+    if mode is None:
+        logger.warning("Ignoring invalid REALTIME_DEFAULT_MODE=%r; using %s.", raw, DEFAULT_MODE.value)
+        return DEFAULT_MODE
+    if mode is ConversationMode.RECORD:
+        # Allowed, because an operator running a standing meeting recorder is a
+        # real use, but worth saying out loud: a robot that boots into 紀錄模式
+        # is silent until it hears its name, which looks exactly like a robot
+        # that failed to start.
+        logger.warning("REALTIME_DEFAULT_MODE=record: Reachy will boot silent until it is addressed by name.")
+    return mode
 
 
 def _party_confirm_s() -> float:
@@ -524,8 +562,30 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # handler currently owns. 0 means "no session open". It is what stops a
         # late cleanup from a replaced connection tearing down its successor.
         self._hanova_session: int = 0
+        # --- conversation modes (2026-08-31 plan) ----------------------------
+        # The single source of truth. Set once, here: the mode deliberately
+        # SURVIVES a reconnect (survey §1.2), because a dropped websocket
+        # mid-meeting must not silently end 紀錄模式. Only turn state resets per
+        # session.
+        self._conversation_mode: ConversationMode = _boot_conversation_mode()
+        # The mode the utterance currently in flight BEGAN in, stamped at
+        # `speech_started` (Task 2). A flip must not retroactively reclassify a
+        # turn that is already half-spoken: ambient speech started in 多人聊天
+        # 模式 must not become answerable because someone flipped to 一對一
+        # mid-sentence, and vice versa (Codex round 1, P1-2).
+        self._turn_mode: ConversationMode = self._conversation_mode
+        # Per-input-item stamps, because a single field is overwritten by the
+        # next `speech_started` before a slow `transcription.completed` for the
+        # PREVIOUS turn arrives (Codex round 2, 2a-4). Keyed by the
+        # `input_audio_buffer.speech_started` event's `item_id`; popped when
+        # that item's transcript completes or fails; cleared per session. The
+        # bound is small because entries only survive until their own transcript
+        # lands, and a dropped stamp falls back to `_turn_mode`.
+        self._turn_modes: dict[str, ConversationMode] = {}
+        # Monotonic coalescing token for session updates (Task 3, decision 9):
+        # a snapshot queued behind a newer flip is dropped rather than sent.
+        self._mode_update_seq: int = 0
         # --- party mode (multi-person hardening, 2026-08-24) -----------------
-        self._party_mode: bool = _party_default_on()
         # monotonic() of the last gate-ACCEPTED user turn; the only thing that
         # opens the follow-up window (Codex round 1, finding 3 — greeting and
         # tool-follow-up responses must not).
@@ -603,53 +663,115 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # call site plus the session `finally`), and the second must be a no-op.
         self._sleep_summary_done: bool = False
 
-    # --- party mode ---------------------------------------------------------
-    def set_party_mode(self, enabled: bool) -> dict[str, Any]:
-        """Flip party mode and push the matching turn-detection to the server.
+    @property
+    def _party_mode(self) -> bool:
+        """Whether the ROOM turn policy applies — GROUP and RECORD both do.
 
-        Injected into `ToolDependencies` (same seam as `go_to_sleep`) so the
-        `party_mode` tool can flip it mid-conversation. Synchronous by design:
-        tools run on the handler's own loop, so the session update is scheduled
-        rather than awaited.
+        Compat shim, and a deliberate one. A dozen sites branch on this
+        (`:1073, :1099, :1118, :1264, :2402, :2422, :2597, :2619, :2629, :2653,
+        :2662, :825` and `openai_realtime.py:416`) and every one of them asks
+        the same binary question: debounced room barge-in and a gate at
+        `transcription.completed`, or the solo pause-then-decide machine?
+        RECORD wants the room answer at all of them. Sites whose behavior really
+        differs per mode read `_conversation_mode` instead.
+
+        The `getattr` default mirrors the existing defensive read at
+        `openai_realtime.py:416`: config emission must also work on
+        partially-built handlers (tests construct via `__new__`). It is
+        deliberately `ONE_ON_ONE` and **not** `DEFAULT_MODE` — the contract it
+        preserves is `getattr(self, "_party_mode", False)`, i.e. a handler with
+        no mode state at all emits the solo config, exactly as it did before
+        this wave. A real handler always has `_conversation_mode` set.
         """
-        enabled = bool(enabled)
-        if enabled == self._party_mode:
-            return {"ok": True, "status": "unchanged", "party_mode": enabled}
-        self._party_mode = enabled
+        mode = getattr(self, "_conversation_mode", ConversationMode.ONE_ON_ONE)
+        return mode is not ConversationMode.ONE_ON_ONE
+
+    # --- conversation modes -------------------------------------------------
+    async def set_conversation_mode(self, mode: str | ConversationMode) -> dict[str, Any]:
+        """Switch conversation mode and push the new policy to the live session.
+
+        Successor to `set_party_mode` (2026-08-24 → 2026-08-31). Injected into
+        `ToolDependencies` (same seam as `go_to_sleep`) so the
+        `set_conversation_mode` tool can switch mid-conversation.
+
+        **Async, unlike its predecessor** (Codex round 1, P1-1). `set_party_mode`
+        scheduled its session update with `ensure_future` and returned; the model
+        then spoke its confirmation against whatever the server still had. That
+        was survivable when the update carried only turn detection. It is not
+        survivable now that it carries the mode's instructions and its whole tool
+        list — the confirmation sentence, and any tool call the model makes right
+        after it, would run against the previous mode. So the update is awaited
+        before the tool result goes back.
+        """
+        target = mode if isinstance(mode, ConversationMode) else parse_mode(mode)
+        if target is None:
+            logger.warning("set_conversation_mode: unknown mode %r", mode)
+            return {"ok": False, "error": f"unknown conversation mode: {mode}", "modes": list(MODE_VALUES)}
+        previous = self._conversation_mode
+        if target is previous:
+            return {"ok": True, "status": "unchanged", "mode": target.value, "label": MODE_LABELS[target]}
+        # Read BEFORE the flags below are cleared (Codex round 2, 2a-3): the
+        # guard at the bottom asks "was somebody mid-utterance when the mode
+        # changed?", and this method is about to clear both flags itself, so
+        # asking afterwards always answered no.
+        turn_in_flight = self._party_speech_open or self._barge_speech_open
+        self._conversation_mode = target
         self._party_speech_open = False
-        # Task 8, fix round finding 3: the solo speech flag is maintained by the
-        # solo branch of `speech_stopped`, which stops running the moment the
-        # mode flips. Left stale True by a flip mid-utterance, it would keep the
-        # response watchdog standing down for the rest of the session.
+        # The solo speech flag is maintained by the solo branch of
+        # `speech_stopped`, which stops running the moment the mode changes.
+        # Left stale True it would keep the response watchdog standing down for
+        # the rest of the session (Task 8 fix round, finding 3).
         self._barge_speech_open = False
-        # Task 4 fix round 2: same hazard class, same cure. Late eligibility is
-        # written only by `_solo_speech_started`, which the party branch never
-        # runs — so an utterance whose onset happened on the other side of this
-        # flip would be judged on a value left over from an unrelated solo turn
-        # (stale True: the turn cancels its own answer; stale False: Reachy
-        # talks over the name with nothing to repair it).
+        # Same hazard class, same cure: late eligibility is written only by
+        # `_solo_speech_started`, which the room branch never runs.
         self._barge_late_eligible = False
         self._party_utterance_seq += 1  # any sleeping barge timer is now stale
         if self._barge_paused or self._barge_pending:
-            # Task 8: the solo pause has just lost every timer that could
-            # resolve it (they all stand down when the mode flips), so it must
-            # be resolved here or the reply stays held forever. Rolling back is
-            # the honest reading: nothing confirmed this as an interruption.
+            # The solo pause has just lost every timer that could resolve it, so
+            # it must be resolved here or the reply stays held forever. Rolling
+            # back is the honest reading: nothing confirmed this as a barge.
             self._resume_playback(rolled_back=True)
-        # Final review: `_resume_playback(rolled_back=True)` above records a
-        # resumed response id, and nothing on the flip path ever clears it (the
-        # completed-transcript branch that normally does belongs to the solo
-        # loop this flip just left). Left set, it would suppress the first
-        # legitimate late interrupt after a party→solo flip.
+        # `_resume_playback(rolled_back=True)` records a resumed response id and
+        # nothing on the flip path ever clears it (the completed-transcript
+        # branch that normally does belongs to the loop this flip just left).
         self._barge_resumed_response_id = None
-        # Whoever just toggled the mode is clearly engaged with the robot:
-        # entering party opens the follow-up window so the conversation that
-        # asked for it can continue without re-addressing by name.
-        self._party_last_accept_at = time.monotonic() if enabled else None
+        # Whoever just switched to the room mode is clearly engaged: entering
+        # GROUP opens the follow-up window so the conversation that asked for it
+        # can continue without re-addressing by name. RECORD deliberately does
+        # NOT — quiet-scribe posture: every command needs the name.
+        self._party_last_accept_at = time.monotonic() if target is ConversationMode.GROUP else None
+        # A flip with no utterance in flight re-stamps the fallback turn mode
+        # too, so the next `speech_started` is not the only thing that can
+        # correct it. With one in flight the stamp is left alone: that turn is
+        # decided under the mode it began in.
+        if not turn_in_flight:
+            self._turn_mode = target
+        logger.info("conversation mode: %s -> %s", previous.value, target.value)
         if self.connection is not None:
-            asyncio.ensure_future(self._push_turn_detection_update())
-        logger.info("party mode %s", "ON" if enabled else "OFF")
-        return {"ok": True, "status": "party_on" if enabled else "party_off", "party_mode": enabled}
+            # Task 3 replaces this with `await self._push_mode_update()`, which
+            # additionally carries the mode's instructions and tool list. The
+            # await is established here so the signature never changes again.
+            await self._push_turn_detection_update()
+        # Re-read AFTER the await (Codex round 3, finding 4). A second
+        # `set_conversation_mode` can land while this one is waiting for its
+        # acknowledgement, and the model speaks this result out loud: reporting
+        # a mode the handler is no longer in would have Reachy announce 紀錄模式
+        # while it is actually in 多人聊天模式.
+        current = self._conversation_mode
+        if current is not target:
+            logger.info(
+                "conversation mode %s was superseded by %s before this call returned",
+                target.value,
+                current.value,
+            )
+            return {
+                "ok": True,
+                "status": "superseded",
+                "mode": current.value,
+                "label": MODE_LABELS[current],
+                "requested": target.value,
+            }
+        return {"ok": True, "status": "mode_set", "mode": target.value, "label": MODE_LABELS[target]}
 
     def _party_reset_for_new_session(self) -> None:
         """Clear party-mode turn state at the start of every (re)connect.

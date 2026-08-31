@@ -21,6 +21,7 @@ import reachy_companion.huggingface_realtime as hf_mod
 from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.core_tools import ToolDependencies
+from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.hanova.music_player import PLAYER
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 
@@ -80,6 +81,10 @@ def ok_daemon(monkeypatch):
 
 def _handler_with(events: tuple[_FakeEvent, ...]) -> HuggingFaceRealtimeHandler:
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    # Since the 2026-08-31 mode wave a real handler boots into 多人聊天模式,
+    # whose speech events take the room branch. The solo ducking hooks these
+    # tests exercise live on the other branch, so pin the mode.
+    handler._conversation_mode = ConversationMode.ONE_ON_ONE
     handler.client = _make_fake_realtime_client(events=events)
     return handler
 

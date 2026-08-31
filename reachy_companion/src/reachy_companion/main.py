@@ -263,10 +263,10 @@ def run(
             instance_path=instance_path,
             startup_voice=startup_voice,
         )
-        # Party mode's voice switch reaches the live handler through deps; the
-        # rewire here (not at deps construction) is what keeps the seam correct
-        # across handler rebuilds by the settings UI (voice changes).
-        deps.set_party_mode = handler.set_party_mode
+        # The mode switch reaches the live handler through deps; the rewire here
+        # (not at deps construction) is what keeps the seam correct across
+        # handler rebuilds by the settings UI (voice changes).
+        deps.set_conversation_mode = handler.set_conversation_mode
         return handler
 
     handler = build_handler(startup_settings.voice)

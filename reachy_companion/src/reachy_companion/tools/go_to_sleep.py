@@ -15,7 +15,11 @@ class GoToSleep(Tool):
     description = (
         "End the interaction entirely: Reachy says goodbye, stops, and rests. Use when you are sure the user "
         "wants Reachy gone, off, asleep, or the conversation over — in any wording or language. The judgment: "
-        "they want you to STOP being active, not to keep participating in a different way (that is party_mode). "
+        "they want you to STOP being active, not to keep participating in a different way (that is "
+        "set_conversation_mode: 一對一聊天模式 / 多人聊天模式 / 紀錄模式). "
+        "Do NOT use when: the user only wants you quiet for a moment — that is wait_for_user. "
+        "Do NOT use when: the user wants you to listen differently, record, or stop recording — that is "
+        "set_conversation_mode. "
         "Do not use for idle turns, sleepy emotions, silence, or ambiguous requests."
     )
     needs_response = False

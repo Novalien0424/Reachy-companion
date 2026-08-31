@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Callable, ClassVar, 
 from pathlib import Path
 from collections import deque
 from dataclasses import field, dataclass
+from collections.abc import Awaitable
 
 from reachy_mini import ReachyMini
 from reachy_companion.config import config, list_tool_module_names
@@ -50,10 +51,14 @@ class ToolDependencies:
     # construction site — tests, the settings UI, older deployments — must keep
     # working with face memory simply absent.
     face_recognizer: Any = None
-    # Party mode (multi-person hardening, 2026-08-24): flips the handler's
-    # group-conversation policy. Injected per handler build, same seam and same
-    # optionality rationale as go_to_sleep.
-    set_party_mode: Callable[[bool], dict[str, Any]] | None = None
+    # Conversation modes (2026-08-31): switches the handler's turn policy
+    # between 一對一 / 多人 / 紀錄模式. Injected per handler build, same seam and
+    # same optionality rationale as go_to_sleep. Takes the mode's string value
+    # (`conversation_mode.MODE_VALUES`) rather than the enum, so a tool module
+    # never has to import the handler. Async, unlike the older seams here,
+    # because the session update must be applied before the tool result reaches
+    # the model (Codex round 1, P1-1).
+    set_conversation_mode: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     # Person-scoped memory (spec §3.3): the name of the last face-recognized
     # person this app run, set by the wake checks and who_is_this. A label for
     # memory scoping only — never used to gate behavior. Optional for the same

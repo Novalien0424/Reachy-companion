@@ -33,6 +33,7 @@ from reachy_companion.console import LocalStream
 from reachy_companion.streaming import AdditionalOutputs
 from reachy_companion.openai_realtime import ROBOT_RATE, OpenAIRealtimeHandler, _turn_detection
 from reachy_companion.tools.core_tools import ToolDependencies
+from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
     _barge_confirm_s,
@@ -71,7 +72,7 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
 def _solo_handler() -> OpenAIRealtimeHandler:
     """Return a solo-mode handler with only the barge-relevant state, no __init__."""
     h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
-    h._party_mode = False
+    h._conversation_mode = ConversationMode.ONE_ON_ONE
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0
@@ -106,6 +107,7 @@ def _clean_barge_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_BARGE_CONFIRM_MS",
         "REALTIME_BARGE_ROLLBACK_TIMEOUT_S",
         "REALTIME_BARGE_COOLDOWN_MS",
+        "REALTIME_DEFAULT_MODE",
         "REALTIME_PARTY_DEFAULT",
         "REALTIME_MIN_TURN_CHARS",
         "REALTIME_ONSET_RAMP_MS",
@@ -855,8 +857,7 @@ async def test_party_mode_flip_mid_pause_resumes_the_reply(monkeypatch: pytest.M
     h._solo_speech_started()
     assert h._barge_paused is True
 
-    h.set_party_mode(True)
-    await asyncio.sleep(0)  # let the scheduled session update run and finish
+    await h.set_conversation_mode("group")
 
     assert h._barge_paused is False and h._barge_pending is False
     # The flip rolls back rather than commits, and rollbacks never truncate:
@@ -888,10 +889,10 @@ async def test_a_flip_back_to_solo_clears_late_eligibility() -> None:
     """
     h = _solo_handler()
     h.connection = None  # no session update to schedule here
-    h._party_mode = True
+    h._conversation_mode = ConversationMode.GROUP
     h._barge_late_eligible = True  # stale, from a solo turn before party mode
 
-    h.set_party_mode(False)
+    await h.set_conversation_mode("one_on_one")
 
     assert h._party_mode is False
     assert h._barge_late_eligible is False
@@ -1093,7 +1094,7 @@ async def test_partial_commit_is_inert_in_party_mode() -> None:
     _make_audible()
     h._response_done_event.clear()
     h._solo_speech_started()
-    h._party_mode = True
+    h._conversation_mode = ConversationMode.GROUP
     await h._maybe_commit_on_partial("欸瑞奇", "item_1")
     assert h._barge_pending
     h.connection.response.cancel.assert_not_awaited()
@@ -1436,6 +1437,11 @@ async def test_late_interrupt_keeps_speech_open_through_the_real_console_flush(
 def _loop_handler(events: tuple[_FakeEvent, ...]) -> HuggingFaceRealtimeHandler:
     """Build a real handler whose realtime session replays `events` (music-barge harness)."""
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    # This file is the SOLO machine, and since the 2026-08-31 mode wave a real
+    # handler boots into 多人聊天模式 — which routes speech through the room
+    # branch and never reaches the code under test. Pin the mode explicitly so
+    # these loop tests stay about what they say they are about.
+    handler._conversation_mode = ConversationMode.ONE_ON_ONE
     handler.client = _make_fake_realtime_client(events=events)
     return handler
 
@@ -1473,7 +1479,7 @@ def _state_at_speech_start(
         else:
             self._response_done_event.set()
         self._barge_late_eligible = eligible
-        self._party_mode = party
+        self._conversation_mode = ConversationMode.GROUP if party else ConversationMode.ONE_ON_ONE
         self._active_response_id = active_id
         self._barge_partial_committed_item = partial_item
 

@@ -37,6 +37,7 @@ import reachy_companion.huggingface_realtime as hf_mod  # noqa: E402
 from reachy_companion.hanova import audio_drain  # noqa: E402
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler  # noqa: E402
 from reachy_companion.tools.core_tools import ToolDependencies  # noqa: E402
+from reachy_companion.conversation_mode import ConversationMode  # noqa: E402
 
 
 _STOP = object()
@@ -180,6 +181,7 @@ def _clean_boot_gate_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_BOOT_GATE",
         "REALTIME_BOOT_GATE_TIMEOUT_S",
         "REALTIME_VAD_TYPE",
+        "REALTIME_DEFAULT_MODE",
         "REALTIME_PARTY_DEFAULT",
         "FACE_AUTO_GREET",
     ):
@@ -324,8 +326,8 @@ async def test_boot_gate_timeout_releases(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_turn_detection_push_is_deferred_while_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nothing but the gate itself may hand turn detection back while it is closed.
 
-    `set_party_mode` pushes turn detection to the live session, and by the time
-    the gate is holding the greeting `_startup_greeting_sent` is already True —
+    `set_conversation_mode` pushes turn detection to the live session, and by the
+    time the gate is holding the greeting `_startup_greeting_sent` is already True —
     so the config builder alone would emit normal VAD. The push waits for the
     release instead, and the mode it wanted lands there.
     """
@@ -334,7 +336,7 @@ async def test_turn_detection_push_is_deferred_while_gated(monkeypatch: pytest.M
     task = await _start_session(handler, conn)
     try:
         await _wait_until(lambda: handler._startup_greeting_sent, "the greeting was never queued")
-        handler._party_mode = True
+        handler._conversation_mode = ConversationMode.GROUP
 
         await handler._push_turn_detection_update()
         assert len(conn.updates) == 1, "the boot gate owns turn detection until it releases"

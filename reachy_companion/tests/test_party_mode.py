@@ -15,14 +15,14 @@ from test_solo_barge import _production_flush, _install_barge_state
 
 from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler, _turn_detection
-from reachy_companion.tools.party_mode import PartyMode
+from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 
 
 def _party_handler() -> OpenAIRealtimeHandler:
     """Return a handler with only the party-relevant state, __init__ skipped."""
     h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
-    h._party_mode = True
+    h._conversation_mode = ConversationMode.GROUP
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0
@@ -31,8 +31,8 @@ def _party_handler() -> OpenAIRealtimeHandler:
     h._cancelled_response_ids = deque(maxlen=8)
     h._response_done_event = asyncio.Event()
     h._response_done_event.set()
-    # Task 8 state: `set_party_mode` has to resolve a solo pause that is live
-    # when the mode flips, so even a party-only handler needs these fields.
+    # Task 8 state: `set_conversation_mode` has to resolve a solo pause that is
+    # live when the mode flips, so even a party-only handler needs these fields.
     _install_barge_state(h)
     # On the OpenAI handler `_clear_queue` is a wrapping property; the mock
     # lands in `_clear_queue_callback` and that is what the asserts read.
@@ -52,6 +52,7 @@ def _party_handler() -> OpenAIRealtimeHandler:
 @pytest.fixture(autouse=True)
 def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
     for name in (
+        "REALTIME_DEFAULT_MODE",
         "REALTIME_PARTY_DEFAULT",
         "REALTIME_PARTY_BARGE_CONFIRM_MS",
         "REALTIME_PARTY_FOLLOWUP_S",
@@ -228,39 +229,9 @@ def test_session_start_resets_party_state():
     assert h._party_utterance_seq == seq_before + 1
 
 
-# --------------------------------------------------------------------------
-# Mode switching
-# --------------------------------------------------------------------------
-
-
-def test_set_party_mode_opens_the_followup_window_on_enable():
-    """The person who toggled the mode is engaged; they keep the floor."""
-    h = _party_handler()
-    h._party_mode = False
-    h.connection = None
-    out = h.set_party_mode(True)
-    assert out == {"ok": True, "status": "party_on", "party_mode": True}
-    assert h._party_last_accept_at is not None
-    assert h._party_gate_accepts("放首歌吧")
-
-
-def test_set_party_mode_off_clears_the_window_and_invalidates_timers():
-    """Leaving party mode closes the window and stales any timer."""
-    h = _party_handler()
-    h.connection = None
-    h._party_last_accept_at = time.monotonic()
-    seq = h._party_utterance_seq
-    out = h.set_party_mode(False)
-    assert out["status"] == "party_off"
-    assert h._party_last_accept_at is None
-    assert h._party_utterance_seq == seq + 1
-
-
-def test_set_party_mode_is_idempotent():
-    """Setting the mode it is already in changes nothing."""
-    h = _party_handler()
-    h.connection = None
-    assert h.set_party_mode(True) == {"ok": True, "status": "unchanged", "party_mode": True}
+# Mode switching now lives in tests/test_conversation_modes.py: the boolean
+# `set_party_mode` was replaced by the three-mode `set_conversation_mode`
+# (2026-08-31 plan).
 
 
 # --------------------------------------------------------------------------
@@ -463,26 +434,8 @@ async def test_a_denied_turn_still_resumes_the_music(monkeypatch: pytest.MonkeyP
         music_hooks.reset_for_tests()
 
 
-# --------------------------------------------------------------------------
-# The tool
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_party_mode_tool_flips_through_the_deps_seam():
-    """The tool forwards enabled to the injected handler seam."""
-    seen = []
-    deps = SimpleNamespace(set_party_mode=lambda enabled: (seen.append(enabled), {"ok": True, "status": "party_on", "party_mode": enabled})[1])
-    out = await PartyMode()(deps, enabled=True)
-    assert out["ok"] is True and seen == [True]
-
-
-@pytest.mark.asyncio
-async def test_party_mode_tool_reports_a_missing_seam():
-    """A build without the seam reports failure instead of raising."""
-    deps = SimpleNamespace(set_party_mode=None)
-    out = await PartyMode()(deps, enabled=True)
-    assert out["ok"] is False
+# The voice switch's own tests live in tests/test_conversation_modes.py; the
+# `party_mode` tool it replaced is gone (2026-08-31 plan).
 
 
 def test_party_state_defaults_exist_on_the_base_handler():
@@ -491,7 +444,7 @@ def test_party_state_defaults_exist_on_the_base_handler():
 
     source = inspect.getsource(HuggingFaceRealtimeHandler.__init__)
     for field in (
-        "_party_mode",
+        "_conversation_mode",
         "_party_last_accept_at",
         "_party_speech_open",
         "_party_utterance_seq",
