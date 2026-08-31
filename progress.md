@@ -5,6 +5,15 @@ history of this file.
 
 ## Current state
 
+**EIGHTEENTH INSTALL (metadata-only redeploy, 2026-08-31 07:39 robot time):**
+the same code re-shipped as wheel **v1.17.0** (sha `3ddae98d…`) so the robot's
+installed metadata matches the new install-mapped versioning scheme
+(CHANGELOG.md; tag `v1.17.0`; GitHub release published). Full ritual again —
+backup/restore manifest `20260831T063823Z-11114`, 4 faces + 4 people read
+back, persona sha `3a2be561` intact — clean boot, zero tracebacks, app left
+RUNNING. `importlib.metadata.version("reachy_companion")` on the robot now
+answers `1.17.0`.
+
 **SEVENTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-31 07:13 robot time).**
 `name-gate-patience` was merged to `main` (fast-forward to `26573f0`, pushed;
 merged-tree suite re-run green **1571 / 30**) and deployed via the full
