@@ -5,8 +5,55 @@ history of this file.
 
 ## Current state
 
-**THE CONVERSATION-MODES WAVE IS IMPLEMENTED AND REVIEWED — NOT MERGED, NOT
-DEPLOYED (branch `conversation-modes`, 2026-08-31).** Twelve tasks off
+**THE NINETEENTH INSTALL (v1.19.0, the conversation-modes wave) IS ON THE
+ROBOT WITH A CLEAN FIRST BOOT — ROBOT LEFT ASLEEP (2026-08-31 ~21:08 robot
+time).** Merged to `main` (fast-forward to `5a92832`, 22 commits, pushed)
+after the final whole-branch review (READY WITH FIXES → C1-C6 applied in
+`a162d7c`, re-review clean) plus the pre-merge chores commit (`5a92832`:
+persona.md re-synced to the shipped tool surface — 18 line changes audited —
+and version 1.17.0 → 1.19.0).
+
+Deploy evidence (nineteenth install): wheel `reachy_companion-1.19.0` sha
+`41e5e15e…`, backup manifest `20260831T200225Z-17699` (7 files + 1 dir;
+`memory.v1.json`/`face_snapshots` explicitly absent), two-step install, restore
+verified (4 faces + 4 people), **persona pushed post-restore** (sha `0c1af73f`,
+zero stale tool names). Boot gates all green: `persona: instance persona.md`;
+wake-up movement ran; model `gpt-realtime-2.1-mini`; **`Realtime session
+updated successfully`** (the live endpoint acknowledges the new ordered
+session-update mechanism — no `never acknowledged within 5.0s`, no
+`session.update rejected`); startup surface exactly **22 tools**; wake greeting
+spoken (one concise sentence; `boot gate released (greeting played)`); zero
+tracebacks. Instance `.env` pins none of the four new knobs, so all shipped
+defaults apply (GROUP boot, 1600 ms party confirm, `open` answer gate). App
+stopped via the sanctioned API after verification; robot posed to sleep via the
+SDK. Antenna touch restarts the app (startup-app unchanged).
+
+**Discovered during verification (pre-existing, NOT a wave regression):** the
+console JSON-RPC `conversation.say` surface corrupts websocket frames — 15
+`invalid_json`/`invalid_value` realtime errors in one burst, `event_id=None`
+(unparseable frames). Isolation: `conversation.interrupt` (same flush, no say)
+is clean; the startup greeting (same `item.create`+`response.create` events,
+executed on the handler loop) works — so the defect is the RPC handler awaiting
+SDK sends from the console's own loop, racing the mic's audio appends
+(cross-loop websocket writes). Voice turns never use this path. Session
+recovered by itself; zero errors after the burst. Row `RPC-SAY-CROSS-LOOP` in
+`feature_list.json`; fix candidate: marshal `handler.say` onto the handler loop
+via `run_coroutine_threadsafe` (the Task 9 `wait_for_reply_finished` pattern).
+
+**Pending: the human-voice probes.** The five VOICE-* / MODE-* / TOOLBOX-*
+rows need a person in the room — the probe scripts are in each
+`feature_list.json` row (boot posture answers-only-when-addressed; 「切到一對一
+聊天模式」 then unaddressed answering; 紀錄模式 silence + 「瑞奇幫我總結」;
+「轉到右邊去看看有誰」 → look_around; 「睡覺吧」 goodbye-then-pose; cold
+「幫我加個行程」 open_toolbox chain; 「放首歌」/「音樂關掉」 with no box).
+Watchpoints while probing: `drain cap reached … with audio still playing`
+(raise `SLEEP_GOODBYE_DRAIN_CAP_S`), `suppressing commentary-phase item`
+(absence over a visit = phase may arrive too late, not a pass), RECORD idle
+`No idle tools are available` WARNING each interval (noise only, known).
+
+Previous wave state (for the record):
+**The conversation-modes wave was implemented and reviewed on branch
+`conversation-modes`, 2026-08-31.** Twelve tasks off
 `docs/plans/2026-08-31-conversation-modes-plan.md` (three Codex review rounds,
 **45 findings — 3 Critical / 27 Important / 15 Minor, 45 accepted, 0
 rejected**, plus one post-review operator amendment making `GROUP` the boot
