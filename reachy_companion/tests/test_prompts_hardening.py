@@ -12,6 +12,15 @@ def test_hardening_block_appended_to_instructions(monkeypatch, tmp_path):
     assert "台灣中文" in text or "台灣國語" in text  # language pin
 
 
+def test_hardening_block_teaches_length_calibration(monkeypatch, tmp_path):
+    """Brevity rules: length follows content, no filler, no preambles."""
+    monkeypatch.delenv("REALTIME_PROMPT_HARDENING", raising=False)
+    text = prompts.get_session_instructions(tmp_path)
+    assert "回答長度" in text  # the section heading
+    assert "長度跟著內容走" in text  # calibration, not a flat sentence cap
+    assert "前導語" in text  # no "let me think" openers
+
+
 def test_hardening_survives_persona_override(monkeypatch, tmp_path):
     """persona.md replaces profile instructions wholesale; the block still applies.
 
