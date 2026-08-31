@@ -405,6 +405,63 @@ def test_the_transcription_fallback_config_strips_reasoning(
 
 
 # --------------------------------------------------------------------------
+# max_output_tokens — a runaway-monologue rail, not a brevity knob
+# (2026-08-30 patience wave, Task 7). Same env-scrubbing rule as above.
+# --------------------------------------------------------------------------
+
+
+def test_session_config_ships_the_output_token_rail(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """~900 tokens is roughly 40 s of speech — loose enough to never fire in normal use."""
+    monkeypatch.delenv("REALTIME_MAX_OUTPUT_TOKENS", raising=False)
+
+    cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["max_output_tokens"] == 900
+
+
+def test_max_output_tokens_inf_removes_the_rail(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """`inf` omits the field entirely, restoring the server's own ceiling."""
+    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", "inf")
+
+    assert "max_output_tokens" not in handler._get_session_config(tool_specs=[])
+
+
+def test_max_output_tokens_env_override(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """A plain number passes through for a deliberately tight bench test."""
+    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", "200")
+
+    assert handler._get_session_config(tool_specs=[])["max_output_tokens"] == 200
+
+
+def test_max_output_tokens_is_clamped_to_the_api_ceiling(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """An out-of-range value is clamped rather than sent for the server to reject."""
+    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", "99999")
+
+    assert handler._get_session_config(tool_specs=[])["max_output_tokens"] == 4096
+
+
+def test_invalid_max_output_tokens_warns_and_uses_the_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, handler: OpenAIRealtimeHandler
+) -> None:
+    """A bad .env value must warn and degrade, never abort the session."""
+    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", "lots")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["max_output_tokens"] == 900
+    assert "REALTIME_MAX_OUTPUT_TOKENS" in caplog.text
+
+
+# --------------------------------------------------------------------------
 # Client build
 # --------------------------------------------------------------------------
 

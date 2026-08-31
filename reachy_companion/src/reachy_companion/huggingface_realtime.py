@@ -2478,9 +2478,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # at the utterance's onset, and a reply keeps draining
                         # out of the speaker long after `response.done` — this
                         # is exactly when 「停」 over a resumed reply arrives.
-                        done_id = getattr(getattr(event, "response", None), "id", None)
+                        response_obj = getattr(event, "response", None)
+                        done_id = getattr(response_obj, "id", None)
                         if done_id is not None and done_id == self._barge_resumed_response_id:
                             self._barge_resumed_response_id = None
+                        # Task 7: a reply the `max_output_tokens` rail cut is
+                        # otherwise silent — it just stops mid-word, with no
+                        # wrap-up sentence and no error anywhere.
+                        status = getattr(response_obj, "status", None)
+                        if status not in (None, "completed"):
+                            details = getattr(response_obj, "status_details", None)
+                            reason = getattr(details, "reason", None)
+                            if reason == "max_output_tokens":
+                                logger.warning(
+                                    "Reply cut off by REALTIME_MAX_OUTPUT_TOKENS "
+                                    "(status=incomplete); raise the rail if this recurs"
+                                )
+                            else:
+                                logger.info("response ended status=%s reason=%s", status, reason)
                         self._active_response_id = None
                         self._response_done_event.set()
                         self._response_started_or_rejected_event.set()

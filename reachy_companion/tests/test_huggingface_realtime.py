@@ -1,5 +1,7 @@
 import time
 import asyncio
+import logging
+from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -895,6 +897,79 @@ async def test_speech_started_marks_that_the_user_has_spoken(monkeypatch: Any) -
     await handler._run_realtime_session()
 
     assert handler._user_has_spoken is True
+
+
+# --------------------------------------------------------------------------
+# response.done status — the `max_output_tokens` rail tripping is silent
+# otherwise: the reply just stops mid-word (2026-08-30 patience wave, Task 7).
+# --------------------------------------------------------------------------
+
+
+async def _run_with_response_done(monkeypatch: Any, response: Any) -> None:
+    """Drive one `response.done` carrying `response` through the receiver loop."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = _make_fake_realtime_client(events=(_FakeEvent("response.done", response=response),))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    await handler._run_realtime_session()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_by_the_token_rail_warns(monkeypatch: Any, caplog: pytest.LogCaptureFixture) -> None:
+    """Hitting the rail truncates mid-word with no wrap-up — that must be visible."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch,
+            SimpleNamespace(
+                id="resp_1",
+                status="incomplete",
+                status_details=SimpleNamespace(reason="max_output_tokens"),
+            ),
+        )
+
+    tripped = [r for r in caplog.records if "REALTIME_MAX_OUTPUT_TOKENS" in r.getMessage()]
+    assert len(tripped) == 1
+    assert tripped[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_another_incomplete_reason_is_logged_at_info(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every other non-completed status is context, not an operator action item."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch,
+            SimpleNamespace(
+                id="resp_1",
+                status="cancelled",
+                status_details=SimpleNamespace(reason="turn_detected"),
+            ),
+        )
+
+    ended = [r for r in caplog.records if "response ended" in r.getMessage()]
+    assert len(ended) == 1
+    assert ended[0].levelno == logging.INFO
+    assert "reason=turn_detected" in ended[0].getMessage()
+    assert not any("REALTIME_MAX_OUTPUT_TOKENS" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_completed_reply_logs_no_status_line(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The normal path stays quiet — this fires on every single reply."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch, SimpleNamespace(id="resp_1", status="completed", status_details=None)
+        )
+
+    assert "response ended" not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -92,6 +92,35 @@ def _reasoning_effort() -> str | None:
     return raw
 
 
+_MAX_OUTPUT_TOKENS_DEFAULT = 900
+
+
+def _max_output_tokens() -> int | None:
+    """Per-reply token ceiling — a runaway-monologue rail, not a brevity knob.
+
+    ~20-25 output tokens per spoken second, so 900 ≈ 40 s of speech. Hitting
+    it cuts the reply MID-WORD with no wrap-up (`response.done` status
+    `incomplete`/`max_output_tokens` — research doc §3), which is why the
+    default is loose and the trip is logged as a warning. Brevity itself is
+    the prompt's job (persona + hardening block).
+    """
+    raw = (os.getenv("REALTIME_MAX_OUTPUT_TOKENS") or "").strip().lower()
+    if raw in ("inf", "off", "0"):
+        return None
+    if not raw:
+        return _MAX_OUTPUT_TOKENS_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid REALTIME_MAX_OUTPUT_TOKENS=%r; using %d.",
+            raw,
+            _MAX_OUTPUT_TOKENS_DEFAULT,
+        )
+        return _MAX_OUTPUT_TOKENS_DEFAULT
+    return max(1, min(value, 4096))
+
+
 def _noise_reduction() -> NoiseReduction | None:
     """Read `REALTIME_NOISE_REDUCTION`; far_field is the default for this robot.
 
@@ -404,6 +433,9 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             # dicts at runtime — same precedent as `keywords` and the 16 kHz
             # format. Codex round 1, finding 1.
             cast(dict[str, Any], cfg)["reasoning"] = {"effort": effort}
+        tokens = _max_output_tokens()
+        if tokens is not None:
+            cfg["max_output_tokens"] = tokens
         return cfg
 
     def _session_config_fallback(
