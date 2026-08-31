@@ -5,8 +5,31 @@ history of this file.
 
 ## Current state
 
-**BRANCH `name-gate-patience`: the human-like-conversation wave is implemented
-and reviewed, NOT deployed (2026-08-31).** Nine tasks off
+**SEVENTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-31 07:13 robot time).**
+`name-gate-patience` was merged to `main` (fast-forward to `26573f0`, pushed;
+merged-tree suite re-run green **1571 / 30**) and deployed via the full
+ritual: wheel sha `c5cccfa0…` verified end to end, version gate passed
+(daemon 1.10.0rc5), app already stopped at deploy time, two-step `--no-deps`
+install, manifest backup/restore at
+`/tmp/reachy_companion_backup/20260831T061202Z-10185` (faces **4** + people
+**4** read back, `memory.v1.json` + `face_snapshots/` recorded absent,
+google-oauth + nas index + google-workspace-mcp restored, modes reasserted).
+**The persona re-sync is DONE**: the Task 8 persona (no-preamble line) was
+scp'd over the restored copy and sha-verified at **`3a2be561`** (replacing
+`1ce532f3`), and the installed `prompts.py` carries the new 回答長度 block.
+Assets preloaded, app discovered. First boot clean: `persona: instance
+persona.md`, **41 tools**, `Face memory ready … 4 people enrolled` (1324 ms),
+wake check 5 rounds / 2173 ms (empty room), `Queued startup greeting prompt`,
+`session turn_detection updated: party=False`, `boot gate released (greeting
+played)`, **zero tracebacks**, and — decisive for D-028's two config risks —
+**no `session.update rejected` line**: the live API accepted
+`reasoning.effort=low` and `max_output_tokens=900`. **App left RUNNING.** The
+wave now awaits its five live rows: `VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`,
+`VOICE-TRUNCATE` (raise the module log level to DEBUG for that run — the
+refused line is DEBUG), `VOICE-PATIENCE`, `VOICE-BREVITY`.
+
+**Wave record (merged): the human-like-conversation wave (2026-08-31).**
+Nine tasks off
 `docs/plans/2026-08-30-name-gate-patience-plan.md` (three Codex review rounds,
 26 findings, 23 accepted outright, 3 in part; plus two implementation-review
 rulings that went *against* plan text — the late-interrupt eligibility flag and
@@ -22,11 +45,10 @@ model stops believing it finished replies nobody heard, patience defaults move
 (VAD silence 800 → **1000**, barge confirm 1400 → **1600** and now gate-off-only,
 `reasoning.effort` pinned **low**), `REALTIME_MAX_OUTPUT_TOKENS=900` is a loudly
 logged runaway rail, and brevity is taught by prompt calibration rather than a
-sentence cap. Gates on the branch: robot suite **1569 passed / 30 skipped**,
-`ruff check .` and `mypy --strict src` clean. **Nothing of this is on the robot**
-— the whole wave rides the **seventeenth install**, and `persona.md` changed in
-Task 8, so it additionally needs the operator's scp + sha256 re-sync (D-016) or
-the no-preamble line never loads. Five new live rows own the acceptance:
+sentence cap. Gates at merge: robot suite **1571 passed / 30 skipped** (final
+fix wave added two tests over the plan's 1569 pin), `ruff check .` and
+`mypy --strict src` clean. All of it is **on the robot as of the seventeenth
+install above**, persona included. Five new live rows own the acceptance:
 `VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`,
 `VOICE-BREVITY`.
 

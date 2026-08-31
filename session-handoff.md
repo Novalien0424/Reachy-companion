@@ -1,48 +1,40 @@
-# Session handoff — 2026-08-30 (sixteenth install deployed and booted)
+# Session handoff — 2026-08-31 (seventeenth install deployed and booted)
 
-`engagement-memory` (9 tasks, D-027) is **merged to `main`** (fast-forward to
-`e4a40b1`, pushed) and the **sixteenth install is on the robot with a clean
-first boot** (2026-08-30 00:03 robot time; wheel `0f95e9ff…`; backup/restore
-manifest `20260829T230203Z-12174`; 4 faces + 4 people survived; persona sha
-`1ce532f3`; 41 tools; new who_is_this fact-fidelity description confirmed in
-the registration log; 0 tracebacks). **App left RUNNING.**
+The human-like-conversation wave (`name-gate-patience`, 9 tasks, D-028,
+3 Codex plan-review rounds + per-task subagent reviews + final whole-branch
+review) is **merged to `main`** (fast-forward to `26573f0`, pushed;
+merged-tree suite 1571 / 30) and the **seventeenth install is on the robot
+with a clean first boot** (2026-08-31 07:13 robot time; wheel `c5cccfa0…`;
+backup/restore manifest `20260831T061202Z-10185`; 4 faces + 4 people
+survived; **persona re-synced to `3a2be561`** — the no-preamble line is
+live; 41 tools; boot gate released; zero tracebacks; **no `session.update
+rejected`** — the live API accepted `reasoning.effort=low` and
+`max_output_tokens=900`). **App left RUNNING.**
 
-## Next actions (operator + a human)
+## Next actions (operator + a human in the room)
 
-1. **MEMORY-LAST-CHAT live row:** get recognized, mention an ongoing thing,
-   say 「請進入睡眠模式」 (must be the VOICE tool — a dashboard stop writes no
-   summary, that's the negative control). Journal must show `Sleep summary:
-   wrote last-chat fact for 1 person(s).` after the session-shutdown lines;
-   `people.v1.json` gains exactly one 「上次聊天（M月D日）：…」 fact; next
-   recognized boot weaves it in. **Measure the summarizer latency** on this
-   first run — gpt-5-mini under the 8 s `MEMORY_LAST_CHAT_TIMEOUT_S` budget
-   is unproven on-device; raise the knob if it times out. Second negative
-   control: two people hours apart → only the recent one gets a summary.
-2. **MEMORY-OPEN-LOOPS:** listen for `remember` preferring ongoing threads.
-3. **BACKEND-CONSOLIDATE:** with the backend STOPPED, run
-   `companion_backend/scripts/consolidate.py` (dry-run) → review diff →
-   `--apply` → push. One-shot flow: `--import-first --apply --push-after`.
-   The CLI refuses (exit 3) while anything listens on :8710.
-4. Older pending rows unchanged — see `progress.md` → Pending verification.
-
-## Watch items
-
-- Daemon force-kill racing the ≤8 s sleep-summary write (benign loss; watch
-  the journal line's absence).
-- Daemon app-state wedge (recurred once, cleared by reboot 2026-08-29).
-- Power/undervoltage triage procedure in `progress.md`.
+1. **VOICE-NAME-GATE**: talk over Reachy without its name → journal
+   `solo barge rolled back (unaddressed)` and the reply resumes; say 「瑞奇」
+   mid-reply → stops <1 s; bare 「停」 → stops.
+2. **VOICE-LATE-INTERRUPT**: address it with a long sentence (>4 s) → reply
+   resumes at the max-pause cap, then stops when the transcript lands
+   (`late solo interrupt (...) on committed turn`). Watch for the T4-m4
+   edge: answer plays, cuts ~300 ms, same answer returns ~1.5 s later.
+3. **VOICE-TRUNCATE**: needs module log level DEBUG for the run — the
+   `conversation.item.truncate refused` line is DEBUG; a clean INFO journal
+   is not proof. After an interruption ask 「你剛剛說到哪」.
+4. **VOICE-PATIENCE** (1 s silence feel; `VOICE-SEMANTIC-VAD-AB` is the
+   deeper A/B: `REALTIME_VAD_TYPE=semantic_vad REALTIME_VAD_EAGERNESS=low`)
+   and **VOICE-BREVITY** (length tracks content; no preambles).
+5. Older pending rows unchanged — `progress.md` → Pending verification.
+   Mitigation if realtime sessions misbehave: `REALTIME_REASONING_EFFORT=off`.
 
 ## Robot access (D-020)
-
-```
-REACHY_HOST=10.0.0.96
-REACHY_SSH_USER=pollen
-```
 
 Secrets in gitignored repo-root `.env` only. Deploy procedure:
 `.claude/skills/reachy-deploy/SKILL.md`.
 
 ## Repo sync
 
-`main` @ `e4a40b1` + this session's docs commit, pushed. Deliberate residue:
-`.gitignore` operator line, untracked `reachy_companion/uv.lock`.
+`main` @ `26573f0` + this session's closing docs commit, pushed. Deliberate
+residue: `.gitignore` operator line, untracked `reachy_companion/uv.lock`.
