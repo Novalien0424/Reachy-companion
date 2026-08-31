@@ -1018,10 +1018,9 @@ commit, the party barge, the late interrupt. Truncation deletes the item's
 transcript server-side and cannot be undone, so **no rollback path may reach it**
 — rollbacks resume the audio. `_heard_audio_ms()` is `enqueued − outstanding −
 device buffer − 300 ms slack`, floored at 0, always rounding **DOWN**, because an
-`audio_end_ms` above the item's real duration is a server error: undershoot costs
-a sentence fragment left in context, overshoot costs the whole truncate. (Note
-the sign, it reads backwards: a *smaller* `audio_end_ms` deletes *more*.) The
-solo path stashes `(item_id, heard_ms)` at pause time and truncates the stash in
+`audio_end_ms` above the item's real duration is a server error: undershoot
+deletes a fragment the user actually heard from context, overshoot loses the
+whole truncate. The solo path stashes `(item_id, heard_ms)` at pause time and truncates the stash in
 both commit branches — the answer-already-live branch included, since that
 paused reply's tail was still dropped — because by commit time the flush has
 zeroed the drain counters and `_audio_item_id` may have moved on; the party and
@@ -1108,7 +1107,7 @@ primitive, but it means an on-device spotter (LiveKit ships `livekit-wakeword`),
 and short names like "Reachy" degrade spotter accuracy — out of POC scope, while
 transcript gating fits the machine we already run (research §4).
 
-**Verified against the unit suites only** — robot **1569 passed / 30 skipped**,
+**Verified against the unit suites only** — robot **1571 passed / 30 skipped**,
 `ruff check .` and `mypy --strict src` clean. The five live rows
 `VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`
 and `VOICE-BREVITY` in `feature_list.json` are the gate, and all of them ride the

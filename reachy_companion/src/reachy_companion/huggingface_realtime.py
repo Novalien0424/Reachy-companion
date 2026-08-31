@@ -222,9 +222,9 @@ _BARGE_RESPONSE_WATCHDOG_S: Final[float] = 1.5
 # Safety margin subtracted from every `conversation.item.truncate` position
 # (Task 5). `audio_end_ms` above the item's real duration is a server error, so
 # the accounting always rounds DOWN: this covers `audio_drain`'s own residue
-# slack (0.25 s) plus the resampler priming (~32 ms). Undershooting costs a
-# sentence fragment left in the model's context; overshooting costs the whole
-# truncate.
+# slack (0.25 s) plus the resampler priming (~32 ms). Undershooting deletes a
+# fragment the user actually heard from the model's context; overshooting past
+# the item's real duration is a server error that loses the whole truncate.
 _TRUNCATE_SLACK_MS: Final[int] = 300
 # The server-VAD default this project ships; shared with `_turn_detection`.
 # The API's own default is 500 ms; 800 shipped from D-023 onward. 1000 is the
@@ -636,6 +636,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # be resolved here or the reply stays held forever. Rolling back is
             # the honest reading: nothing confirmed this as an interruption.
             self._resume_playback(rolled_back=True)
+        # Final review: `_resume_playback(rolled_back=True)` above records a
+        # resumed response id, and nothing on the flip path ever clears it (the
+        # completed-transcript branch that normally does belongs to the solo
+        # loop this flip just left). Left set, it would suppress the first
+        # legitimate late interrupt after a party→solo flip.
+        self._barge_resumed_response_id = None
         # Whoever just toggled the mode is clearly engaged with the robot:
         # entering party opens the follow-up window so the conversation that
         # asked for it can continue without re-addressing by name.
@@ -1317,7 +1323,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             logger.info("solo barge rolled back (empty)")
         return True
 
-    def _resolve_solo_barge_failure(self) -> None:
+    def _resolve_solo_barge_failure(self, item_id: str | None) -> None:
         """Roll a pause back when transcription failed: no verdict will ever come.
 
         The late-interrupt fields are cleared first, ahead of the pending guard:
@@ -1326,10 +1332,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         then failed. Nothing about that turn can be decided any more, so neither
         its resumed id nor its committed-item marker may outlive it (Codex round
         3, findings 1 and 2).
+
+        `item_id` is the failing event's own item (T4 m5): the resumed-id and
+        eligibility clears are session-wide and stay unconditional, but the
+        committed-item marker names one specific turn, so a *different* turn's
+        failure must not consume it — that would let the marked turn's own
+        completed transcript interrupt a second time.
         """
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
-        self._barge_partial_committed_item = None
+        if item_id is not None and item_id == self._barge_partial_committed_item:
+            self._barge_partial_committed_item = None
         if not self._barge_pending:
             return
         logger.info("solo barge rolled back (transcription failed)")
@@ -1352,7 +1365,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         enqueued − outstanding − device buffer − slack, floored at 0:
         `audio_end_ms` above the item's real duration is a server error, so this
         always rounds DOWN (`docs/research-realtime-api-2026-08.md` §2).
-        Undershoot costs a sentence fragment left in context; overshoot costs
+        Undershoot deletes a fragment the user actually heard from context;
+        overshoot past the item's real duration is a server error that loses
         the whole truncate.
 
         Accepted limitation (D-028): `outstanding_s()` is global — there is one
@@ -2567,7 +2581,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             if await self._resolve_solo_barge(transcript):
                                 continue
                             pause_committed = True
-                        if event.item_id == self._barge_partial_committed_item:
+                        if (
+                            self._barge_partial_committed_item is not None
+                            and event.item_id == self._barge_partial_committed_item
+                        ):
                             # This turn already interrupted via its partial
                             # transcript; the reply now playing is its answer.
                             self._barge_partial_committed_item = None
@@ -2649,8 +2666,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             on_turn_without_response(self.deps)
                         else:
                             # Task 8: same reasoning for a pending solo pause —
-                            # nothing is coming that could confirm it.
-                            self._resolve_solo_barge_failure()
+                            # nothing is coming that could confirm it. The
+                            # failing item is named so the partial-commit marker
+                            # is only consumed when it is *this* turn's (T4 m5).
+                            self._resolve_solo_barge_failure(getattr(event, "item_id", None))
                         logger.debug("User transcription failed")
 
                     # Handle assistant transcription

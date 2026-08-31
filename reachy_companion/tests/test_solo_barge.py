@@ -652,7 +652,7 @@ async def test_transcription_failure_rolls_back() -> None:
     h._solo_speech_started()
     h._solo_speech_stopped()
 
-    h._resolve_solo_barge_failure()
+    h._resolve_solo_barge_failure("item_1")
 
     assert h._barge_paused is False and h._barge_pending is False
     h.connection.response.cancel.assert_not_awaited()
@@ -840,18 +840,28 @@ def test_clear_audio_queue_tells_the_handler_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_party_mode_flip_mid_pause_resumes_the_reply() -> None:
+async def test_party_mode_flip_mid_pause_resumes_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     """Flipping to party mode while paused must not strand the pause forever."""
-    h = _solo_handler()
-    h.connection = None  # set_party_mode must not schedule a session update here
+    # A real connection, so the truncate assertion below is not vacuous; the
+    # session update the flip schedules is stubbed out (it would rebuild the
+    # whole session config on a `__new__`-built handler).
+    monkeypatch.setattr(OpenAIRealtimeHandler, "_push_turn_detection_update", AsyncMock())
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
     _make_audible()
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 2000.0
     h._response_done_event.clear()
     h._solo_speech_started()
     assert h._barge_paused is True
 
     h.set_party_mode(True)
+    await asyncio.sleep(0)  # let the scheduled session update run and finish
 
     assert h._barge_paused is False and h._barge_pending is False
+    # The flip rolls back rather than commits, and rollbacks never truncate:
+    # truncation is irreversible and this reply is resuming.
+    truncate.assert_not_awaited()
     # Fix round, finding 3: the solo speech flag is maintained by a branch that
     # stops running the moment the mode flips, so the flip must clear it — a
     # stale True would keep the watchdog standing down for the whole session.
@@ -859,6 +869,10 @@ async def test_party_mode_flip_mid_pause_resumes_the_reply() -> None:
     # Task 4 fix round 2: the late-eligibility flag is written only by the solo
     # speech-start branch, so a flip mid-utterance must clear it too.
     assert h._barge_late_eligible is False
+    # Final review: the rollback the flip performs records a resumed response
+    # id, and no solo-loop branch will ever run to clear it — left set, it
+    # would suppress the first legitimate late interrupt after party→solo.
+    assert h._barge_resumed_response_id is None
     audio_drain.note_cleared()
     assert audio_drain.is_audible() is False
 
@@ -1286,9 +1300,38 @@ def test_transcription_failure_clears_the_late_interrupt_state() -> None:
     h._barge_resumed_response_id = "resp_123"
     h._barge_partial_committed_item = "item_1"
     assert h._barge_pending is False
-    h._resolve_solo_barge_failure()
+    h._resolve_solo_barge_failure("item_1")
     assert h._barge_resumed_response_id is None
     assert h._barge_partial_committed_item is None
+
+
+def test_another_turns_transcription_failure_keeps_the_partial_marker() -> None:
+    """T4 m5: the committed-item marker names one turn; only that turn may consume it.
+
+    The resumed id and the eligibility flag are session-wide, so a failure
+    clears them whichever turn failed. The marker is not — cleared by an
+    unrelated turn's failure, the marked turn's own completed transcript would
+    no longer be recognised as already-interrupted and would interrupt twice.
+    """
+    h = _solo_handler()
+    h._barge_resumed_response_id = "resp_123"
+    h._barge_partial_committed_item = "item_1"
+
+    h._resolve_solo_barge_failure("item_2")
+
+    assert h._barge_partial_committed_item == "item_1"
+    assert h._barge_resumed_response_id is None
+    assert h._barge_late_eligible is False
+
+
+def test_an_id_less_transcription_failure_keeps_the_partial_marker() -> None:
+    """An event with no item id names no turn, so it may not consume the marker."""
+    h = _solo_handler()
+    h._barge_partial_committed_item = "item_1"
+
+    h._resolve_solo_barge_failure(None)
+
+    assert h._barge_partial_committed_item == "item_1"
 
 
 def test_external_interrupt_clears_the_resumed_id() -> None:
@@ -1740,7 +1783,7 @@ async def test_transcription_failure_rollback_never_truncates() -> None:
     h._audio_item_enqueued_ms = 4000.0
     h._response_done_event.clear()
     h._solo_speech_started()
-    h._resolve_solo_barge_failure()
+    h._resolve_solo_barge_failure("item_abc")
     assert h._barge_pending is False
     truncate.assert_not_awaited()
 
