@@ -1,3 +1,4 @@
+import json
 import time
 import asyncio
 import logging
@@ -1163,3 +1164,72 @@ def test_any_tool_result_with_an_image_is_sanitized() -> None:
     # Results with no picture are returned untouched.
     passthrough = {"ok": True, "status": "waiting"}
     assert sanitize("wait_for_user", passthrough) is passthrough
+
+
+def _image_tool_handler(monkeypatch: Any) -> Any:
+    """Build a handler wired to a capturing connection, ready to deliver one tool result."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.connection = _CapturingConnection()
+    handler.output_queue = asyncio.Queue()
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_look_arounds_picture_reaches_the_model_as_an_input_image(monkeypatch: Any) -> None:
+    """The attach site keys on the payload, so a second picture tool works too.
+
+    This is the half that actually delivers the image. Sanitizing `b64_im` out
+    of the tool JSON is worthless on its own — without this item the model gets
+    a result announcing `image_attached: true` and no image, and would describe
+    a scene it never saw. Keyed on `tool_name == "camera"` this test fails
+    (review round 1, important 1).
+    """
+    handler = _image_tool_handler(monkeypatch)
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_look",
+            tool_name="look_around",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"direction_requested": "right", "question": "誰在那邊", "b64_im": "QUJD"},
+        )
+    )
+
+    output, image = handler.connection.created_items
+    # The JSON the model reads: the direction survives, the base64 does not.
+    assert output["type"] == "function_call_output"
+    assert output["call_id"] == "call_look"
+    payload = json.loads(output["output"])
+    assert payload == {"direction_requested": "right", "question": "誰在那邊", "image_attached": True}
+    # ...and the picture itself arrives as a real image item, not as text.
+    assert image["type"] == "message"
+    assert image["role"] == "user"
+    (content,) = image["content"]
+    assert content["type"] == "input_image"
+    assert content["image_url"] == "data:image/jpeg;base64,QUJD"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_without_a_picture_creates_no_image_item(monkeypatch: Any) -> None:
+    """The other side of the payload check: no `b64_im`, no image item."""
+    handler = _image_tool_handler(monkeypatch)
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_move",
+            tool_name="look_around",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"direction_requested": "up", "error": "No frame available"},
+        )
+    )
+
+    (output,) = handler.connection.created_items
+    assert output["type"] == "function_call_output"

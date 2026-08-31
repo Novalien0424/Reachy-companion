@@ -66,9 +66,15 @@ async def test_look_around_moves_then_captures(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.asyncio
 async def test_look_around_rejects_an_unknown_direction() -> None:
-    """A direction the schema cannot express never reaches the body."""
+    """A direction the schema cannot express never reaches the body.
+
+    The message is read by the model, so it is written for a reader: a plain
+    comma-joined list, not a Python list repr full of brackets and quotes
+    (review round 1, minor 3).
+    """
     result = await LookAround()(_deps(), direction="behind")
-    assert "error" in result
+    assert result["error"] == "direction must be one of left, right, up, down, front"
+    assert "[" not in result["error"] and "'" not in result["error"]
     assert "direction_requested" not in result
 
 
@@ -107,6 +113,35 @@ async def test_look_around_reports_a_failed_capture_but_keeps_the_move(
     assert result["direction_requested"] == "up"
     assert result["error"] == "No frame available"
     assert "b64_im" not in result
+
+
+@pytest.mark.asyncio
+async def test_look_around_reports_a_raised_capture_as_a_capture_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A camera that RAISES is still a capture failure, not a failed move.
+
+    `Camera` returns `{"error": …}` for the failures it anticipates, but a
+    driver fault raises instead. Without the guard that exception escapes
+    `look_around` and the dispatcher turns it into a bare `{"error": …}` — the
+    move-failure envelope, which tells the model the head never went anywhere
+    when in fact it did (review round 1, minor 2).
+    """
+
+    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"status": "looking down"}
+
+    async def _camera(self: Camera, deps: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("v4l2 device disappeared")
+
+    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(Camera, "__call__", _camera)
+    monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
+
+    result = await LookAround()(_deps(), direction="down")
+    assert result["direction_requested"] == "down"
+    assert "b64_im" not in result
+    assert "RuntimeError" in result["error"]
 
 
 @pytest.mark.asyncio

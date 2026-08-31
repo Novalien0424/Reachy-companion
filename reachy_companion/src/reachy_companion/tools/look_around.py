@@ -81,7 +81,10 @@ class LookAround(Tool):
         direction = kwargs.get("direction")
         valid = self.parameters_schema["properties"]["direction"]["enum"]
         if not isinstance(direction, str) or direction not in valid:
-            return {"error": f"direction must be one of {valid}"}
+            # Comma-joined, not the list's repr: this string is read back to the
+            # model, and brackets and quotes are noise to it (review round 1,
+            # minor 3).
+            return {"error": f"direction must be one of {', '.join(valid)}"}
         question = (kwargs.get("question") or "").strip() or _DEFAULT_QUESTION
         logger.info("Tool call: look_around direction=%s question=%s", direction, question[:120])
 
@@ -102,7 +105,21 @@ class LookAround(Tool):
             return {"error": moved["error"]}
         await asyncio.sleep(float(deps.motion_duration_s) + LOOK_AROUND_SETTLE_S)
 
-        shot = await Camera()(deps, question=question)
+        # Guarded, because from here on the head HAS been sent and every exit
+        # owes the model the capture-failure envelope. `Camera` returns
+        # `{"error": …}` for the faults it anticipates, but a driver fault
+        # raises — and an exception escaping here would be turned into a bare
+        # `{"error": …}` by the dispatcher, which is the *move*-failure shape and
+        # would tell the model the head never moved (review round 1, minor 2).
+        try:
+            shot = await Camera()(deps, question=question)
+        except asyncio.CancelledError:
+            # A cancelled tool call is the caller unwinding the turn, not a
+            # capture failure; it must keep propagating.
+            raise
+        except Exception as exc:  # noqa: BLE001 - the move already happened; report it honestly
+            logger.warning("look_around: capture raised after the move: %s: %s", type(exc).__name__, exc)
+            shot = {"error": f"camera failed: {type(exc).__name__}: {exc}"}
         # `direction_requested`, not `direction_moved`: `MoveHead` returns once
         # the move is QUEUED, and `MovementManager` publishes no accepted- or
         # completed-move signal for us to wait on (`moves.py:245-266`, `:764`) —
