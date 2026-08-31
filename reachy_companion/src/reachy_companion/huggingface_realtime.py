@@ -590,6 +590,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # mode flips. Left stale True by a flip mid-utterance, it would keep the
         # response watchdog standing down for the rest of the session.
         self._barge_speech_open = False
+        # Task 4 fix round 2: same hazard class, same cure. Late eligibility is
+        # written only by `_solo_speech_started`, which the party branch never
+        # runs — so an utterance whose onset happened on the other side of this
+        # flip would be judged on a value left over from an unrelated solo turn
+        # (stale True: the turn cancels its own answer; stale False: Reachy
+        # talks over the name with nothing to repair it).
+        self._barge_late_eligible = False
         self._party_utterance_seq += 1  # any sleeping barge timer is now stale
         if self._barge_paused or self._barge_pending:
             # Task 8: the solo pause has just lost every timer that could

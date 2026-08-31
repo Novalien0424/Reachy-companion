@@ -833,8 +833,31 @@ async def test_party_mode_flip_mid_pause_resumes_the_reply() -> None:
     # stops running the moment the mode flips, so the flip must clear it — a
     # stale True would keep the watchdog standing down for the whole session.
     assert h._barge_speech_open is False
+    # Task 4 fix round 2: the late-eligibility flag is written only by the solo
+    # speech-start branch, so a flip mid-utterance must clear it too.
+    assert h._barge_late_eligible is False
     audio_drain.note_cleared()
     assert audio_drain.is_audible() is False
+
+
+@pytest.mark.asyncio
+async def test_a_flip_back_to_solo_clears_late_eligibility() -> None:
+    """The direction that matters: an utterance begun in party mode is not solo-judged.
+
+    Task 4 fix round 2. `_barge_late_eligible` is set only in
+    `_solo_speech_started`, which party speech never reaches, so a party→solo
+    flip landing mid-utterance would otherwise hand the completed-transcript
+    handler a value recorded during some earlier, unrelated solo turn.
+    """
+    h = _solo_handler()
+    h.connection = None  # no session update to schedule here
+    h._party_mode = True
+    h._barge_late_eligible = True  # stale, from a solo turn before party mode
+
+    h.set_party_mode(False)
+
+    assert h._party_mode is False
+    assert h._barge_late_eligible is False
 
 
 @pytest.mark.asyncio
