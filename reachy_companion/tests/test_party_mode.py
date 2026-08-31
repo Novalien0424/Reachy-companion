@@ -23,6 +23,10 @@ def _party_handler() -> OpenAIRealtimeHandler:
     """Return a handler with only the party-relevant state, __init__ skipped."""
     h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
     h._conversation_mode = ConversationMode.GROUP
+    # Per-turn stamps of that mode; `_party_reset_for_new_session` clears them,
+    # so even a party-only handler needs them present (2026-08-31 mode wave).
+    h._turn_mode = ConversationMode.GROUP
+    h._turn_modes = {}
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0

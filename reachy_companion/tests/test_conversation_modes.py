@@ -120,6 +120,43 @@ def test_booting_into_record_warns(monkeypatch: pytest.MonkeyPatch, caplog) -> N
     assert "boot silent" in caplog.text
 
 
+def test_the_dead_party_knob_is_announced_when_it_is_the_only_one_set(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """An operator whose `.env` still carries the old knob must hear that it is dead.
+
+    `REALTIME_PARTY_DEFAULT=0` used to mean "boot solo" and now selects nothing at
+    all. Silently booting into 多人聊天模式 against an explicit `0` is the kind of
+    thing that gets diagnosed as a broken robot, so say it in the deploy log.
+    """
+    import logging
+
+    from reachy_companion.huggingface_realtime import _boot_conversation_mode
+
+    monkeypatch.delenv("REALTIME_DEFAULT_MODE", raising=False)
+    monkeypatch.setenv("REALTIME_PARTY_DEFAULT", "0")
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.huggingface_realtime"):
+        assert _boot_conversation_mode() is ConversationMode.GROUP
+    assert "REALTIME_PARTY_DEFAULT" in caplog.text
+    assert "REALTIME_DEFAULT_MODE" in caplog.text
+    assert "group" in caplog.text, "the resolved mode has to be in the line"
+
+
+def test_the_dead_party_knob_is_silent_once_the_new_one_is_set(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Nothing to warn about: the operator has already migrated."""
+    import logging
+
+    from reachy_companion.huggingface_realtime import _boot_conversation_mode
+
+    monkeypatch.setenv("REALTIME_PARTY_DEFAULT", "1")
+    monkeypatch.setenv("REALTIME_DEFAULT_MODE", "one_on_one")
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.huggingface_realtime"):
+        assert _boot_conversation_mode() is ConversationMode.ONE_ON_ONE
+    assert "REALTIME_PARTY_DEFAULT" not in caplog.text
+
+
 def test_party_mode_property_tracks_the_room_modes() -> None:
     """The dozen room-vs-solo branch sites keep reading one boolean."""
     assert _mode_handler(ConversationMode.ONE_ON_ONE)._party_mode is False
@@ -212,6 +249,26 @@ async def test_mode_flip_resolves_a_live_solo_pause() -> None:
     assert not h._barge_paused and not h._barge_pending
     assert h._barge_resumed_response_id is None
     assert h._party_utterance_seq == seq + 1
+
+
+def test_a_new_session_clears_the_turn_stamps() -> None:
+    """A stamp from a dead session must never judge a turn in the one replacing it.
+
+    The SAS carry-over hazard `_party_reset_for_new_session` exists to prevent:
+    `item_id`s are per-session, so a surviving entry can be hit by an unrelated
+    item of the same name — and `_turn_mode` left over from the previous session
+    would be the fallback for every turn until the first `speech_started`. The
+    MODE itself deliberately survives (survey §1.2); only the turn state resets.
+    """
+    h = _mode_handler(ConversationMode.RECORD)
+    h._turn_modes["item_1"] = ConversationMode.ONE_ON_ONE
+    h._turn_mode = ConversationMode.ONE_ON_ONE
+
+    h._party_reset_for_new_session()
+
+    assert h._turn_modes == {}
+    assert h._turn_mode is ConversationMode.RECORD
+    assert h._conversation_mode is ConversationMode.RECORD, "a reconnect does not end 紀錄模式"
 
 
 def test_mode_state_default_exists_on_the_base_handler() -> None:

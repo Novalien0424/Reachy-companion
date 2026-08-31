@@ -123,6 +123,18 @@ def _boot_conversation_mode() -> ConversationMode:
     """
     raw = (os.getenv("REALTIME_DEFAULT_MODE") or "").strip()
     if not raw:
+        if os.getenv("REALTIME_PARTY_DEFAULT") is not None:
+            # Deploy visibility: an operator reading their own `.env` would
+            # otherwise believe the boot mode is still theirs to set with the old
+            # knob. `REALTIME_PARTY_DEFAULT=0` is the case that stings — it used
+            # to mean "boot solo" and now selects nothing at all.
+            logger.warning(
+                "REALTIME_PARTY_DEFAULT is no longer read; the boot mode is REALTIME_DEFAULT_MODE, "
+                "now unset, so Reachy boots into %s. Set REALTIME_DEFAULT_MODE=%s for the old "
+                "one-on-one behaviour.",
+                DEFAULT_MODE.value,
+                ConversationMode.ONE_ON_ONE.value,
+            )
         return DEFAULT_MODE
     mode = parse_mode(raw)
     if mode is None:
@@ -783,10 +795,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         treated as still addressing the robot in the session that replaces it.
         Called once near the top of `_run_realtime_session`, for both the
         first session and every reconnect/restart after it.
+
+        The conversation MODE deliberately survives (survey §1.2) — a dropped
+        websocket mid-meeting must not silently end 紀錄模式 — but the per-turn
+        stamps of that mode do not: `item_id`s are scoped to a session, so an
+        entry left behind can be hit by an unrelated item of the same name in
+        the session that replaces it, which is this method's hazard exactly.
         """
         self._party_last_accept_at = None
         self._party_speech_open = False
         self._party_utterance_seq += 1  # any sleeping barge timer is now stale
+        # Per-session, as promised where they are declared: the stamps describe
+        # turns of the session that just ended, and the fallback stamp is
+        # re-anchored to the mode the new session actually opens in rather than
+        # left pointing at whatever the last turn happened to begin in.
+        self._turn_modes.clear()
+        self._turn_mode = self._conversation_mode
 
     async def _push_turn_detection_update(self) -> None:
         """Send the mode's turn-detection to the live session. Base: no-op.
