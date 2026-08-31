@@ -932,3 +932,189 @@ monkeypatch-target complaint about `cli.shutil` / `cli.subprocess` the file
 already carried eight times. Still **no on-robot run**: both fixes ride the
 sixteenth install, and the visit window adds a second negative control to
 `MEMORY-LAST-CHAT` (two people hours apart, only the recent one summarized).
+
+## D-028 — Name-gated barge-in, turn patience, and an honest interrupted context (2026-08-30)
+
+Operator ask of 2026-08-30: Reachy should barge in only when addressed ("like a
+human, listen for barge-in if 'REACHY' is mentioned"), should not rush to reply
+"before speaker is silent", and should stay talkative in character without
+"obviously speaking too much". Research: `docs/research-realtime-api-2026-08.md`;
+compact summary of what changed: `docs/human-like-conversation.md`. Plan and its
+three-round Codex log (26 findings — 23 accepted outright, 3 accepted in part or
+rejected with a recorded reason):
+`docs/plans/2026-08-30-name-gate-patience-plan.md` §Review log. Eight decisions.
+
+**(1) The name gate is on by default, and it gates interruption only.**
+`REALTIME_SOLO_NAME_GATE` (default 1) makes a paused solo reply commit only when
+`_gate_text_accepts(text)` says the words address the robot: a control phrase
+(停/閉嘴/stop — checked first and always winning, gate on or off) or one of
+`REALTIME_PARTY_ADDRESS_NAMES`, the same list party mode and the transcription
+keyword bias already use. Anything else rolls back and the sentence resumes
+where it left off (journal `solo barge rolled back (unaddressed)` /
+`(backchannel)`). `0` restores the pre-gate substantive-transcript rule, which
+stays shipped. **The scope is deliberate:** an unaddressed turn is still
+transcribed, still committed and still answered whenever Reachy is not already
+speaking — the gate decides who may take the floor *away*, not who gets an
+answer. There is no server-side primitive to lean on (research §4): no wake
+word, nothing like "respond only when addressed", so name gating is necessarily
+client-side on transcript text, and it slots into the pause-then-decide machine
+D-023 already built. Latency lever: `_maybe_commit_on_partial(partial, item_id)`
+commits the moment a *partial* delta carries the name, without waiting for
+`transcription.completed`. Building it exposed a latent bug — the base partial
+accumulator kept only the newest fragment (`deltas = [delta]`, snapshot
+semantics), so a name split across chunks (瑞 + 奇) could never match; the OpenAI
+subclass now appends, because GA deltas are incremental. With our shipped
+`gpt-transcribe` the partials effectively arrive post-commit anyway, so that
+fast path is really staged for `gpt-live-transcribe` +
+`REALTIME_TRANSCRIPTION_DELAY` (unset by default, the server's own default
+standing).
+
+**(2) An unaddressed pause is bounded, and resuming *through* the chatter is the
+requested behavior, not a defect.** With the gate on, sustained speech proves
+nothing — a name can only arrive by transcript — but an unaddressed 30-second
+side conversation must not hold the reply hostage either. `REALTIME_BARGE_MAX_PAUSE_MS`
+(default **4000**) is the cap: when it fires the reply resumes and Reachy keeps
+talking while the room talks past it (`solo barge pause hit its cap with no
+address; resuming reply`). Codex read the resume-while-speech-is-still-open as a
+defect; **rejected as a defect, accepted as a doc gap** — it is exactly what a
+person telling a story does, and decision 3 is what makes it safe. `0` disables
+the gate-on pause entirely, leaving the late interrupt as the only way to stop a
+reply. `REALTIME_BARGE_CONFIRM_MS` therefore becomes a **gate-off-only** knob: it
+commits nothing while the gate is on, and still governs the
+`REALTIME_SOLO_NAME_GATE=0` path, where it must outlast the VAD silence window
+(now **1600** over 1000).
+
+**(3) The late interrupt is what makes the cap safe, and eligibility is decided
+at speech onset.** `_late_solo_interrupt` fires when a *committed* turn addresses
+the robot while it is still audible and the pause is already over — rolled back
+at the cap, swallowed by the post-barge cooldown, or never armed — because
+otherwise the gate's worst case is Reachy talking over the person who just called
+its name. The permissive branch (no resumed id ⇒ cancel) is kept honest by
+`_barge_late_eligible`, set in `_solo_speech_started`'s client-barge branch as
+`self._robot_audible()` **at onset, before the cooldown return**, so both the
+cooldown-suppressed and the pause paths capture it while a turn that started in
+silence records False. That design is a **review ruling against the plan text**:
+Codex round 1's finding-6 rule protected the cooldown case but let an idle
+addressed turn cancel its *own* answer, since with `gpt-transcribe` the answer's
+`response.created` routinely precedes `transcription.completed`. Eligibility is
+deliberately **not** cleared at `response.done` — a reply keeps draining out of
+the speaker long after that event, and that gap is precisely when 「停」 over a
+resumed reply arrives; staleness is bounded because the next onset rewrites the
+flag. It *is* cleared everywhere the resumed id is cleared, in
+`on_external_interrupt`, and on `set_party_mode` flips (a stale value must not
+survive a party→solo flip). The late path arms the barge watchdog for the same
+reason a committed barge does — with `interrupt_response=false` the auto-response
+of a turn that commits mid-reply "may fail to create", so an addressed turn could
+otherwise end in silence — and it honours `REALTIME_SOLO_CLIENT_BARGE=0`. Journal:
+`late solo interrupt (name|control phrase) on committed turn`.
+
+**(4) Every committed interruption truncates the model's copy of the reply; no
+rollback path ever may.** On **WebSocket** the server never trims an interrupted
+reply (WebRTC and SIP get it for free), and neither we nor upstream Pollen ever
+sent `conversation.item.truncate` — so after every barge the model believed it
+had said the whole reply, and then talked as if it had. That is a real driver of
+"speaks too much / repeats itself". All three commit paths now send it: the solo
+commit, the party barge, the late interrupt. Truncation deletes the item's
+transcript server-side and cannot be undone, so **no rollback path may reach it**
+— rollbacks resume the audio. `_heard_audio_ms()` is `enqueued − outstanding −
+device buffer − 300 ms slack`, floored at 0, always rounding **DOWN**, because an
+`audio_end_ms` above the item's real duration is a server error: undershoot costs
+a sentence fragment left in context, overshoot costs the whole truncate. (Note
+the sign, it reads backwards: a *smaller* `audio_end_ms` deletes *more*.) The
+solo path stashes `(item_id, heard_ms)` at pause time and truncates the stash in
+both commit branches — the answer-already-live branch included, since that
+paused reply's tail was still dropped — because by commit time the flush has
+zeroed the drain counters and `_audio_item_id` may have moved on; the party and
+late paths have no pause, so they measure live, ahead of the flush. Three
+accepted biases, recorded rather than fixed: `audio_drain.outstanding_s()` is
+**global** (there is one sink) while `_audio_item_enqueued_ms` is per item, so
+residue from an earlier item can only make the figure *smaller* — under-truncate,
+the safe direction; true per-item accounting would need item identity plumbed
+through `console.play_loop`'s sink handoff, disproportionate for a POC. On the
+pause path the device-buffer term is subtracted from a figure the pause already
+froze, so it double-counts and can **over-cut by up to ~1.3 s per barge** — again
+the safe direction. And a multi-item reply truncates only its **last** item; the
+earlier items keep their full text in context, which is likewise safe.
+
+**(5) The audio-item tracker resets on item change, not on `response.created` —
+a second ruling against the plan text.** The plan mandated clearing
+`_audio_item_id` on `response.created`; the implementation review showed that
+opens a reachable no-truncate hole in the tool-heavy path (a second response
+created after a tool call while the first response's audio still plays → the
+barge stashes `(None, 0)` → nothing is truncated, the exact symptom this wave
+exists to remove). The reset now happens when a delta arrives carrying a
+*different* item id, which covers every case the other one covered. Residual,
+accepted: a fully drained item keeps its id until the next item's first delta, so
+a barge inside that window sends a harmless truncate at about `duration − 300 ms`
+of an item nobody is still hearing. A delta with no item id no longer accumulates
+into the previous item's tally.
+
+**(6) Patience is three numbers and one pin.**
+`REALTIME_VAD_SILENCE_DURATION_MS` 800 → **1000** (the API's own default is 500)
+so a Mandarin mid-sentence pause of about a second does not commit the turn; past
+roughly 1100 ms the robot reads as sluggish rather than patient, and that is the
+practical ceiling. `REALTIME_BARGE_CONFIRM_MS` 1400 → **1600** in step with it,
+keeping the gate-off rollback branch reachable. `reasoning.effort` is pinned to
+**low** (`REALTIME_REASONING_EFFORT`; `off` omits the field entirely) — gpt-realtime-2.x
+reasons before it speaks and `low` is OpenAI's documented voice-agent
+recommendation, so pinning stops a future server-side default change from
+silently adding pre-speech latency. The field is **not** in the installed SDK
+TypedDict, so it rides a runtime-dict cast, and the one-shot session-config retry
+**drops it** along with the transcription upgrade: a rejection does not say which
+field the server refused, and losing the effort pin on a degraded session costs
+latency while a mute robot costs everything. Live mitigation if it is ever
+rejected on device: `REALTIME_REASONING_EFFORT=off`; the tell in the journal is
+`session.update rejected; retrying with legacy transcription shape`. The other
+patience mechanism, `semantic_vad` + `eagerness=low`, is better on paper —
+eagerness sets a *maximum* wait (low ≈ 8 s, medium ≈ 4 s, high ≈ 2 s), not a
+fixed delay, so a finished-sounding sentence still turns over fast — but it is
+not documented as Mandarin-tuned, so it stays one env flip away for the
+`VOICE-SEMANTIC-VAD-AB` live trial rather than shipping blind.
+
+**(7) `max_output_tokens` is a rail, not the brevity mechanism — and it never
+clamps silently.** `REALTIME_MAX_OUTPUT_TOKENS` defaults to **900**; at roughly
+20–25 output tokens per spoken second that is about 40 s of speech, and
+`inf`/`off`/`0` removes the ceiling. Hitting it cuts the reply **mid-word** with
+no wrap-up sentence and no error anywhere, so a `response.done` whose status is
+not `completed` is now logged — `Reply cut off by REALTIME_MAX_OUTPUT_TOKENS
+(status=incomplete)` at WARNING, every other non-completed status at INFO. Seeing
+that warning in normal conversation means the rail is too tight, not that the
+robot is verbose. A malformed value warns and falls back, an out-of-range one
+warns and clamps: **clamping silently was the review's one Important finding** —
+`-5` is a one-token, effectively mute robot, and "every knob degrades with a
+warning" is this file's rule. Brevity itself is prompt work. The hardening block
+gains a 回答長度 section teaching **calibration**, not a cap — 長度跟著內容走: a
+one-line answer where one line suffices, a real explanation or story where the
+topic deserves it — after the operator ruled (2026-08-31) that a flat
+one-to-two-sentence rule is "over strict". What it cuts is filler: repeating the
+speaker, restating itself, unasked background, reading tool data verbatim, more
+than one clarifying question at a time, and 「讓我想想」-style preambles, which
+gpt-realtime-2.x generates by default. `persona.md` gains one matching
+no-preamble line and keeps its own calibration lines untouched.
+
+**(8) The confirm-vs-silence startup warning now only fires where it can bite.**
+`warn_if_barge_confirm_races_vad()` used to compare the two values
+unconditionally. It is suppressed with the name gate on (the confirm timer
+commits nothing there, so there is no dead branch to warn about) and under
+`REALTIME_VAD_TYPE=semantic_vad`, where the server ignores
+`REALTIME_VAD_SILENCE_DURATION_MS` entirely — the comparison was against a value
+with no effect, and that known edge in `progress.md` is retired by this wave.
+
+**Rejected alternatives.** Solo `create_response=false` plus an explicit client
+`response.create` (party mode's shape): it would put every solo *answer* behind
+our gate, so a missed name would cost the user a reply rather than an
+interruption — the inverse of decision 1's scope. An acoustic wake word: the real
+primitive, but it means an on-device spotter (LiveKit ships `livekit-wakeword`),
+and short names like "Reachy" degrade spotter accuracy — out of POC scope, while
+transcript gating fits the machine we already run (research §4).
+
+**Verified against the unit suites only** — robot **1568 passed / 30 skipped**,
+`ruff check .` and `mypy --strict src` clean. The five live rows
+`VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`
+and `VOICE-BREVITY` in `feature_list.json` are the gate, and all of them ride the
+**seventeenth install**; `persona.md` changed, so it additionally needs the
+operator's scp + sha256 re-sync (D-016) to reach the robot at all. Residual risks
+if they cannot be exercised on device: live acceptance of `reasoning.effort` and
+of the `status_details` shape; on-robot acceptance of our `audio_end_ms`
+(community reports of partial trims — research §2); semantic-VAD behavior on
+Mandarin; and `gpt-live-transcribe` partial latency.

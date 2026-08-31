@@ -150,11 +150,11 @@
     },
     {
       "id": "VOICE-SOLO-BARGE",
-      "behavior": "Solo mode pauses (never flushes) playback on speech onset while audible, confirms a real interruption at REALTIME_BARGE_CONFIRM_MS=250ms of sustained speech, and rolls back — resuming the paused reply with the onset ramp re-armed — on a backchannel/empty/failed transcript or the REALTIME_BARGE_ROLLBACK_TIMEOUT_S=2.0s timeout; a 1.5s watchdog repairs the auto-response the server's one-active-response rule would otherwise reject after a confirmed barge-in. That rejection mechanism itself is UNVERIFIED against the live API.",
-      "verification": "On-robot: (1) a real interruption still lands under roughly 1 s perceived stop latency and the reply is genuinely cancelled; (2) a cough or a 「嗯」 mid-reply produces `barge-in rolled back; resuming reply` or `solo barge rolled back (<reason>)` in the journal and the sentence finishes rather than cutting off. Also watch whether the watchdog's premise holds at all — does the server actually reject a concurrent response after a real barge-in, or auto-respond fine on its own.",
+      "behavior": "Solo mode pauses (never flushes) playback on speech onset while audible and then decides from the words. Since 2026-08-30 (D-028) the decision is name-gated by default: only an address name or a control phrase commits, an unaddressed pause rolls back at REALTIME_BARGE_MAX_PAUSE_MS=4000ms, and REALTIME_BARGE_CONFIRM_MS=1600ms is a gate-off-only backstop. Rollback resumes the paused reply with the onset ramp re-armed on a backchannel/unaddressed/empty/failed transcript or the REALTIME_BARGE_ROLLBACK_TIMEOUT_S=2.0s timeout; a 1.5s watchdog repairs the auto-response the server's one-active-response rule would otherwise reject after a confirmed barge-in. That rejection mechanism itself is UNVERIFIED against the live API.",
+      "verification": "On-robot: (1) a real interruption (say the name, or 「停」) still lands under roughly 1 s perceived stop latency and the reply is genuinely cancelled — journal `solo barge-in confirmed by transcript (name|control phrase, N chars)` or `... by partial transcript (...)`; (2) a cough or a 「嗯」 mid-reply produces `barge-in rolled back; resuming reply` plus `solo barge rolled back (backchannel)` and the sentence finishes rather than cutting off; (3) unaddressed speech that is substantive now logs `solo barge rolled back (unaddressed)` — the renamed reason — and, if it drags on, `solo barge pause hit its cap with no address; resuming reply`. Also watch whether the watchdog's premise holds at all — does the server actually reject a concurrent response after a real barge-in, or auto-respond fine on its own.",
       "state": "implemented-unverified",
       "evidence": null,
-      "next_action": "operator on-robot: real-interruption timing + cough/嗯 rollback-and-resume behavior; confirm or refute the server one-active-response rejection premise"
+      "next_action": "operator on-robot: real-interruption timing + cough/嗯 rollback-and-resume behavior; confirm the renamed rollback reasons in the journal; confirm or refute the server one-active-response rejection premise"
     },
     {
       "id": "VOICE-WAIT-FOR-USER",
@@ -190,11 +190,51 @@
     },
     {
       "id": "VOICE-SEMANTIC-VAD-AB",
-      "behavior": "REALTIME_VAD_TYPE=semantic_vad with REALTIME_VAD_EAGERNESS=low (env already existed pre-round, D-003) is an alternative turn-detection mode to the default server_vad, intended to reduce fragment/backchannel commits at the cost of end-of-turn latency; semantic_vad reportedly misses 「對」/「好」 per the research doc",
-      "verification": "On-robot A/B, same room and script: REALTIME_VAD_TYPE=server_vad (current default) vs. REALTIME_VAD_TYPE=semantic_vad + REALTIME_VAD_EAGERNESS=low. Measure false-commit rate on backchannel utterances (嗯/對/好) against response latency for each.",
+      "behavior": "REALTIME_VAD_TYPE=semantic_vad with REALTIME_VAD_EAGERNESS=low (env already existed pre-round, D-003) is an alternative turn-detection mode to the default server_vad, intended to reduce fragment/backchannel commits at the cost of end-of-turn latency; semantic_vad reportedly misses 「對」/「好」 per the research doc. Since 2026-08-30 (D-028) this row ALSO covers the patience trial: eagerness sets a MAXIMUM wait (low ~8s, medium ~4s, high ~2s), not a fixed delay, so it is the better 'wait until I have finished' mechanism on paper — it is not documented as Mandarin-tuned, which is why the shipped default stayed server_vad with REALTIME_VAD_SILENCE_DURATION_MS raised 800 -> 1000. Under semantic_vad the server ignores that silence value entirely.",
+      "verification": "On-robot A/B, same room and script: REALTIME_VAD_TYPE=server_vad + REALTIME_VAD_SILENCE_DURATION_MS=1000 (current default) vs. REALTIME_VAD_TYPE=semantic_vad + REALTIME_VAD_EAGERNESS=low. Measure (a) false-commit rate on backchannel utterances (嗯/對/好), (b) how often a deliberate ~1s Mandarin mid-sentence pause still cuts the speaker off, and (c) end-of-turn response latency, for each. Both directions matter: semantic_vad can win on patience and lose on backchannels.",
       "state": "implemented-unverified",
       "evidence": null,
-      "next_action": "operator on-robot A/B: server_vad vs. semantic_vad(eagerness=low) on Mandarin backchannel handling and latency"
+      "next_action": "operator on-robot A/B: server_vad(1000ms) vs. semantic_vad(eagerness=low) on Mandarin backchannel handling, mid-sentence-pause patience, and end-of-turn latency"
+    },
+    {
+      "id": "VOICE-NAME-GATE",
+      "behavior": "REALTIME_SOLO_NAME_GATE (default 1, D-028): while Reachy is speaking, only being addressed takes the floor away from it — an address name (REALTIME_PARTY_ADDRESS_NAMES: 瑞奇/reachy/...) or a control phrase (停/閉嘴/stop, which always win, gate on or off). Speech aimed at someone else pauses the reply for at most REALTIME_BARGE_MAX_PAUSE_MS=4000ms and then resumes it. The gate governs INTERRUPTION only: an unaddressed turn is still transcribed, committed and answered when the robot is not already talking.",
+      "verification": "On-robot, solo mode, three probes while Reachy is mid-reply: (1) talk over it WITHOUT the name (a full substantive sentence to another person) — the reply must go briefly silent, then resume, and the journal must show `solo barge rolled back (unaddressed)`; keep talking past 4 s and expect `solo barge pause hit its cap with no address; resuming reply` with the reply audibly continuing over the side conversation. (2) Say 「瑞奇」 mid-reply — it must stop in well under ~1 s, journal `solo barge-in confirmed by transcript (name, N chars)` (or `by partial transcript (name)` if the transcriber emits usable partials). (3) Say 「停」 alone — one character, below REALTIME_MIN_TURN_CHARS — it must still stop, reason `control phrase`. Negative control: REALTIME_SOLO_NAME_GATE=0 in the instance .env restores interrupt-on-any-substantive-speech.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: the three probes above in one solo session; judge whether 'talks through the room but stops for its name' actually feels human"
+    },
+    {
+      "id": "VOICE-LATE-INTERRUPT",
+      "behavior": "A turn that addressed the robot but only proved it late — after the pause hit REALTIME_BARGE_MAX_PAUSE_MS, was swallowed by the post-barge cooldown, or was never armed — is still honoured: `_late_solo_interrupt` cancels the audible reply, flushes, truncates and arms the response watchdog so the addressed turn cannot end in silence. Eligibility is captured at speech onset (`_barge_late_eligible = _robot_audible()`), so a turn that started in silence can never cancel its own answer.",
+      "verification": "On-robot: address Reachy mid-reply with a LONG sentence (>4 s, name at the front), so the max-pause cap fires before the transcript lands. Expected: the reply audibly resumes at the cap, then stops again a moment later when the transcript arrives — journal `solo barge pause hit its cap with no address; resuming reply` followed by `late solo interrupt (name) on committed turn` — and the answer to that sentence still arrives (the watchdog repair, if the server rejected the auto-response). Negative control: start an addressed turn from silence (Reachy not speaking) and confirm its own answer is NOT cancelled — no `late solo interrupt` line. Also worth one pass with 「停」 over a reply that has just finished but is still draining out of the speaker: eligibility deliberately survives response.done, so it should still stop.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: long addressed sentence over a reply (resume-then-stop), the idle-start negative control, and the draining-「停」 case"
+    },
+    {
+      "id": "VOICE-TRUNCATE",
+      "behavior": "Every COMMITTED interruption (solo commit, party barge, late interrupt) now sends conversation.item.truncate with the milliseconds actually heard — enqueued minus outstanding minus device buffer minus 300 ms slack, floored and always rounded DOWN. On WebSocket the server never trims an interrupted reply on its own, so without this the model believed it had spoken the whole reply and talked as if it had. Rollback paths never truncate (irreversible, and they resume the audio). Accepted biases (D-028): global outstanding under-counts, the pause path's device-buffer term can over-cut ~1.3 s, and a multi-item reply truncates only its last item — all in the safe direction.",
+      "verification": "On-robot: interrupt Reachy mid-reply (name or 「停」), then ask 「你剛剛說到哪」 or 「你剛剛講完了嗎」. The model must NOT act as though it finished the reply, and must not re-deliver the part nobody heard. Journal checks on the same run: NO `conversation.item.truncate refused: ...` lines (that DEBUG line means the server rejected the position — most likely audio_end_ms above the item's real duration; enable DEBUG for the module to see it at all), and no `session.update rejected; retrying with legacy transcription shape` (that warning means the upgraded session shape — transcription extras AND the pinned reasoning.effort — was refused, and the mitigation is REALTIME_REASONING_EFFORT=off in the instance .env). Secondary signal across a whole session: less self-repetition after interruptions than the previous install.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: interrupt-then-ask-what-you-said probe; watch the journal for `conversation.item.truncate refused` and for the legacy-transcription retry warning"
+    },
+    {
+      "id": "VOICE-PATIENCE",
+      "behavior": "REALTIME_VAD_SILENCE_DURATION_MS 800 -> 1000 (the API's own default is 500) plus reasoning.effort pinned to low: a Mandarin mid-sentence pause of about a second must no longer commit the turn, while the robot must not start feeling sluggish (roughly 1100 ms is where patience turns into lag). reasoning.effort=low is pinned so a future server-side default change cannot silently add pre-speech latency; REALTIME_REASONING_EFFORT=off omits the field.",
+      "verification": "On-robot: speak Mandarin sentences with deliberate ~1 s mid-sentence pauses (thinking pauses, 「那個…」, a counted list) and count how many get cut off mid-thought against the previous install's behavior. Then judge the other direction: does the end of a finished sentence still get answered promptly, or does the extra 200 ms read as a lag? Journal: the session must open with no `session.update rejected; retrying with legacy transcription shape` warning — its absence is the positive signal that the live API accepted the pinned reasoning.effort (the retry drops that field along with the transcription extras). Mitigation if it is rejected: REALTIME_REASONING_EFFORT=off.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: mid-sentence-pause probes at 1000 ms, plus the sluggishness judgement; confirm the reasoning.effort session was accepted"
+    },
+    {
+      "id": "VOICE-BREVITY",
+      "behavior": "Reply length is taught by prompt, not capped: the hardening block's 回答長度 section and the persona's calibration lines say 長度跟著內容走 — a one-line answer where one line suffices, a real explanation or story where the topic deserves it — while cutting filler (repeating the speaker, restating itself, unasked background, reading tool data verbatim, more than one clarifying question at a time) and 「讓我想想」-style preambles, which gpt-realtime-2.x generates by default. REALTIME_MAX_OUTPUT_TOKENS=900 (~40 s of speech) is a runaway-monologue rail only.",
+      "verification": "Subjective, on-robot across a normal session: (1) does a simple question get a short answer, and does 「解釋一下…」 still get a real, willing explanation — i.e. does length track the content rather than a flat rule; (2) no preambles before the substance; (3) no repeating back what the speaker just said, no restating its own previous answer, no unasked background; (4) tool results are stated, not read out verbatim. Journal: `Reply cut off by REALTIME_MAX_OUTPUT_TOKENS (status=incomplete)` must be ABSENT in normal use — if it appears, the rail is too tight (raise REALTIME_MAX_OUTPUT_TOKENS), not evidence that the robot is verbose. Watch also for `response ended status=... reason=...` INFO lines, the other non-completed statuses.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: listen across a normal session for content-calibrated length, absent preambles and absent padding; confirm the max_output_tokens warning does not appear"
     },
     {
       "id": "FACE-ROUTING",

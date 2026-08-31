@@ -161,9 +161,16 @@ values.
 | `PERSONA_FILE`                     | Absolute path to the persona override, if not the default `persona.md` beside `.env`. Same fallback rules. |
 | `REALTIME_TRANSCRIPTION_LANGUAGE`  | Input transcription language. Defaults to `zh`.                |
 | `REALTIME_VAD_TYPE`                | Turn detection: `server_vad` (default) or `semantic_vad`.      |
-| `REALTIME_VAD_SILENCE_DURATION_MS` | Silence before Reachy takes its turn. Default `800`, raised from the API default so Chinese mid-sentence pauses do not cut you off. |
+| `REALTIME_VAD_SILENCE_DURATION_MS` | Silence before Reachy takes its turn. Default `1000` (was `800`; the API's own is `500`) so a Mandarin mid-sentence pause does not commit the turn. Past ~`1100` it feels sluggish rather than patient. Ignored under `semantic_vad`. |
 | `REALTIME_VAD_THRESHOLD`           | Speech activation threshold, `0.0`–`1.0`. Raise it in a noisy room. |
 | `REALTIME_VAD_PREFIX_PADDING_MS`   | Audio retained from before speech was detected.                |
+| `REALTIME_VAD_EAGERNESS`           | `semantic_vad` only: the *maximum* wait before taking the turn (`low`≈8 s, `medium`≈4 s, `high`≈2 s, `auto`). `semantic_vad` + `low` is the staged patience A/B. |
+| `REALTIME_SOLO_NAME_GATE`          | Solo barge-in requires being addressed — the robot's name or a control phrase (停/stop, which always win). Default `1`. `0` restores interrupt-on-any-substantive-speech. Interruption only: unaddressed turns are still answered when Reachy is not talking. |
+| `REALTIME_BARGE_MAX_PAUSE_MS`      | How long a reply stays paused for speech that never addresses the robot, before resuming *through* it. Default `4000`. `0` disables the gate-on pause entirely, leaving only the late interrupt. |
+| `REALTIME_BARGE_CONFIRM_MS`        | Sustained-speech confirm window. **Gate-off only** — with the name gate on it commits nothing. Default `1600`; under `REALTIME_SOLO_NAME_GATE=0` it must exceed `REALTIME_VAD_SILENCE_DURATION_MS` or the rollback path is dead (the app warns). |
+| `REALTIME_TRANSCRIPTION_DELAY`     | How long the streaming transcriber buffers before emitting a partial (`minimal`…`xhigh`). Unset by default; staged for the `gpt-live-transcribe` A/B. |
+| `REALTIME_REASONING_EFFORT`        | Session `reasoning.effort`, pinned to `low` (OpenAI's voice-agent recommendation) so a server default change cannot add pre-speech latency. `off` omits the field. |
+| `REALTIME_MAX_OUTPUT_TOKENS`       | Runaway-monologue rail, not a brevity knob — brevity is prompt work. Default `900` (≈40 s of speech); hitting it cuts mid-word and logs a warning. `inf`/`off`/`0` removes the ceiling. |
 | `VOICEFX_ENABLED`                  | Master switch for the character voice. Off leaves the audio path untouched. |
 | `VOICEFX_PITCH_SEMITONES`          | Upward pitch shift, duration preserved. Typical `4.0`.         |
 | `VOICEFX_RINGMOD_HZ`               | Ring-modulator carrier frequency; `0` disables it.             |

@@ -5,6 +5,31 @@ history of this file.
 
 ## Current state
 
+**BRANCH `name-gate-patience`: the human-like-conversation wave is implemented
+and reviewed, NOT deployed (2026-08-31).** Nine tasks off
+`docs/plans/2026-08-30-name-gate-patience-plan.md` (three Codex review rounds,
+26 findings, 23 accepted outright, 3 in part; plus two implementation-review
+rulings that went *against* plan text — the late-interrupt eligibility flag and
+the dropped `response.created` reset of the audio-item tracker). Design record:
+**D-028**. What it changes: solo barge-in is **name-gated** by default
+(`REALTIME_SOLO_NAME_GATE=1` — only the robot's name or a control phrase takes
+the floor away mid-reply, interruption only, answers are unaffected), an
+unaddressed pause is capped at `REALTIME_BARGE_MAX_PAUSE_MS=4000` and the reply
+resumes *through* the side conversation, a late name/control phrase on a
+committed turn still stops it (`late solo interrupt (...) on committed turn`),
+every **committed** interruption now sends `conversation.item.truncate` so the
+model stops believing it finished replies nobody heard, patience defaults move
+(VAD silence 800 → **1000**, barge confirm 1400 → **1600** and now gate-off-only,
+`reasoning.effort` pinned **low**), `REALTIME_MAX_OUTPUT_TOKENS=900` is a loudly
+logged runaway rail, and brevity is taught by prompt calibration rather than a
+sentence cap. Gates on the branch: robot suite **1568 passed / 30 skipped**,
+`ruff check .` and `mypy --strict src` clean. **Nothing of this is on the robot**
+— the whole wave rides the **seventeenth install**, and `persona.md` changed in
+Task 8, so it additionally needs the operator's scp + sha256 re-sync (D-016) or
+the no-preamble line never loads. Five new live rows own the acceptance:
+`VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`,
+`VOICE-BREVITY`.
+
 **SIXTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-30 00:03 robot time).**
 `engagement-memory` was merged to `main` (fast-forward to `e4a40b1`, pushed)
 and deployed via the full ritual: wheel sha `0f95e9ff…` verified end to end,
@@ -119,24 +144,34 @@ LED first; dark = power event, not software.
 
 ## Next action
 
-1. Merge `engagement-memory` into `main`.
-2. Deploy the **sixteenth install** via the `reachy-deploy` ritual — that is
-   what puts Tasks 2–5 (the transcript containers, the record sites, the
-   summarizer, the shutdown hook) and the two tool-description edits on the
-   robot. Manifest must still cover `people.v1.json` + `face_snapshots/`.
-3. Then the three new live rows: `MEMORY-LAST-CHAT` (two-session on-robot
-   test), `MEMORY-OPEN-LOOPS` (live listening), `BACKEND-CONSOLIDATE` (real
-   store dry-run → `--apply` → push, backend stopped).
+1. Merge `name-gate-patience` into `main`.
+2. Deploy the **seventeenth install** via the `reachy-deploy` ritual — that is
+   what puts the whole D-028 wave (name gate, max pause, late interrupt,
+   `conversation.item.truncate`, the patience defaults, the token rail, the
+   hardening-block verbosity section) on the robot. Manifest must still cover
+   `people.v1.json` + `face_snapshots/`.
+3. **Re-sync `persona.md` in the same pass** — it changed in Task 8 (the
+   no-preamble line) and reaches the robot only by the operator scp + sha256
+   ritual (D-016), never by the wheel.
+4. Then the five new live rows: `VOICE-NAME-GATE` (talk over it without the
+   name → rolls back; 「瑞奇」 → stops; 「停」 alone → stops),
+   `VOICE-LATE-INTERRUPT` (long addressed sentence → resume at the cap, then
+   stop when the transcript lands), `VOICE-TRUNCATE` (interrupt, then ask
+   「你剛剛說到哪」), `VOICE-PATIENCE` (~1 s Mandarin mid-sentence pauses),
+   `VOICE-BREVITY` (subjective, across a normal session) — plus the still-owed
+   `MEMORY-LAST-CHAT`, `MEMORY-OPEN-LOOPS` and `BACKEND-CONSOLIDATE` rows from
+   the sixteenth install.
 
 ## Pending verification (operator)
 
-Twenty-one `implemented-unverified` rows in `feature_list.json` still need
-live use. **All rows except the three engagement-memory ones are DEPLOYED and
-BOOTED (fifteenth install, first boot verified 2026-08-29) and need only a
-human in front of the camera / a listener in the room; the three new rows
-additionally need the sixteenth install.**
+Twenty-six `implemented-unverified` rows in `feature_list.json` still need live
+use. **Everything through the engagement-memory wave is DEPLOYED and BOOTED
+(sixteenth install, first boot verified 2026-08-30) and needs only a human in
+front of the camera / a listener in the room; the five new D-028 voice rows
+additionally need the seventeenth install and the persona re-sync.**
 
-**Engagement memory (three, D-027 — NOT yet on the robot):**
+**Engagement memory (three, D-027 — on the robot since the sixteenth install,
+awaiting live use):**
 `MEMORY-LAST-CHAT` (recognized session about an ongoing thing → 「請進入睡眠
 模式」 → journal shows `Sleep summary: wrote last-chat fact for 1 person(s).`
 *after* the session-shutdown lines, `people.v1.json` holds exactly one
@@ -185,12 +220,26 @@ enrolled 2026-08-26, fresh session → `recognized name=Louis score ≥ 0.363` �
 the threshold's first cross-day test); `FACE-MULTI-SAMPLE` (samples ≥ 2, then
 stable repeated `who_is_this`).
 
-**Voice (six):** `VOICE-MINI-MODEL` (tool spread on `gpt-realtime-2.1-mini`;
+**Voice (eleven):** `VOICE-MINI-MODEL` (tool spread on `gpt-realtime-2.1-mini`;
 revert `REALTIME_MODEL=gpt-realtime-2.1`); `VOICE-SOLO-BARGE` (cough/「嗯」
-mid-reply → `barge-in rolled back; resuming reply`; 「停」 confirms; real
-interruption < ~1 s); `VOICE-WAIT-FOR-USER` (TV/side talk → suppressed turns);
+mid-reply → `barge-in rolled back; resuming reply` + `solo barge rolled back
+(backchannel)`; 「停」 confirms; real interruption < ~1 s — rollback reasons
+renamed by D-028); `VOICE-WAIT-FOR-USER` (TV/side talk → suppressed turns);
 `VOICE-PARTY-FACE-GATE` (≥2 people: engaged-face accept, turned-away deny);
-`VOICE-NOISE-REDUCTION-AB`; `VOICE-SEMANTIC-VAD-AB`.
+`VOICE-NOISE-REDUCTION-AB`; `VOICE-SEMANTIC-VAD-AB` (now also the
+eagerness=low **patience** trial). **Five new, D-028, needing the seventeenth
+install:** `VOICE-NAME-GATE` (unaddressed talk-over → `solo barge rolled back
+(unaddressed)` and the reply resumes; 「瑞奇」 mid-reply → stops < ~1 s; 「停」
+alone → stops); `VOICE-LATE-INTERRUPT` (a >4 s addressed sentence → the reply
+resumes at the cap, then `late solo interrupt (name) on committed turn` when
+the transcript lands; negative control: an idle-start addressed turn must NOT
+cancel its own answer); `VOICE-TRUNCATE` (interrupt, then 「你剛剛說到哪」 — the
+model must not believe it finished; journal free of `conversation.item.truncate
+refused` and of `session.update rejected; retrying with legacy transcription
+shape`, whose mitigation is `REALTIME_REASONING_EFFORT=off`); `VOICE-PATIENCE`
+(~1 s Mandarin mid-sentence pauses no longer commit, without the robot feeling
+sluggish); `VOICE-BREVITY` (subjective — length tracks content, no preambles,
+no padding, and the `max_output_tokens` warning absent in normal use).
 
 Older human rows still owed: music duck→resume with a real voice; the gated
 email send with a dictated address; the five **PRD §8** demo gates; the
@@ -237,8 +286,20 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   during the tail drain of a done response captures no paused-response id (a
   follow-up response is treated as "the answer" and not cancelled); the
   keep-the-answer path can clip the new answer's first queued chunk.
-- The confirm-vs-silence startup warning compares against the `server_vad`
-  silence value even under `semantic_vad`.
+- ~~The confirm-vs-silence startup warning compares against the `server_vad`
+  silence value even under `semantic_vad`.~~ **FIXED 2026-08-30 (D-028 §8,
+  commit `c8a384c`)**: the warning is now suppressed under `semantic_vad` (the
+  server ignores that value entirely) and with the name gate on (the confirm
+  timer commits nothing there).
+- Truncate accounting (D-028 §4), accepted biases, not defects: the global
+  outstanding-audio figure can only *under*-truncate; the pause path's
+  device-buffer term double-counts and can over-cut up to ~1.3 s per barge; a
+  multi-item reply truncates only its last item — all in the safe direction. A
+  fully drained audio item keeps its id until the next item's first delta, so a
+  barge in that window sends a harmless truncate at ~`duration − 300 ms`.
+- Late-interrupt eligibility (D-028 §3) deliberately survives `response.done`,
+  so that 「停」 over a still-draining reply is honoured; the cost is a rare
+  self-cancel in an exotic ordering, healed by the response watchdog.
 - Boot-gate release ceiling is `response.done` + the 3 s drain cap — can
   exceed `REALTIME_BOOT_GATE_TIMEOUT_S` by design.
 - BUG (old, DEMO-1): the RPC/UI stop button clears the queue but never sends
@@ -323,3 +384,12 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   operator-run backend consolidation CLI — implemented and reviewed, **not
   merged and not deployed**; the sixteenth install is what puts the robot half
   on the device.
+- **2026-08-30/31** — `engagement-memory` merged and the **sixteenth install**
+  deployed and booted clean; then the **human-like-conversation wave**, 9 tasks
+  on branch `name-gate-patience`, **D-028** (1468/30 → **1568/30**): name-gated
+  solo barge-in, a bounded unaddressed pause with a late-interrupt catch,
+  `conversation.item.truncate` on every committed interruption, patience
+  defaults (VAD silence 1000, confirm 1600 gate-off-only, `reasoning.effort`
+  pinned low), a 900-token runaway rail, and prompt-taught verbosity
+  calibration — implemented and reviewed, **not deployed**; the seventeenth
+  install plus a persona re-sync is what puts it on the device.

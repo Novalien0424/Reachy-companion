@@ -1,5 +1,13 @@
 # Realtime voice-agent best practices — research synthesis (2026-08-25)
 
+> **2026-08-30: partly superseded.** The §transcription and §truncate guidance
+> below is superseded in parts by `research-realtime-api-2026-08.md` —
+> `gpt-live-transcribe` (plus the new `delay` knob) is now the streaming-partials
+> pick rather than `gpt-transcribe`, and the "verify our
+> `conversation.item.truncate` accounting" gap is closed: we had none, and the
+> name-gate/patience wave added it (D-028). That doc's §6 lists every correction
+> line by line; read it alongside this one.
+
 Three parallel research passes (OpenAI Realtime API specifics; vendor-neutral
 turn-taking/barge-in practice; the realtime model landscape), synthesized
 against this repo's current design (T1–T3 multi-person hardening, shipped
