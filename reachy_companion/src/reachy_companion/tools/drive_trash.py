@@ -41,7 +41,10 @@ class DriveTrash(Tool):
         "properties": {
             "file_id": {
                 "type": "string",
-                "description": "Drive file or folder id, from drive_list. Omit when confirming.",
+                # 2026-08-31 tool diet: this description reaches the model through
+                # the `drive` family schema, so it must name a call the model can
+                # still make.
+                "description": "Drive file or folder id, from a call with action=list. Omit when confirming.",
             },
             "confirm": {
                 "type": "boolean",

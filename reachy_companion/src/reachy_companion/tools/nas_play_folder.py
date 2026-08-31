@@ -20,7 +20,9 @@ class NasPlayFolder(Tool):
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            "top_folder": {"type": "string", "description": "Folder name from nas_video_query. Preferred."},
+            # 2026-08-31 tool diet: this description reaches the model through the
+            # `nas` family schema, so it must name a call the model can still make.
+            "top_folder": {"type": "string", "description": "Folder name from a call with action=query. Preferred."},
             "year": {"type": "integer", "description": "Year, when no folder name is known."},
             "place": {"type": "string", "description": "Place or trip name, when no folder name is known."},
         },

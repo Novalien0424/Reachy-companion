@@ -1,6 +1,8 @@
 """Contract tests for the locked Chinese-first companion profile."""
 
 import re
+import json
+import importlib
 from pathlib import Path
 
 import pytest
@@ -8,7 +10,13 @@ import pytest
 from reachy_companion.config import LOCKED_PROFILE, DEFAULT_PROFILES_DIRECTORY
 from reachy_companion.memory import add_memory_fact
 from reachy_companion.prompts import get_session_instructions
+from reachy_companion.tools.tv import Tv
+from reachy_companion.tools.nas import Nas
+from reachy_companion.tools.drive import Drive
+from reachy_companion.tools.music import Music
+from reachy_companion.tools.tasks import Tasks
 from reachy_companion.profile_store import read_profile
+from reachy_companion.tools.calendar import Calendar
 
 
 EXPECTED_TOOLS = (
@@ -181,17 +189,88 @@ _RETIRED_TOOL_NAMES = (
     "party_mode",
 )
 
-# `tv（action=play_video）` names the live `tv` tool and one of its action
-# values; that value happens to spell a name this list retired, and an argument
-# is not an instruction to call a function that no longer exists. Blank the
-# values out before scanning, so the tripwire keeps catching the thing it is
-# for -- a prompt still telling the model to call `play_video` itself.
-_ACTION_VALUE = re.compile(r"action=[a-z_]+(?:/[a-z_]+)*")
+FAMILY_NAMES = ("music", "tv", "nas", "calendar", "tasks", "drive")
+
+# Every family's live action enum, read off the shipped classes rather than
+# restated here: a family that renames an action must not be able to leave a
+# stale value behind in the prompt.
+_FAMILY_ACTIONS = {
+    family.name: frozenset(family.parameters_schema["properties"]["action"]["enum"])
+    for family in (Calendar, Tasks, Drive, Nas, Music, Tv)
+}
+
+_ACTION_VALUE = re.compile(r"action=([a-z_]+(?:/[a-z_]+)*)")
+_FAMILY_MENTION = re.compile(r"(?<![0-9A-Za-z_])(" + "|".join(sorted(_FAMILY_ACTIONS)) + r")(?![0-9A-Za-z_])")
+
+
+def _family_before(text: str, index: int) -> str | None:
+    """Return the family named nearest before *index*, or None.
+
+    This is how a reader — and the model — resolves 「用 nas：先 action=query 找」:
+    the family is stated once and the actions that follow belong to it.
+    """
+    owner = None
+    for match in _FAMILY_MENTION.finditer(text):
+        if match.end() > index:
+            break
+        owner = match.group(1)
+    return owner
+
+
+def _resolved_action_values(text: str) -> list[tuple[str | None, str, str]]:
+    """Return (family, action, whole match) for every `action=…` value in *text*."""
+    resolved = []
+    for match in _ACTION_VALUE.finditer(text):
+        owner = _family_before(text, match.start())
+        for action in match.group(1).split("/"):
+            resolved.append((owner, action, match.group(0)))
+    return resolved
 
 
 def _tool_name_surface(text: str) -> str:
-    """Return *text* with every `action=…` value blanked out."""
-    return _ACTION_VALUE.sub("action=", text)
+    """Blank out every `action=…` value that is REAL, and only those.
+
+    `tv（action=play_video）` names the live `tv` tool and passes it an argument;
+    that argument happens to spell a name this list retired, and an argument is
+    not an instruction to call a function that no longer exists. But blanking
+    every `action=…` unconditionally would turn the escape hatch into a hiding
+    place — `music（action=play_music）` is a stale call dressed as an argument.
+    So a value is blanked only when its family really has that action; anything
+    else stays visible and faces the scan (review round 3, minor 3).
+    """
+
+    def _blank(match: re.Match[str]) -> str:
+        owner = _family_before(text, match.start())
+        values = match.group(1).split("/")
+        if owner is not None and all(value in _FAMILY_ACTIONS[owner] for value in values):
+            return "action="
+        return match.group(0)
+
+    return _ACTION_VALUE.sub(_blank, text)
+
+
+def _spec_surface(spec: dict) -> str:
+    """Render one tool spec as scannable JSON, blanking only its OWN action names.
+
+    Keyed on the spec's own name, not on nearest-mention: inside a family schema
+    the surrounding prose names sibling families ("that is music"), so proximity
+    would resolve the wrong owner.
+
+    Inside the `tv` spec every bare `play_video` — the enum value, the "Pick
+    `action`" sentence, the action property's own description — is that family's
+    action, so the whole token is blanked there and nowhere else. That is the one
+    place this scan cannot tell an action from the tool it was named after, and
+    it is unavoidable: the reviewed design named the action `play_video`. Every
+    other spec, and the other seventeen retired names, are scanned in full.
+    """
+    blob = json.dumps(spec, ensure_ascii=False)
+    own_actions = _FAMILY_ACTIONS.get(spec["name"], frozenset())
+    if not own_actions:
+        return blob
+    # Token-bounded, so `drive_list` is NOT blanked by the `list` action and
+    # `play_music` is NOT blanked by the `play` action.
+    pattern = "|".join(sorted(own_actions, key=len, reverse=True))
+    return re.sub(rf"(?<![0-9A-Za-z_])(?:{pattern})(?![0-9A-Za-z_])", "<action>", blob)
 
 
 def _bundled_profile_files() -> list[Path]:
@@ -224,8 +303,56 @@ def test_the_hardening_block_names_no_retired_tool() -> None:
         assert name not in block, name
 
 
+def test_no_retired_tool_name_reaches_the_model_in_a_tool_spec() -> None:
+    """The schemas are a prompt too — and the widest of the three surfaces.
+
+    A family's `parameters_schema` is a union of its delegates', so a property
+    description still saying "from nas_video_query" ships that dead name to the
+    model on every single turn while both prose tripwires above stay green.
+    Scanning the full JSON of every spec covers names, descriptions and every
+    nested property at once (review round 3, important 2).
+    """
+    core_tools = importlib.import_module("reachy_companion.tools.core_tools")
+    core_tools.initialize_tools(force=True)
+    try:
+        specs = core_tools.get_tool_specs()
+    finally:
+        core_tools._TOOLS_SIGNATURE = None
+    assert specs, "no tool specs were built"
+    for spec in specs:
+        blob = _spec_surface(spec)
+        for name in _RETIRED_TOOL_NAMES:
+            assert name not in blob, f"{spec['name']}: {name}"
+
+
+def test_every_action_value_in_a_bundled_profile_is_real() -> None:
+    """The blanking in `_tool_name_surface` must never become a hiding place.
+
+    Checked independently of the retired-name list, so an action that is merely
+    invented (`music（action=blast）`) fails here too, not only one that happens
+    to spell a name we retired.
+    """
+    for path in _bundled_profile_files():
+        for owner, action, context in _resolved_action_values(path.read_text(encoding="utf-8")):
+            assert owner is not None, f"{path.name}: {context} names no family before it"
+            assert action in _FAMILY_ACTIONS[owner], f"{path.name}: {owner} has no action {action!r} ({context})"
+
+
 def test_the_locked_profile_body_names_every_family_it_ships() -> None:
     """The other half of P2-6: the body must teach the names that DO exist."""
     body = read_profile(LOCKED_PROFILE).instructions
-    for family in ("music", "tv", "nas", "calendar", "tasks", "drive"):
+    for family in FAMILY_NAMES:
         assert family in body, family
+
+
+def test_the_confirm_retry_tells_the_model_to_resend_its_action() -> None:
+    """A confirm retry without `action` would strand the armed claim until TTL.
+
+    The gated tools are family actions now: the confirming call carries only
+    `confirm`, so if the model drops `action` too the façade answers "action
+    must be one of …" and never reaches the delegate that would have spent the
+    authorisation (review round 3, important 1).
+    """
+    body = read_profile(LOCKED_PROFILE).instructions
+    confirm_rule = next(line for line in body.splitlines() if "needs_confirmation" in line)
+    assert "同样的 action" in confirm_rule, confirm_rule

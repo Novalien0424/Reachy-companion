@@ -25,7 +25,9 @@ class PlayNasVideo(Tool):
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Exact clip path from nas_video_query. Preferred."},
+            # 2026-08-31 tool diet: this description reaches the model through the
+            # `nas` family schema, so it must name a call the model can still make.
+            "path": {"type": "string", "description": "Exact clip path from a call with action=query. Preferred."},
             "year": {"type": "integer", "description": "Year, when no path is known."},
             "place": {"type": "string", "description": "Place or trip name, when no path is known."},
             "keyword": {"type": "string", "description": "Any text to narrow the match."},
