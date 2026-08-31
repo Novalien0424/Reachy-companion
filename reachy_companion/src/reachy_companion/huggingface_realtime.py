@@ -376,6 +376,34 @@ def warn_if_barge_confirm_races_vad() -> None:
     )
 
 
+def _item_phase(item: Any) -> str | None:
+    """Return an output item's `phase`, for a model or a dict, else None.
+
+    `gpt-realtime-2.x` generates preambles by DEFAULT and tags each output item
+    `commentary` or `final_answer`; there is no documented switch to turn them
+    off (research doc §C6). The installed openai 2.28.0 stub predates the field
+    — no `phase` anywhere under `openai/types/realtime/` — but
+    `openai._models.BaseModel` is `ConfigDict(extra="allow")` (`_models.py:118`),
+    so a server-sent `phase` arrives as a plain attribute. Defensive on both
+    shapes because this is an undeclared field on a wire format we do not own:
+    a future SDK could parse it into something other than a str, and a raw dict
+    is what a fake or a replayed trace hands us.
+    """
+    if item is None:
+        return None
+    if isinstance(item, dict):
+        phase = item.get("phase")
+    else:
+        phase = getattr(item, "phase", None)
+    return phase if isinstance(phase, str) else None
+
+
+def _item_id(item: Any) -> str | None:
+    """Return an output item's `id`, for a model or a dict, else None."""
+    item_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+    return item_id if isinstance(item_id, str) else None
+
+
 def _current_task() -> "asyncio.Task[Any] | None":
     """Return the running task, or None when called from outside the event loop.
 
@@ -704,6 +732,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Late audio deltas from a cancelled response must not reach the
         # speaker (finding 8). Tiny bound: only very recent ids can race.
         self._cancelled_response_ids: deque[str] = deque(maxlen=8)
+        # Output items the model tagged `commentary` — 2.x preambles. Their
+        # audio and transcript are dropped so a 「讓我想想喔」 never plays as
+        # speech and never counts toward the reply the brevity rules judge.
+        # Tiny bound, same as above: only very recent ids can matter.
+        self._commentary_item_ids: deque[str] = deque(maxlen=8)
         # --- solo pause-then-decide barge-in (Task 8) ------------------------
         # `_barge_paused` and `_barge_pending` move together: paused means emit()
         # is withholding audio, pending means a decision is still owed. Solo has
@@ -1478,6 +1511,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._audio_item_enqueued_ms = 0.0
         self._barge_paused_item_id = None
         self._barge_paused_heard_ms = 0
+        # Task 10: a commentary id from an abandoned turn must not suppress a
+        # real item in the session that replaces it (ids are unique, but the
+        # bound is small and a stale entry is pure risk).
+        self._commentary_item_ids.clear()
         audio_drain.note_paused(False)
 
     def _barge_reset_for_new_session(self) -> None:
@@ -3112,6 +3149,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self.deps.movement_manager.set_listening(False)
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
+                    if event.type == "response.output_item.added":
+                        # Task 10: 2.x preambles arrive as ordinary output items
+                        # tagged `commentary`. Only the id is remembered here —
+                        # the response's own lifecycle (`response.created` /
+                        # `response.done`, and the sender loop that waits on it)
+                        # is deliberately untouched, so a reply that is nothing
+                        # BUT commentary still closes its turn normally.
+                        item = getattr(event, "item", None)
+                        if _item_phase(item) == "commentary":
+                            item_id = _item_id(item)
+                            if item_id is not None:
+                                self._commentary_item_ids.append(item_id)
+                                logger.debug("suppressing commentary-phase item %s", item_id)
+
                     if event.type == "response.output_audio.done":
                         self.deps.movement_manager.set_speaking(False)
                         # D-018 / R7: the assistant's turn produced its last audio.
@@ -3395,6 +3446,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.done":
+                        if getattr(event, "item_id", None) in self._commentary_item_ids:
+                            # A preamble is not part of the answer: it must not
+                            # reach the console, the observer, or the room log.
+                            logger.debug(
+                                "dropping commentary-phase transcript for item %s",
+                                getattr(event, "item_id", None),
+                            )
+                            continue
                         self._mark_activity("assistant_transcript_done")
                         logger.debug(f"Assistant transcript: {event.transcript}")
                         await self.output_queue.put(
@@ -3410,6 +3469,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # already in flight from the cancelled reply must not
                             # reach the speaker after the local flush.
                             logger.debug("Dropping audio delta from a cancelled response")
+                            continue
+                        if getattr(event, "item_id", None) in self._commentary_item_ids:
+                            # Task 10: dropped before ANY accounting — the drain
+                            # tracker and the per-item truncate numerator must
+                            # only ever count frames that actually reach the
+                            # speaker, exactly as for a cancelled response above.
+                            logger.debug(
+                                "dropping commentary-phase audio for item %s", getattr(event, "item_id", None)
+                            )
                             continue
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)

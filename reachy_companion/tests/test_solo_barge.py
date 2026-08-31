@@ -62,6 +62,8 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._audio_item_enqueued_ms = 0.0
     handler._barge_paused_item_id = None
     handler._barge_paused_heard_ms = 0
+    # Task 10: `on_external_interrupt` clears the commentary suppression list.
+    handler._commentary_item_ids = deque(maxlen=8)
     # `_pause_playback` captures the live response id; a handler built for the
     # emit path alone has no party state, so fill it in without clobbering a
     # caller that set a real id.

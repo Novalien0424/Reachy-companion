@@ -1,12 +1,15 @@
 import json
 import time
+import base64
 import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 import reachy_companion.conversation_handler as conv_mod
@@ -1333,3 +1336,183 @@ async def test_wait_for_reply_finished_gives_up_on_a_stopped_loop() -> None:
         assert asyncio.get_running_loop().time() - started < 1.0
     finally:
         stopped.close()
+
+
+# --------------------------------------------------------------------------
+# Commentary-phase suppression (2026-08-31 plan, Task 10)
+# --------------------------------------------------------------------------
+
+
+def _silent_delta(samples: int = 240) -> str:
+    """Return one base64 PCM16 audio delta of `samples` silent frames."""
+    return base64.b64encode(np.zeros(samples, dtype=np.int16).tobytes()).decode("utf-8")
+
+
+def _commentary_handler(monkeypatch: Any, events: tuple[_FakeEvent, ...]) -> HuggingFaceRealtimeHandler:
+    """Build a real handler wired to a fake session that yields `events`."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = _make_fake_realtime_client(events=events)
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+    return handler
+
+
+def _drain_queue(handler: HuggingFaceRealtimeHandler) -> list[Any]:
+    """Pop everything the receiver loop put on the output queue."""
+    queued: list[Any] = []
+    while not handler.output_queue.empty():
+        queued.append(handler.output_queue.get_nowait())
+    return queued
+
+
+def test_item_phase_reads_models_and_dicts() -> None:
+    """The field is undeclared on the wire format, so read both shapes safely."""
+    from reachy_companion.huggingface_realtime import _item_phase
+
+    assert _item_phase(SimpleNamespace(phase="commentary")) == "commentary"
+    assert _item_phase({"phase": "final_answer"}) == "final_answer"
+    assert _item_phase(SimpleNamespace(id="item_1")) is None
+    assert _item_phase({"id": "item_1"}) is None
+    assert _item_phase(SimpleNamespace(phase=7)) is None
+    assert _item_phase(None) is None
+    assert _item_phase(object()) is None
+
+
+@pytest.mark.asyncio
+async def test_commentary_audio_and_transcript_are_dropped(monkeypatch: Any) -> None:
+    """2.x emits preambles by default; they must not play as normal speech."""
+    silence = _silent_delta()
+    remembered: list[str] = []
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_pre", response_id="resp_1", delta=silence),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_pre", transcript="讓我想想喔"),
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_ans", "phase": "final_answer"},
+                response_id="resp_1",
+                output_index=1,
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_ans", response_id="resp_1", delta=silence),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_ans", transcript="三點二十"),
+            _FakeEvent("session.updated"),
+        ),
+    )
+    transcripts: list[tuple[str, str]] = []
+    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text)))
+    # The session's own teardown runs `on_external_interrupt`, which forgets
+    # every commentary id, so the list is sampled from a sentinel event still
+    # inside the receiver loop.
+    monkeypatch.setattr(handler, "_note_session_updated", lambda: remembered.extend(handler._commentary_item_ids))
+
+    await handler._run_realtime_session()
+
+    assert transcripts == [("assistant", "三點二十")]
+    # Exactly one audio tuple reached the output queue: the answer's, not the
+    # preamble's.
+    queued = _drain_queue(handler)
+    assert len([item for item in queued if isinstance(item, tuple)]) == 1
+    assert remembered == ["item_pre"]
+    # And the session boundary forgets it, so it cannot suppress a fresh item.
+    assert handler._commentary_item_ids == deque(maxlen=8)
+
+
+@pytest.mark.asyncio
+async def test_commentary_item_carried_on_a_pydantic_style_model_is_dropped(monkeypatch: Any) -> None:
+    """The real SDK hands us an `extra="allow"` model, not a dict."""
+    remembered: list[str] = []
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent(
+                "response.output_item.added",
+                item=SimpleNamespace(id="item_pre", phase="commentary"),
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent(
+                "response.output_audio.delta",
+                item_id="item_pre",
+                response_id="resp_1",
+                delta=_silent_delta(),
+            ),
+            _FakeEvent("session.updated"),
+        ),
+    )
+    monkeypatch.setattr(handler, "_note_session_updated", lambda: remembered.extend(handler._commentary_item_ids))
+
+    await handler._run_realtime_session()
+
+    assert remembered == ["item_pre"]
+    assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
+
+
+@pytest.mark.asyncio
+async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> None:
+    """Dropping every item of a response must not wedge the done bookkeeping.
+
+    Task 9's sleep wait blocks on `_response_done_event`; if suppression ever
+    short-circuited `response.created`/`response.done`, a preamble-only reply
+    would leave the robot waiting for a response that already finished. The
+    session's own `finally` sets the event too, so the state is sampled from a
+    sentinel event *inside* the loop, after `response.done`.
+    """
+    seen: dict[str, Any] = {}
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent("response.created", response=SimpleNamespace(id="resp_1")),
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent(
+                "response.output_audio.delta",
+                item_id="item_pre",
+                response_id="resp_1",
+                delta=_silent_delta(),
+            ),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_pre", transcript="讓我想想喔"),
+            _FakeEvent("response.output_audio.done", item_id="item_pre", response_id="resp_1"),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_1", status="completed")),
+            _FakeEvent("session.updated"),
+        ),
+    )
+    transcripts: list[tuple[str, str]] = []
+    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text)))
+
+    def _sample_state_inside_the_loop() -> None:
+        seen["done"] = handler._response_done_event.is_set()
+        seen["started_or_rejected"] = handler._response_started_or_rejected_event.is_set()
+        seen["active_response_id"] = handler._active_response_id
+
+    monkeypatch.setattr(handler, "_note_session_updated", _sample_state_inside_the_loop)
+
+    await handler._run_realtime_session()
+
+    assert seen["done"] is True
+    assert seen["started_or_rejected"] is True
+    assert seen["active_response_id"] is None
+    assert transcripts == []
+    assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
+
+
+def test_external_interrupt_forgets_commentary_ids() -> None:
+    """A stale id must not suppress a real item in the session that replaces it."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler._commentary_item_ids.append("item_pre")
+    handler.on_external_interrupt()
+    assert not handler._commentary_item_ids
