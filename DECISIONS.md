@@ -1117,3 +1117,381 @@ if they cannot be exercised on device: live acceptance of `reasoning.effort` and
 of the `status_details` shape; on-robot acceptance of our `audio_end_ms`
 (community reports of partial trims — research §2); semantic-VAD behavior on
 Mandarin; and `gpt-live-transcribe` partial latency.
+
+## D-029 — Conversation modes, a client-driven answer gate, and the tool diet (2026-08-31)
+
+Operator ask of 2026-08-31, in three parts: Reachy should have named
+conversation *modes* it can be switched between by voice (one-on-one, group,
+and a quiet meeting scribe); it should stop answering things nobody said to it;
+and it should pick the right tool, after 「轉到右邊去看看有誰」 kept selecting
+`camera` instead of moving the head. Two on-robot defects rode along: a goodbye
+cut off mid-sentence by the sleep pose, and 2.x preambles playing out loud.
+Research: `docs/research-mini-tool-calling-2026-08.md`; the plumbing survey the
+plan was built on: `docs/survey-conversation-modes-plumbing.md`. Plan and its
+three-round Codex log (45 findings — 3 Critical / 27 Important / 15 Minor, **45
+accepted, 0 rejected**):
+`docs/plans/2026-08-31-conversation-modes-plan.md` §Review log. Nine design
+decisions, five open questions, one post-review operator amendment.
+
+**(1) A three-valued enum replaces the boolean, and `_party_mode` survives on
+purpose.** `ConversationMode` (`conversation_mode.py`) is `ONE_ON_ONE` /
+`GROUP` / `RECORD`, and `set_party_mode` becomes `set_conversation_mode`. But
+`_party_mode` is *kept*, as a read-only property returning
+`self._current_mode() is not ConversationMode.ONE_ON_ONE`. A dozen call sites
+branch on it and every one asks the same binary question — debounced room
+barge-in and a gate at `transcription.completed`, or the solo pause-then-decide
+machine? RECORD wants the room answer at all of them, so rewriting each site to
+a three-way branch would have been twelve chances to get one wrong for no
+behavior change. Sites whose behavior genuinely differs per mode read
+`_conversation_mode` instead. The property's `getattr` default is deliberately
+`ONE_ON_ONE`, not `DEFAULT_MODE`: the contract it preserves is
+`getattr(self, "_party_mode", False)`, i.e. a handler with no mode state at all
+(tests construct via `__new__`) emits the solo config exactly as it did before
+this wave.
+
+**(2) Interruption and answering are two gates, not one.** D-028's
+`REALTIME_SOLO_NAME_GATE` decides what may take the floor *away* from a reply
+in progress. This wave adds `REALTIME_ONE_ON_ONE_ANSWER_GATE` (`open` default,
+`name_only` fallback), which decides what gets a reply *at all* in
+一對一聊天模式. They are separate concerns and are now separate knobs; the deny
+line is `one-on-one gate: no answer for a non-substantive turn`, alongside
+GROUP's `party gate: denied ambient turn` and RECORD's `record gate:
+transcribed without answering`.
+
+**(3) `create_response=false` in every mode, so the client owns every answer.**
+Party mode already did this; solo did not, and the difference was the pile-up:
+the server auto-answered a turn the client had *just* rolled back as an
+unaddressed barge, so talking over Reachy queued a second full answer behind
+the resumed reply. With the flag off everywhere, a turn is answered only by
+`_safe_response_create()` after its mode's gate accepted it. The cost is one
+queue hop of latency per turn versus server auto-answer — party mode's week of
+use says that is acceptable, and it is measured on-robot by
+`VOICE-NO-DOUBLE-ANSWER`.
+
+**(4) The answer gate got its OWN environment variable, and that is the whole
+point (Open question 1).** Overloading `REALTIME_SOLO_NAME_GATE` to mean "and
+also only answer when named" was the obvious economy and is exactly wrong here:
+the instance `.env` on the robot sets that variable explicitly, and the deploy
+ritual restores `.env` from backup on *every* install. An overloaded knob would
+therefore have re-flipped 一對一聊天模式 to name-only answering on every deploy
+— silently, forever, with no line in any diff to explain it. A new variable
+that nobody's `.env` mentions defaults cleanly and costs one row in a table.
+**Consequence for the deploy: no `.env` surgery is owed by this wave.**
+
+**(5) Mode survives a reconnect; the boot posture is `GROUP` (Open question 2,
+plus the operator amendment).** A dropped websocket mid-meeting must not
+silently end 紀錄模式, so `_conversation_mode` is deliberately *not* reset by
+`_party_reset_for_new_session()` — only the per-turn state is (follow-up
+window, open-speech flags, barge timers), for the research doc's SAS carry-over
+hazard. What a *settings or backend restart* does is different, and is covered
+in decision 6. **The boot default is 多人聊天模式**, by explicit operator
+instruction applied after the review closed: the robot sits in a room with
+several people in it, and one that wakes up ready to answer every overheard
+sentence is the precise failure party mode was built to fix. It is now
+`REALTIME_DEFAULT_MODE` (`_boot_conversation_mode()`, values through
+`parse_mode`, default `group`); `record` is accepted but logs a warning,
+because a robot that boots silent looks exactly like a robot that failed to
+start. `REALTIME_PARTY_DEFAULT` is **deprecated-superseded**: it is no longer
+read at all, and setting it while `REALTIME_DEFAULT_MODE` is unset logs a
+warning naming the mode actually booted. Its old truthy meaning is now the
+default, so `=1` lands where it asked; `=0` is the case that stings, and the
+warning names `REALTIME_DEFAULT_MODE=one_on_one` as its replacement. The
+amendment changed a default, not a mechanism — no gate, session-update,
+toolbox, sleep or record-log behavior moved with it — so it did not reopen the
+review.
+
+**(6) `record_log` at 2000 and `session_transcript` at 40 are different data,
+not two sizes of the same data.** The D-027 transcript is forty accepted turns
+feeding a per-person 「上次聊天」 callback. A meeting record is the opposite on
+both axes: it wants every line anyone said — *especially* the ones the answer
+gate declined — and forty lines is a few minutes. So 紀錄模式 gets its own
+deque, in memory only, never written to disk and never exported (PRD non-goal:
+long-term memory). It is cleared when the mode is left and again at the sleep
+that ends the visit — and, per P1-5, **not** on a settings/backend restart,
+which D-027 already treats as mid-visit; throwing away a meeting that was still
+happening would be worse than keeping it. **The accepted cost, recorded:** such
+a restart drops the mode back to the boot default, so recording *silently
+stops* while the log survives, and a second 紀錄模式 appends to the abandoned
+log with an unmarked gap between the stretches. The summarizer prompt is told
+the truth about this rather than guessing at seams from timestamps. Mode
+persistence across restarts is the obvious follow-up and is deliberately not in
+this wave.
+**RECORD presence heartbeat (Task 4 ruling).** A *user*-role room-log line beats
+D-027's `touch_presence`, because in 紀錄模式 the answer gate declines the
+meeting's speech before `record_transcript` is ever reached — a room that talked
+for an hour would otherwise look to `write_sleep_summaries` like a room whose
+people were last seen at the boot greeting. An assistant line does not: the
+robot's own voice is no evidence that anybody is still in front of it. And
+`session_transcript` is deliberately *not* fed from the record log — the sleep
+summary's input stays "turns the robot actually took part in".
+
+**(7) RECORD's tool allowlist is six local names, and the `[OFFICIAL]`
+under-20-tools rule is why it is a list at all.** `set_conversation_mode`,
+`summarize_conversation`, `go_to_sleep`, `wait_for_user` — the four the model
+uses — plus `task_status` and `task_cancel`, which are `SystemTool` values the
+background tool manager injects into every profile and which the model needs to
+follow up a long-running call (Open question 4: hiding them would break the
+tools that *are* allowed). Everything else is excluded through the registry's
+existing `exclusion_list` seam, so nothing in the tool pipeline had to learn
+about modes. **`EXTRA_TOOLS` are never hidden in ANY mode, RECORD included**
+(P2-8): an MCP tool belongs to no toolbox, so no `open_toolbox` category could
+bring it back, and hiding it would strand it for the whole meeting. Every count
+in this record is therefore "plus any `EXTRA_TOOLS`".
+
+**(8) `look_around` is one composite tool, and it reports
+`direction_requested`, not `direction_moved` (P2-2).** The selection failure was
+the right tool present but not ranked first — `move_head` losing to `camera` on
+「轉到右邊去看看有誰」 — so the fix is a single tool that does both, in order,
+rather than a prompt teaching the model to chain two. It calls
+`clear_move_queue()` first so its move is not stuck behind an older one. The
+field is named for what the motion API can attest and nothing more: `MoveHead`
+returns on *queueing*, `MovementManager` publishes no accepted/completed
+signal, and `set_hold_still` can drop a queued move silently — so the tool can
+honestly say where the head was *sent*, never that it arrived, and the
+description tells the model to describe the returned picture rather than assert
+completed motion. Three outcomes are spelled out separately: move failure (no
+direction field), capture failure (direction + error, no image), success.
+「看一下你後面」 was removed from both `look_around`'s and `camera`'s
+descriptions (P2-4) — there is no `behind` in the schema and body rotation is
+out of scope — and a test asserts neither 「後面」 nor "behind" survives. The
+image-attachment path was generalized in the same pass (P2-1, Critical): the
+handler keyed the attach site on `tool_name == "camera"`, so `look_around`'s
+picture would never have reached the model and its base64 would have been dumped
+into the tool JSON. Both the sanitizer and the attach condition now key on
+`"b64_im" in tool_result`, for any tool.
+
+**(9) Going to sleep is silence → wait → drain → pose, and silencing comes
+first (P2-10 Critical, then round 2's 2a-6).** `go_to_sleep` runs from the tool
+worker *before* `response.done`, so `is_audible()` could be false while the
+goodbye was still being generated and the robot lay down mid-sentence. The fix
+is a bounded `wait_for_reply_finished()` seam on `_response_done_event`. The
+*order* then mattered more than the wait: waiting first left the microphone live
+for up to ten seconds, which is how a repeated 「睡覺吧」 or the goodbye's own
+echo opened a turn nobody would answer. So `quiesce_for_sleep` is split —
+`begin_sleep_quiesce` (mute the mic, disarm the barge machine) runs first, then
+the bounded wait, then `wait_for_speaker_quiet`, then the pose. Journal order,
+which is the verification contract:
+
+```
+Tool call: go_to_sleep
+sleep quiesce: microphone muted
+sleep quiesce: barge machine disarmed
+    (the bounded wait for the reply to finish — silent unless it overruns, and
+     then `go_to_sleep: the goodbye response did not finish in time`)
+Going to sleep before stopping conversation app.
+sleep quiesce: speaker quiet after N.Ns
+    | sleep quiesce: drain cap reached after N.Ns with audio still playing
+    (the pose, only after that)
+```
+
+**It never flushes.** The quiesce silences *inputs* and waits for the speaker;
+nothing on this path drops queued audio, because the whole purpose is to let the
+goodbye finish. `SLEEP_GOODBYE_DRAIN_CAP_S` (default 6.0) exists only so a stuck
+drain estimate cannot hold the robot awake, and the cap branch says so out loud
+rather than logging "speaker quiet" over audio that is still playing (P2-11).
+**The seam is loop-aware** (2a-5): the inactivity path runs `GoToSleep` via
+`asyncio.run` on a daemon thread, so `wait_for_reply_finished` captures
+`_handler_loop` at session start, awaits directly when already on it, marshals
+via `asyncio.run_coroutine_threadsafe` with the same bounded timeout otherwise,
+and reports success when the loop is gone.
+**Two defects found during implementation, recorded because neither was in the
+plan.** First, the plan had `begin_sleep()` set `go_to_sleep_requested` — that
+event is the pose closure's own duplicate latch, so claiming it in the quiesce
+would have made the very sleep it was preparing return `already_requested`, for
+every voice sleep. `begin_sleep` therefore sets only `deps.sleep_requested`
+(D-027's flag, idempotent) and runs the quiesce. Second, nulling `_handler_loop`
+in the receive loop's `finally` strands the *live* session: a replacement session
+captures the loop near the top of `_run_realtime_session`, before it publishes
+its connection, so a dying session's `finally` landing in that window nulls the
+loop the live session just captured — after which `wait_for_reply_finished`
+short-circuits `True` for the rest of that session and the goodbye is cut off
+again. The field is now nulled only in `__init__` and `shutdown()`; the session
+`finally` still *sets* `_response_done_event`, conn-guarded, so a session that
+dies mid-response does not leave the sleep path burning its whole timeout
+(round 3, finding 2).
+
+**Design decision 9 — one ordered, acknowledged, single-flight session update.**
+Four review findings (P1-1, P1-3, P1-4, P2-9) were ruled one defect family and
+fixed once. `_apply_session_update(build_session, what=…)` takes a **builder**,
+not a payload, and holds `_session_update_lock` across ticket check, payload
+build, waiter install, send and acknowledgement wait as one uninterrupted region
+— taking the lock twice (2a-1, Critical) let a newer flip overtake an older
+payload between them and made the monotonic ticket worthless. Every live-session
+caller goes through it — `_push_mode_update`, `_push_turn_detection_update`,
+`change_voice`, `apply_personality` — because `session.updated` carries no
+client `event_id` and an uncorrelated ack would otherwise resolve somebody
+else's waiter. The one exemption is the initial `session.update` in
+`_run_realtime_session`, which runs before the receive loop exists. A client
+`event_id` *is* stamped, because an `error` names the event it rejected, and
+that is how a rejection is told apart from an unrelated server error — resolving
+the update's waiter and `continue`ing, never touching the response-create path.
+`set_conversation_mode` and `open_toolbox` **await** it: the model's confirmation
+sentence, and any tool call right after it, must run under the mode being
+confirmed. Every update logs `Tools in session (<mode>): [...]`, because the
+startup-only `Tools to be used in conversation:` line cannot show a mid-visit
+flip (P2-12).
+
+**The unmatched-acknowledgement debt counter is the genuinely non-obvious
+part.** `session.updated` carries no correlation id, so *every* acknowledgement
+the server already owes — the connect config, its one-shot retry, pushes sent
+before the receive loop, and waits that timed out — must be paid off before a
+live waiter may be resolved. Without it (round 3, findings 5 and 6, both
+Critical) a mode flip would be told its payload was applied on the strength of
+the connect config's ack, and a late ack after a timeout would resolve the
+*next* update's waiter. `_note_session_updated` pays `_session_update_ack_debt`
+first and only then touches a waiter; a timeout books one unit rather than
+restarting the session, which would be disproportionate on every slow ack. The
+no-wait path books debt too and logs which kind it is: `session updated (<what>,
+sent before the receive loop)` or `(…, not waiting for the acknowledgement)`;
+the acknowledged line is `session updated (conversation mode <value>)`. Debt and
+`_receive_loop_active` reset per session, conn-guarded, so a dead websocket's
+teardown cannot zero a live session's debt.
+**Three accepted residuals on this mechanism, none of which can wedge the
+handler.** (a) *Debt ratchet:* the design assumes exactly one `session.updated`
+per accepted `session.update`. A server that emits more than one, or none for a
+no-op, drifts the counter and makes a later flip resolve early or time out.
+(b) *One-tick timeout double-count:* an acknowledgement arriving in the same
+tick the wait expires can book a phantom unit of debt, paid down by a later ack.
+(c) *Dead-session late finally:* an update in flight when the session dies is
+reported failed even though the server may have applied it. All three degrade to
+"applied locally only" — the client-side gates, the barge policy and the record
+log are all still enforced — never to a stuck session. The live tell is the
+journal's `never acknowledged within 5.0s` warning on a healthy connection; if
+it appears, the assumption is wrong for this endpoint, and the fallback is to
+send without the wait rather than leave every flip failing. `change_voice` is
+pessimistic for the same reason: an ack timeout reports failure even if the
+update landed.
+
+**Commentary-phase suppression (Task 10).** gpt-realtime-2.x tags output items
+`commentary` or `final_answer` and there is no documented switch to turn
+preambles off, so the client refuses to play them: an item whose `phase` is
+`commentary` has its id remembered (`suppressing commentary-phase item …`) and
+its transcript and audio are dropped (`dropping commentary-phase … for item …`),
+while the item still closes its turn normally. Ids are cleared per session so an
+abandoned turn's id cannot suppress a later one. **The on-robot check is whether
+the field arrives at all**: the whole seam rests on `phase` being present on
+`response.output_item.added`. If the server carries it only on
+`response.output_item.done` — after the audio has already streamed — the seam
+fires too late and the preamble still plays. Absence of those DEBUG lines across
+a whole visit *with* preambles still audible means "the field is elsewhere": a
+follow-up, not a fix. This is client-side only — the model still spends the
+tokens and the latency; the prompt-side half of the problem is D-028's brevity
+work.
+
+**Two verbatim envelope shapes, and only two (Open question 3).** Tools that
+produce text the model must read out *exactly* return an envelope rather than
+trusting the prose: `who_is_this` sets `response_text` +
+`require_repeat_verbatim`, and `summarize_conversation` sets `summary_text` +
+`speak_verbatim`. The hardening block teaches one rule covering both. The reason
+is the D-025 failure already recorded in `progress.md` — the tool data was right
+and the spoken sentence was not — and `[COMMUNITY]` reports (research §D2)
+describe verbatim-name fidelity as a model-level regression on non-English
+2.1-mini. The envelope improves the odds; it cannot guarantee them.
+
+### The tool diet: 41 tools → 22 at the start of a turn
+
+OpenAI's own function-calling guide asks for "fewer than 20 functions available
+at the start of a turn", the realtime prompting docs say a focused list
+"prevents the model from misselecting tools", and the measured effect is largest
+in exactly our case — the right tool present but not ranked first (research
+§A1). Three mechanisms, cheapest first.
+
+**Decision 7 — façade consolidation: 18 CRUD tools become 6 action-enum
+families.** `calendar`, `tasks`, `drive`, `nas`, `music`, `tv`, all through
+`tools/tool_family.py`'s `dispatch_family`. **The 18 modules stay on disk**,
+with their prerequisite rows and their tests, and each façade delegates to the
+untouched original: merging the bodies would mean rewriting every confirmation
+gate and all the Google/NAS/HA error handling for zero model-facing gain. The
+façade **adds no argument validation of its own** (P2-5) — it validates the
+action *name* and nothing else — because a `REQUIRED` table at the façade would
+reorder and reword each delegate's own checks, which deliberately run *after*
+`settings.tool_status`; two tests pin the delegate's own error string and the
+prereq-before-args order. Every spoken confirmation gate before a delete, a
+trash or an upload is unchanged.
+**A recorded cost:** the six family descriptions are 453–637 characters each,
+3408 in total, where the eighteen one-line originals came to 832. The tool
+*count* is what the selection research measures, and each entry also carries a
+JSON schema, so the trade is still worth taking — but "consolidation shrinks the
+prompt" would be false, and is not claimed anywhere.
+
+**Three deletions.** `sweep_look`, `self_destruct` and `mad_laugh` are gone,
+along with `HANOVA_SELF_DESTRUCT_YT_ID` / `HANOVA_MAD_LAUGH_YT_ID`. A
+`_RETIRED_TOOL_NAMES` tripwire asserts no retired name survives in *any* bundled
+`profiles/*/profile.md` or in `hardening_block()` (P2-6, and round 2 finding 14
+— `profiles/default` shipped `sweep_look` too).
+
+**Decision 8 — `open_toolbox`, and boxes ACCUMULATE.** Two families load on
+demand: `productivity` (calendar, tasks, drive, email_send, notion_add) and
+`media` (tv, nas). Sizes, plus any `EXTRA_TOOLS`: **22** at rest, **27** with
+productivity open, **24** with media, **29** with both — all four asserted by
+`test_the_documented_surface_sizes_hold`. Boxes accumulate within a mode and
+close together at its edges — a mode switch, sleep, or a new session — because
+closing a box the model has *already been told about*, mid-turn, is how you get
+a call to a tool that is no longer there (round 2, 2b-3). For the same reason
+there are **no idle timers**: carrying one extra family for the rest of a visit
+is cheaper than that failure. The open is **awaited, not scheduled**: the model
+reads the result and continues to the real call in the same turn, so the update
+must be acknowledged before the result comes back. It is optimistic then rolled
+back (P2-9) — the box goes into `_open_toolboxes` first, because
+`_push_mode_update` builds its payload from that live set, and comes straight
+out with `status: "update_failed"` if the server refused. The membership is
+re-checked *after* the await (round 3, finding 3) for the second failure case: a
+`set_conversation_mode` landing mid-flight calls `close_toolboxes`, so the box is
+gone even though the push itself succeeded, and reporting "loaded" there would
+advertise tools the session no longer has. `set_conversation_mode` re-reads the
+mode after its own await for the mirror-image reason (round 3, finding 4) and a
+losing flip returns `status: "superseded"` with the mode the handler is
+*actually* in, plus `requested` for the journal.
+
+**The honest count is 22, and `music` is in it (Open question 5, P2-7).** The
+plan said 21 until the review pointed out that boxing `music` would hide
+`stop_music` — documented as the prerequisite-free safety lane, the one tool
+that must answer when nothing else can. Behind a toolbox, 「音樂關掉」 would
+first have to load the tools for turning the music off. `music` moved into the
+static core, the media box became `tv` + `nas`, and a negative control
+(「放首歌」 then 「音樂關掉」 with no `open_toolbox` between them) joined
+`TOOLBOX-DYNAMIC`. The membership rule for the core: anything the robot might
+need in the *first second* of a turn with no chance to load something first —
+its senses, its body, who it is talking to, the lights, the web, and the
+conversation's own controls.
+
+**Rejected alternatives.** Merging the 18 sub-tool bodies into 6 (rewrites the
+confirmation gates and the Google/NAS/HA error handling for zero model-facing
+gain). `allowed_tools` instead of swapping `tools` (an equivalent surface, but
+the app already owns a proven `session.update` seam and this would be a second
+mechanism). Idle-timer toolbox expiry, and swap-instead-of-accumulate (both
+close a box the model has already been told about, mid-turn — round 2, 2b-3).
+Forcing the look chain with `tool_choice: {"type":"function","name":"camera"}`
+(research §B3 — `[COMMUNITY]` bug reports on `tool_choice` in Realtime; the
+composite needs no such gamble). Numeric length caps (operator ruling, carried
+over from D-028). Raising `reasoning.effort` to medium (unmeasured latency cost;
+revisit only if the composite does not fix selection). Restarting the session on
+a slow ack instead of booking one unit of debt (disproportionate on every slow
+ack). A per-item mode map beyond the one stamped field — the orchestrator scoped
+round 1's finding 2 to a single `_turn_mode`, and round 2's 2a-4 then forced
+exactly as much more as the defect required: an item-keyed `_turn_modes` dict
+stamped at `speech_started` and popped at the completed/failed branches, no more.
+
+**Accepted residuals beyond those already named.** A turn whose transcript
+arrives empty or fails gets no response at all, in every mode — the GROUP
+precedent, unchanged by this wave, with `_barge_response_watchdog` as the repair
+for the case where a barge was confirmed first. Under the non-default
+`REALTIME_SOLO_NAME_GATE=0` + `REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only`
+combination an already-fired watchdog can meet a late denied transcript; the
+combination is documented rather than special-cased.
+
+**Verified against the unit suites only** — **1746 passed / 30 skipped**,
+`ruff check .` and `mypy --strict src` clean. Ten live rows in
+`feature_list.json` are the acceptance gate — `MODE-BOOT-DEFAULT`,
+`MODE-ONE-ON-ONE`, `MODE-GROUP-SWITCH`, `MODE-RECORD`, `VOICE-LOOK-AROUND`,
+`VOICE-SLEEP-QUIESCE`, `VOICE-NO-DOUBLE-ANSWER`, `VOICE-COMMENTARY-SUPPRESS`,
+`TOOLS-CONSOLIDATED`, `TOOLBOX-DYNAMIC` — and all of them ride the next install.
+**`persona.md` MUST be re-synced in that same pass, and this is a hard
+pre-deploy gate, not a nicety.** The instance copy still names all eighteen
+retired CRUD sub-tools, `party_mode`, and the `### self_destruct` ritual
+section; it reaches the robot only by the operator's scp + sha256 ritual
+(D-016), never by the wheel, so an install without it puts a prompt describing a
+tool belt that no longer exists in front of the model. The re-sync must edit
+`tests/test_hanova_integration.py`'s `PERSONA_TOOL_TOKENS` in the same change —
+it currently pins `("play_music", "nas_skip")`, i.e. the *stale* state, exactly
+so this file can say which copy is which.

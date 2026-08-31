@@ -36,11 +36,14 @@ you say its name, and talks on through conversation that isn't for it.
   deployment ritual's mandatory backup/restore. A Mac-side backend
   (`companion_backend/`) manages people, photos and facts and pushes them to
   the robot.
-- **A real tool belt** — 41 tools live on-device: Home Assistant control
-  against an allowlist you configure, music playback from the robot's own
-  speaker, YouTube and home-video (NAS) casting to the TV, Google Calendar /
-  Tasks / Drive / Gmail (with read-back confirmation gates before anything
-  sends), Notion notes, and automatic web search the model invokes on its own.
+- **A real tool belt, kept short** — Home Assistant control against an
+  allowlist you configure, music playback from the robot's own speaker,
+  YouTube and home-video (NAS) casting to the TV, Google Calendar / Tasks /
+  Drive / Gmail (with read-back confirmation gates before anything sends),
+  Notion notes, and automatic web search the model invokes on its own. Reachy
+  sees **22 tools** at the start of a turn rather than the 41 it used to: the
+  productivity and TV/NAS families load on demand, and six overlapping CRUD
+  families became one action tool each.
 - **A character, not an assistant** — a single locked Chinese-first persona,
   editable on the robot as `persona.md` (rewriting the character costs an
   antenna touch, not a redeploy); a pitched-up comb-resonator robot voice;
@@ -48,13 +51,51 @@ you say its name, and talks on through conversation that isn't for it.
   tracking; spontaneous idle behavior. Replies are length-calibrated —
   one-liners for one-line questions, real explanations when warranted, no
   「讓我想想」 filler.
-- **Plays well with a full room** — party mode answers only speech addressed
-  to it (by name, follow-up window, or an engaged face) and stays quiet
-  through the rest; solo mode's `wait_for_user` discipline keeps it from
-  reacting to TV audio and side talk.
+- **Plays well with a full room** — Reachy wakes up in 多人聊天模式 and
+  answers only speech addressed to it (by name, follow-up window, or an
+  engaged face), staying quiet through the rest. 「切到一對一聊天模式」 gives
+  you the always-answering behaviour when it is just the two of you, and
+  `wait_for_user` discipline keeps it from reacting to TV audio and side talk
+  in every mode.
 - **Runs as a managed app on the robot** — installed under the robot's own
   daemon, registered as the startup app: an antenna touch wakes the whole
   experience. No laptop, no dashboard.
+
+## Conversation modes
+
+Reachy has three postures, and you switch between them by saying so — one
+sentence, no restart, no settings page.
+
+| Mode                | Say                    | What Reachy does                                                     |
+| ------------------- | ---------------------- | -------------------------------------------------------------------- |
+| 多人聊天模式 `group` | 「切到多人聊天模式」   | A room with several people: stays quiet, answers only when addressed by name (or inside the follow-up window, or with an engaged face in frame). |
+| 一對一聊天模式 `one_on_one` | 「切到一對一聊天模式」 | Just the two of you: answers anything substantive, no name needed.   |
+| 紀錄模式 `record`    | 「進入紀錄模式」       | A meeting: listens silently and writes every line down, speaking only when named — mainly to read back a summary (「瑞奇幫我總結」). |
+
+**Reachy boots into 多人聊天模式**, so a fresh start listens quietly and
+answers when you say its name; 「切到一對一聊天模式」 is the one sentence that
+gives you the always-answering behaviour. The boot posture is
+`REALTIME_DEFAULT_MODE`.
+
+紀錄模式's record is **in memory only** — never written to disk, never
+exported — and is cleared when the mode is left and again at the sleep that
+ends the visit.
+
+## Tools
+
+22 tools are loaded at the start of every turn, because a shorter list is a
+list the model picks from correctly. Music is among them, so 「音樂關掉」
+always reaches a tool with nothing to load first.
+
+The calendar / to-do / Drive / email / Notion family and the TV / NAS-video
+family are **loaded on demand**: the model calls `open_toolbox` and continues
+to the real call in the same turn. Open boxes accumulate within a mode and are
+closed together on a mode switch, at sleep, and at the start of a new session.
+
+Six overlapping CRUD tools became one action-enum tool each — `calendar`,
+`tasks`, `drive`, `nas`, `music`, `tv` — with every spoken confirmation gate
+before a delete, a trash or an upload unchanged. Three tools nobody used
+(`sweep_look`, `self_destruct`, `mad_laugh`) were retired.
 
 ## Behavior notes
 
@@ -86,7 +127,7 @@ proof of concept rather than defects to file:
 | `persona.md`         | The version-controlled working copy of the on-robot persona (synced by the deploy ritual) |
 | `CHANGELOG.md`       | Release notes; versions map to on-robot installs                    |
 | `progress.md`        | Current verified state, known defects, open operator items          |
-| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-028)                    |
+| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-029)                    |
 | `feature_list.json`  | The demo gates and per-feature verification evidence                |
 
 ## How it's built
@@ -141,9 +182,9 @@ cd reachy_companion
 .venv/bin/python -m pytest -q
 ```
 
-The suite is green (1571 passed / 30 skipped as of 1.17.0); the fixed set of
-upstream skips is documented in `tests/conftest.py` (they assume a
-user-switchable profile, which this app deliberately locks).
+The suite is green (1746 passed / 30 skipped on the conversation-modes
+branch); the fixed set of upstream skips is documented in `tests/conftest.py`
+(they assume a user-switchable profile, which this app deliberately locks).
 
 Two things the simulator cannot rehearse and that need the physical robot: live
 face tracking of a real person, and any camera scene that requires a properly
@@ -183,7 +224,9 @@ below — never commit real values.
 | `REALTIME_VAD_THRESHOLD`           | Speech activation threshold, `0.0`–`1.0`. Raise it in a noisy room. |
 | `REALTIME_VAD_PREFIX_PADDING_MS`   | Audio retained from before speech was detected.                |
 | `REALTIME_VAD_EAGERNESS`           | `semantic_vad` only: the *maximum* wait before taking the turn (`low`≈8 s, `medium`≈4 s, `high`≈2 s, `auto`). `semantic_vad` + `low` is the staged patience A/B. |
-| `REALTIME_SOLO_NAME_GATE`          | Solo barge-in requires being addressed — the robot's name or a control phrase (停/stop, which always win). Default `1`. `0` restores interrupt-on-any-substantive-speech. Interruption only: unaddressed turns are still answered when Reachy is not talking. |
+| `REALTIME_DEFAULT_MODE`            | The mode Reachy boots into: `group` (default — quiet in a room, answers when named), `one_on_one`, or `record` (allowed but discouraged: it boots silent, which looks like a robot that failed to start, and warns). `REALTIME_PARTY_DEFAULT` is a deprecated alias that is no longer read. |
+| `REALTIME_ONE_ON_ONE_ANSWER_GATE`  | Which turns 一對一聊天模式 answers: `open` (default) answers anything substantive, so nobody has to say the robot's name; `name_only` answers only a name or a control phrase. Separate from `REALTIME_SOLO_NAME_GATE`, which decides *interruption*, not what gets a reply. |
+| `REALTIME_SOLO_NAME_GATE`          | Barge-in requires being addressed — the robot's name or a control phrase (停/stop, which always win). Default `1`. `0` restores interrupt-on-any-substantive-speech. **Interruption only**: which turns get *answered* is `REALTIME_ONE_ON_ONE_ANSWER_GATE` above. |
 | `REALTIME_BARGE_MAX_PAUSE_MS`      | How long a reply stays paused for speech that never addresses the robot, before resuming *through* it. Default `4000`. `0` disables the gate-on pause entirely, leaving only the late interrupt. |
 | `REALTIME_BARGE_CONFIRM_MS`        | Sustained-speech confirm window. **Gate-off only** — with the name gate on it commits nothing. Default `1600`; under `REALTIME_SOLO_NAME_GATE=0` it must exceed `REALTIME_VAD_SILENCE_DURATION_MS` or the rollback path is dead (the app warns). |
 | `REALTIME_TRANSCRIPTION_DELAY`     | How long the streaming transcriber buffers before emitting a partial (`minimal`…`xhigh`). Unset by default; staged for the `gpt-live-transcribe` A/B. |
@@ -202,6 +245,8 @@ below — never commit real values.
 | `MEMORY_LAST_CHAT_ENABLED`         | Master switch for the sleep-time last-chat summary. Off writes no `上次聊天` fact. |
 | `MEMORY_LAST_CHAT_MODEL`           | Model that writes the one-line summary per person. Defaults to `gpt-5-mini`. |
 | `MEMORY_LAST_CHAT_TIMEOUT_S`       | Time budget for that summarizer call, `1.0`–`30.0`. Default `8.0`; an overrun leaves no fact. |
+| `RECORD_SUMMARY_TIMEOUT_S`         | Time budget for the 紀錄模式 summarizer, `1.0`–`60.0`. Default `20.0` — longer than the last-chat one because the input is a whole meeting. An overrun is spoken, not silent. |
+| `SLEEP_GOODBYE_DRAIN_CAP_S`        | How long the sleep pose waits for the goodbye to finish playing, `0.0`–`15.0`. Default `6.0`; by then the mic is muted and the reply has finished generating, so the cap only stops a stuck drain estimate holding the robot awake. |
 | `NOTION_MCP_URL` / `NOTION_MCP_TOKEN` | Remote MCP endpoint and bearer token for the Notion integration. |
 | `HA_URL` / `HA_TOKEN`              | Home Assistant base URL and long-lived access token.            |
 | `HA_ENTITIES`                      | JSON map of spoken names to entity ids — the **only** devices the model may target. |

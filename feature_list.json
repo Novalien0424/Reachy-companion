@@ -74,10 +74,11 @@
     },
     {
       "id": "HANOVA-GAGS",
-      "behavior": "mad_laugh plays its clip on the robot speaker; self_destruct runs its in-character arm/confirm ritual with a 90 s TTL and a working abort word, and plays nothing until authorised",
-      "verification": "On-robot: run mad_laugh; arm self_destruct and abort it; arm it again and authorise it",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (round 3): mad_laugh clip audibly played 7.9 s after the command; self_destruct full ritual -- cold confirm refused by the gate, armed with in-character countdown, abort verified, re-armed, authorised, clip audible 11.7 s after authorization; both clip ids configured from the operator's project."
+      "behavior": "RETIRED 2026-08-31 (D-029, the tool diet). mad_laugh and self_destruct were deleted along with sweep_look — three tools nobody called, whose only cost was tool-selection quality. HANOVA_SELF_DESTRUCT_YT_ID and HANOVA_MAD_LAUGH_YT_ID configure nothing now. Historical behavior, for the record: mad_laugh played its clip on the robot speaker; self_destruct ran an in-character arm/confirm ritual with a 90 s TTL and a working abort word, and played nothing until authorised.",
+      "verification": "None owed — the tools are gone. A regression here would be a retired name reappearing, which is pinned by the _RETIRED_TOOL_NAMES tripwire over every bundled profiles/*/profile.md and over hardening_block().",
+      "state": "retired",
+      "evidence": "2026-08-22 on-robot (round 3), before retirement: mad_laugh clip audibly played 7.9 s after the command; self_destruct full ritual -- cold confirm refused by the gate, armed with in-character countdown, abort verified, re-armed, authorised, clip audible 11.7 s after authorization; both clip ids configured from the operator's project.",
+      "next_action": "deploy chore only: drop HANOVA_SELF_DESTRUCT_YT_ID / HANOVA_MAD_LAUGH_YT_ID from the instance .env when convenient — they configure nothing, and leaving them costs nothing either"
     },
     {
       "id": "HANOVA-CAST",
@@ -135,7 +136,7 @@
     {
       "id": "VOICE-MINI-MODEL",
       "behavior": "REALTIME_MODEL defaults to gpt-realtime-2.1-mini ($10/$20 vs $32/$64 per 1M audio tokens for gpt-realtime-2.1); tool-calling selection quality across all 39 tools must hold up on the smaller model, since a large tool array is exactly the axis D-019 flagged as the real risk of tool-array growth",
-      "verification": "On-robot: run a session covering a spread of the 39 tools (home control, memory, face, HANOVA families, party_mode, wait_for_user) and confirm the mini model selects the correct tool as reliably as gpt-realtime-2.1 did before this round, with no malformed/wrong tool_call args in the log. Fallback if selection degrades: set REALTIME_MODEL=gpt-realtime-2.1 in the instance .env, no code change.",
+      "verification": "On-robot: run a session covering a spread of the tool surface (home control, memory, face, the consolidated HANOVA families, set_conversation_mode, wait_for_user) and confirm the mini model selects the correct tool as reliably as gpt-realtime-2.1 did before this round, with no malformed/wrong tool_call args in the log. Since 2026-08-31 (D-029) the start-of-turn surface is 22 tools rather than 39, which is the tool-array axis this row was written to watch — so a re-run after the tool diet is the interesting one. Fallback if selection degrades: set REALTIME_MODEL=gpt-realtime-2.1 in the instance .env, no code change.",
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot A/B: mini vs full model tool-selection accuracy across a representative tool sample"
@@ -198,7 +199,7 @@
     },
     {
       "id": "VOICE-NAME-GATE",
-      "behavior": "REALTIME_SOLO_NAME_GATE (default 1, D-028): while Reachy is speaking, only being addressed takes the floor away from it — an address name (REALTIME_PARTY_ADDRESS_NAMES: 瑞奇/reachy/...) or a control phrase (停/閉嘴/stop, which always win, gate on or off). Speech aimed at someone else pauses the reply for at most REALTIME_BARGE_MAX_PAUSE_MS=4000ms and then resumes it. The gate governs INTERRUPTION only: an unaddressed turn is still transcribed, committed and answered when the robot is not already talking.",
+      "behavior": "REALTIME_SOLO_NAME_GATE (default 1, D-028): while Reachy is speaking, only being addressed takes the floor away from it — an address name (REALTIME_PARTY_ADDRESS_NAMES: 瑞奇/reachy/...) or a control phrase (停/閉嘴/stop, which always win, gate on or off). Speech aimed at someone else pauses the reply for at most REALTIME_BARGE_MAX_PAUSE_MS=4000ms and then resumes it. Since 2026-08-31 (D-029) this knob is INTERRUPTION-ONLY BY CONSTRUCTION: which turns get ANSWERED is a separate knob, REALTIME_ONE_ON_ONE_ANSWER_GATE (default `open`), covered by MODE-ONE-ON-ONE. An unaddressed turn is still transcribed, committed and answered when the robot is not already talking.",
       "verification": "On-robot, solo mode, three probes while Reachy is mid-reply: (1) talk over it WITHOUT the name (a full substantive sentence to another person) — the reply must go briefly silent, then resume, and the journal must show `solo barge rolled back (unaddressed)`; keep talking past 4 s and expect `solo barge pause hit its cap with no address; resuming reply` with the reply audibly continuing over the side conversation. (2) Say 「瑞奇」 mid-reply — it must stop in well under ~1 s, journal `solo barge-in confirmed by transcript (name, N chars)` (or `by partial transcript (name)` if the transcriber emits usable partials). (3) Say 「停」 alone — one character, below REALTIME_MIN_TURN_CHARS — it must still stop, reason `control phrase`. Negative control: REALTIME_SOLO_NAME_GATE=0 in the instance .env restores interrupt-on-any-substantive-speech.",
       "state": "implemented-unverified",
       "evidence": null,
@@ -235,6 +236,86 @@
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot: listen across a normal session for content-calibrated length, absent preambles and absent padding; confirm the max_output_tokens warning does not appear"
+    },
+    {
+      "id": "MODE-BOOT-DEFAULT",
+      "behavior": "A fresh boot comes up in 多人聊天模式 and answers only when addressed by name (operator amendment, 2026-08-31, D-029). REALTIME_DEFAULT_MODE is the knob; REALTIME_PARTY_DEFAULT is no longer read and warns if set while REALTIME_DEFAULT_MODE is unset.",
+      "verification": "Power-cycle or restart the app with no REALTIME_DEFAULT_MODE in the instance .env. The startup journal must show the greeting, and then, on the first ambient sentence spoken near the robot WITHOUT its name, `party gate: denied ambient turn` — and no reply. Say 「瑞奇你好」 and it must answer. Also confirm the startup line `Tools to be used in conversation:` still lists 22 names (the boot mode changes the posture, not the tool surface). If the instance .env still carries REALTIME_PARTY_DEFAULT, expect one startup WARNING naming the mode actually booted — that is the dead-knob announcement, not a failure.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: restart with no REALTIME_DEFAULT_MODE set; one unaddressed ambient sentence (denied) then one 「瑞奇你好」 (answered); read the 22-name startup tool line"
+    },
+    {
+      "id": "MODE-ONE-ON-ONE",
+      "behavior": "After switching into 一對一聊天模式 by voice, a single person is answered without saying the robot's name; a backchannel 「嗯嗯」 gets no reply. REALTIME_ONE_ON_ONE_ANSWER_GATE=open is the default rule.",
+      "verification": "On-robot. FIRST say 「切到一對一聊天模式」 (a fresh boot is in 多人聊天模式 — operator amendment 2026-08-31) and confirm the journal shows `conversation mode: group -> one_on_one` followed by `session updated (conversation mode one_on_one)`. Then ask three ordinary questions WITHOUT saying 瑞奇: each must be answered once, exactly once, with no `one-on-one gate: no answer for a non-substantive turn` line for any of them — and exactly that line for an 「嗯」. Negative control: put REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only in the instance .env, restart, switch into 一對一聊天模式 by voice again (the boot mode is 多人聊天模式), and confirm an unaddressed SUBSTANTIVE question is transcribed with `one-on-one gate: no answer for a non-substantive turn` and gets no reply; then remove the line again.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: voice-switch into 一對一聊天模式, three unaddressed questions (each answered once) plus one 「嗯」 (denied); then the name_only negative control and remove the env line"
+    },
+    {
+      "id": "MODE-GROUP-SWITCH",
+      "behavior": "「切到多人聊天模式」 flips back by voice from any other mode, the model confirms in one sentence, and party semantics are unchanged.",
+      "verification": "On-robot from 一對一聊天模式: journal `conversation mode: one_on_one -> group` followed by `session updated (conversation mode group)`; ambient chatter afterwards logs `party gate: denied ambient turn`. The spoken confirmation sentence must come AFTER that update line — the tool awaits the acknowledgement (Codex round 1, P1-1), which is the whole point of the ordering. A `conversation mode group applied locally only` warning means the server refused or never acknowledged the update: the client-side gate still holds, but record it and check for `was never acknowledged within 5.0s` on the same run.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: flip back to 多人聊天模式 by voice, confirm the update line precedes the spoken confirmation, then one ambient sentence denied"
+    },
+    {
+      "id": "MODE-RECORD",
+      "behavior": "「進入紀錄模式」 makes Reachy silent; it keeps every line, answered or not; 「瑞奇幫我總結」 reads back a Chinese summary verbatim; leaving the mode wipes the log. The record lives in memory only — never on disk, never exported.",
+      "verification": "On-robot: journal `conversation mode: * -> record`, then `record gate: transcribed without answering` on unaddressed lines, `Record summary written from N logged lines.` on the summary, and `record log cleared (N lines)` on exit. Confirm the live surface in the `Tools in session (record): [...]` line logged on the flip — SIX local names (set_conversation_mode, summarize_conversation, go_to_sleep, wait_for_user, task_status, task_cancel) plus any MCP extras the operator installed, which are never hidden in any mode. The startup-only `Tools to be used in conversation:` line does NOT reflect a mid-visit flip, which is why the per-update line exists (Codex round 1, P2-12). If the summary comes back as 「剛剛的記錄整理失敗了，要不要再說一次？」, the summarizer failed or overran RECORD_SUMMARY_TIMEOUT_S=20.0 — raise the knob (1.0-60.0), do not treat it as a silent pass. Known accepted edge: a settings/backend restart mid-meeting keeps the log but drops the mode back to the boot default, so recording silently stops until 紀錄模式 is re-entered.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: enter 紀錄模式, let a few unaddressed lines land, ask for a summary, then leave the mode and read the four journal lines plus the six-name tool line"
+    },
+    {
+      "id": "VOICE-LOOK-AROUND",
+      "behavior": "「轉到右邊去看看有誰」 physically turns the head, then describes what the camera saw — one composite tool instead of a prompted move_head-then-camera chain.",
+      "verification": "On-robot: journal `Tool call: look_around direction=right`; the head visibly moves BEFORE the description; and a description that follows a failed move must not claim the turn (the tool returns `direction_requested`, never `direction_moved`, because the motion API confirms queueing and not execution). Ask 「看一下你後面」 as a negative control: `behind` is deliberately not in the schema and body rotation is out of scope, so the model must not fabricate a turn it cannot make.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: 「轉到右邊去看看有誰」 with the head watched; confirm motion precedes the description and that a blocked move is not described as a completed turn"
+    },
+    {
+      "id": "VOICE-SLEEP-QUIESCE",
+      "behavior": "「睡覺吧」 lets the goodbye finish, then the body lies down; no speech after the pose, and no `barge-in rolled back; resuming reply` afterwards.",
+      "verification": "On-robot, journal order: `Tool call: go_to_sleep` -> `sleep quiesce: microphone muted` -> `sleep quiesce: barge machine disarmed` -> (the bounded wait for the reply to finish, which logs nothing unless it overruns) -> `Going to sleep before stopping conversation app.` -> `sleep quiesce: speaker quiet after N.Ns`, and the pose only after that. The two quiesce lines appearing BEFORE the wait is the point (Codex round 2, 2a-6): a live microphone through a ten-second wait is how a repeated 「睡覺吧」 opened a turn nobody answered. A `sleep quiesce: drain cap reached after N.Ns with audio still playing` line means the cap is too tight for this goodbye, not that the fix failed — record it and raise SLEEP_GOODBYE_DRAIN_CAP_S (0.0-15.0, default 6.0). If `go_to_sleep: the goodbye response did not finish in time` appears, the response wait (P2-10) hit its own cap. Repeat the command twice and confirm the second returns `already_requested`.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: 「睡覺吧」 with the journal open — confirm the six-line order, the goodbye audible before the body moves, and `already_requested` on an immediate repeat"
+    },
+    {
+      "id": "VOICE-NO-DOUBLE-ANSWER",
+      "behavior": "Talking over Reachy no longer queues a second full answer behind the resumed reply. create_response is false in every mode since 2026-08-31, so a turn is answered only by the client after its mode's gate accepted it.",
+      "verification": "On-robot: interrupt mid-reply with an UNADDRESSED sentence three times. Each time the reply must resume and NO extra answer may follow; the journal shows the rollback line (`barge-in rolled back; resuming reply`) and no matching `response.created` for that turn. Secondary measurement while you are there: client-driven answering adds one queue hop per turn versus server auto-answer — read `Turn latency: response.created … ms` and record the delta against the previous install.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: three unaddressed talk-overs mid-reply; confirm no second answer follows any of them, and record the turn-latency delta"
+    },
+    {
+      "id": "VOICE-COMMENTARY-SUPPRESS",
+      "behavior": "gpt-realtime-2.x preambles never play: an output item whose `phase` is `commentary` has its transcript and audio dropped client-side, while the item still closes its turn normally.",
+      "verification": "On-robot with the module at DEBUG: journal `suppressing commentary-phase item …` / `dropping commentary-phase audio for item …` with nothing audible for those items. If those lines NEVER appear across a whole visit, record that as `preambles not observed on this model snapshot` rather than a pass — and if they never appear WHILE preambles are still audible, the `phase` field is not arriving on `response.output_item.added` (it may only be on `output_item.done`, after the audio has streamed), which is a follow-up, not a fix.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: one visit at DEBUG for this module; grep for the two commentary lines and judge them against whether preambles were actually heard"
+    },
+    {
+      "id": "TOOLS-CONSOLIDATED",
+      "behavior": "The calendar / to-do / drive / NAS / music / TV families are single action-enum tools (calendar, tasks, drive, nas, music, tv) delegating to the untouched originals, and every old behavior — including the spoken confirmation before a delete, a trash or an upload — is unchanged. sweep_look, self_destruct and mad_laugh are retired.",
+      "verification": "On-robot: run one action per family (「幫我加個行程」、「加到待辦」、「雲端有什麼檔案」、「放首歌」、「電視上放那個」、「找一下那年的影片」) plus one destructive one (「把星期五那個會取消」) and confirm the spoken confirmation still gates it. Journal shows `Tool call: calendar action=add`-style lines with the delegate's own log line right after — the façade validates the action NAME only, so each delegate's own error strings and its prereq-before-args check order must be visibly unchanged.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: one action per family plus one gated destructive action; confirm the action= journal lines and the unchanged confirmation read-back"
+    },
+    {
+      "id": "TOOLBOX-DYNAMIC",
+      "behavior": "22 tools are loaded at rest; a productivity or media request opens its box with open_toolbox and completes in the SAME turn. Boxes accumulate within a mode (22 / 27 / 24 / 29, plus any MCP extras) and close together at a mode switch, at sleep and at session start.",
+      "verification": "On-robot, and the COLD-START case is mandatory: with no box open and nothing else said first, say 「幫我加個行程，明天下午三點看牙醫」. Reachy must call open_toolbox and then calendar in the same turn, with no second prompt to the user and no silent skip (the [COMMUNITY]-reported 2.1-mini failure this row exists to catch). Journal: `Tool call: open_toolbox category=productivity` -> `Tools in session (one_on_one): [...]` listing 27 names -> `session updated (conversation mode one_on_one)` -> `toolbox opened: productivity (...)` -> `Tool call: calendar action=add`. Repeat cold for media (「電視上放那個」). NEGATIVE CONTROL for the always-core stop lane: 「放首歌」 then 「音樂關掉」 must both work with NO open_toolbox call in between (Codex round 1, P2-7). Then switch modes and confirm `toolboxes closed (mode -> group): productivity`. Also confirm the startup line `Tools to be used in conversation:` lists 22 names. A `toolbox … was not applied by the server; rolled back` line means the update failed or a mode switch raced it — the box is correctly discarded, but record it.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "operator on-robot: cold-start probe for productivity and for media, the music stop-lane negative control, a mode switch to see the boxes close, and the 22-name startup line. If the cold start makes the model ask the user again instead of continuing, the fallback is to promote that family into the static core (22 -> 27 productivity, 22 -> 24 media), not to prompt harder — record which and why"
     },
     {
       "id": "FACE-ROUTING",

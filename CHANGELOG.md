@@ -5,7 +5,55 @@ install that shipped the release (`1.17.0` = the seventeenth install), patch
 numbers are fix-only redeploys. Versions before 1.17.0 were assigned
 retroactively — the wheel said `1.0.0` for the first sixteen installs — and
 their entries below are compact summaries reconstructed from `progress.md`
-and `DECISIONS.md` (D-numbers cite the design records).
+and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
+the eighteenth install was a metadata-only redeploy that re-shipped the
+`1.17.0` wheel, so it carried no release of its own.
+
+## [1.19.0] — 2026-08-31 · the conversation-modes wave
+
+Deployed as the nineteenth install (commit `…`, wheel sha `…`).
+Design record D-029.
+
+Reachy now has three ways of being in a room, and you switch between them by
+saying so.
+
+- **It wakes up in 多人聊天模式.** In a room with several people it listens
+  quietly and answers when you say its name — the failure it used to have was
+  waking up ready to answer every overheard sentence. 「切到一對一聊天模式」
+  gives you the old always-answering behaviour back when it is just the two of
+  you, and 「進入紀錄模式」 turns it into a silent scribe that writes the whole
+  meeting down and reads a summary back when you ask (「瑞奇幫我總結」). That
+  record lives in memory only and is wiped when you leave the mode or go to
+  sleep.
+- **It stops answering things you did not say to it.** Every reply is now the
+  robot's own decision rather than the server's reflex, which also kills the
+  double answer: talk over Reachy and the sentence it was saying resumes — no
+  second full answer queued behind it.
+- **It turns its head when you tell it to look somewhere.** 「轉到右邊去看看
+  有誰」 moves first and describes second, instead of describing whatever was
+  already in front of it.
+- **It finishes saying goodbye before it lies down.** 「睡覺吧」 mutes the
+  microphone, lets the goodbye play out, and only then takes the sleep pose —
+  no more cut-off farewells, and no turn opened by the goodbye's own echo.
+- **It picks the right tool more often, because it sees 22 instead of 41.**
+  The calendar/to-do/drive/email/Notion family and the TV/NAS-video family load
+  the moment a request needs them, six overlapping tool families became one
+  tool each, and three tools nobody used were retired. Music stays always
+  loaded, so 「音樂關掉」 never has to wait for anything.
+- **And it stops muttering to itself.** The 2.x model's 「讓我想想…」-style
+  preambles are dropped before they reach the speaker.
+
+### For contributors
+
+- `ConversationMode` enum + `set_conversation_mode` replace the `party_mode`
+  boolean; `REALTIME_DEFAULT_MODE` replaces `REALTIME_PARTY_DEFAULT`, which is
+  now a dead knob that warns. New: `REALTIME_ONE_ON_ONE_ANSWER_GATE`,
+  `RECORD_SUMMARY_TIMEOUT_S`, `SLEEP_GOODBYE_DRAIN_CAP_S`.
+- All live `session.update`s go through one ordered, acknowledged,
+  single-flight mechanism with an unmatched-acknowledgement debt counter — mode
+  flips and toolbox opens await it, so the model never speaks under a session
+  shape the server has not applied yet.
+- Three Codex review rounds, 45 findings, 45 accepted. Suite 1746/30.
 
 ## [1.17.0] — 2026-08-31 · the human-like-conversation wave
 

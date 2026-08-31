@@ -5,6 +5,45 @@ history of this file.
 
 ## Current state
 
+**THE CONVERSATION-MODES WAVE IS IMPLEMENTED AND REVIEWED — NOT MERGED, NOT
+DEPLOYED (branch `conversation-modes`, 2026-08-31).** Twelve tasks off
+`docs/plans/2026-08-31-conversation-modes-plan.md` (three Codex review rounds,
+**45 findings — 3 Critical / 27 Important / 15 Minor, 45 accepted, 0
+rejected**, plus one post-review operator amendment making `GROUP` the boot
+default). Design record: **D-029**.
+
+What it changes, in three groups.
+**(1) Conversation modes.** `ConversationMode` (`ONE_ON_ONE` / `GROUP` /
+`RECORD`) replaces the party-mode boolean, switched by voice through
+`set_conversation_mode`. **Reachy now boots into 多人聊天模式**
+(`REALTIME_DEFAULT_MODE`, operator amendment) — a robot in a shared room must
+not wake up answering every overheard sentence. `REALTIME_PARTY_DEFAULT` is
+dead and warns if set. 紀錄模式 keeps an in-memory-only room log (2000 lines,
+distinct from D-027's 40-line `session_transcript`) with a spoken Chinese
+summary via `summarize_conversation`. A new `REALTIME_ONE_ON_ONE_ANSWER_GATE`
+(default `open`) decides what gets *answered*, deliberately separate from
+`REALTIME_SOLO_NAME_GATE`, which still decides only what may *interrupt*.
+`create_response=false` in every mode, which kills the double answer.
+**(2) The tool diet: 41 → 22 at the start of a turn.** 18 CRUD tools became 6
+action-enum families (`calendar`, `tasks`, `drive`, `nas`, `music`, `tv`)
+delegating to the untouched originals; `sweep_look`, `self_destruct` and
+`mad_laugh` were deleted; the productivity and TV/NAS families load on demand
+via `open_toolbox` (22 / 27 / 24 / 29, plus any MCP extras, boxes accumulating
+within a mode). All live `session.update`s now run through one ordered,
+acknowledged, single-flight mechanism with an unmatched-ack debt counter.
+**(3) Three on-robot fixes.** `look_around` is one composite tool that moves
+then looks and reports `direction_requested` (never claiming a move it cannot
+attest); the sleep path is silence → bounded reply wait → drain → pose, so the
+goodbye finishes before the body lies down; and 2.x commentary-phase preambles
+are dropped before they reach the speaker.
+
+Gates on the branch: robot suite **1746 passed / 30 skipped**, `ruff check .`
+and `mypy --strict src` clean. Ten new live rows own the acceptance:
+`MODE-BOOT-DEFAULT`, `MODE-ONE-ON-ONE`, `MODE-GROUP-SWITCH`, `MODE-RECORD`,
+`VOICE-LOOK-AROUND`, `VOICE-SLEEP-QUIESCE`, `VOICE-NO-DOUBLE-ANSWER`,
+`VOICE-COMMENTARY-SUPPRESS`, `TOOLS-CONSOLIDATED`, `TOOLBOX-DYNAMIC`. Nothing
+here is on the device: the **nineteenth install** is what puts it there.
+
 **EIGHTEENTH INSTALL (metadata-only redeploy, 2026-08-31 07:39 robot time):**
 the same code re-shipped as wheel **v1.17.0** (sha `3ddae98d…`) so the robot's
 installed metadata matches the new install-mapped versioning scheme
@@ -175,31 +214,91 @@ LED first; dark = power event, not software.
 
 ## Next action
 
-1. Merge `name-gate-patience` into `main`.
-2. Deploy the **seventeenth install** via the `reachy-deploy` ritual — that is
-   what puts the whole D-028 wave (name gate, max pause, late interrupt,
-   `conversation.item.truncate`, the patience defaults, the token rail, the
-   hardening-block verbosity section) on the robot. Manifest must still cover
+1. Merge `conversation-modes` into `main`.
+2. **Re-sync `persona.md` FIRST — this is a hard pre-deploy gate, not a
+   chore.** The instance copy still names all eighteen retired CRUD sub-tools,
+   `party_mode`, and the `### self_destruct` ritual section, and it reaches the
+   robot only by the operator's scp + sha256 ritual (D-016), never by the
+   wheel. Installing the wheel without it puts a prompt describing a tool belt
+   that no longer exists in front of the model — the worst possible pairing
+   with a wave whose whole point is tool-selection quality. The same change
+   must edit `reachy_companion/tests/test_hanova_integration.py`'s
+   `PERSONA_TOOL_TOKENS`, which currently pins `("play_music", "nas_skip")` —
+   i.e. the *stale* state, deliberately, so the test says which copy is which.
+3. Deploy the **nineteenth install** via the `reachy-deploy` ritual — that is
+   what puts the whole D-029 wave (the three modes and the GROUP boot default,
+   the separate answer gate, the 22-tool surface with on-demand toolboxes, the
+   `look_around` composite, the sleep quiesce, commentary suppression, the
+   verbatim envelopes) on the robot. Manifest must still cover
    `people.v1.json` + `face_snapshots/`.
-3. **Re-sync `persona.md` in the same pass** — it changed in Task 8 (the
-   no-preamble line) and reaches the robot only by the operator scp + sha256
-   ritual (D-016), never by the wheel.
-4. Then the five new live rows: `VOICE-NAME-GATE` (talk over it without the
-   name → rolls back; 「瑞奇」 → stops; 「停」 alone → stops),
-   `VOICE-LATE-INTERRUPT` (long addressed sentence → resume at the cap, then
-   stop when the transcript lands), `VOICE-TRUNCATE` (interrupt, then ask
-   「你剛剛說到哪」), `VOICE-PATIENCE` (~1 s Mandarin mid-sentence pauses),
-   `VOICE-BREVITY` (subjective, across a normal session) — plus the still-owed
-   `MEMORY-LAST-CHAT`, `MEMORY-OPEN-LOOPS` and `BACKEND-CONSOLIDATE` rows from
+   Deploy-time chores, both cheap:
+   (a) **No `.env` surgery is owed.** The instance's
+   `REALTIME_SOLO_NAME_GATE=1` keeps meaning exactly what it always meant, and
+   the new answer gate has its own variable precisely so the ritual's
+   restore-from-backup cannot change conversation behavior (D-029, Open
+   question 1). If the instance still carries `REALTIME_PARTY_DEFAULT`, expect
+   one startup warning naming the mode actually booted; the fix is to delete
+   the line or say it as `REALTIME_DEFAULT_MODE=…`.
+   (b) Drop `HANOVA_SELF_DESTRUCT_YT_ID` / `HANOVA_MAD_LAUGH_YT_ID` from the
+   instance `.env` when convenient — they configure nothing now, and leaving
+   them costs nothing either.
+4. **Live-endpoint watchpoints on the first boot** — four things the unit
+   suite structurally cannot answer, all readable from the journal:
+   - `was never acknowledged within 5.0s` on a healthy connection would mean
+     this endpoint does not send `session.updated` for every `session.update`
+     it applies. The fallback is to send without the wait, not to leave every
+     flip failing.
+   - `suppressing commentary-phase item …` never appearing *while preambles
+     are still audible* would mean `phase` arrives only on
+     `response.output_item.done`, after the audio has streamed — a follow-up,
+     not a fix.
+   - `sleep quiesce: drain cap reached … with audio still playing` would mean
+     6.0 s is too tight for a long Chinese goodbye; raise
+     `SLEEP_GOODBYE_DRAIN_CAP_S` rather than treating it as a failed fix.
+   - The **cold** 「幫我加個行程」 probe: if the model asks the user again
+     instead of continuing to `calendar` in the same turn, the router pattern
+     is not safe on this tier and the family must be promoted into the static
+     core (22 → 27) rather than prompted harder — record which, and why.
+5. Then the ten new live rows: `MODE-BOOT-DEFAULT`, `MODE-ONE-ON-ONE`,
+   `MODE-GROUP-SWITCH`, `MODE-RECORD`, `VOICE-LOOK-AROUND`,
+   `VOICE-SLEEP-QUIESCE`, `VOICE-NO-DOUBLE-ANSWER`,
+   `VOICE-COMMENTARY-SUPPRESS`, `TOOLS-CONSOLIDATED`, `TOOLBOX-DYNAMIC` — plus
+   the still-owed D-028 five (`VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`,
+   `VOICE-TRUNCATE`, `VOICE-PATIENCE`, `VOICE-BREVITY`) and the
+   `MEMORY-LAST-CHAT`, `MEMORY-OPEN-LOOPS`, `BACKEND-CONSOLIDATE` rows from
    the sixteenth install.
 
 ## Pending verification (operator)
 
-Twenty-six `implemented-unverified` rows in `feature_list.json` still need live
+Thirty-six `implemented-unverified` rows in `feature_list.json` still need live
 use. **Everything through the engagement-memory wave is DEPLOYED and BOOTED
 (sixteenth install, first boot verified 2026-08-30) and needs only a human in
-front of the camera / a listener in the room; the five new D-028 voice rows
-additionally need the seventeenth install and the persona re-sync.**
+front of the camera / a listener in the room; the five D-028 voice rows and the
+ten D-029 rows below additionally need their installs.**
+
+**Conversation modes and the tool diet (ten, D-029 — need the nineteenth
+install and the `persona.md` re-sync):** `MODE-BOOT-DEFAULT` (restart with no
+`REALTIME_DEFAULT_MODE` set → one unaddressed ambient sentence denied
+(`party gate: denied ambient turn`), 「瑞奇你好」 answered, and the startup tool
+line lists 22 names); `MODE-ONE-ON-ONE` (voice-switch in first, then three
+unaddressed questions each answered exactly once and one 「嗯」 denied; plus the
+`REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only` negative control);
+`MODE-GROUP-SWITCH` (`conversation mode: one_on_one -> group` then
+`session updated (conversation mode group)` **before** the spoken
+confirmation); `MODE-RECORD` (silent capture, `Record summary written from N
+logged lines.`, `record log cleared (N lines)` on exit, and a
+`Tools in session (record): [...]` line carrying six local names plus any MCP
+extras); `VOICE-LOOK-AROUND` (head moves before the description, and a failed
+move is never described as a completed turn); `VOICE-SLEEP-QUIESCE` (the
+six-line journal order, goodbye audible before the body moves,
+`already_requested` on an immediate repeat); `VOICE-NO-DOUBLE-ANSWER` (three
+unaddressed talk-overs, no second answer after any of them — and record the
+turn-latency delta from the extra queue hop); `VOICE-COMMENTARY-SUPPRESS` (the
+two DEBUG lines, judged against whether preambles were actually heard);
+`TOOLS-CONSOLIDATED` (one action per family plus one gated destructive one, the
+read-back confirmation unchanged); `TOOLBOX-DYNAMIC` (the **cold-start** probe
+for productivity and media, the 「放首歌」/「音樂關掉」 stop-lane negative
+control, boxes closing on a mode switch, and the 22-name startup line).
 
 **Engagement memory (three, D-027 — on the robot since the sixteenth install,
 awaiting live use):**
@@ -302,7 +401,15 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   brittle). Persona half live at next wake; descriptions ride the sixteenth
   install. Live re-test owed. **Now load-bearing beyond routing:** the
   last-chat summary (D-027) is written only when `go_to_sleep` runs, so a
-  misroute to `party_mode` also costs that visit its memory.
+  misroute also costs that visit its memory. Since D-029 the contrast is
+  `go_to_sleep` (end the interaction) versus `set_conversation_mode` (stay
+  awake, participate differently); `party_mode` no longer exists, and both tool
+  descriptions were rewritten onto the new pair.
+- Conversation mode does NOT persist across a settings or backend restart
+  (D-029 §6, accepted): the record log survives such a restart deliberately,
+  but the mode drops back to the boot default, so 紀錄模式 stops recording
+  silently and a later re-entry appends to the abandoned log with an unmarked
+  gap. Mode persistence is the obvious follow-up and is out of this wave.
 - Same night 06:06 boot: the documented too_far edge played out live —
   wake check rounds ended `too_far` (face visible, person seated across the
   room), stranger intro spoken, extended window then recognized 小諾 (0.454)
@@ -424,3 +531,16 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   pinned low), a 900-token runaway rail, and prompt-taught verbosity
   calibration — implemented and reviewed, **not deployed**; the seventeenth
   install plus a persona re-sync is what puts it on the device.
+- **2026-08-31** — the seventeenth install (D-028 live) and the eighteenth
+  (metadata-only redeploy of the same wheel as `v1.17.0`, so no `1.18.0`
+  release exists); then the **conversation-modes wave**, 12 tasks on branch
+  `conversation-modes`, **D-029** (1571/30 → **1746/30**, net of the deleted
+  `tests/test_hanova_gags.py`): three voice-switched
+  conversation modes with 多人聊天模式 as the boot default, an answer gate
+  separate from the interruption gate, client-driven responses in every mode,
+  the 紀錄模式 room log and its spoken summary, the 41 → 22 tool diet (six
+  action-enum families, three deletions, `open_toolbox`), one ordered and
+  acknowledged session-update mechanism, the `look_around` composite, the sleep
+  quiesce, and commentary-phase suppression — implemented and reviewed, **not
+  merged and not deployed**; the nineteenth install plus a mandatory
+  `persona.md` re-sync is what puts it on the device.
