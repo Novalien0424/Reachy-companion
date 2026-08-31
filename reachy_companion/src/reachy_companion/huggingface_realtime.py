@@ -800,11 +800,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # asking afterwards always answered no.
         turn_in_flight = self._party_speech_open or self._barge_speech_open
         self._conversation_mode = target
-        if previous is ConversationMode.RECORD:
-            # The room log is scoped to one stay in the mode as well as to one
-            # visit: leaving 紀錄模式 ends the recording, and a later 紀錄模式
-            # must not open on the last meeting's lines.
-            clear_record_log(self.deps)
         self._party_speech_open = False
         # The solo speech flag is maintained by the solo branch of
         # `speech_stopped`, which stops running the moment the mode changes.
@@ -835,6 +830,23 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # decided under the mode it began in.
         if not turn_in_flight:
             self._turn_mode = target
+        # Last of the local flip, deliberately: everything above is in-memory
+        # flag work that cannot fail, so a raise here cannot leave a
+        # half-flipped handler, and nothing above can leave the log cleared
+        # under a mode that never finished changing.
+        #
+        # What this guarantees is narrower than "紀錄模式 always opens empty":
+        # it fires on a flip that goes through this method — the voice command
+        # and the `set_conversation_mode` tool. A settings or backend restart
+        # never reaches here (the new handler simply boots at the default mode,
+        # `_boot_conversation_mode`), so a recording abandoned that way is left
+        # standing on purpose (P1-5) and survives until the sleep that ends the
+        # visit clears it in `shutdown()`. A second 紀錄模式 after such a
+        # restart therefore continues the abandoned log rather than opening a
+        # blank one — the deliberate cost of not throwing away a meeting that
+        # was still happening.
+        if previous is ConversationMode.RECORD:
+            clear_record_log(self.deps)
         logger.info("conversation mode: %s -> %s", previous.value, target.value)
         if self.connection is not None:
             if not await self._push_mode_update():
@@ -919,10 +931,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         straight to the output queue, `_emit_debounced_partial` `:2073`), and the
         `final` guard keeps it that way for any future caller, so the log holds
         finished lines only.
+
+        The broadcast goes FIRST. Recording is the added duty here and the
+        console/JSON-RPC transcript is the pre-existing one: were the order
+        reversed, a raise while recording would silently cost the operator the
+        line they were watching for. The base already swallows a misbehaving
+        observer, so nothing below can be starved by one.
         """
+        super()._emit_transcript(role, text, final)
         if final and text and self._current_mode() is ConversationMode.RECORD:
             record_room_transcript(self.deps, role, text)
-        super()._emit_transcript(role, text, final)
 
     def _mode_tool_exclusions(self) -> list[str]:
         """Tool names hidden from the session in the current mode. Base: none."""

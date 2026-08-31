@@ -157,6 +157,53 @@ def test_emit_transcript_still_reaches_the_observer() -> None:
     assert seen == [("user", "他說下週三", True)]
 
 
+def test_a_failed_recording_still_lets_the_broadcast_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The console line is the pre-existing duty; recording is the added one.
+
+    Ordering, not error handling: the broadcast happens first, so a raise while
+    recording costs the log a line but never costs the operator the line they
+    were watching for. The failure is left to surface — it is not swallowed.
+    """
+    from reachy_companion import huggingface_realtime as hf_mod
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("record log exploded")
+
+    monkeypatch.setattr(hf_mod, "record_room_transcript", _boom)
+    seen: list[tuple[str, str, bool]] = []
+    h = _record_handler()
+    h._transcript_observer = lambda role, text, final: seen.append((role, text, final))
+
+    with pytest.raises(RuntimeError, match="record log exploded"):
+        h._emit_transcript("user", "他說下週三", True)
+
+    assert seen == [("user", "他說下週三", True)]
+
+
+@pytest.mark.asyncio
+async def test_a_flip_that_raises_partway_keeps_the_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The clear is the LAST act of the flip, so a half-flip cannot lose lines.
+
+    `_resume_playback` is the one call in `set_conversation_mode` that runs real
+    logic rather than flag assignment. If it raises, the mode change never
+    completed — and a recording must not have been thrown away on behalf of a
+    flip that did not happen.
+    """
+    h = _record_handler()
+    record_room_transcript(h.deps, "user", "會議內容")
+    h._barge_paused = True
+
+    def _boom(**kwargs: object) -> None:
+        raise RuntimeError("resume exploded")
+
+    monkeypatch.setattr(h, "_resume_playback", _boom)
+
+    with pytest.raises(RuntimeError, match="resume exploded"):
+        await h.set_conversation_mode("one_on_one")
+
+    assert [text for _role, text, _ts in h.deps.record_log] == ["會議內容"]
+
+
 @pytest.mark.asyncio
 async def test_leaving_record_mode_clears_the_log() -> None:
     """In-memory per visit AND per stay in the mode: no files, no export."""
