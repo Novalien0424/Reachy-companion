@@ -179,3 +179,41 @@ def test_inactivity_timeout_thread_closes_stream_manager_without_sleep_callback(
     thread.join(timeout=1.0)
     assert not thread.is_alive()
     stream_manager.close.assert_called_once_with()
+
+
+def test_begin_sleep_silences_without_consuming_the_sleep_latch(monkeypatch) -> None:
+    """`begin_sleep` is step 1-3 only; the pose still has to happen after it.
+
+    `go_to_sleep_requested` is `go_to_sleep_and_stop_app`'s own duplicate latch.
+    If the quiesce closure set it, the very first tool-driven sleep would come
+    back `already_requested` and Reachy would never lie down (2026-08-31 plan,
+    Task 9).
+    """
+    from reachy_companion import app_lifecycle
+    from reachy_companion.hanova import audio_drain
+
+    monkeypatch.setattr(app_lifecycle, "request_stop_current_app", lambda _robot, _logger: True)
+    monkeypatch.setattr(audio_drain, "is_audible", lambda: False)
+    deps = _run_app(monkeypatch).deps
+
+    deps.begin_sleep()
+    assert deps.sleep_requested is True
+
+    result = deps.go_to_sleep()
+
+    assert result["status"] == "sleeping"
+    deps.reachy_mini.goto_sleep.assert_called_once_with()
+    # The duplicate short-circuit still stands for a repeated 「睡覺吧」.
+    assert deps.go_to_sleep()["status"] == "already_requested"
+
+
+def test_begin_sleep_mutes_the_mic_and_disarms_the_live_handler(monkeypatch) -> None:
+    """The wiring reaches the real stream manager and its current handler."""
+    stubbed = _run_app(monkeypatch)
+    stream_manager = stubbed.stream_cls.return_value
+
+    stubbed.deps.begin_sleep()
+
+    assert stream_manager._mic_muted is True
+    stream_manager.handler.on_external_interrupt.assert_called_once_with()
+    stream_manager.clear_audio_queue.assert_not_called()

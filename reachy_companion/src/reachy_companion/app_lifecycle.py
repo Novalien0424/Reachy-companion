@@ -1,9 +1,11 @@
 """Helpers for app startup and shutdown lifecycle behavior."""
 
+import time
 import asyncio
 import logging
 import urllib.error
 import urllib.request
+from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -11,6 +13,8 @@ import numpy.typing as npt
 from reachy_mini import ReachyMini
 from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
 from reachy_mini.utils.interpolation import distance_between_poses
+from reachy_companion.hanova import audio_drain
+from reachy_companion.audio.envparse import env_float
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.go_to_sleep import GoToSleep
 
@@ -73,6 +77,84 @@ def wake_up_if_sleeping(robot: ReachyMini, logger: logging.Logger) -> bool:
         logger.error("Failed to run wake-up movement: %s", e)
         return False
     return True
+
+
+# --- sleep quiesce (2026-08-31 plan) ----------------------------------------
+# Observed on-robot 2026-08-31: `go_to_sleep` ran the sleep pose immediately
+# while the mic, the player and the barge machine stayed live for another five
+# to ten seconds. The journal shows a goodbye spoken after the body was already
+# asleep, a second `go_to_sleep` from a repeated command, and a
+# `barge-in rolled back; resuming reply` resurrecting parked audio over a
+# sleeping robot. The cure is ordering, not new machinery — and the order is
+# silence, then wait, then drain, then pose (Codex round 2, 2a-6). Silencing
+# last would leave the microphone live for the whole of the wait.
+SLEEP_DRAIN_POLL_S: Final[float] = 0.1
+SLEEP_DRAIN_CAP_DEFAULT_S: Final[float] = 6.0
+
+
+def sleep_drain_cap_s() -> float:
+    """Longest the sleep pose waits for the goodbye to finish playing."""
+    return env_float("SLEEP_GOODBYE_DRAIN_CAP_S", SLEEP_DRAIN_CAP_DEFAULT_S, lo=0.0, hi=15.0)
+
+
+def begin_sleep_quiesce(stream_manager: Any, logger: logging.Logger) -> None:
+    """Silence the robot's inputs. First thing the sleep path does.
+
+    Thread-agnostic by construction, because both callers exist: the tool's own
+    event loop reaches it through `deps.begin_sleep`, and the worker thread
+    reaches it again (idempotently) from `go_to_sleep_and_stop_app`.
+    `_mic_muted` is a plain flag the record loop reads (`console.py:912`) and
+    `on_external_interrupt()` marshals its cancels onto the handler's own loop
+    (`huggingface_realtime.py:1434-1470`).
+
+    Two deliberate omissions:
+
+    * **No flush.** `clear_audio_queue()` would run `on_external_interrupt`
+      *and* drop the player queue — which holds the goodbye the model spoke in
+      the same response as the tool call. That audio is the whole point.
+    * **No `turn_detection = None` push.** Muting the mic is the cheaper hard
+      stop and needs no round trip to a server we are about to disconnect from.
+    """
+    if stream_manager is not None:
+        # Cheapest hard stop: frames never reach `handler.receive`, so no new
+        # turn can commit between here and the disconnect — including one the
+        # goodbye's own echo would otherwise open while we wait for it.
+        stream_manager._mic_muted = True
+        logger.info("sleep quiesce: microphone muted")
+    handler = getattr(stream_manager, "handler", None)
+    disarm = getattr(handler, "on_external_interrupt", None)
+    if callable(disarm):
+        # Every barge timer stands down and the pause state is dropped, so
+        # nothing can resume parked audio over a sleeping robot.
+        disarm()
+        logger.info("sleep quiesce: barge machine disarmed")
+
+
+def wait_for_speaker_quiet(logger: logging.Logger) -> float:
+    """Wait, bounded, for the goodbye to finish playing. Returns seconds waited.
+
+    Runs on the `go_to_sleep` worker thread (`tools/go_to_sleep.py` hands the
+    closure to `asyncio.to_thread`), so it blocks with `time.sleep`;
+    `audio_drain.is_audible()` takes the module lock and is safe from there.
+
+    Bounded for the boot gate's reason: a stuck drain estimate must never hold
+    the robot awake. By the time this runs, the inputs are already silenced and
+    the response has already finished emitting, so everything it is waiting on
+    is audio that genuinely exists.
+    """
+    started = time.monotonic()
+    deadline = started + sleep_drain_cap_s()
+    while audio_drain.is_audible() and time.monotonic() < deadline:
+        time.sleep(SLEEP_DRAIN_POLL_S)
+    waited = time.monotonic() - started
+    if audio_drain.is_audible():
+        # The cap expired with audio still playing. Saying "speaker quiet" here
+        # would make the journal claim the goodbye finished when the pose that
+        # follows is about to cut it off (Codex round 1, P2-11).
+        logger.info("sleep quiesce: drain cap reached after %.1fs with audio still playing", waited)
+    else:
+        logger.info("sleep quiesce: speaker quiet after %.1fs", waited)
+    return waited
 
 
 def run_go_to_sleep_tool(deps: ToolDependencies, logger: logging.Logger) -> dict[str, object]:

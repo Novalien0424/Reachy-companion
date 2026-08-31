@@ -96,6 +96,11 @@ logger = logging.getLogger(__name__)
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
 
+# How long the sleep path waits for the goodbye's response to finish being
+# generated. Longer than a normal reply needs, short enough that a wedged
+# response cannot leave the robot standing there indefinitely.
+_GOODBYE_RESPONSE_WAIT_S: Final[float] = 10.0
+
 # --- party mode (multi-person hardening, 2026-08-24) -------------------------
 # docs/plans/party-mode-plan.md + docs/multi-person-investigation.md. In a
 # group, most speech is not for the robot: party mode debounces barge-in and
@@ -602,6 +607,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._pending_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._response_done_event: asyncio.Event = asyncio.Event()
         self._response_done_event.set()
+        # The loop this handler's session runs on, captured in
+        # `_run_realtime_session` and released in its `finally`. `asyncio.Event`
+        # is loop-bound, so a caller arriving from another thread's loop — the
+        # inactivity path's `asyncio.run` most of all — has to marshal onto this
+        # one rather than await the event directly (Codex round 2, 2a-5).
+        self._handler_loop: asyncio.AbstractEventLoop | None = None
         self._response_started_or_rejected_event: asyncio.Event = asyncio.Event()
         self._last_response_rejected: bool = False
         self._turn_user_done_at: float | None = None
@@ -1994,6 +2005,59 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         except asyncio.TimeoutError:
             return False
 
+    async def wait_for_reply_finished(self) -> bool:
+        """Wait for the response now being generated to finish. Never raises.
+
+        Step 4 of the sleep path (Codex round 1, P2-10). `go_to_sleep` is called
+        from the tool worker the instant
+        `response.function_call_arguments.done` arrives — which is BEFORE
+        `response.done` and before the rest of the goodbye's audio deltas exist.
+        Draining the speaker at that moment finds nothing audible and the robot
+        lies down mid-sentence. Waiting here means every delta of the goodbye is
+        enqueued before anything starts measuring whether it has played. The
+        microphone and the barge machine are already silenced by the time this
+        runs (round 2, 2a-6), so the wait cannot let a new turn in.
+
+        **Loop-aware** (round 2, 2a-5): the inactivity path reaches `GoToSleep`
+        through `app_lifecycle.run_go_to_sleep_tool`, which does
+        `asyncio.run(...)` on a daemon thread with its own fresh loop. Awaiting
+        `_response_done_event` — an `asyncio.Event` bound to the handler's
+        loop — from there is undefined behavior, so a caller on any other loop
+        is marshalled across. No handler loop at all means nothing to wait for,
+        which is success, not failure.
+        """
+        event = self._response_done_event
+        if event.is_set():
+            return True
+        # A session that died mid-response leaves the event clear forever:
+        # nothing will ever arrive to set it, so waiting is ten seconds of
+        # nothing on every shutdown that follows a dropped websocket (Codex
+        # round 3, finding 2).
+        if self.connection is None:
+            return True
+        loop = self._handler_loop
+        if loop is None or loop.is_closed():
+            return True
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            try:
+                await asyncio.wait_for(event.wait(), timeout=_GOODBYE_RESPONSE_WAIT_S)
+                return True
+            except asyncio.TimeoutError:
+                return False
+        future = asyncio.run_coroutine_threadsafe(
+            asyncio.wait_for(event.wait(), timeout=_GOODBYE_RESPONSE_WAIT_S), loop
+        )
+        try:
+            await asyncio.to_thread(future.result, _GOODBYE_RESPONSE_WAIT_S + 1.0)
+            return True
+        except Exception:  # noqa: BLE001 - timeout, cancellation, or a dead loop
+            future.cancel()
+            return False
+
     def _resolve_backend_voice(
         self,
         voice: str | None,
@@ -2894,6 +2958,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # and leave a live mode flip waiting out its whole timeout.
         self._session_update_ack_debt = 0
         self._receive_loop_active = False
+        # The loop this handler's session runs on, so a caller from another
+        # thread's loop can marshal onto it (round 2, 2a-5).
+        self._handler_loop = asyncio.get_running_loop()
         # Person-scoped memory label (spec §3.3): set on recognition, cleared
         # per session. Cleared here, before the session config is built and
         # therefore before the connection is published, so nothing in the new
@@ -3496,6 +3563,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 # once this loop is over. Conn-guarded inside, because this can
                 # run after a restart's replacement session is already live.
                 self._end_session_updates(conn)
+
+                # A session that dies mid-response leaves `_response_done_event`
+                # clear forever. Anything still waiting on it — the sleep path
+                # most of all — is waiting for a response that can no longer
+                # finish, so end the wait rather than let it burn its timeout
+                # (Codex round 3, finding 2). Conn-guarded for the same reason
+                # as `_end_session_updates(conn)` above: a reconnect's
+                # replacement session owns both of these by the time this runs,
+                # and must not have them cleared out from under it.
+                if self.connection is None or self.connection is conn:
+                    self._response_done_event.set()
+                    self._handler_loop = None
 
                 # Solo barge-in (Task 8): a pause must never outlive the session
                 # that opened it — it would hold audio the next session cannot

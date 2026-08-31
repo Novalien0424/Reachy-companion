@@ -30,11 +30,23 @@ class GoToSleep(Tool):
     }
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> dict[str, Any]:
-        """Put Reachy to sleep and request app shutdown."""
+        """Silence, wait for the goodbye to finish, then put Reachy to sleep."""
         if deps.go_to_sleep is None:
             return {"error": "go_to_sleep is unavailable in this runtime"}
 
         logger.info("Tool call: go_to_sleep")
+        # Order is the fix (Codex round 2, 2a-6). Silence first: the wait below
+        # can take seconds, and a live microphone through it means a repeated
+        # 「睡覺吧」 or the goodbye's own echo opens a turn nobody will answer.
+        if deps.begin_sleep is not None:
+            deps.begin_sleep()
+        # Then wait, because the closure below hands off to a worker thread that
+        # measures whether the speaker has gone quiet — and measuring that
+        # before the response has finished emitting is measuring nothing
+        # (Codex round 1, P2-10).
+        if deps.wait_for_reply_finished is not None:
+            if not await deps.wait_for_reply_finished():
+                logger.warning("go_to_sleep: the goodbye response did not finish in time; sleeping anyway")
         try:
             return await asyncio.to_thread(deps.go_to_sleep)
         except Exception as e:

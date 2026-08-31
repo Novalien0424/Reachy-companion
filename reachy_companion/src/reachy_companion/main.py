@@ -268,6 +268,9 @@ def run(
         # handler rebuilds by the settings UI (voice changes).
         deps.set_conversation_mode = handler.set_conversation_mode
         deps.open_toolbox = handler.open_toolbox
+        # Same rewire-on-rebuild reason: the sleep path must wait on the
+        # handler that is actually live, not the one the settings UI replaced.
+        deps.wait_for_reply_finished = handler.wait_for_reply_finished
         return handler
 
     handler = build_handler(startup_settings.voice)
@@ -302,6 +305,16 @@ def run(
     go_to_sleep_lock = threading.Lock()
     go_to_sleep_requested = threading.Event()
 
+    def begin_sleep() -> None:
+        """Mark the visit over and silence the inputs, before anything waits."""
+        # D-027: still the only writer of this flag, and setting it twice is a
+        # no-op — `go_to_sleep_and_stop_app` sets it again on its own path.
+        # Deliberately NOT `go_to_sleep_requested.set()`: that event is the pose
+        # closure's own duplicate latch, and claiming it here would make the
+        # very sleep this quiesce is preparing return `already_requested`.
+        deps.sleep_requested = True
+        app_lifecycle.begin_sleep_quiesce(stream_manager, logger)
+
     def go_to_sleep_and_stop_app() -> dict[str, Any]:
         """Put Reachy to sleep, then stop the current app."""
         if not go_to_sleep_lock.acquire(blocking=False):
@@ -318,6 +331,15 @@ def run(
 
             logger.info("Going to sleep before stopping conversation app.")
             sleep_error: str | None = None
+
+            # Silencing already happened in the tool (deps.begin_sleep); repeat
+            # it here so the timeout/inactivity paths, which reach this closure
+            # without the tool, get it too. Both calls are idempotent.
+            app_lifecycle.begin_sleep_quiesce(stream_manager, logger)
+            # The response has finished emitting by now, so what this waits on
+            # is audio that genuinely exists: let the goodbye out of the speaker
+            # before the body lies down.
+            app_lifecycle.wait_for_speaker_quiet(logger)
 
             try:
                 robot.disable_wobbling()
@@ -357,6 +379,11 @@ def run(
             go_to_sleep_lock.release()
 
     deps.go_to_sleep = go_to_sleep_and_stop_app
+    # `deps.wait_for_reply_finished` is wired in `build_handler` instead, beside
+    # `set_conversation_mode`: it belongs to whichever handler is live, and the
+    # settings UI rebuilds handlers. `begin_sleep` closes over `stream_manager`,
+    # which is never rebuilt, so it is wired once here.
+    deps.begin_sleep = begin_sleep
 
     def run_go_to_sleep_tool() -> dict[str, Any]:
         return app_lifecycle.run_go_to_sleep_tool(deps, logger)

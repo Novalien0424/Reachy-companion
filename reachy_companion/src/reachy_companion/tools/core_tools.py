@@ -46,6 +46,14 @@ class ToolDependencies:
     camera_enabled: bool = False
     motion_duration_s: float = 1.0
     go_to_sleep: Callable[[], dict[str, Any]] | None = None
+    # Silences the mic and disarms the barge machine before anything waits or
+    # poses (Codex round 2, 2a-6). Optional for the same reason as
+    # `go_to_sleep` itself: every other construction site keeps working with it
+    # simply absent.
+    begin_sleep: Callable[[], None] | None = None
+    # Lets `go_to_sleep` wait for the goodbye's response to finish generating
+    # before the body is put to sleep (Codex round 1, P2-10). Same optionality.
+    wait_for_reply_finished: Callable[[], Awaitable[bool]] | None = None
     # FaceRecognizer from face_id.py (D-013). Optional and untyped for the same
     # reason as go_to_sleep: the runtime injects it in main.py, and every other
     # construction site — tests, the settings UI, older deployments — must keep
@@ -93,9 +101,10 @@ class ToolDependencies:
     # decided not to answer most of all. The maxlen literal must stay equal to
     # record_mode.RECORD_LOG_MAX_ITEMS; importing it here would be a cycle.
     record_log: deque[tuple[str, str, float]] = field(default_factory=lambda: deque(maxlen=2000))
-    # Set only by the go_to_sleep closure in main.py; gates the sleep summary so
-    # settings/backend restarts (console.py:307/:697 also reach shutdown()) don't
-    # write mid-visit.
+    # Set only by main.py's sleep path — `begin_sleep` first, then
+    # `go_to_sleep_and_stop_app` again for the timeout/inactivity routes that
+    # skip the tool. Gates the sleep summary so settings/backend restarts
+    # (console.py:307/:697 also reach shutdown()) don't write mid-visit.
     sleep_requested: bool = False
 
     def record_recognition(self, name: str) -> None:
