@@ -439,13 +439,28 @@ def test_max_output_tokens_env_override(
     assert handler._get_session_config(tool_specs=[])["max_output_tokens"] == 200
 
 
-def test_max_output_tokens_is_clamped_to_the_api_ceiling(
-    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+@pytest.mark.parametrize(("raw", "clamped"), [("99999", 4096), ("-5", 1)])
+def test_out_of_range_max_output_tokens_warns_and_clamps(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handler: OpenAIRealtimeHandler,
+    raw: str,
+    clamped: int,
 ) -> None:
-    """An out-of-range value is clamped rather than sent for the server to reject."""
-    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", "99999")
+    """Clamping is never silent — `-5` would otherwise mute the robot at one token.
 
-    assert handler._get_session_config(tool_specs=[])["max_output_tokens"] == 4096
+    Above the ceiling the clamp saves a server rejection; below the floor it is
+    a real misconfiguration the operator has to be able to see in the journal.
+    Same "every knob degrades with a warning" rule as the VAD knobs.
+    """
+    monkeypatch.setenv("REALTIME_MAX_OUTPUT_TOKENS", raw)
+
+    with caplog.at_level(logging.WARNING):
+        cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["max_output_tokens"] == clamped
+    assert "REALTIME_MAX_OUTPUT_TOKENS" in caplog.text
+    assert "Clamping" in caplog.text
 
 
 def test_invalid_max_output_tokens_warns_and_uses_the_default(

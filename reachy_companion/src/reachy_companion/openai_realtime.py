@@ -103,22 +103,18 @@ def _max_output_tokens() -> int | None:
     `incomplete`/`max_output_tokens` — research doc §3), which is why the
     default is loose and the trip is logged as a warning. Brevity itself is
     the prompt's job (persona + hardening block).
+
+    Only the three disable sentinels are handled here; every other value goes
+    through `env_int`, which is what makes a malformed knob warn and fall back
+    and an out-of-range one warn and clamp. Clamping silently was the bug (fix
+    round, finding 1): `-5` is a one-token, effectively mute robot, and that is
+    precisely the misconfiguration the "every knob degrades with a warning"
+    rule exists to put in the journal.
     """
     raw = (os.getenv("REALTIME_MAX_OUTPUT_TOKENS") or "").strip().lower()
     if raw in ("inf", "off", "0"):
         return None
-    if not raw:
-        return _MAX_OUTPUT_TOKENS_DEFAULT
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning(
-            "Ignoring invalid REALTIME_MAX_OUTPUT_TOKENS=%r; using %d.",
-            raw,
-            _MAX_OUTPUT_TOKENS_DEFAULT,
-        )
-        return _MAX_OUTPUT_TOKENS_DEFAULT
-    return max(1, min(value, 4096))
+    return env_int("REALTIME_MAX_OUTPUT_TOKENS", _MAX_OUTPUT_TOKENS_DEFAULT, lo=1, hi=4096)
 
 
 def _noise_reduction() -> NoiseReduction | None:
