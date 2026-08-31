@@ -114,6 +114,7 @@ def _clean_barge_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_VAD_TYPE",
         "REALTIME_VAD_SILENCE_DURATION_MS",
         "REALTIME_SOLO_NAME_GATE",
+        "REALTIME_ONE_ON_ONE_ANSWER_GATE",
         "REALTIME_BARGE_MAX_PAUSE_MS",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -2108,3 +2109,140 @@ async def test_the_loop_truncates_across_a_tool_follow_up_response(monkeypatch: 
     )
     await handler._run_realtime_session()
     assert sent == [("item_A", 1200)]
+
+
+# --- the answer gate's effect on the barge lifecycle (2026-08-31, Task 2 fixes)
+
+
+@pytest.mark.asyncio
+async def test_the_loop_closes_the_barge_lifecycle_on_a_denied_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A denied turn decides its utterance too, so it must clear what it owned.
+
+    Review item 1. The accept path clears `_barge_resumed_response_id` and
+    `_barge_late_eligible`; before this fix the answer gate's `continue` jumped
+    straight over that clear. A stale resumed id then makes the NEXT
+    `_late_solo_interrupt`'s `answer_already_live` guard suppress a real
+    「瑞奇停」, and stale late-eligibility credits a later utterance with an
+    onset over a talking robot that it never had.
+
+    Observed from INSIDE the loop, through the music hook the deny branch calls
+    right after the clear: session teardown runs `on_external_interrupt()`,
+    which clears both fields anyway, so a post-session assertion would pass
+    with or without the fix.
+    """
+    _quiet_session(monkeypatch)
+    holder: dict[str, HuggingFaceRealtimeHandler] = {}
+    baseline: list[int] = []
+    seen: list[tuple[Any, Any, Any]] = []
+
+    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+        self._response_done_event.set()
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        self._barge_late_eligible = True
+        self._barge_resumed_response_id = "resp_rolled_back"
+        # The session's own boot greeting is already queued by now; the claim
+        # below is that the DENIED TURN adds nothing to it.
+        baseline.append(self._pending_responses.qsize())
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(
+        hf_mod,
+        "on_turn_without_response",
+        lambda _deps: seen.append(
+            (
+                holder["h"]._barge_resumed_response_id,
+                holder["h"]._barge_late_eligible,
+                holder["h"]._pending_responses.qsize(),
+            )
+        ),
+    )
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            # A backchannel: substantive-nothing, so the one-on-one gate denies it.
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="嗯嗯",
+                item_id="item_1",
+            ),
+        )
+    )
+    holder["h"] = handler
+
+    await handler._run_realtime_session()
+
+    assert seen == [(None, False, baseline[0])], "the denied turn left barge lifecycle state behind"
+
+
+@pytest.mark.asyncio
+async def test_the_loop_stands_the_watchdog_down_on_a_denied_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`SOLO_NAME_GATE=0` + `ONE_ON_ONE_ANSWER_GATE=name_only` must still stay silent.
+
+    Review item 3. With the name gate off, sustained speech alone confirms a
+    barge and arms the repair watchdog; name-only answering then denies that
+    same turn an answer. Without the stand-down the watchdog speaks 1.5 s later
+    — exactly the unprompted reply the gate refused.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    monkeypatch.setenv("REALTIME_ONE_ON_ONE_ANSWER_GATE", "name_only")
+    _quiet_session(monkeypatch)
+    holder: dict[str, HuggingFaceRealtimeHandler] = {}
+    baseline: list[int] = []
+    seen: list[Any] = []
+
+    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+        self._response_done_event.set()
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        # Stand in for the confirmed barge that armed the repair watchdog.
+        self._barge_response_seen = False
+        self._arm_barge_watchdog()
+        baseline.append(self._pending_responses.qsize())
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(
+        hf_mod,
+        "on_turn_without_response",
+        lambda _deps: seen.append((holder["h"]._barge_watchdog_task, holder["h"]._pending_responses.qsize())),
+    )
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            # Substantive but unaddressed: accepted by the barge gate with the
+            # name gate off, denied an answer by name-only answering.
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="我們晚餐要吃什麼呢",
+                item_id="item_1",
+            ),
+        )
+    )
+    holder["h"] = handler
+
+    await handler._run_realtime_session()
+
+    assert seen == [(None, baseline[0])], "the denied turn left its repair watchdog armed"
+
+
+@pytest.mark.asyncio
+async def test_a_stood_down_watchdog_never_asks_for_a_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The seam itself: a cancelled watchdog produces no `response.create`."""
+    monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
+    h = _solo_handler()
+    h._barge_response_seen = False
+    h._arm_barge_watchdog()
+    armed = h._barge_watchdog_task
+    assert armed is not None
+
+    h._stand_down_barge_watchdog()
+
+    assert h._barge_watchdog_task is None
+    await asyncio.sleep(0.05)
+    assert armed.cancelled()
+    assert h._pending_responses.qsize() == 0
+    # Not a lie about what happened: no response was seen, so the next commit
+    # re-arms a watchdog that can still do its job.
+    assert h._barge_response_seen is False

@@ -1013,9 +1013,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         mode = self._conversation_mode
         self._turn_mode = mode
         if item_id:
-            if len(self._turn_modes) >= _TURN_MODE_MAX_ITEMS:
+            if item_id not in self._turn_modes and len(self._turn_modes) >= _TURN_MODE_MAX_ITEMS:
                 # Only reachable if transcripts stop arriving entirely; drop the
-                # oldest so a stuck session cannot grow this without bound.
+                # oldest so a stuck session cannot grow this without bound. The
+                # `not in` guard matters: re-stamping an id already present
+                # replaces its entry rather than adding one, so evicting for it
+                # would throw away an unrelated turn's stamp to make room that
+                # is not needed.
                 self._turn_modes.pop(next(iter(self._turn_modes)), None)
             self._turn_modes[item_id] = mode
 
@@ -1357,12 +1361,23 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._resume_playback(rolled_back=True)
 
     async def _barge_response_watchdog(self, seq: int) -> None:
-        """Ask for the reply the server refused after a confirmed barge.
+        """Ask for the reply a confirmed barge cancelled and nothing replaced.
 
-        Codex round 1, finding 11. With `interrupt_response=false` the auto
-        `response.create` of a turn committed while a response was still active
-        is rejected server-side, so the turn the user barged in with can end in
-        silence. Only fires when nothing answered it and nothing is speaking.
+        Codex round 1, finding 11, restated for client-driven answering
+        (2026-08-31). The server-rejected auto-`response.create` this was
+        written for no longer exists — `create_response` is false in every mode
+        and the client answers accepted turns itself. What remains is the same
+        silence from a different cause: a barge is confirmed *before* the
+        turn's own transcript lands (the confirm timer, or
+        `_maybe_commit_on_partial` acting on a partial), so the reply is
+        cancelled by a turn whose answer depends on a `transcription.completed`
+        that may never come — a failed transcription, or one that arrives empty
+        and takes the branch's early `continue`. Then the user barged in and got
+        nothing at all.
+
+        Only fires when nothing answered the turn and nothing is speaking; a
+        turn the answer gate deliberately denied stands it down explicitly
+        (`_stand_down_barge_watchdog`).
         """
         try:
             await asyncio.sleep(_BARGE_RESPONSE_WATCHDOG_S)
@@ -1382,6 +1397,27 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     def _barge_note_response_created(self) -> None:
         """Record that a response did start, and stand the watchdog down."""
         self._barge_response_seen = True
+        task, self._barge_watchdog_task = self._barge_watchdog_task, None
+        _cancel_barge_task(task, _current_task())
+
+    def _stand_down_barge_watchdog(self) -> None:
+        """Cancel the repair watchdog for a turn deliberately left unanswered.
+
+        The watchdog exists to rescue a barged turn whose answer never
+        materialised. A turn the answer gate DENIED has no answer to rescue —
+        it was heard, kept as context and left unanswered on purpose — so the
+        watchdog must not speak for it 1.5 s later.
+
+        Reachable with `REALTIME_SOLO_NAME_GATE=0` together with
+        `REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only`: with the name gate off,
+        sustained speech alone confirms the barge and arms this watchdog, and
+        name-only answering then denies the same turn an answer. Without this
+        the two knobs combined would produce exactly the unprompted reply the
+        gate refused.
+
+        Deliberately does not touch `_barge_response_seen`: no response was
+        seen, and the next commit re-arms the watchdog with its own flag reset.
+        """
         task, self._barge_watchdog_task = self._barge_watchdog_task, None
         _cancel_barge_task(task, _current_task())
 
@@ -1416,14 +1452,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # confirmed the barge), so the flag has to survive it: it is what stops
         # the response watchdog from injecting a reply over a talking user.
         speech_open = self._barge_speech_open
-        # Review round, finding 4: a *different* response is live, so the reply
-        # we paused already ended and the server accepted the barged turn's own
-        # auto-response — this id belongs to the ANSWER to what the user just
-        # said. Cancelling it would kill the reply the barge was asking for, and
-        # arming the watchdog for it would ask for that same answer twice. The
-        # held audio still goes: it belongs to the reply that is over. A live id
-        # of None is NOT this case — nothing is speaking, so the turn may well
-        # have lost its auto-response and still needs the watchdog.
+        # Review round, finding 4, restated for client-driven answering
+        # (2026-08-31): a *different* response is live, so the reply we paused
+        # already ended and something else started speaking in its place. With
+        # `create_response` false in every mode that id can only be a
+        # CLIENT-created response, and it is never this turn's answer — this
+        # turn has not reached the answer gate yet, and `_safe_response_create`
+        # is the only thing that could have asked for one. It belongs to
+        # something else the sender queue released: an earlier turn's reply, a
+        # tool-batch follow-up, a wake-face greeting. Cancelling it would cut
+        # that off mid-word, and arming the watchdog for this turn would ask
+        # twice for an answer the completed-transcript branch is about to
+        # request itself. The held audio still goes: it belongs to the reply
+        # that is over. A live id of None is NOT this case — nothing is
+        # speaking, so a turn whose transcript never lands would end in silence
+        # and still needs the watchdog.
         answer_already_live = (
             self._active_response_id is not None and self._active_response_id != self._barge_paused_response_id
         )
@@ -2860,6 +2903,26 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # touch nothing else — the tool-batch state belongs
                             # to an accepted turn that may still be running.
                             logger.info("%s (%d chars)", _ANSWER_DENY_LOG[turn_mode], len(transcript))
+                            if not self._party_mode:
+                                # This utterance is decided — denied — so the
+                                # solo barge lifecycle it owned closes here as
+                                # well as on the accept path below (round 2,
+                                # finding 1 lifecycle). Left set, a stale
+                                # resumed id makes `_late_solo_interrupt`'s
+                                # `answer_already_live` guard suppress the NEXT
+                                # real 「瑞奇停」, and stale late-eligibility
+                                # credits a later turn with an onset over a
+                                # talking robot that it never had.
+                                self._barge_resumed_response_id = None
+                                self._barge_late_eligible = False
+                                # A denied turn has no answer to repair, so the
+                                # watchdog a confirmed barge armed for it must
+                                # not fire one. Only reachable with
+                                # REALTIME_SOLO_NAME_GATE=0 and
+                                # REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only,
+                                # where sustained speech confirms the barge and
+                                # name-only answering then denies it.
+                                self._stand_down_barge_watchdog()
                             on_turn_without_response(self.deps)
                             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                             self._emit_transcript("user", transcript, True)

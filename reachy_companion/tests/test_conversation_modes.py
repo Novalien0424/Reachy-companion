@@ -487,3 +487,28 @@ def test_the_stamp_map_is_bounded() -> None:
     for index in range(_TURN_MODE_MAX_ITEMS + 5):
         h._stamp_turn_mode(f"item_{index}")
     assert len(h._turn_modes) <= _TURN_MODE_MAX_ITEMS
+
+
+def test_restamping_one_item_does_not_evict_another_turn() -> None:
+    """A repeat `speech_started` for a live item replaces, it does not crowd out.
+
+    Review item 4. Eviction used to fire on size alone, so once the map was
+    full a re-stamp of an id already in it threw away the OLDEST turn's stamp
+    to make room it did not need — and that turn's late transcript then fell
+    back to `_turn_mode`, which is the very reclassification the per-item map
+    exists to prevent.
+    """
+    from reachy_companion.huggingface_realtime import _TURN_MODE_MAX_ITEMS
+
+    h = _mode_handler(ConversationMode.GROUP)
+    for index in range(_TURN_MODE_MAX_ITEMS):
+        h._stamp_turn_mode(f"item_{index}")
+    assert len(h._turn_modes) == _TURN_MODE_MAX_ITEMS
+
+    # Deliberately NOT the oldest key: evicting for a re-stamp of the oldest is
+    # self-healing (it pops the very entry it is about to rewrite), so only a
+    # mid-map id exposes the bug.
+    h._stamp_turn_mode("item_5")
+
+    assert h._turn_modes["item_0"] is ConversationMode.GROUP, "an unrelated turn's stamp was evicted"
+    assert len(h._turn_modes) == _TURN_MODE_MAX_ITEMS
