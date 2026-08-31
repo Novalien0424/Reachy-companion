@@ -50,6 +50,10 @@ EXPECTED_TOOLS = (
     "go_to_sleep",
     "set_conversation_mode",
     "summarize_conversation",
+    # 2026-08-31 tool diet: the router that loads the productivity and media
+    # families on demand. Listed with the other conversation-level controls
+    # because it is one — it changes what the session can reach, not the world.
+    "open_toolbox",
     "remember",
     "forget",
     "remember_face",

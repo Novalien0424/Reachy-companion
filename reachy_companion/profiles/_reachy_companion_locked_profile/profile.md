@@ -21,6 +21,7 @@ default_tools = [
   "go_to_sleep",
   "set_conversation_mode",
   "summarize_conversation",
+  "open_toolbox",
   "remember",
   "forget",
   "remember_face",

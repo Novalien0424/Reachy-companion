@@ -73,6 +73,9 @@ def _solo_handler() -> OpenAIRealtimeHandler:
     """Return a solo-mode handler with only the barge-relevant state, no __init__."""
     h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
     h._conversation_mode = ConversationMode.ONE_ON_ONE
+    # Task 8: `set_conversation_mode` closes every open toolbox on a flip, and
+    # two tests here flip mid-pause.
+    h._open_toolboxes = set()
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0
@@ -1453,7 +1456,7 @@ def _quiet_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralise everything a session touches except the barge decision."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
     monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
     monkeypatch.setattr(hf_mod, "on_user_speech_candidate", lambda _deps: None)

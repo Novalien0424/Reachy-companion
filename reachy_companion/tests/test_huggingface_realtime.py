@@ -15,6 +15,7 @@ from reachy_companion.tools import core_tools
 from reachy_companion.config import config, get_default_voice
 from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import Identification
+from reachy_companion.toolboxes import session_tool_exclusions
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.conversation_mode import MODE_LABELS
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
@@ -179,7 +180,7 @@ async def test_partial_transcription_uses_latest_snapshot(monkeypatch: Any) -> N
     """Partial transcription snapshots should replace older snapshots for the same item."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.client = _make_fake_realtime_client(
@@ -224,7 +225,7 @@ async def test_parallel_tool_calls_trigger_single_response(monkeypatch: Any) -> 
     """Parallel tool calls in one turn should yield one response, not one per completed tool."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.connection = AsyncMock()
@@ -329,7 +330,7 @@ async def test_run_realtime_session_uses_default_voice_for_lb_allocated_sessions
     """Use the backend default speaker when no profile voice is selected for the hf LB."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
     monkeypatch.setattr(config, "HF_REALTIME_SESSION_URL", "https://lb.example.test/session")
 
     captured_update: dict[str, Any] = {}
@@ -361,7 +362,7 @@ async def test_run_realtime_session_passes_allocated_session_query(monkeypatch: 
     """Hugging Face sessions must forward the allocated session token to the websocket connect call."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     captured_connect: dict[str, Any] = {}
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
@@ -891,7 +892,7 @@ async def test_speech_started_marks_that_the_user_has_spoken(monkeypatch: Any) -
     """
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.client = _make_fake_realtime_client(events=(_FakeEvent("input_audio_buffer.speech_started"),))
@@ -915,7 +916,7 @@ async def _run_with_response_done(monkeypatch: Any, response: Any) -> None:
     """Drive one `response.done` carrying `response` through the receiver loop."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.client = _make_fake_realtime_client(events=(_FakeEvent("response.done", response=response),))
@@ -1067,7 +1068,7 @@ async def test_current_person_is_cleared_for_every_new_session(monkeypatch: Any)
 
     labels: list[str | None] = []
 
-    def _tool_specs() -> list[Any]:
+    def _tool_specs(exclusion_list: list[str] | None = None) -> list[Any]:
         labels.append(deps.current_person)
         return []
 
@@ -1080,6 +1081,43 @@ async def test_current_person_is_cleared_for_every_new_session(monkeypatch: Any)
 
     assert labels == [None]
     assert deps.current_person is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_session_opens_on_the_mode_scoped_core(monkeypatch: Any) -> None:
+    """Task 8: a session starts from the static core, with every box closed.
+
+    A box opened in the session that died says nothing about the one replacing
+    it, and a bare `get_tool_specs()` here would silently hand the model the
+    whole registry back — passing every other assertion in this file.
+    """
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    handler._startup_greeting_sent = True
+    # A box left open by the session that just died.
+    handler._open_toolboxes = {"productivity"}
+
+    seen: list[list[str] | None] = []
+
+    def _tool_specs(exclusion_list: list[str] | None = None) -> list[Any]:
+        seen.append(exclusion_list)
+        return []
+
+    monkeypatch.setattr(hf_mod, "get_tool_specs", _tool_specs)
+    handler.client = _make_fake_realtime_client(events=(_FakeEvent("input_audio_buffer.speech_started"),))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    await handler._run_realtime_session()
+
+    assert handler._open_toolboxes == set()
+    # Computed AFTER the close, so the productivity family is back out of sight.
+    # A bare `get_tool_specs()` would leave `None` here instead.
+    assert seen == [session_tool_exclusions(handler._conversation_mode, ())]
+    assert seen[0] is not None
 
 
 @pytest.mark.asyncio
@@ -1170,7 +1208,7 @@ def _image_tool_handler(monkeypatch: Any) -> Any:
     """Build a handler wired to a capturing connection, ready to deliver one tool result."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
 
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.connection = _CapturingConnection()

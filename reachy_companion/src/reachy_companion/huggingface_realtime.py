@@ -50,6 +50,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
+from reachy_companion.toolboxes import TOOLBOXES, TOOLBOX_CATEGORIES, session_tool_exclusions
 from reachy_companion.record_mode import clear_record_log, record_room_transcript
 from reachy_companion.sleep_summary import record_transcript, write_sleep_summaries
 from reachy_companion.audio.envparse import env_int, env_bool, env_float
@@ -661,6 +662,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Whether the receive loop is running and can therefore observe an
         # acknowledgement at all (Codex round 3, finding 1).
         self._receive_loop_active: bool = False
+        # --- dynamic toolboxes (2026-08-31 tool diet) ------------------------
+        # Which on-demand tool families are currently in `session.tools`. Opened
+        # by the `open_toolbox` router, closed on a mode switch, at session
+        # start and at shutdown (the path `go_to_sleep` takes). No idle timer:
+        # a box that closes mid-sentence is a new failure mode for exactly the
+        # model tier this diet exists to stop confusing.
+        self._open_toolboxes: set[str] = set()
         # --- party mode (multi-person hardening, 2026-08-24) -----------------
         # monotonic() of the last gate-ACCEPTED user turn; the only thing that
         # opens the follow-up window (Codex round 1, finding 3 — greeting and
@@ -800,6 +808,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # asking afterwards always answered no.
         turn_in_flight = self._party_speech_open or self._barge_speech_open
         self._conversation_mode = target
+        # A new mode is a new posture: its instructions describe a different
+        # tool surface, so whatever was loaded for the old one goes. Before the
+        # push below, so the update this flip sends already carries the smaller
+        # surface rather than needing a second one to take the boxes back out.
+        self.close_toolboxes(f"mode -> {target.value}")
         self._party_speech_open = False
         # The solo speech flag is maintained by the solo branch of
         # `speech_stopped`, which stops running the moment the mode changes.
@@ -876,6 +889,58 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             }
         return {"ok": True, "status": "mode_set", "mode": target.value, "label": MODE_LABELS[target]}
 
+    # --- dynamic toolboxes --------------------------------------------------
+    async def open_toolbox(self, category: str) -> dict[str, Any]:
+        """Load one on-demand tool family into the live session.
+
+        The model reads this tool's result and continues to the real call in the
+        same turn, so the update is not merely sent but ACKNOWLEDGED before the
+        result comes back — otherwise the tool it reaches for still does not
+        exist on the server (design decision 9).
+
+        Optimistic then rolled back (Codex round 1, P2-9): the box goes into
+        `_open_toolboxes` first, because `_push_mode_update` builds its payload
+        from that live set — and comes straight back out if the server refused,
+        because a box marked open that the session never got would have the
+        model calling tools that are not there for the rest of the visit.
+
+        The membership re-check after the await covers the second failure case
+        (Codex round 3, finding 3): a `set_conversation_mode` landing while the
+        update was in flight calls `close_toolboxes`, so the box is gone even
+        though the push itself succeeded. Reporting "loaded" there would
+        advertise tools the session no longer has.
+        """
+        if category not in TOOLBOXES:
+            logger.warning("open_toolbox: unknown category %r", category)
+            return {
+                "ok": False,
+                "error": f"unknown toolbox category: {category}",
+                "categories": list(TOOLBOX_CATEGORIES),
+            }
+        tools = list(TOOLBOXES[category])
+        if category in self._open_toolboxes:
+            return {"ok": True, "status": "already_open", "category": category, "tools": tools}
+        self._open_toolboxes.add(category)
+        if not await self._push_mode_update() or category not in self._open_toolboxes:
+            self._open_toolboxes.discard(category)
+            logger.warning("toolbox %s was not applied by the server; rolled back", category)
+            return {
+                "ok": False,
+                "status": "update_failed",
+                "error": f"the {category} tools could not be loaded right now",
+                "category": category,
+                "categories": list(TOOLBOX_CATEGORIES),
+            }
+        logger.info("toolbox opened: %s (%s)", category, ", ".join(tools))
+        return {"ok": True, "status": "loaded", "category": category, "tools": tools}
+
+    def close_toolboxes(self, reason: str) -> None:
+        """Drop every open toolbox. Caller owns pushing the smaller surface."""
+        if not self._open_toolboxes:
+            return
+        logger.info("toolboxes closed (%s): %s", reason, ", ".join(sorted(self._open_toolboxes)))
+        self._open_toolboxes.clear()
+
     def _party_reset_for_new_session(self) -> None:
         """Clear party-mode turn state at the start of every (re)connect.
 
@@ -943,8 +1008,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             record_room_transcript(self.deps, role, text)
 
     def _mode_tool_exclusions(self) -> list[str]:
-        """Tool names hidden from the session in the current mode. Base: none."""
-        return []
+        """Tool names hidden from the session right now: mode plus open boxes."""
+        return session_tool_exclusions(self._current_mode(), self._open_toolboxes)
 
     async def _apply_session_update(
         self,
@@ -2836,7 +2901,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # was established in the session this one replaces. A reconnect
         # re-establishes it through the wake checks or `who_is_this`.
         self.deps.current_person = None
-        tool_specs = get_tool_specs()
+        # A fresh session starts from the static core, first connect and
+        # reconnect alike: a box opened in the session that died says nothing
+        # about the one replacing it.
+        self.close_toolboxes("new session")
+        tool_specs = get_tool_specs(exclusion_list=self._mode_tool_exclusions())
         logger.info(
             "Tools to be used in conversation: %s",
             [tool["name"] for tool in tool_specs],
@@ -3550,6 +3619,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # happening. Only the sleep that ends the visit clears it.
         if self.deps.sleep_requested:
             clear_record_log(self.deps)
+
+        # `go_to_sleep` reaches shutdown, and so does every other end of a
+        # visit: boxes never outlive the conversation that opened them. Not
+        # gated on `sleep_requested` like the record log above — a settings or
+        # backend restart rebuilds the handler, and the session that comes back
+        # must not be told it still has a family it was never sent.
+        self.close_toolboxes("shutdown")
 
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()

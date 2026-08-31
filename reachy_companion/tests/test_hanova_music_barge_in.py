@@ -53,7 +53,7 @@ def quiet_session(monkeypatch):
     """Neutralise everything a realtime session touches except our hooks."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_TEST_VOICE: default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
     monkeypatch.setattr("reachy_companion.hanova.settings._music_wheels_ready", lambda: (True, ""))
     PLAYER.reset()
     GATE.reset()

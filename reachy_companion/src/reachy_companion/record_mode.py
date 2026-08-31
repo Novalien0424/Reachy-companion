@@ -60,6 +60,24 @@ def clear_record_log(deps: ToolDependencies) -> None:
     deps.record_log.clear()
 
 
+# What 紀錄模式 leaves on the table: SIX local names — the four the model uses
+# plus two structural ones. `task_status` and `task_cancel` are `SystemTool`
+# values the background tool manager injects into every profile, and the model
+# needs them to follow up a long-running call, so hiding them would break the
+# tools that ARE allowed. MCP extras (`EXTRA_TOOLS`) are additionally always
+# kept — see `toolboxes.session_tool_exclusions` (Codex round 1, P2-8).
+RECORD_TOOL_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "set_conversation_mode",
+        "summarize_conversation",
+        "go_to_sleep",
+        "wait_for_user",
+        "task_status",
+        "task_cancel",
+    }
+)
+
+
 RECORD_EMPTY_SUMMARY: Final[str] = "還沒有記錄到內容。"
 RECORD_SUMMARY_FAILED: Final[str] = "剛剛的記錄整理失敗了，要不要再說一次？"
 

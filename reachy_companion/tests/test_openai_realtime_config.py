@@ -197,7 +197,7 @@ async def test_session_update_falls_back_to_legacy_transcription_on_rejection(
 
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
     monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
 
     update_calls: list[dict[str, Any]] = []

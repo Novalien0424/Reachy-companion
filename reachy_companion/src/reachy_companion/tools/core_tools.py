@@ -59,6 +59,11 @@ class ToolDependencies:
     # because the session update must be applied before the tool result reaches
     # the model (Codex round 1, P1-1).
     set_conversation_mode: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    # Dynamic toolboxes (2026-08-31 tool diet): loads one on-demand tool family
+    # into the live session. Async for the same reason `set_conversation_mode`
+    # is: the `session.update` must be applied before the tool result reaches
+    # the model, or the tool it reaches for next does not exist yet.
+    open_toolbox: Callable[[str], Awaitable[dict[str, Any]]] | None = None
     # Person-scoped memory (spec §3.3): the name of the last face-recognized
     # person this app run, set by the wake checks and who_is_this. A label for
     # memory scoping only — never used to gate behavior. Optional for the same

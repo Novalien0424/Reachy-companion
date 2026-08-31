@@ -38,6 +38,8 @@ def _mode_handler(mode: ConversationMode = ConversationMode.ONE_ON_ONE) -> OpenA
     # `speech_started`). A `__new__`-built handler starts them equal.
     h._turn_mode = mode
     h._turn_modes = {}
+    # Task 8: `set_conversation_mode` closes every open toolbox on a flip.
+    h._open_toolboxes = set()
     h._mode_update_seq = 0
     h._session_update_lock = asyncio.Lock()
     h._session_update_event_id = None

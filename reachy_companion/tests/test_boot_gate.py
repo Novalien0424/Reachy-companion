@@ -140,7 +140,7 @@ def _make_handler(
     """Build an OpenAI handler wired to `conn`, with prompts and tools stubbed."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
-    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
     monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: greeting)
     handler = OpenAIRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler.get_current_voice = MagicMock(return_value="cedar")  # type: ignore[method-assign]
