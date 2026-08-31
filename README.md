@@ -3,50 +3,57 @@
 Turn a [Reachy Mini Wireless](https://www.pollen-robotics.com/) into a
 physically present AI companion. Reachy Companion connects the robot's
 microphone, speaker and camera to OpenAI's `gpt-realtime-2.1` as a continuous
-speech-to-speech session: it holds a natural Chinese-first conversation you can
-interrupt mid-sentence, tracks your face while you talk, reacts with real
-expressive movement, looks through its camera when you ask what it sees,
-searches the live web on its own when a question needs today's information,
-controls a device in your home, remembers what you tell it and who you are —
-and does all of it in a pitched-up, cute robotic voice.
+speech-to-speech session: it holds a natural Chinese-first conversation, knows
+who it's talking to, remembers what you told it last time, plays your music,
+puts videos on your TV, manages your calendar and mail by voice, controls your
+home — and behaves like someone actually in the room: it yields the floor when
+you say its name, and talks on through conversation that isn't for it.
 
-> **Status:** proof of concept, implemented and dev-verified. The five demo
-> gates are pending live operator validation on the physical robot. See
-> [docs/PRD.md](docs/PRD.md).
+> **Version:** 1.17.0 (the seventeenth on-robot install — versions track
+> installs; see [CHANGELOG.md](CHANGELOG.md)).
+> **Status:** proof of concept, live on the robot in daily family use. The
+> five formal demo gates of [docs/PRD.md](docs/PRD.md) are pending scripted
+> operator validation; per-feature evidence lives in `feature_list.json`.
 
 ## Highlights
 
-- **Realtime voice** — speech-to-speech on `gpt-realtime-2.1`, with turn
-  detection tuned so a natural mid-sentence pause in Chinese does not cut you
-  off, and barge-in so you can interrupt mid-answer.
-- **Chinese-first persona** — a single locked personality: cheerful, concise,
-  colloquial Chinese by default, following you if you switch languages. The
-  persona text is editable on the robot: a `persona.md` next to `.env` in the
-  instance directory replaces the built-in one at the next app start, so
-  rewriting the character costs an antenna touch instead of a redeploy.
-- **Embodiment** — face tracking runs from startup with no model involvement;
-  emotion moves and speech-reactive motion layer over it and hand back to idle
-  breathing automatically.
-- **On-demand vision** — one camera frame, attached to the live conversation.
-  No continuous video to the cloud.
-- **Automatic web search** — invoked by the model when it decides fresh
-  information is needed; you never have to say "search the web".
-- **Home control** — natural-language commands against a Home Assistant
-  allowlist you configure.
-- **Cute robotic voice** — an on-device pitch shift that preserves speaking
-  pace, plus a comb resonator for the metallic robot character. Fully reversible.
-- **Memory that survives redeploys** — remembered facts and enrolled faces live
-  on the robot, inside the installed package. A reinstall would wipe them, so
-  the deployment procedure backs both stores up before installing and restores
-  them afterwards; that mandatory step is what makes them survive.
-- **On-device face recognition** — enrol by name in conversation, get greeted by
-  name at wake. Recognition frames and face signatures never leave the robot;
-  what the cloud model gets is a status, a face count, the matched name, a
-  rounded similarity score, a runner-up name only on an ambiguous answer, and a
-  reason code from a closed set. The camera tool is a separate, explicitly
-  requested path that does send one frame to the model.
+- **Realtime voice, human turn-taking** — speech-to-speech on
+  `gpt-realtime-2.1`, tuned so a Mandarin mid-sentence pause doesn't cut you
+  off. Barge-in is **name-gated**: while Reachy is talking, 「瑞奇」 or a stop
+  phrase (停/stop — those always win) takes the floor; a cough or somebody
+  else's sentence just pauses the reply for a beat before it carries on.
+  Interrupted replies are truncated server-side too, so Reachy never believes
+  it finished a sentence you never heard.
+- **Knows who it's talking to** — on-device face recognition: enrol by name in
+  conversation (「記住我」), get greeted by name at wake, with per-person
+  remembered facts woven in (「上次你說要考試，後來呢？」). Recognition frames
+  and face signatures never leave the robot; the cloud model only ever gets a
+  name, a score and a reason code. The camera tool is a separate, explicitly
+  requested path that does send one frame.
+- **Memory with a life cycle** — facts land per person while you're
+  recognized, a one-line 「上次聊天」 summary is written when you send Reachy
+  to sleep by voice, and everything survives redeploys through the
+  deployment ritual's mandatory backup/restore. A Mac-side backend
+  (`companion_backend/`) manages people, photos and facts and pushes them to
+  the robot.
+- **A real tool belt** — 41 tools live on-device: Home Assistant control
+  against an allowlist you configure, music playback from the robot's own
+  speaker, YouTube and home-video (NAS) casting to the TV, Google Calendar /
+  Tasks / Drive / Gmail (with read-back confirmation gates before anything
+  sends), Notion notes, and automatic web search the model invokes on its own.
+- **A character, not an assistant** — a single locked Chinese-first persona,
+  editable on the robot as `persona.md` (rewriting the character costs an
+  antenna touch, not a redeploy); a pitched-up comb-resonator robot voice;
+  emotion moves and speech-reactive motion layered over always-on face
+  tracking; spontaneous idle behavior. Replies are length-calibrated —
+  one-liners for one-line questions, real explanations when warranted, no
+  「讓我想想」 filler.
+- **Plays well with a full room** — party mode answers only speech addressed
+  to it (by name, follow-up window, or an engaged face) and stays quiet
+  through the rest; solo mode's `wait_for_user` discipline keeps it from
+  reacting to TV audio and side talk.
 - **Runs as a managed app on the robot** — installed under the robot's own
-  daemon and set as the startup app, so an antenna touch wakes the whole
+  daemon, registered as the startup app: an antenna touch wakes the whole
   experience. No laptop, no dashboard.
 
 ## Behavior notes
@@ -58,7 +65,9 @@ proof of concept rather than defects to file:
   a web console and a JSON-RPC control channel on the robot, reachable from any
   device on the same network, with no password or token. Anyone who can reach it
   can make Reachy speak, interrupt it, mute the microphone and change settings.
-  Fine on a trusted home LAN; not something to expose beyond one.
+  Fine on a trusted home LAN; not something to expose beyond one. The Mac
+  backend shares the same trusted-network posture (tailnet-bound by operator
+  authorization).
 - **Reachy moves on its own, and eventually sleeps.** After about three minutes
   with no conversation it plays a spontaneous dance, emotion or head turn — a
   personality choice, not a bug. After 24 hours of inactivity it returns to the
@@ -69,13 +78,16 @@ proof of concept rather than defects to file:
 | Path                 | What it is                                                          |
 | -------------------- | ------------------------------------------------------------------- |
 | `reachy_companion/`  | The application — a fork of Pollen Robotics' official conversation app, adapted in place |
-| `docs/`              | [PRD](docs/PRD.md), SDK and conversation-app research notes, and the [adding-a-skill guide](docs/adding-a-skill.md) |
+| `companion_backend/` | Mac-side FastAPI app for managing people, photos and facts, with guarded push/import/merge to the robot |
+| `docs/`              | [PRD](docs/PRD.md), research notes (SDK, conversation app, realtime API), the [human-like-conversation summary](docs/human-like-conversation.md), executed plans, and the [adding-a-skill guide](docs/adding-a-skill.md) |
 | `scripts/`           | Development daemon launcher, development app runner, asset preloader, SDK smoke test |
 | `.claude/skills/`    | Project automation skills — deployment, research, and the reuse-first checklist |
 | `reference/`         | Read-only clones of the official Pollen Robotics repos (gitignored, never committed) |
+| `persona.md`         | The version-controlled working copy of the on-robot persona (synced by the deploy ritual) |
+| `CHANGELOG.md`       | Release notes; versions map to on-robot installs                    |
 | `progress.md`        | Current verified state, known defects, open operator items          |
-| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-014)                    |
-| `feature_list.json`  | The five demo gates and per-feature verification evidence           |
+| `DECISIONS.md`       | Durable implementation decisions (D-001 … D-028)                    |
+| `feature_list.json`  | The demo gates and per-feature verification evidence                |
 
 ## How it's built
 
@@ -87,46 +99,51 @@ of the official conversation app, adapted in place, so upstream fixes stay easy
 to port.
 
 What *is* custom is the part that is genuinely different: the `gpt-realtime-2.1`
-backend and its turn handling, the VoiceFX chain that gives Reachy its voice,
-the local tools and Skills pattern, the MCP configuration seam, and the fact and
-face memories.
+backend and its turn handling (including the client-side name-gated barge-in
+machine), the VoiceFX chain that gives Reachy its voice, the local tools and
+Skills pattern, the MCP configuration seam, and the fact, person and face
+memories.
 
 ## Quickstart (development, no robot required)
 
 **Prerequisites**
 
-- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- Python 3.12 and [uv](https://docs.astral.sh/uv/)
 - An OpenAI API key with Realtime API access
 - A working microphone and webcam on the development machine
 
-**Setup**
+**Setup (macOS/Linux)**
 
-```powershell
+```sh
 uv venv
 uv pip install -e reachy_companion
-copy reachy_companion\.env.example reachy_companion\.env
+cp reachy_companion/.env.example reachy_companion/.env
 # then put your key in OPENAI_API_KEY=
 ```
 
+(On Windows, the same three steps with `copy` and backslashes; the dev helper
+scripts in `scripts/` ship as PowerShell.)
+
 **Run**
 
-```powershell
+```sh
 # terminal 1 — simulated daemon (real kinematics, no physics, local webcam/mic)
-scripts\dev_daemon.ps1
+scripts/dev_daemon.ps1        # Windows; on macOS run its python command directly
 
 # terminal 2 — the app, against that daemon
-scripts\run_app_dev.ps1
+scripts/run_app_dev.ps1
 ```
 
 **Test**
 
-```powershell
+```sh
 cd reachy_companion
-..\.venv\Scripts\python.exe -m pytest -q
+.venv/bin/python -m pytest -q
 ```
 
-The suite is green; a fixed set of upstream tests is skipped on purpose (they
-assume a user-switchable profile, which this app deliberately locks).
+The suite is green (1571 passed / 30 skipped as of 1.17.0); the fixed set of
+upstream skips is documented in `tests/conftest.py` (they assume a
+user-switchable profile, which this app deliberately locks).
 
 Two things the simulator cannot rehearse and that need the physical robot: live
 face tracking of a real person, and any camera scene that requires a properly
@@ -140,11 +157,12 @@ discovery, start/stop and registering the app as the startup app, so an antenna
 touch on the sleeping robot brings the whole experience up. The daemon's code
 and configuration are out of scope for deployment — the one exception on record
 is a one-time authorised update of the daemon to the required version line
-during bring-up, through the robot's own updater. Configuration plus both
-persistent stores are backed up and restored around every install.
+during bring-up, through the robot's own updater. Configuration, the persona,
+and every persistent store are backed up and restored around every install via
+a manifest-driven ritual.
 
-The full procedure — version gate, two-step install, `.env` and store
-backup/restore, asset preload, verification, and how to leave the robot asleep —
+The full procedure — version gate, two-step install, backup/restore, asset
+preload, verification, and how to leave the robot asleep —
 lives in [`.claude/skills/reachy-deploy/SKILL.md`](.claude/skills/reachy-deploy/SKILL.md).
 Robot connection details are read from a gitignored environment file and are not
 in this repository.
@@ -152,8 +170,8 @@ in this repository.
 ## Configuration
 
 All settings live in `reachy_companion/.env` (start from
-`reachy_companion/.env.example`). Placeholders only below — never commit real
-values.
+`reachy_companion/.env.example`, which documents every knob). Placeholders only
+below — never commit real values.
 
 | Key                                | Meaning                                                        |
 | ---------------------------------- | -------------------------------------------------------------- |
@@ -190,11 +208,16 @@ values.
 
 ## Status
 
-Proof of concept, implemented. All five demo gates are pending live operator
-validation on the robot; the MCP and home-control integrations are additionally
-pending credentials. Requirements, journeys and the as-built architecture are in
-[docs/PRD.md](docs/PRD.md); current verified state and open items are in
-[progress.md](progress.md).
+Live on the robot (seventeenth install, v1.17.0) and in daily family use:
+conversation, face recognition, person memory, music, TV and home-video
+casting, calendar/tasks/email, home control and the name-gated barge-in are
+all deployed with runnable evidence recorded per feature. What remains open is
+formal, scripted validation of the five PRD §8 demo gates plus a set of live
+acceptance rows for the newest wave — all tracked with exact pass criteria in
+[`feature_list.json`](feature_list.json). Requirements, journeys and the
+as-built architecture are in [docs/PRD.md](docs/PRD.md); current verified
+state and open items are in [progress.md](progress.md); release notes in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License and credit
 
