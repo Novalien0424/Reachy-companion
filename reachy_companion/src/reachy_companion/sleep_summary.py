@@ -42,15 +42,14 @@ _SYSTEM_PROMPT: Final[str] = (
 )
 
 
-def record_transcript(deps: ToolDependencies, role: str, text: str) -> None:
-    """Append one finalized utterance, stamped, to the bounded session tail.
+def touch_presence(deps: ToolDependencies, stamp: float) -> None:
+    """Refresh the current speaker's sighting stamp, because talking is presence.
 
-    Recording also refreshes the current person's sighting stamp, because talking
-    is presence. Without that, `write_sleep_summaries`' window would exclude the
-    commonest case it should keep: one person recognized at the boot greeting who
-    then talks past 40 lines, pushing their own recognition out of the retained
-    tail. Only a person already on the guest list is refreshed — `current_person`
-    is a label, and a label alone is not a sighting.
+    Without it, `write_sleep_summaries`' window would exclude the commonest case
+    it should keep: one person recognized at the boot greeting who then talks
+    past 40 lines, pushing their own recognition out of the retained tail. Only a
+    person already on the guest list is refreshed — `current_person` is a label,
+    and a label alone is not a sighting.
 
     The label is not always there to follow. `_run_realtime_session` clears it on
     **every** session, reconnects included (`huggingface_realtime.py:1982`), and
@@ -59,17 +58,31 @@ def record_transcript(deps: ToolDependencies, role: str, text: str) -> None:
     this run, the talking can only be theirs, so the heartbeat follows them
     instead. With two or more known and no label it refreshes nobody: guessing
     whose line this is would recreate the attribution leak the window closes.
+
+    The one heartbeat, called from both recorders. `record_transcript` below is
+    the ordinary path; `record_mode.record_room_transcript` is 紀錄模式's, where
+    the answer gate denies meeting speech and this function would otherwise never
+    run for a whole meeting — a room full of talking would look like an empty
+    room to the sleep summary.
+    """
+    speaker = deps.current_person
+    if speaker is None and len(deps.recognized_at) == 1:
+        speaker = next(iter(deps.recognized_at))
+    if speaker is not None and speaker in deps.recognized_at:
+        deps.recognized_at[speaker] = stamp
+
+
+def record_transcript(deps: ToolDependencies, role: str, text: str) -> None:
+    """Append one finalized utterance, stamped, to the bounded session tail.
+
+    Recording also refreshes the speaker's sighting stamp (`touch_presence`).
     """
     cleaned = text.strip()
     if not cleaned or cleaned.startswith("[error]"):
         return
     stamp = time.monotonic()
     deps.session_transcript.append((role, cleaned, stamp))
-    speaker = deps.current_person
-    if speaker is None and len(deps.recognized_at) == 1:
-        speaker = next(iter(deps.recognized_at))
-    if speaker is not None and speaker in deps.recognized_at:
-        deps.recognized_at[speaker] = stamp
+    touch_presence(deps, stamp)
 
 
 def _default_model() -> str:

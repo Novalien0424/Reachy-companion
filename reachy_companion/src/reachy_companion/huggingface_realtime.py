@@ -50,6 +50,7 @@ from reachy_companion.prompts import (
     get_session_greeting_prompt,
 )
 from reachy_companion.streaming import AdditionalOutputs, audio_to_int16
+from reachy_companion.record_mode import clear_record_log, record_room_transcript
 from reachy_companion.sleep_summary import record_transcript, write_sleep_summaries
 from reachy_companion.audio.envparse import env_int, env_bool, env_float
 from reachy_companion.tools.core_tools import (
@@ -799,6 +800,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # asking afterwards always answered no.
         turn_in_flight = self._party_speech_open or self._barge_speech_open
         self._conversation_mode = target
+        if previous is ConversationMode.RECORD:
+            # The room log is scoped to one stay in the mode as well as to one
+            # visit: leaving 紀錄模式 ends the recording, and a later 紀錄模式
+            # must not open on the last meeting's lines.
+            clear_record_log(self.deps)
         self._party_speech_open = False
         # The solo speech flag is maintained by the solo branch of
         # `speech_stopped`, which stops running the moment the mode changes.
@@ -902,6 +908,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         told.
         """
         return f"{get_session_instructions(self.instance_path)}\n\n{mode_rules_block(self._current_mode())}"
+
+    def _emit_transcript(self, role: str, text: str, final: bool = True) -> None:
+        """Forward the transcript, and in 紀錄模式 keep a copy of every final line.
+
+        This one override covers all four final-transcript sites — the rolled-back
+        solo barge (`:1800`), the answer-gate denial (`:3152`), the answered user
+        turn (`:3191`) and the assistant's own transcript (`:3236`) — plus any
+        added later. Debounced partials never come through here at all (they go
+        straight to the output queue, `_emit_debounced_partial` `:2073`), and the
+        `final` guard keeps it that way for any future caller, so the log holds
+        finished lines only.
+        """
+        if final and text and self._current_mode() is ConversationMode.RECORD:
+            record_room_transcript(self.deps, role, text)
+        super()._emit_transcript(role, text, final)
 
     def _mode_tool_exclusions(self) -> list[str]:
         """Tool names hidden from the session in the current mode. Base: none."""
@@ -3495,6 +3516,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             written = await write_sleep_summaries(self.deps)
             if written:
                 logger.info("Sleep summary: wrote last-chat fact for %d person(s).", written)
+
+        # 紀錄模式's room log is per visit and lives only in memory. `shutdown()`
+        # also runs for settings and backend restarts (console.py:307, :697),
+        # which are mid-visit — D-027 already refuses to summarize on those, and
+        # for the same reason they must not throw away a meeting that is still
+        # happening. Only the sleep that ends the visit clears it.
+        if self.deps.sleep_requested:
+            clear_record_log(self.deps)
 
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()

@@ -17,6 +17,7 @@ import pytest
 # directory itself on sys.path — import the sibling harness by bare name.
 from test_solo_barge import _install_barge_state
 
+from reachy_companion.record_mode import RECORD_LOG_MAX_ITEMS
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler
 from reachy_companion.conversation_mode import (
     MODE_LABELS,
@@ -68,6 +69,9 @@ def _mode_handler(mode: ConversationMode = ConversationMode.ONE_ON_ONE) -> OpenA
             get_tracked_face=lambda wait: SimpleNamespace(detected=False, x=None, y=None, roll=None, ts=None)
         ),
         movement_manager=MagicMock(),
+        # Task 4: leaving 紀錄模式 clears the room log, so a flip out of RECORD
+        # reads this field. The real `ToolDependencies` always carries it.
+        record_log=deque(maxlen=RECORD_LOG_MAX_ITEMS),
     )
     _install_barge_state(h)
     h._clear_queue = MagicMock()

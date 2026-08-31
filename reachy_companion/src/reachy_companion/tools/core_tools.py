@@ -81,6 +81,13 @@ class ToolDependencies:
     recognized_people: set[str] = field(default_factory=set)
     recognized_at: dict[str, float] = field(default_factory=dict)
     session_transcript: deque[tuple[str, str, float]] = field(default_factory=lambda: deque(maxlen=40))
+    # 紀錄模式's room log (record_mode.py): EVERY final transcript, user and
+    # assistant, answered and unanswered, for one visit. Unlike
+    # `session_transcript` above it is not the sleep summary's input and it does
+    # not filter by the answer gate — a meeting record wants the lines the robot
+    # decided not to answer most of all. The maxlen literal must stay equal to
+    # record_mode.RECORD_LOG_MAX_ITEMS; importing it here would be a cycle.
+    record_log: deque[tuple[str, str, float]] = field(default_factory=lambda: deque(maxlen=2000))
     # Set only by the go_to_sleep closure in main.py; gates the sleep summary so
     # settings/backend restarts (console.py:307/:697 also reach shutdown()) don't
     # write mid-visit.
