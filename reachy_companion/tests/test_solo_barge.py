@@ -12,6 +12,7 @@ the pre-Task-8 path must come back byte for byte.
 """
 
 import time
+import base64
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -54,6 +55,12 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_resumed_response_id = None
     handler._barge_late_eligible = False
     handler._held_audio = deque()
+    # Task 5 (truncate accounting): the item currently coming out of the
+    # speaker, and the pair stashed when a pause began.
+    handler._audio_item_id = None
+    handler._audio_item_enqueued_ms = 0.0
+    handler._barge_paused_item_id = None
+    handler._barge_paused_heard_ms = 0
     # `_pause_playback` captures the live response id; a handler built for the
     # emit path alone has no party state, so fill it in without clobbering a
     # caller that set a real id.
@@ -1594,5 +1601,329 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_barge_resumed_response_id",
         "_barge_late_eligible",
         "_held_audio",
+        "_audio_item_id",
+        "_audio_item_enqueued_ms",
+        "_barge_paused_item_id",
+        "_barge_paused_heard_ms",
     ):
         assert field in source, field
+
+
+# --------------------------------------------------------------------------
+# conversation.item.truncate on committed interruptions (Task 5)
+# --------------------------------------------------------------------------
+
+
+def _truncating_handler() -> OpenAIRealtimeHandler:
+    """Return a solo handler whose connection records `conversation.item.truncate`."""
+    h = _solo_handler()
+    h.connection = SimpleNamespace(
+        response=SimpleNamespace(cancel=AsyncMock()),
+        conversation=SimpleNamespace(item=SimpleNamespace(truncate=AsyncMock())),
+    )
+    return h
+
+
+@pytest.mark.asyncio
+async def test_commit_sends_truncate_with_heard_ms() -> None:
+    """A committed barge truncates the paused item at the heard position."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_abc"
+    # 2000 ms enqueued for the item, 500 ms still outstanding → heard ≈ 1200 ms.
+    h._audio_item_enqueued_ms = 2000.0
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._commit_solo_barge()
+    truncate.assert_awaited_once()
+    kwargs = truncate.await_args.kwargs
+    assert kwargs["item_id"] == "item_abc"
+    assert kwargs["content_index"] == 0
+    assert 0 < kwargs["audio_end_ms"] <= 1200
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_rollback_never_truncates() -> None:
+    """Truncation deletes server-side transcript; a resumed reply keeps all of it."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    _make_audible()
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 2000.0
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._resolve_solo_barge("嗯")
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_max_pause_rollback_never_truncates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The patience cap resumes the reply, so its transcript must stay whole."""
+    monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 4000.0  # plenty heard: only the path forbids it
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await asyncio.sleep(0.05)
+    assert h._barge_pending is False
+    assert h._barge_paused is False
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_timer_rollback_never_truncates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No transcript ever arrived: the reply plays on, whole."""
+    monkeypatch.setenv("REALTIME_BARGE_ROLLBACK_TIMEOUT_S", "0.01")
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 4000.0
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._solo_speech_stopped()
+    await asyncio.sleep(0.05)
+    assert h._barge_pending is False
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_transcription_failure_rollback_never_truncates() -> None:
+    """A failed transcript decides nothing — and decides nothing to delete either."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 4000.0
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._resolve_solo_barge_failure()
+    assert h._barge_pending is False
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_zero_heard_ms_skips_truncate() -> None:
+    """If nothing measurably played, do not send a truncate the server may reject."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 400.0
+    audio_drain.note_enqueued(generation, sample_count=9600, sample_rate=24000)  # all outstanding
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._commit_solo_barge()
+    truncate.assert_not_awaited()
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_commit_truncates_the_paused_item_not_a_newer_one() -> None:
+    """The tail that was dropped belongs to the item that was PAUSED.
+
+    By commit time `_audio_item_id` can already name a newer response's item;
+    truncating that one would delete text the user is still hearing.
+    """
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_paused"
+    h._audio_item_enqueued_ms = 2000.0
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    # A newer response started speaking while the decision was pending.
+    h._audio_item_id = "item_newer"
+    h._audio_item_enqueued_ms = 50.0
+    await h._commit_solo_barge()
+    assert truncate.await_args.kwargs["item_id"] == "item_paused"
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_commit_truncates_even_when_the_answer_is_already_live() -> None:
+    """The paused reply's tail was dropped either way — its unheard text must go."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_paused"
+    h._audio_item_enqueued_ms = 2000.0
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    h._active_response_id = "resp_answer"  # a different, newer response is live
+    await h._commit_solo_barge()
+    h.connection.response.cancel.assert_not_awaited()
+    truncate.assert_awaited_once()
+    assert truncate.await_args.kwargs["item_id"] == "item_paused"
+
+
+@pytest.mark.asyncio
+async def test_late_interrupt_truncates_the_live_item() -> None:
+    """The late path has no pause, so it measures the item that is speaking now."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms
+    h._audio_item_id = "item_live"
+    h._audio_item_enqueued_ms = 2000.0
+    h._response_done_event.clear()
+    await h._late_solo_interrupt()
+    truncate.assert_awaited_once()
+    kwargs = truncate.await_args.kwargs
+    assert kwargs["item_id"] == "item_live"
+    assert kwargs["content_index"] == 0
+    assert 0 < kwargs["audio_end_ms"] <= 1200
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_late_interrupt_that_keeps_a_newer_response_never_truncates() -> None:
+    """Nothing was cancelled, so nothing left the ear unheard."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    _make_audible()
+    h._response_done_event.clear()
+    h._barge_resumed_response_id = "resp_old"
+    h._active_response_id = "resp_new"
+    h._audio_item_id = "item_live"
+    h._audio_item_enqueued_ms = 4000.0
+    await h._late_solo_interrupt()
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_truncate_survives_a_refused_stale_item() -> None:
+    """A finished/deleted item is a benign race: log at debug, never raise."""
+    h = _truncating_handler()
+    h.connection.conversation.item.truncate.side_effect = RuntimeError("no such item")
+    await h._truncate_heard_audio("item_gone", 900)
+
+
+@pytest.mark.asyncio
+async def test_truncate_is_skipped_without_a_connection() -> None:
+    """Session teardown can leave the paths above running with no socket."""
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    h.connection = None
+    await h._truncate_heard_audio("item_abc", 900)
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heard_audio_ms_subtracts_the_device_buffer() -> None:
+    """Audio handed to the sink can still be inside the device buffer, unheard."""
+    h = _truncating_handler()
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 2000.0
+    audio_drain.note_enqueued(generation, sample_count=48000, sample_rate=24000)  # 2 s
+    audio_drain.note_chunk(sample_count=24000, sample_rate=24000)  # 1 s to the sink
+    # 2000 enqueued − 1000 outstanding − ~1000 device-buffered − 300 slack < 0.
+    assert h._heard_audio_ms() == 0
+
+
+def test_heard_audio_ms_is_zero_without_an_item() -> None:
+    """No item id means nothing addressable to truncate."""
+    h = _truncating_handler()
+    h._audio_item_enqueued_ms = 5000.0
+    assert h._heard_audio_ms() == 0
+
+
+def test_external_interrupt_forgets_the_audio_item() -> None:
+    """A stale id surviving a reconnect must never be truncated in a later session."""
+    h = _truncating_handler()
+    h._audio_item_id = "item_abc"
+    h._audio_item_enqueued_ms = 2000.0
+    h._barge_paused_item_id = "item_abc"
+    h._barge_paused_heard_ms = 1200
+    h.on_external_interrupt()
+    assert h._audio_item_id is None
+    assert h._audio_item_enqueued_ms == 0.0
+    assert h._barge_paused_item_id is None
+    assert h._barge_paused_heard_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_the_paused_stash_on_both_branches() -> None:
+    """A stash outliving its pause would truncate the wrong item on a later commit."""
+    for rolled_back in (True, False):
+        h = _truncating_handler()
+        _make_audible()
+        h._audio_item_id = "item_abc"
+        h._audio_item_enqueued_ms = 4000.0
+        h._response_done_event.clear()
+        h._solo_speech_started()
+        assert h._barge_paused_item_id == "item_abc"
+        h._resume_playback(rolled_back=rolled_back)
+        assert h._barge_paused_item_id is None, rolled_back
+        assert h._barge_paused_heard_ms == 0, rolled_back
+        h.on_external_interrupt()
+        audio_drain.reset()
+
+
+def _audio_item_probe(
+    monkeypatch: pytest.MonkeyPatch, events: tuple[_FakeEvent, ...]
+) -> tuple[HuggingFaceRealtimeHandler, list[tuple[Any, float]]]:
+    """Replay *events* and sample the audio-item tally at each `response.done`.
+
+    Sampled mid-session on purpose: the session teardown runs
+    `on_external_interrupt()`, which clears both fields, so reading them after
+    `_run_realtime_session` returns would pass no matter what the loop did.
+    """
+    seen: list[tuple[Any, float]] = []
+    _quiet_session(monkeypatch)
+    monkeypatch.setattr(hf_mod, "on_response_audio", lambda sample_count, sample_rate: None)
+    monkeypatch.setattr(
+        hf_mod,
+        "on_assistant_turn_ended",
+        lambda _deps, _live=None: seen.append((handler._audio_item_id, handler._audio_item_enqueued_ms)),
+    )
+    handler = _loop_handler(events)
+    return handler, seen
+
+
+# 240 frames at the base handler's 16 kHz = 15 ms of audio per delta.
+_DELTA_15MS = base64.b64encode(b"\x00\x00" * 240).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_the_loop_accumulates_enqueued_ms_per_audio_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-item accounting: a new item id restarts the tally, deltas add to it."""
+    handler, seen = _audio_item_probe(
+        monkeypatch,
+        (
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_1"),
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_1"),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_A")),
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_2"),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_A")),
+        ),
+    )
+    await handler._run_realtime_session()
+    assert seen == [("item_1", pytest.approx(30.0, abs=0.01)), ("item_2", pytest.approx(15.0, abs=0.01))]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_forgets_the_audio_item_on_a_new_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`response.created` is a clean slate; a stale tally would over-truncate."""
+    handler, seen = _audio_item_probe(
+        monkeypatch,
+        (
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_1"),
+            _FakeEvent("response.created", response=SimpleNamespace(id="resp_B")),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_B")),
+        ),
+    )
+    await handler._run_realtime_session()
+    assert seen == [(None, 0.0)]

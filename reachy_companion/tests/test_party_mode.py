@@ -308,6 +308,59 @@ async def test_sustained_speech_cancels_and_flushes(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_a_confirmed_party_barge_truncates_the_live_item(monkeypatch: pytest.MonkeyPatch):
+    """WebSocket: the server keeps every unheard word unless we cut the item.
+
+    Party mode never pauses, so the pair is measured live, before the flush
+    zeroes the drain counters.
+    """
+    monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
+    h = _party_handler()
+    truncate = AsyncMock()
+    h.connection = SimpleNamespace(
+        response=SimpleNamespace(cancel=AsyncMock()),
+        conversation=SimpleNamespace(item=SimpleNamespace(truncate=truncate)),
+    )
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms
+    h._response_done_event.clear()
+    h._active_response_id = "resp_123"
+    h._audio_item_id = "item_live"
+    h._audio_item_enqueued_ms = 2000.0
+    h._party_speech_open = True
+    h._party_utterance_seq = 7
+    h._start_party_barge_timer()
+    await asyncio.sleep(0.08)
+    truncate.assert_awaited_once()
+    kwargs = truncate.await_args.kwargs
+    assert kwargs["item_id"] == "item_live"
+    assert kwargs["content_index"] == 0
+    assert 0 < kwargs["audio_end_ms"] <= 1200
+
+
+@pytest.mark.asyncio
+async def test_a_party_blip_never_truncates(monkeypatch: pytest.MonkeyPatch):
+    """The reply was never cancelled, so nothing left the ear unheard."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
+    h = _party_handler()
+    truncate = AsyncMock()
+    h.connection = SimpleNamespace(
+        response=SimpleNamespace(cancel=AsyncMock()),
+        conversation=SimpleNamespace(item=SimpleNamespace(truncate=truncate)),
+    )
+    _make_audible()
+    h._response_done_event.clear()
+    h._audio_item_id = "item_live"
+    h._audio_item_enqueued_ms = 4000.0
+    h._party_speech_open = True
+    h._party_utterance_seq = 7
+    h._start_party_barge_timer()
+    h._party_speech_open = False  # the blip ended
+    await asyncio.sleep(0.08)
+    truncate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_stale_timer_never_fires(monkeypatch: pytest.MonkeyPatch):
     """A newer utterance owns the floor; the old timer must stand down."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")

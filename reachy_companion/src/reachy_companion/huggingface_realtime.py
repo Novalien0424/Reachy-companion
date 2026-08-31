@@ -212,6 +212,13 @@ def _barge_cooldown_s() -> float:
 # reply at all. This is how long we wait before repairing that (Codex round 1,
 # finding 11).
 _BARGE_RESPONSE_WATCHDOG_S: Final[float] = 1.5
+# Safety margin subtracted from every `conversation.item.truncate` position
+# (Task 5). `audio_end_ms` above the item's real duration is a server error, so
+# the accounting always rounds DOWN: this covers `audio_drain`'s own residue
+# slack (0.25 s) plus the resampler priming (~32 ms). Undershooting costs a
+# sentence fragment left in the model's context; overshooting costs the whole
+# truncate.
+_TRUNCATE_SLACK_MS: Final[int] = 300
 # The server-VAD default this project ships; shared with `_turn_detection`.
 _VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 800
 _BARGE_CONFIRM_WARNED = False
@@ -566,6 +573,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_late_eligible: bool = False
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
+        # --- heard-audio accounting for `conversation.item.truncate` (Task 5) -
+        # We are on WebSocket, where the server never trims an interrupted
+        # reply: without a truncate the model believes it said every word it
+        # generated, including the ones the barge cut off. `_audio_item_id` is
+        # the assistant item currently coming out of the speaker and
+        # `_audio_item_enqueued_ms` is how much of it has been handed to the
+        # playback path; the `_barge_paused_*` pair is that same measurement
+        # frozen at pause time, because by commit time `_audio_item_id` may
+        # already belong to a newer response (Codex round 2, finding 4).
+        self._audio_item_id: str | None = None
+        self._audio_item_enqueued_ms: float = 0.0
+        self._barge_paused_item_id: str | None = None
+        self._barge_paused_heard_ms: int = 0
         # --- sleep-time engagement memory (D-027) ----------------------------
         # One summary per visit: `shutdown()` can legitimately run twice (its own
         # call site plus the session `finally`), and the second must be a no-op.
@@ -789,9 +809,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not self._party_speech_open or not self._robot_audible():
             return
         logger.info("party barge-in confirmed; cancelling the active reply")
+        # Task 5: party mode never pauses, so the heard position is measured
+        # live — and before the cancel/flush, which zeroes the drain counters.
+        truncate_item, truncate_ms = self._audio_item_id, self._heard_audio_ms()
         await self._cancel_active_response()
         if self._clear_queue:
             self._clear_queue()
+        if truncate_item is not None:
+            await self._truncate_heard_audio(truncate_item, truncate_ms)
 
     # --- solo pause-then-decide barge-in (Task 8) ---------------------------
     def _pause_playback(self) -> None:
@@ -805,9 +830,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         The id of the reply being paused is captured here so a later commit can
         tell it apart from a *different* response that started in the meantime
         (review round, finding 4).
+
+        Task 5 stashes the *audio item* and its heard position for the same
+        reason: a commit truncates the reply that was paused, not whatever is
+        speaking by the time the decision lands. The heard figure taken here is
+        a conservative floor — nothing new reaches the ear during a pause — and
+        it has to be read now, because the commit's own flush zeroes the drain
+        counters it is computed from.
         """
         self._barge_paused = True
         self._barge_paused_response_id = self._active_response_id
+        self._barge_paused_item_id = self._audio_item_id
+        self._barge_paused_heard_ms = self._heard_audio_ms()
         audio_drain.note_paused(True)
 
     def _resume_playback(self, *, rolled_back: bool) -> None:
@@ -831,6 +865,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_pending = False
         audio_drain.note_paused(False)
         self._barge_paused_response_id = None
+        # Both branches: the pause is over either way, and a stash outliving it
+        # would aim a later commit's truncate at an item nobody paused. The
+        # committing caller captures the pair before it gets here (Task 5).
+        self._barge_paused_item_id = None
+        self._barge_paused_heard_ms = 0
         current = _current_task()
         confirm, self._barge_confirm_task = self._barge_confirm_task, None
         rollback, self._barge_rollback_task = self._barge_rollback_task, None
@@ -880,6 +919,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
         self._held_audio.clear()
+        # Task 5: a stale item id surviving a `conversation.interrupt` or a
+        # reconnect must never be truncated in a later session — the id would
+        # name an item from a conversation this handler no longer owns.
+        self._audio_item_id = None
+        self._audio_item_enqueued_ms = 0.0
+        self._barge_paused_item_id = None
+        self._barge_paused_heard_ms = 0
         audio_drain.note_paused(False)
 
     def _barge_reset_for_new_session(self) -> None:
@@ -1085,6 +1131,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         for the rest of the session.
         """
         self._barge_pending = False
+        # Task 5: the pair to truncate is the one stashed when the pause began,
+        # and it has to be read HERE — the `finally` below runs
+        # `_resume_playback` (which clears the stash) and `_clear_queue` (which
+        # in production runs `on_external_interrupt` and zeroes the drain
+        # counters the figure was computed from).
+        truncate_item = self._barge_paused_item_id
+        truncate_ms = self._barge_paused_heard_ms
         # In production `_clear_queue` IS `console.clear_audio_queue`, which
         # calls `on_external_interrupt()` — a full barge-state reset, including
         # `_barge_speech_open` (fix round, finding 1). Here the flush is our
@@ -1114,6 +1167,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._resume_playback(rolled_back=False)
             self._barge_speech_open = speech_open
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
+        # Unconditional across both branches (Codex round 2, finding 4): even
+        # when the answer to the barged turn is already live, the paused reply's
+        # tail was still dropped, and its unheard text must still leave the
+        # model's context.
+        if truncate_item is not None:
+            await self._truncate_heard_audio(truncate_item, truncate_ms)
         if not answer_already_live:
             self._barge_response_seen = False
             self._arm_barge_watchdog()
@@ -1145,10 +1204,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # That flag is what stops the watchdog armed below from firing a
         # response at a user who is already talking again.
         speech_open = self._barge_speech_open
+        # Task 5: no pause exists on this path either, so the pair is measured
+        # live, before the flush zeroes the drain counters behind it.
+        truncate_item, truncate_ms = self._audio_item_id, self._heard_audio_ms()
         await self._cancel_active_response()
         if self._clear_queue:
             self._clear_queue()
         self._barge_speech_open = speech_open
+        if truncate_item is not None:
+            await self._truncate_heard_audio(truncate_item, truncate_ms)
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
@@ -1260,6 +1324,44 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             await self.connection.response.cancel()
         except Exception as exc:  # noqa: BLE001 - "no active response" is a benign race
             logger.debug("response.cancel refused (likely already done): %s", exc)
+
+    def _heard_audio_ms(self) -> int:
+        """Milliseconds of the current audio item that provably reached the ear.
+
+        enqueued − outstanding − device buffer − slack, floored at 0:
+        `audio_end_ms` above the item's real duration is a server error, so this
+        always rounds DOWN (`docs/research-realtime-api-2026-08.md` §2).
+        Undershoot costs a sentence fragment left in context; overshoot costs
+        the whole truncate.
+
+        Accepted limitation (D-028): `outstanding_s()` is global — there is one
+        sink — while `_audio_item_enqueued_ms` is per item, so residue from an
+        earlier item can only make this figure *smaller*, i.e. under-truncate,
+        which is the safe direction.
+        """
+        if self._audio_item_id is None:
+            return 0
+        outstanding_ms = audio_drain.outstanding_s() * 1000.0
+        buffered_ms = audio_drain.device_buffered_s() * 1000.0
+        return max(0, int(self._audio_item_enqueued_ms - outstanding_ms - buffered_ms - _TRUNCATE_SLACK_MS))
+
+    async def _truncate_heard_audio(self, item_id: str, audio_end_ms: int) -> None:
+        """Cut the server's copy of a cancelled reply at the heard position.
+
+        WebSocket transport: the server never truncates on its own, so without
+        this every barge leaves unheard text in the model's context — which is
+        what makes an interrupted Reachy repeat itself. Commit paths only:
+        truncation deletes the item's transcript server-side and cannot be
+        rolled back, so no rollback path may ever reach here.
+        """
+        if self.connection is None or audio_end_ms <= 0:
+            return
+        try:
+            await self.connection.conversation.item.truncate(
+                item_id=item_id, content_index=0, audio_end_ms=audio_end_ms
+            )
+        except Exception as exc:  # noqa: BLE001 - a stale/finished item is a benign race
+            logger.debug("conversation.item.truncate refused: %s", exc)
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -2313,6 +2415,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         on_response_created()
                         self._mark_activity("response_created")
                         self._active_response_id = getattr(getattr(event, "response", None), "id", None)
+                        # Task 5: a new response speaks new items; carrying the
+                        # previous one's tally forward would truncate past what
+                        # the next item actually contains.
+                        self._audio_item_id = None
+                        self._audio_item_enqueued_ms = 0.0
                         self.deps.movement_manager.set_speaking(True)
                         self._notify_response_started()
                         # Task 8: a reply exists, so the post-barge watchdog has
@@ -2533,6 +2640,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         on_response_audio(
                             sample_count=len(decoded_pcm_bytes) // 2,  # 16-bit mono frames
                             sample_rate=self.SAMPLE_RATE,
+                        )
+                        # Task 5: per-item enqueued total, the numerator of the
+                        # `conversation.item.truncate` position. Counted here,
+                        # like the drain accounting above, because this is the
+                        # one place that sees every frame — including the ones
+                        # a barge-in pause later diverts into `_held_audio`.
+                        audio_item_id = getattr(event, "item_id", None)
+                        if audio_item_id is not None and audio_item_id != self._audio_item_id:
+                            self._audio_item_id = audio_item_id
+                            self._audio_item_enqueued_ms = 0.0
+                        self._audio_item_enqueued_ms += (
+                            (len(decoded_pcm_bytes) // 2) / float(self.SAMPLE_RATE) * 1000.0
                         )
                         if self._turn_user_done_at is not None and self._turn_first_audio_at is None:
                             self._turn_first_audio_at = time.perf_counter()

@@ -208,6 +208,18 @@ def outstanding_s() -> float:
         return _OUTSTANDING_S
 
 
+def device_buffered_s() -> float:
+    """Estimated seconds of sink-handed audio still inside the device buffer.
+
+    The second term of the truncate accounting (Task 5): `note_chunk` retires
+    audio from `outstanding_s()` the instant it reaches the sink, but the device
+    holds up to a second more before anyone hears it. Counting that gap as heard
+    would put `audio_end_ms` past what actually played.
+    """
+    with _LOCK:
+        return max(0.0, _DRAINED_AT - time.monotonic())
+
+
 def is_audible() -> bool:
     """Whether queued or device-buffered assistant audio may still be heard.
 

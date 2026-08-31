@@ -141,6 +141,23 @@ async def test_enqueued_audio_is_outstanding_until_it_is_played():
 
 
 @pytest.mark.asyncio
+async def test_device_buffered_s_reports_the_sink_side_estimate():
+    """Handed to the sink is not heard yet — the truncate accounting needs the gap.
+
+    `outstanding_s()` retires audio the moment `note_chunk` hands it over, so
+    without this second term "enqueued − outstanding" would count up to a
+    second of device-buffered speech as already heard.
+    """
+    assert audio_drain.device_buffered_s() == 0.0, "nothing handed over yet"
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=24000, sample_rate=24000)
+    audio_drain.note_chunk(sample_count=24000, sample_rate=24000)  # 1 s to the sink
+    assert audio_drain.device_buffered_s() == pytest.approx(1.0, abs=0.05)
+    audio_drain.note_cleared()
+    assert audio_drain.device_buffered_s() == 0.0, "a flush drops the estimate, never waits it out"
+
+
+@pytest.mark.asyncio
 async def test_barge_in_clear_discards_the_pending_device_buffer():
     """When the queue is flushed the estimate must be dropped, not waited out."""
     generation = audio_drain.begin_response()
