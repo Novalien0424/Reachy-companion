@@ -104,8 +104,10 @@ def begin_sleep_quiesce(stream_manager: Any, logger: logging.Logger) -> None:
     event loop reaches it through `deps.begin_sleep`, and the worker thread
     reaches it again (idempotently) from `go_to_sleep_and_stop_app`.
     `_mic_muted` is a plain flag the record loop reads (`console.py:912`) and
-    `on_external_interrupt()` marshals its cancels onto the handler's own loop
-    (`huggingface_realtime.py:1434-1470`).
+    `HuggingFaceRealtimeHandler.on_external_interrupt` is documented safe from a
+    non-loop thread — it never cancels the task it is running on, and every
+    barge timer re-checks the flags it clears. (Cited by name: the line range
+    this once carried went stale within one wave of edits.)
 
     Two deliberate omissions:
 

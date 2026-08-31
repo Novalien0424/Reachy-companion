@@ -384,6 +384,28 @@ def run(
             if sleep_error is not None:
                 result["error"] = f"go_to_sleep movement failed: {sleep_error}"
             return result
+        except Exception:
+            # Final review, C6. `begin_sleep_quiesce` mutes the microphone first
+            # and has no undo by design — the disconnect is meant to follow
+            # within seconds. But `movement_manager.stop()` and the quiesce
+            # itself are unguarded, and `tools/go_to_sleep.py` catches whatever
+            # escapes here and returns an error dict, so the app keeps running:
+            # awake, moving, and permanently deaf. Give the microphone back.
+            #
+            # `deps.sleep_requested` deliberately STAYS set. By the time we get
+            # here we cannot tell whether the app stop already went through —
+            # `request_stop_current_app` and `app_stop_event.set()` live in the
+            # same block — and clearing it on a path where it did would cost the
+            # visit its D-027 sleep summary. A lost memory is the worse failure
+            # than one spurious summary at a later settings restart, which is
+            # what leaving it set can cost.
+            if stream_manager is not None:
+                try:
+                    stream_manager._mic_muted = False
+                    logger.warning("go_to_sleep failed before the stop; microphone unmuted")
+                except Exception as e:  # noqa: BLE001 - never mask the original failure
+                    logger.error("Could not unmute the microphone after a failed sleep: %s", e)
+            raise
         finally:
             go_to_sleep_lock.release()
 

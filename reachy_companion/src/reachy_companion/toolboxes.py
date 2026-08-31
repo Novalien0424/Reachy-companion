@@ -83,7 +83,7 @@ def session_tool_exclusions(mode: ConversationMode, open_boxes: Iterable[str]) -
     """Tool names to hide from the session, given the mode and the open boxes.
 
     Expressed through the registry's existing `exclusion_list` seam
-    (`tools/core_tools.py:537`), so nothing else in the tool pipeline has to
+    (`tools.core_tools.get_tool_specs`), so nothing else in the tool pipeline has to
     learn about modes or boxes. Computed against the LIVE registry rather than a
     literal, because MCP and external tools join it at runtime.
 

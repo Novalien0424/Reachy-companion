@@ -159,8 +159,24 @@ def _boot_conversation_mode() -> ConversationMode:
 
 
 def _party_confirm_s() -> float:
-    """How long speech must persist while Reachy is audible to count as a barge."""
-    return env_int("REALTIME_PARTY_BARGE_CONFIRM_MS", 400, lo=0) / 1000.0
+    """How long speech must persist while Reachy is audible to count as a barge.
+
+    Carries the same hard invariant as the solo window (`_barge_confirm_s`): it
+    MUST be longer than `REALTIME_VAD_SILENCE_DURATION_MS`. `_party_barge_confirm`
+    cancels iff `_party_speech_open` is still True when it fires, and only
+    `speech_stopped` clears that flag — which the server cannot send until its
+    whole silence window has elapsed. A shorter window therefore confirms every
+    onset, cough included, and "sustained speech" stops meaning anything.
+
+    Raised 400 → 1600 ms in the final review of the 2026-08-31 mode wave (C2).
+    400 predates both the 1000 ms patience default and GROUP becoming the boot
+    mode, so the shipped robot cut its own reply on any VAD-detected noise. 1600
+    is the solo window's number, for the same reason it is the solo window's
+    number: a ≥600 ms margin over the silence window. It costs no perceived stop
+    latency in a room either — party mode never pauses, so what the window buys
+    is the chance for the transcript to arrive and decide the turn properly.
+    """
+    return env_int("REALTIME_PARTY_BARGE_CONFIRM_MS", 1600, lo=0) / 1000.0
 
 
 def _party_followup_s() -> float:
@@ -339,41 +355,62 @@ _BARGE_CONFIRM_WARNED = False
 
 
 def warn_if_barge_confirm_races_vad() -> None:
-    """Warn once when the confirm window cannot outlast the VAD silence window.
+    """Warn once when a confirm window cannot outlast the VAD silence window.
 
-    Review round, finding 1. With `REALTIME_BARGE_CONFIRM_MS` at or below
+    Review round, finding 1, widened to both windows in the final review of the
+    2026-08-31 mode wave (C2). With a confirm window at or below
     `REALTIME_VAD_SILENCE_DURATION_MS`, `speech_stopped` cannot possibly have
-    arrived by the time the confirm timer fires, so every pause confirms and
-    the rollback path is dead. That is a silent misconfiguration — the robot
-    simply goes back to being interruptible by a cough — so it gets a warning
-    at session-config build rather than nothing at all.
+    arrived by the time that confirm timer fires, so every onset confirms and
+    the false-interruption branch is dead. That is a silent misconfiguration —
+    the robot simply goes back to being interruptible by a cough — so it gets a
+    warning at session-config build rather than nothing at all.
 
-    Two configurations have no such branch to warn about, and warning anyway
-    was noise: with the name gate on the confirm timer no longer commits at all
-    (it is a max pause that rolls back), and under `REALTIME_VAD_TYPE=
-    semantic_vad` the server ignores `REALTIME_VAD_SILENCE_DURATION_MS`
-    entirely, so the comparison was against a value with no effect (recorded
-    known edge in `progress.md`).
+    Two windows, checked independently because they gate different modes:
+
+    * `REALTIME_BARGE_CONFIRM_MS` is the SOLO window, and only the legacy
+      `REALTIME_SOLO_NAME_GATE=0` path still lets it commit anything (under the
+      gate it is a max pause that rolls back). It is also meaningless without
+      `REALTIME_SOLO_CLIENT_BARGE`. Both conditions still gate that half.
+    * `REALTIME_PARTY_BARGE_CONFIRM_MS` is the ROOM window, used by GROUP and
+      RECORD — and GROUP is the boot default, so this one is normally live. It
+      has no gate and no legacy switch: `_party_barge_confirm` always commits.
+
+    Deliberately mode-agnostic: this is a startup advisory about the configured
+    values, and the live mode is a runtime property the operator can flip with
+    one tool call, so warning only about the mode that happens to be booting
+    would leave the other misconfiguration silent until the flip.
+
+    Under `REALTIME_VAD_TYPE=semantic_vad` the server ignores
+    `REALTIME_VAD_SILENCE_DURATION_MS` entirely, so neither comparison means
+    anything and the whole check stands down (recorded known edge in
+    `progress.md`).
     """
     global _BARGE_CONFIRM_WARNED
-    if _BARGE_CONFIRM_WARNED or not _solo_client_barge():
-        return
-    if _solo_name_gate():
+    if _BARGE_CONFIRM_WARNED:
         return
     if os.getenv("REALTIME_VAD_TYPE", "server_vad").strip().lower() == "semantic_vad":
         return
-    confirm_ms = _barge_confirm_s() * 1000.0
     silence_ms = _vad_silence_duration_ms()
-    if confirm_ms > silence_ms:
+    offenders: list[tuple[str, float]] = []
+    if _solo_client_barge() and not _solo_name_gate():
+        solo_ms = _barge_confirm_s() * 1000.0
+        if solo_ms <= silence_ms:
+            offenders.append(("REALTIME_BARGE_CONFIRM_MS", solo_ms))
+    party_ms = _party_confirm_s() * 1000.0
+    if party_ms <= silence_ms:
+        offenders.append(("REALTIME_PARTY_BARGE_CONFIRM_MS", party_ms))
+    if not offenders:
         return
     _BARGE_CONFIRM_WARNED = True
-    logger.warning(
-        "REALTIME_BARGE_CONFIRM_MS=%.0f is not longer than REALTIME_VAD_SILENCE_DURATION_MS=%d: "
-        "speech_stopped cannot arrive before the confirm timer fires, so every barge-in will be "
-        "confirmed and the false-interruption rollback can never run.",
-        confirm_ms,
-        silence_ms,
-    )
+    for name, confirm_ms in offenders:
+        logger.warning(
+            "%s=%.0f is not longer than REALTIME_VAD_SILENCE_DURATION_MS=%d: "
+            "speech_stopped cannot arrive before the confirm timer fires, so every barge-in will be "
+            "confirmed and the false-interruption rollback can never run.",
+            name,
+            confirm_ms,
+            silence_ms,
+        )
 
 
 def _item_phase(item: Any) -> str | None:
@@ -795,16 +832,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     def _party_mode(self) -> bool:
         """Whether the ROOM turn policy applies — GROUP and RECORD both do.
 
-        Compat shim, and a deliberate one. A dozen sites branch on this
-        (`:1073, :1099, :1118, :1264, :2402, :2422, :2597, :2619, :2629, :2653,
-        :2662, :825` and `openai_realtime.py:416`) and every one of them asks
-        the same binary question: debounced room barge-in and a gate at
+        Compat shim, and a deliberate one. A dozen sites branch on this —
+        `_party_barge_confirm`, `_confirm_solo_barge`, `_rollback_timer`,
+        `_barge_response_watchdog`, `_maybe_commit_on_partial`, six branches in
+        `_run_realtime_session`'s receive loop (`speech_started`,
+        `speech_stopped`, the answer-gate denial, the late-interrupt guard, the
+        decided-turn clear and `transcription.failed`), and
+        `openai_realtime._get_session_config` — and every one of them asks the
+        same binary question: debounced room barge-in and a gate at
         `transcription.completed`, or the solo pause-then-decide machine?
         RECORD wants the room answer at all of them. Sites whose behavior really
-        differs per mode read `_conversation_mode` instead.
+        differs per mode read `_conversation_mode` instead. (Named rather than
+        numbered on purpose: this list went stale within one wave of edits.)
 
-        The `getattr` default mirrors the existing defensive read at
-        `openai_realtime.py:416`: config emission must also work on
+        The `getattr` default mirrors the existing defensive read in
+        `openai_realtime._get_session_config`: config emission must also work on
         partially-built handlers (tests construct via `__new__`). It is
         deliberately `ONE_ON_ONE` and **not** `DEFAULT_MODE` — the contract it
         preserves is `getattr(self, "_party_mode", False)`, i.e. a handler with
@@ -1033,13 +1075,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     def _emit_transcript(self, role: str, text: str, final: bool = True) -> None:
         """Forward the transcript, and in 紀錄模式 keep a copy of every final line.
 
-        This one override covers all four final-transcript sites — the rolled-back
-        solo barge (`:1800`), the answer-gate denial (`:3152`), the answered user
-        turn (`:3191`) and the assistant's own transcript (`:3236`) — plus any
-        added later. Debounced partials never come through here at all (they go
-        straight to the output queue, `_emit_debounced_partial` `:2073`), and the
-        `final` guard keeps it that way for any future caller, so the log holds
-        finished lines only.
+        This one override covers all four final-transcript sites — the
+        rolled-back solo barge (`_resolve_solo_barge`) and, in
+        `_run_realtime_session`'s receive loop, the answer-gate denial, the
+        answered user turn and the assistant's own
+        `output_audio_transcript.done` — plus any added later. Debounced
+        partials never come through here at all (they go straight to the output
+        queue, from `_emit_debounced_partial`), and the `final` guard keeps it
+        that way for any future caller, so the log holds finished lines only.
+        Named rather than numbered on purpose: the line numbers this once
+        carried went stale within one wave of edits.
 
         The broadcast goes FIRST. Recording is the added duty here and the
         console/JSON-RPC transcript is the pre-existing one: were the order
@@ -1054,6 +1099,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     def _mode_tool_exclusions(self) -> list[str]:
         """Tool names hidden from the session right now: mode plus open boxes."""
         return session_tool_exclusions(self._current_mode(), self._open_toolboxes)
+
+    def _idle_tool_exclusions(self) -> list[str]:
+        """Hide from the idle picker exactly what the session hides (final review, C4)."""
+        return self._mode_tool_exclusions()
 
     async def _apply_session_update(
         self,
@@ -1853,10 +1902,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
-        # The addressed turn must not end in silence (Codex round 1, finding 5):
-        # its auto-response may have been rejected against the reply we just
-        # cancelled, so give the watchdog the repair duty, exactly as a
-        # committed barge does.
+        # The addressed turn must not end in silence (Codex round 1, finding 5).
+        # The original reason — "its auto-response may have been rejected
+        # against the reply we just cancelled" — died with `create_response`,
+        # which is false in every mode since 2026-08-31; nothing is auto-created
+        # any more. What is left is the reset plus a net that is deliberately
+        # short-lived: the only caller is the answer-gate ACCEPT path, which
+        # requests this turn's answer a few lines later and stands the watchdog
+        # down as it goes (final review, C1) — so on the live path this arm is
+        # cancelled before it can fire, and it exists to keep the barge
+        # bookkeeping honest (`_barge_response_seen` describes a cancelled reply,
+        # not a delivered one) and to cover any future caller that cancels a
+        # reply without requesting its replacement.
         self._barge_response_seen = False
         self._arm_barge_watchdog()
 
@@ -3398,6 +3455,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # now over.
                             self._barge_resumed_response_id = None
                             self._barge_late_eligible = False
+                            # Final review, C1. This turn is about to ask for its
+                            # own answer (`_safe_response_create` below), so the
+                            # repair watchdog a confirmed barge armed for it has
+                            # nothing left to repair. Left armed, every one of
+                            # its guards passes whenever `response.created` takes
+                            # longer than `_BARGE_RESPONSE_WATCHDOG_S` — no
+                            # response seen, nothing speaking, the floor quiet —
+                            # and it enqueues a SECOND request: Reachy answers
+                            # the same sentence twice. Standing it down HERE,
+                            # rather than relying on `response.created` winning
+                            # the race, is what makes that timing-independent.
+                            self._stand_down_barge_watchdog()
 
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None

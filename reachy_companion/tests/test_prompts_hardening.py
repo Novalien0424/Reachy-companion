@@ -61,6 +61,25 @@ def test_mode_rules_block_covers_every_mode() -> None:
     assert "紀錄模式" not in one and "紀錄模式" not in group
 
 
+def test_the_record_block_matches_the_surface_the_mode_actually_ships() -> None:
+    """The prompt must not deny tools 紀錄模式 keeps (final review, C5).
+
+    `toolboxes.session_tool_exclusions` never hides `EXTRA_TOOLS` — an MCP tool
+    belongs to no box, so hiding it would strand it for the whole meeting — and
+    the hardening block tells the model to use the tools it is given. A block
+    that closed the list at "只有四件" contradicted both, so a model that saw a
+    Notion tool in its own session had two rules pointing opposite ways.
+    """
+    from reachy_companion.prompts import mode_rules_block
+    from reachy_companion.conversation_mode import ConversationMode
+
+    record = mode_rules_block(ConversationMode.RECORD)
+    assert "其他外掛工具如果還在也可以用" in record
+    assert "只有四件" not in record
+    # The redirect for everything else survives the rewrite.
+    assert "切模式" in record
+
+
 def test_hardening_block_carries_the_verbatim_and_example_rules() -> None:
     """One rule must name both envelope shapes at once (who_is_this and summarize).
 

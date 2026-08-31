@@ -37,6 +37,7 @@ from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
     _barge_confirm_s,
+    _party_confirm_s,
     _vad_silence_duration_ms,
 )
 
@@ -110,6 +111,7 @@ def _clean_barge_env(monkeypatch: pytest.MonkeyPatch):
     for name in (
         "REALTIME_SOLO_CLIENT_BARGE",
         "REALTIME_BARGE_CONFIRM_MS",
+        "REALTIME_PARTY_BARGE_CONFIRM_MS",
         "REALTIME_BARGE_ROLLBACK_TIMEOUT_S",
         "REALTIME_BARGE_COOLDOWN_MS",
         "REALTIME_DEFAULT_MODE",
@@ -213,6 +215,44 @@ def test_the_patience_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert _vad_silence_duration_ms() == 1000
     assert _barge_confirm_s() == pytest.approx(1.6)
+
+
+def test_the_party_confirm_window_outlasts_the_vad_silence_window() -> None:
+    """The room window carries the same hard invariant as the solo one.
+
+    Final review, C2. `_party_barge_confirm` cancels iff `_party_speech_open`
+    is still True when it fires, and only `speech_stopped` clears that flag —
+    which the server cannot send until its whole silence window has elapsed. A
+    party confirm window at or below the silence window therefore confirms
+    EVERY onset, and since GROUP became the boot default that is the shipped
+    behavior of the shipped mode: any VAD-detected noise cuts a playing reply
+    mid-sentence. This pins the relationship, not the number.
+    """
+    assert _party_confirm_s() * 1000 > _vad_silence_duration_ms()
+
+
+def test_a_party_confirm_window_inside_the_vad_window_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The startup advisory covers the room window too, gate on or off.
+
+    Final review, C2. The check used to return early whenever the solo name
+    gate was on — its default — so the party window, which the boot mode
+    actually uses, was never compared to anything.
+    """
+    monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
+    monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "400")
+    monkeypatch.setenv("REALTIME_VAD_SILENCE_DURATION_MS", "1000")
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert "REALTIME_PARTY_BARGE_CONFIRM_MS" in caplog.text
+    assert "rollback can never run" in caplog.text
+
+    # Warned once, not once per session update.
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        hf_mod.warn_if_barge_confirm_races_vad()
+    assert caplog.text == ""
 
 
 def test_a_confirm_window_inside_the_vad_window_warns(
@@ -2230,6 +2270,64 @@ async def test_the_loop_stands_the_watchdog_down_on_a_denied_turn(
     await handler._run_realtime_session()
 
     assert seen == [(None, baseline[0])], "the denied turn left its repair watchdog armed"
+
+
+@pytest.mark.asyncio
+async def test_the_loop_stands_the_watchdog_down_on_an_accepted_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An answered turn asks for its own reply, so its repair watchdog must go.
+
+    Final review, C1. The barge that produced this turn armed the watchdog; the
+    accept path then calls `_safe_response_create()` itself. Leave the watchdog
+    armed and every one of its guards passes whenever `response.created` takes
+    longer than 1.5 s — nothing seen, nothing speaking, the floor quiet — so it
+    enqueues a SECOND request and Reachy answers the same sentence twice.
+
+    Observed from INSIDE the loop, at the `record_transcript` seam, which sits
+    after the stand-down and before the answer is requested: that is what makes
+    the claim independent of `response.created` timing. A post-session
+    assertion would prove nothing, because session teardown
+    (`_barge_shutdown`) cancels the watchdog either way.
+    """
+    _quiet_session(monkeypatch)
+    holder: dict[str, HuggingFaceRealtimeHandler] = {}
+    baseline: list[int] = []
+    seen: list[tuple[Any, int]] = []
+
+    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+        # A silent robot, so the late-interrupt path stays out of this test.
+        self._response_done_event.set()
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        # Stand in for the confirmed barge that armed the repair watchdog.
+        self._barge_response_seen = False
+        self._arm_barge_watchdog()
+        baseline.append(self._pending_responses.qsize())
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(
+        hf_mod,
+        "record_transcript",
+        lambda _deps, _role, _text: seen.append(
+            (holder["h"]._barge_watchdog_task, holder["h"]._pending_responses.qsize())
+        ),
+    )
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            # Substantive, so the open one-on-one answer gate accepts it.
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="我們晚餐要吃什麼呢",
+                item_id="item_1",
+            ),
+        )
+    )
+    holder["h"] = handler
+
+    await handler._run_realtime_session()
+
+    assert seen == [(None, baseline[0])], "the accepted turn kept its repair watchdog armed"
 
 
 @pytest.mark.asyncio

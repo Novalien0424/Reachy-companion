@@ -115,13 +115,25 @@ class ConversationHandler(AsyncStreamHandler, ABC):
             return None
         return handler_output
 
+    def _idle_tool_exclusions(self) -> list[str]:
+        """Tool names the idle picker may not choose from. Base: nothing is hidden.
+
+        Overridden by backends that hide tools from the live session, so the
+        idle policy selects from the same surface the model has.
+        """
+        return []
+
     async def send_idle_signal(self, idle_duration: float) -> None:
         """Run a locally selected idle tool without sending an idle turn to the model."""
         if not self._is_connected():
             logger.debug("No active session; cannot run idle tool")
             return
 
-        available_tool_names = {spec["name"] for spec in get_tool_specs()}
+        # Final review, C4: the same exclusion list the session was built with.
+        # Selecting from the unfiltered registry let 紀錄模式 break a quiet
+        # recording with a dance, an emotion or a head turn — movement the mode
+        # exists to suppress, chosen by a picker that never learned about modes.
+        available_tool_names = {spec["name"] for spec in get_tool_specs(self._idle_tool_exclusions())}
         await start_idle_tool_call(
             deps=self.deps,
             tool_manager=self.tool_manager,

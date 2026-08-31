@@ -9,6 +9,7 @@ latency-tolerant (docs/research-mini-tool-calling-2026-08.md §A1).
 import asyncio
 import importlib
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,7 @@ from reachy_companion.toolboxes import (
 )
 from reachy_companion.record_mode import RECORD_TOOL_ALLOWLIST
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler
+from reachy_companion.tools.core_tools import EXTRA_TOOLS
 from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.tools.open_toolbox import OpenToolbox
 
@@ -326,6 +328,38 @@ def test_handler_exclusions_follow_mode_and_boxes() -> None:
     h2 = _box_handler()
     h2._open_toolboxes = {"media"}
     assert h2._mode_tool_exclusions() == session_tool_exclusions(ConversationMode.ONE_ON_ONE, {"media"})
+
+
+@pytest.mark.asyncio
+async def test_the_idle_picker_obeys_the_mode_tool_diet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """紀錄模式 hides the body tools, so the idle policy must not reach for them.
+
+    Final review, C4. `send_idle_signal` selected from the UNFILTERED registry,
+    so a quiet recording could still break into a dance, an emotion or a head
+    turn three minutes in — movement the mode exists to suppress, chosen by a
+    picker that never learned about modes.
+    """
+    from reachy_companion import conversation_handler as ch_mod
+
+    seen: list[set[str]] = []
+
+    async def _capture(**kwargs: Any) -> None:
+        seen.append(set(kwargs["available_tool_names"]))
+        return None
+
+    monkeypatch.setattr(ch_mod, "start_idle_tool_call", _capture)
+    h = _box_handler(ConversationMode.RECORD)
+    h.connection = SimpleNamespace()  # `_is_connected()` only checks for one
+    h.output_queue = asyncio.Queue()
+    h.tool_manager = MagicMock()
+
+    await h.send_idle_signal(200.0)
+
+    assert seen, "the idle picker never ran"
+    assert not seen[0] & set(h._mode_tool_exclusions()), "idle candidates included hidden tools"
+    for name in ("dance", "play_emotion", "move_head"):
+        assert name not in seen[0]
+    assert seen[0] <= RECORD_TOOL_ALLOWLIST | set(EXTRA_TOOLS)
 
 
 @pytest.mark.asyncio

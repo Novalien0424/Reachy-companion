@@ -16,7 +16,11 @@ from test_solo_barge import _production_flush, _install_barge_state
 from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler, _turn_detection
 from reachy_companion.conversation_mode import ConversationMode
-from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
+from reachy_companion.huggingface_realtime import (
+    HuggingFaceRealtimeHandler,
+    _party_confirm_s,
+    _vad_silence_duration_ms,
+)
 
 
 def _party_handler() -> OpenAIRealtimeHandler:
@@ -59,6 +63,7 @@ def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_DEFAULT_MODE",
         "REALTIME_PARTY_DEFAULT",
         "REALTIME_PARTY_BARGE_CONFIRM_MS",
+        "REALTIME_VAD_SILENCE_DURATION_MS",
         "REALTIME_PARTY_FOLLOWUP_S",
         "REALTIME_PARTY_ADDRESS_NAMES",
         "REALTIME_VAD_TYPE",
@@ -267,6 +272,41 @@ async def test_a_blip_does_not_cancel_the_reply(monkeypatch: pytest.MonkeyPatch)
     h._start_party_barge_timer()
     h._party_speech_open = False  # the blip ended
     await asyncio.sleep(0.08)
+    h.connection.response.cancel.assert_not_awaited()
+    h._clear_queue_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_default_survives_a_real_vad_stop():
+    """Sub-window noise must not cut the reply at the SHIPPED confirm default.
+
+    Final review, C2, and the one test here that does not hand-clear
+    `_party_speech_open`: every other party-barge test above sets it False by
+    hand at the instant the blip ends, which is not how the flag moves. Only
+    `speech_stopped` clears it, and the server cannot send that until its whole
+    `REALTIME_VAD_SILENCE_DURATION_MS` window of silence has elapsed. So the
+    real ordering is simulated here — a blip, then the flag clearing one full
+    VAD window later — with both knobs at their shipped defaults.
+
+    At the old 400 ms default the confirm fired at 0.4 s, while the flag was
+    still True, and ANY VAD-detected noise cancelled a playing reply
+    mid-sentence in the boot mode. The run continues past the new 1600 ms
+    window so the timer is proved inert, not merely late.
+    """
+    h = _party_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._active_response_id = "resp_123"
+    h._party_speech_open = True
+    h._party_utterance_seq = 7
+    h._start_party_barge_timer()
+
+    vad_s = _vad_silence_duration_ms() / 1000.0
+    await asyncio.sleep(vad_s)
+    h._party_speech_open = False  # `speech_stopped`, one full VAD window later
+    h.connection.response.cancel.assert_not_awaited()
+
+    await asyncio.sleep(_party_confirm_s() - vad_s + 0.15)
     h.connection.response.cancel.assert_not_awaited()
     h._clear_queue_callback.assert_not_called()
 

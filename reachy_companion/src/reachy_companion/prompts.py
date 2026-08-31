@@ -118,9 +118,10 @@ _MODE_BLOCKS: Final[dict[ConversationMode, str]] = {
 - 只有聽到自己的名字或「停」才回應，回應也要短。
 - 有人請你總結、回顧、唸重點的時候，呼叫 summarize_conversation，然後照它回傳的
   summary_text 一字不差地唸出來，不要改寫也不要補話。
-- 這個模式下你能做的事只有四件：set_conversation_mode 換模式、summarize_conversation 唸摘要、
+- 這個模式下你主要做的是這四件：set_conversation_mode 換模式、summarize_conversation 唸摘要、
   go_to_sleep 去睡覺、wait_for_user 安靜聽著。（task_status 和 task_cancel 也還在，
-  用來追蹤還沒跑完的工作。）要做別的事，請先用 set_conversation_mode 切回其他模式。
+  用來追蹤還沒跑完的工作。）其他外掛工具如果還在也可以用；要做別的事請先用
+  set_conversation_mode 切模式。
 """.strip(),
 }
 

@@ -207,6 +207,32 @@ def test_begin_sleep_silences_without_consuming_the_sleep_latch(monkeypatch) -> 
     assert deps.go_to_sleep()["status"] == "already_requested"
 
 
+def test_a_failed_sleep_gives_the_microphone_back(monkeypatch) -> None:
+    """A sleep that raises must not leave a live robot that cannot hear.
+
+    Final review, C6. `begin_sleep_quiesce` mutes the mic first and by design
+    has no undo — the disconnect is supposed to follow within seconds. But
+    `movement_manager.stop()` and the quiesce itself are unguarded, and the tool
+    catches whatever they raise and returns an error dict, so the app keeps
+    running: awake, moving, and permanently deaf. The mic goes back on the
+    exception path.
+
+    `deps.sleep_requested` deliberately stays set — see the closure's comment.
+    """
+    from reachy_companion.hanova import audio_drain
+
+    monkeypatch.setattr(audio_drain, "is_audible", lambda: False)
+    stubbed = _run_app(monkeypatch)
+    stream_manager = stubbed.stream_cls.return_value
+    stubbed.movement_manager.stop.side_effect = RuntimeError("motor bus down")
+
+    with pytest.raises(RuntimeError, match="motor bus down"):
+        stubbed.deps.go_to_sleep()
+
+    assert stream_manager._mic_muted is False, "the failed sleep left the robot deaf"
+    assert stubbed.deps.sleep_requested is True
+
+
 def test_begin_sleep_mutes_the_mic_and_disarms_the_live_handler(monkeypatch) -> None:
     """The wiring reaches the real stream manager and its current handler."""
     stubbed = _run_app(monkeypatch)
