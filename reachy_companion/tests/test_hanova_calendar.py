@@ -446,11 +446,19 @@ async def test_calendar_delete_rejects_a_too_short_match():
 
 
 def test_all_three_tools_reach_the_model_session():
-    """The locked profile must list them, or the model never sees them."""
+    """The locked profile must list the family, or the model never sees them.
+
+    2026-08-31 tool diet: these are no longer registered under their own
+    names -- they are the actions of the `calendar` façade, which is what the
+    profile lists now. Their modules, names and prerequisite rows are
+    unchanged; only the surface the model reaches them through is.
+    """
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")
     core_tools.initialize_tools(force=True)
     try:
-        names = {spec["name"] for spec in core_tools.get_tool_specs()}
-        assert {"calendar_add", "calendar_list", "calendar_delete"} <= names
+        registry = core_tools.get_tools()
+        assert "calendar" in registry, "the locked profile no longer lists the family"
+        reachable = {tool.name for tool in type(registry["calendar"]).ACTIONS.values()}
+        assert {"calendar_add", "calendar_list", "calendar_delete"} <= reachable
     finally:
         core_tools._TOOLS_SIGNATURE = None

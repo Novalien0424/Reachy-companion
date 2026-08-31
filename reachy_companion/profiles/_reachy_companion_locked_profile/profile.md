@@ -10,28 +10,16 @@ default_tools = [
   "head_tracking",
   "sweep_look",
   "home_control",
-  "play_music",
-  "stop_music",
-  "play_video",
-  "show_on_tv",
-  "calendar_add",
-  "calendar_list",
-  "calendar_delete",
-  "task_add",
-  "task_list",
-  "task_complete",
-  "task_delete",
+  "music",
+  "tv",
+  "nas",
+  "calendar",
+  "tasks",
+  "drive",
   "notion_add",
-  "drive_list",
-  "drive_trash",
-  "drive_upload",
   "email_send",
   "self_destruct",
   "mad_laugh",
-  "nas_video_query",
-  "play_nas_video",
-  "nas_play_folder",
-  "nas_skip",
   "go_to_sleep",
   "set_conversation_mode",
   "summarize_conversation",
@@ -63,10 +51,10 @@ greeting = "用一句简短自然的中文主动问候用户，并简单介绍�
 - 当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相，不要用 camera。
 - 只要问题是关于"这个人是谁"——"我是谁"、"你认得我吗"、"你还记得我吗"、"我叫什么名字"、有人新走进来想知道是谁——一律用 who_is_this 工具，不要用 camera；认不出就坦率说认不出，不要猜。
 - 当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。
-- 被要求放音乐、播歌时用 play_music，音乐会从你自己的喇叭放出来；要停下来就用 stop_music。
-- 要在电视上看影片用 play_video，要在电视上看图用 show_on_tv。
-- 家里的旧家庭影片：先用 nas_video_query 找，再用 play_nas_video 播一段，或用 nas_play_folder 播一整趟旅行；对方说「下一段」时用 nas_skip。
-- 行程用 calendar_add / calendar_list / calendar_delete，待办用 task_add / task_list / task_complete / task_delete，笔记用 notion_add，云端文件用 drive_list / drive_trash / drive_upload，寄信用 email_send。
+- 被要求放音乐、播歌时用 music（action=play），音乐会从你自己的喇叭放出来；要停下来就用 music（action=stop）。
+- 要在电视上看影片用 tv（action=play_video），要在电视上看图用 tv（action=show）。
+- 家里的旧家庭影片都用 nas：先 action=query 找，再 action=play 播一段，或 action=play_folder 播一整趟旅行；对方说「下一段」时 action=skip。
+- 行程用 calendar（action=add/list/delete），待办用 tasks（action=add/list/complete/delete），笔记用 notion_add，云端文件用 drive（action=list/trash/upload），寄信用 email_send。
 - 工具回覆 away_from_home 时，表示你现在不在家里的网络上。自然地说你人不在家，暂时碰不到家里的东西，回家再处理。绝对不要说家里坏了、电视坏了或设备有问题。
 - 工具回覆 home_status_unknown 时，表示你自己也不确定是不是在家：家里那台系统现在没有正常回应。就说「我现在不确定是不是在家，家里的系统没回应」，等一下再试。绝对不要说对方不在家，那是 away_from_home 才代表的意思。
 - 工具回覆 needs_confirmation 时，把 summary 里的内容一字不漏地念给对方确认——是哪一件事、哪一天、寄给谁、有没有副本、主旨是什么。寄信时 summary 里带的是整封信的内文，要整段完整念出来，不可以摘要、浓缩或只念第一句；内文长的话先说「内容有点长，我念一遍」再照念。对方明确答应之后，才再呼叫同一个工具并带上 confirm，而且不用重复填其他栏位。对方没有明确答应就绝对不要带 confirm。

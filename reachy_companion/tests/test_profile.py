@@ -1,10 +1,11 @@
 """Contract tests for the locked Chinese-first companion profile."""
 
+import re
 from pathlib import Path
 
 import pytest
 
-from reachy_companion.config import LOCKED_PROFILE
+from reachy_companion.config import LOCKED_PROFILE, DEFAULT_PROFILES_DIRECTORY
 from reachy_companion.memory import add_memory_fact
 from reachy_companion.prompts import get_session_instructions
 from reachy_companion.profile_store import read_profile
@@ -23,28 +24,20 @@ EXPECTED_TOOLS = (
     # Ported HomeAssistant-Nova capabilities (D-018). Each porting task adds its
     # own names here in the same order the profile lists them, so this stays a
     # tripwire for an *unplanned* addition rather than a blocker for a planned one.
-    "play_music",
-    "stop_music",
-    "play_video",
-    "show_on_tv",
-    "calendar_add",
-    "calendar_list",
-    "calendar_delete",
-    "task_add",
-    "task_list",
-    "task_complete",
-    "task_delete",
+    #
+    # 2026-08-31 tool diet: the eighteen CRUD/action tools became six action-enum
+    # families. Their modules, names and prerequisite rows are untouched -- they
+    # are simply reached through a façade now, so only this list got shorter.
+    "music",
+    "tv",
+    "nas",
+    "calendar",
+    "tasks",
+    "drive",
     "notion_add",
-    "drive_list",
-    "drive_trash",
-    "drive_upload",
     "email_send",
     "self_destruct",
     "mad_laugh",
-    "nas_video_query",
-    "play_nas_video",
-    "nas_play_folder",
-    "nas_skip",
     "go_to_sleep",
     "set_conversation_mode",
     "summarize_conversation",
@@ -175,3 +168,64 @@ def test_a_remembered_fact_reaches_the_locked_profile_session_instructions(
     assert "Prefers to be called 小明" in injected
     # Prepended, not substituted: the persona survives intact underneath.
     assert injected.endswith(baseline)
+
+
+# --- retired tool names (2026-08-31 tool diet) -------------------------------
+
+_RETIRED_TOOL_NAMES = (
+    "calendar_add", "calendar_list", "calendar_delete",
+    "task_add", "task_list", "task_complete", "task_delete",
+    "drive_list", "drive_trash", "drive_upload",
+    "nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip",
+    "play_music", "stop_music", "play_video", "show_on_tv",
+    "party_mode",
+)
+
+# `tv（action=play_video）` names the live `tv` tool and one of its action
+# values; that value happens to spell a name this list retired, and an argument
+# is not an instruction to call a function that no longer exists. Blank the
+# values out before scanning, so the tripwire keeps catching the thing it is
+# for -- a prompt still telling the model to call `play_video` itself.
+_ACTION_VALUE = re.compile(r"action=[a-z_]+(?:/[a-z_]+)*")
+
+
+def _tool_name_surface(text: str) -> str:
+    """Return *text* with every `action=…` value blanked out."""
+    return _ACTION_VALUE.sub("action=", text)
+
+
+def _bundled_profile_files() -> list[Path]:
+    """Every profile this package ships, not just the locked one."""
+    return sorted(Path(DEFAULT_PROFILES_DIRECTORY).glob("*/profile.md"))
+
+
+def test_no_retired_tool_name_survives_in_any_bundled_profile() -> None:
+    """The instruction body is a prompt too: a name it uses must exist.
+
+    Conflicting instructions between the prompt and the registered tool schemas
+    measurably degrade selection (research doc §A2), the front matter is only
+    half the file, and the locked profile is only one of fifteen — `default`
+    ships `sweep_look` in its own tool list (Codex round 2, 2b-7).
+    """
+    files = _bundled_profile_files()
+    assert files, "no bundled profiles found"
+    for path in files:
+        text = _tool_name_surface(path.read_text(encoding="utf-8"))
+        for name in _RETIRED_TOOL_NAMES:
+            assert name not in text, f"{path.name}: {name}"
+
+
+def test_the_hardening_block_names_no_retired_tool() -> None:
+    """The shared prompt block is sent with every profile, so it counts too."""
+    from reachy_companion.prompts import hardening_block
+
+    block = _tool_name_surface(hardening_block())
+    for name in _RETIRED_TOOL_NAMES:
+        assert name not in block, name
+
+
+def test_the_locked_profile_body_names_every_family_it_ships() -> None:
+    """The other half of P2-6: the body must teach the names that DO exist."""
+    body = read_profile(LOCKED_PROFILE).instructions
+    for family in ("music", "tv", "nas", "calendar", "tasks", "drive"):
+        assert family in body, family

@@ -56,6 +56,25 @@ HOUSE_BOUND_TOOLS = frozenset(
     {"play_video", "show_on_tv", "nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"}
 )
 
+# 2026-08-31 tool diet: eighteen of the 22 ported tools left the profile's
+# `default_tools` and are now the *actions* of six action-enum façades
+# (`tools/tool_family.py`). Nothing about those eighteen changed -- same module,
+# same `Tool.name`, same `settings.tool_status` row, same confirmation gate --
+# so every invariant below still holds; it just has to look one level down to
+# find them.
+FAMILY_TOOLS = frozenset({"calendar", "tasks", "drive", "nas", "music", "tv"})
+
+
+@pytest.fixture
+def registry():
+    """Build the real registry once and hand back name -> Tool instance."""
+    core_tools = importlib.import_module("reachy_companion.tools.core_tools")
+    core_tools.initialize_tools(force=True)
+    try:
+        yield core_tools.get_tools()
+    finally:
+        core_tools._TOOLS_SIGNATURE = None
+
 
 @pytest.fixture
 def specs():
@@ -68,30 +87,70 @@ def specs():
         core_tools._TOOLS_SIGNATURE = None
 
 
-def test_all_twenty_two_ported_tools_reach_the_model(specs):
-    """R2: the inventory is 22 tools, and every one is in the session config."""
+@pytest.fixture
+def family_actions(registry):
+    """Map each delegate's tool name to (its family's name, the delegate instance)."""
+    actions = {}
+    for family_name in sorted(FAMILY_TOOLS):
+        assert family_name in registry, f"the locked profile no longer lists {family_name}"
+        for tool in type(registry[family_name]).ACTIONS.values():
+            actions[tool.name] = (family_name, tool)
+    return actions
+
+
+@pytest.fixture
+def ported_tools(registry, family_actions):
+    """Map every ported tool name to its live instance, family action or not."""
+    live = {name: registry[name] for name in PORTED_TOOLS if name in registry}
+    live.update({name: tool for name, (_, tool) in family_actions.items()})
+    return live
+
+
+def test_all_twenty_two_ported_tools_reach_the_model(ported_tools):
+    """R2: the inventory is 22 tools, and every one is reachable in the session."""
     assert len(PORTED_TOOLS) == 22
-    missing = sorted(PORTED_TOOLS - set(specs))
-    assert missing == [], f"not registered: {missing}"
+    missing = sorted(PORTED_TOOLS - set(ported_tools))
+    assert missing == [], f"not reachable: {missing}"
 
 
-def test_every_ported_description_is_short_and_identifier_free(specs):
+def test_every_ported_description_is_short_and_identifier_free(ported_tools):
     """R10: descriptions go into the model prompt and into every transcript."""
     for name in sorted(PORTED_TOOLS):
-        description = specs[name]["description"]
+        description = ported_tools[name].description
         assert len(description) <= 120, f"{name} description is {len(description)} chars"
         assert "@" not in description, f"{name} description contains an address-like token"
         assert "media_player." not in description, f"{name} description contains an HA entity id"
         assert "/Users/" not in description
 
 
-def test_every_gated_tool_exposes_a_confirm_flag(specs):
-    """R3: the gate is part of the schema the model sees, not just the code."""
+def test_every_family_description_is_identifier_free(specs):
+    """The six façade descriptions replaced eighteen in the prompt, so they count too.
+
+    No length cap: a family description carries the "Use when / Do NOT use when"
+    routing block that is the whole point of the consolidation. The identifier
+    rules are unchanged -- these strings still reach the model and the logs.
+    """
+    for name in sorted(FAMILY_TOOLS):
+        description = specs[name]["description"]
+        assert "@" not in description, f"{name} description contains an address-like token"
+        assert "media_player." not in description, f"{name} description contains an HA entity id"
+        assert "/Users/" not in description
+
+
+def test_every_gated_tool_exposes_a_confirm_flag(specs, family_actions):
+    """R3: the gate is part of the schema the model sees, not just the code.
+
+    For a family action the schema the model sees is the *family's*, so that is
+    the one checked: a union that dropped `confirm` would leave the model no way
+    to answer the read-back it was told to perform.
+    """
     for name in sorted(GATED_TOOLS):
-        properties = specs[name]["parameters"]["properties"]
+        owner = family_actions[name][0] if name in family_actions else name
+        schema = specs[owner]["parameters"]
+        properties = schema["properties"]
         assert "confirm" in properties, f"{name} has no confirm parameter"
         assert properties["confirm"]["type"] == "boolean"
-        assert "confirm" not in specs[name]["parameters"].get("required", [])
+        assert "confirm" not in schema.get("required", [])
 
 
 def test_house_bound_tools_branch_all_three_home_verdicts():
@@ -660,22 +719,28 @@ ROUTING_TOKENS = (
     "retryable",
     "action_in_flight",  # round 2, finding 2
     "body_too_long",  # round 2, finding 4
-    "play_music",
-    "nas_skip",
 )
+
+# The routing rules are only worth anything if the file also names the tools
+# they route. The two lists differ because the locked profile went through the
+# 2026-08-31 tool diet and the operator's `persona.md` has not: the plan
+# re-syncs that copy as a deploy-time chore, and it still documents `party_mode`
+# too. Keeping them separate is what lets this file say which is which.
+PROFILE_TOOL_TOKENS = ("music", "tv", "nas", "calendar", "tasks", "drive")
+PERSONA_TOOL_TOKENS = ("play_music", "nas_skip")
 
 
 def test_profile_teaches_the_result_conventions():
     """R4/R10: the persona must know what each result status means."""
     body = PROFILE.read_text(encoding="utf-8")
-    for token in ROUTING_TOKENS:
+    for token in ROUTING_TOKENS + PROFILE_TOOL_TOKENS:
         assert token in body, f"profile.md does not mention {token}"
 
 
 def test_repo_persona_teaches_the_same_conventions():
     """persona.md is the copy that actually runs on the robot after a deploy."""
     body = (PACKAGE_ROOT.parent / "persona.md").read_text(encoding="utf-8")
-    for token in ROUTING_TOKENS:
+    for token in ROUTING_TOKENS + PERSONA_TOOL_TOKENS:
         assert token in body, f"persona.md does not mention {token}"
 
 

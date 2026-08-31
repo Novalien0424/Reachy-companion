@@ -1438,11 +1438,19 @@ async def test_nas_logs_never_carry_a_clip_path(monkeypatch, caplog, tmp_path):
 
 
 def test_all_four_tools_reach_the_model_session():
-    """The locked profile must list them, or the model never sees them."""
+    """The locked profile must list the family, or the model never sees them.
+
+    2026-08-31 tool diet: these are no longer registered under their own
+    names -- they are the actions of the `nas` façade, which is what the
+    profile lists now. Their modules, names and prerequisite rows are
+    unchanged; only the surface the model reaches them through is.
+    """
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")
     core_tools.initialize_tools(force=True)
     try:
-        names = {spec["name"] for spec in core_tools.get_tool_specs()}
-        assert {"nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"} <= names
+        registry = core_tools.get_tools()
+        assert "nas" in registry, "the locked profile no longer lists the family"
+        reachable = {tool.name for tool in type(registry["nas"]).ACTIONS.values()}
+        assert {"nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"} <= reachable
     finally:
         core_tools._TOOLS_SIGNATURE = None

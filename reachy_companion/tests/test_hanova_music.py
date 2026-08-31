@@ -477,11 +477,19 @@ async def test_a_failed_search_is_logged_as_a_shape_not_the_word_error(daemon, m
 
 
 def test_both_tools_reach_the_model_session():
-    """The locked profile must list them, or the model never sees them."""
+    """The locked profile must list the family, or the model never sees them.
+
+    2026-08-31 tool diet: these are no longer registered under their own
+    names -- they are the actions of the `music` façade, which is what the
+    profile lists now. Their modules, names and prerequisite rows are
+    unchanged; only the surface the model reaches them through is.
+    """
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")
     core_tools.initialize_tools(force=True)
     try:
-        names = {spec["name"] for spec in core_tools.get_tool_specs()}
-        assert {"play_music", "stop_music"} <= names
+        registry = core_tools.get_tools()
+        assert "music" in registry, "the locked profile no longer lists the family"
+        reachable = {tool.name for tool in type(registry["music"]).ACTIONS.values()}
+        assert {"play_music", "stop_music"} <= reachable
     finally:
         core_tools._TOOLS_SIGNATURE = None
