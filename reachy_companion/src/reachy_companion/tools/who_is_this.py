@@ -24,7 +24,10 @@ class WhoIsThis(Tool):
         "say plainly that you do not recognize them — never guess a name. "
         "When recognized, the result includes the remembered name and short facts about that person: say the "
         "name exactly as returned and state the facts as returned — do not add, alter, or guess details the "
-        "result does not contain."
+        "result does not contain. "
+        "When recognized, the result also carries `response_text` and `require_repeat_verbatim`: while that "
+        "flag is true, say `response_text` out loud EXACTLY as returned — do not change the name, do not add, "
+        "omit or reorder anything — and only then continue naturally."
     )
     parameters_schema: dict[str, Any] = {
         "type": "object",
@@ -52,6 +55,7 @@ class WhoIsThis(Tool):
             # tell tonight's visitor from this morning's before writing 上次聊天.
             deps.record_recognition(name)
             await self._attach_known_facts(deps, result, name)
+            self._attach_verbatim_envelope(result, name)
         logger.info(
             "Tool call: who_is_this status=%s name=%s score=%s facts=%d",
             result.get("status"),
@@ -86,3 +90,26 @@ class WhoIsThis(Tool):
             logger.warning("who_is_this: could not read person facts: %s: %s", type(e).__name__, e)
             return
         result["known_facts"] = [fact.text for fact in facts]
+
+    @staticmethod
+    def _attach_verbatim_envelope(result: dict[str, Any], name: str) -> None:
+        """Wrap the name (and one fact) in the cookbook's verbatim envelope.
+
+        Research doc §C3, reproducing OpenAI's own diagnosis of this exact bug:
+        "If your tool returns a raw string and separately asks the model to
+        'repeat exactly', the model may be more prone to paraphrasing,
+        truncation, or blending in its own preamble." On 2026-08-31 that is
+        precisely what happened — told to repeat 雲霓, the model said a
+        different name. So the authoritative text becomes a named field with the
+        flag travelling beside it.
+
+        One fact, not all of them: a longer recitation is what gets paraphrased,
+        and the remaining facts are still in `known_facts` for the model to use
+        in its own words afterwards. A recall that failed or was switched off
+        leaves no `known_facts` at all, and the name alone is then the whole
+        envelope — the part that must survive is the name.
+        """
+        facts = result.get("known_facts") or []
+        first = facts[0] if facts and isinstance(facts[0], str) and facts[0].strip() else ""
+        result["response_text"] = f"{name}。{first}" if first else name
+        result["require_repeat_verbatim"] = True

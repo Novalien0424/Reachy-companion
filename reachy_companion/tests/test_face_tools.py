@@ -562,6 +562,84 @@ async def test_a_camera_failure_is_reported_without_its_exception_text(
     assert "v4l2" in caplog.text
 
 
+# --- who_is_this verbatim envelope ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_wraps_a_recognition_in_a_verbatim_envelope(tmp_path: Path) -> None:
+    """Research §C3: a raw string plus 'say it exactly' is what mini paraphrases."""
+    add_person_fact(tmp_path, "雲霓", "喜歡爬山")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="雲霓", score=0.81, face_count=1))
+
+    result = await WhoIsThis()(_deps(recognizer, instance_path=tmp_path))
+
+    assert result["response_text"] == "雲霓。喜歡爬山"
+    assert result["require_repeat_verbatim"] is True
+    assert result["name"] == "雲霓"
+    assert result["known_facts"] == ["喜歡爬山"]
+    _assert_carries_no_image(result)
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_envelope_quotes_only_the_first_fact(tmp_path: Path) -> None:
+    """One name plus one fact: a longer recitation is exactly what gets paraphrased.
+
+    The quoted one is `known_facts[0]`, and the store hands those back newest
+    first — so the fact Reachy says out loud is the most recent thing it learned
+    about this person, not the oldest. The rest stay in `known_facts` for the
+    model to use in its own words once the verbatim part is out.
+    """
+    add_person_fact(tmp_path, "雲霓", "喜歡爬山")
+    add_person_fact(tmp_path, "雲霓", "在準備馬拉松")
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="雲霓", score=0.81, face_count=1))
+
+    result = await WhoIsThis()(_deps(recognizer, instance_path=tmp_path))
+
+    assert result["known_facts"] == ["在準備馬拉松", "喜歡爬山"]
+    assert result["response_text"] == "雲霓。在準備馬拉松"
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_envelope_without_facts() -> None:
+    """Recognized with nothing on file: the name alone is the whole envelope."""
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="雲霓", score=0.71, face_count=1))
+
+    result = await WhoIsThis()(_deps(recognizer))
+
+    assert result["response_text"] == "雲霓"
+    assert result["require_repeat_verbatim"] is True
+    assert result["known_facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_unknown_carries_no_envelope(instant_sleep: None) -> None:
+    """Nothing to repeat, so nothing to repeat verbatim."""
+    recognizer = _FakeRecognizer(Identification(status="unknown", score=0.21, face_count=1))
+
+    result = await WhoIsThis()(_deps(recognizer))
+
+    assert "response_text" not in result
+    assert "require_repeat_verbatim" not in result
+
+
+@pytest.mark.asyncio
+async def test_who_is_this_envelope_survives_a_recall_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken person store costs the fact, never the name the model must repeat."""
+
+    def _boom(*args: Any, **kwargs: Any) -> list[Any]:
+        raise OSError("people store unreadable")
+
+    monkeypatch.setattr("reachy_companion.tools.who_is_this.facts_for_person", _boom)
+    recognizer = _FakeRecognizer(Identification(status="recognized", name="雲霓", score=0.7, face_count=1))
+
+    result = await WhoIsThis()(_deps(recognizer, instance_path=tmp_path))
+
+    assert result["response_text"] == "雲霓"
+    assert result["require_repeat_verbatim"] is True
+
+
 # --- remember_face ----------------------------------------------------------
 
 

@@ -59,3 +59,54 @@ def test_mode_rules_block_covers_every_mode() -> None:
     # Each block names its own mode and no other, so a live update cannot leave
     # two postures in the instructions at once.
     assert "紀錄模式" not in one and "紀錄模式" not in group
+
+
+def test_hardening_block_carries_the_verbatim_and_example_rules() -> None:
+    """One rule must name both envelope shapes at once (who_is_this and summarize).
+
+    Two envelopes now travel to the model — `require_repeat_verbatim`/`response_text`
+    from `who_is_this` and `speak_verbatim`/`summary_text` from
+    `summarize_conversation`. A rule that named only one would leave the other
+    looking like ordinary tool output, which is exactly the paraphrasing the
+    envelope exists to stop.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    for phrase in (
+        "回答長度範例",
+        "require_repeat_verbatim",
+        "speak_verbatim",
+        "response_text",
+        "summary_text",
+        "只講真的做過的事",
+    ):
+        assert phrase in block
+
+
+def test_hardening_block_states_no_numeric_length_cap() -> None:
+    """Operator ruling: calibration, never a number (D-028, and the user memory).
+
+    The brevity fix is few-shot examples of the *tone*, not a sentence budget:
+    a numeric cap truncates the explanations and stories that the calibration
+    rule above deliberately allows.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    for banned in ("一到兩句", "不超過兩句", "最多三句", "1-2 sentences"):
+        assert banned not in block
+
+
+def test_length_examples_are_labelled_as_style_not_as_triggers() -> None:
+    """Research §D3: 2.1-mini matches prompt example phrases too literally.
+
+    Community reports have the mini tier treating an illustrative exchange as a
+    trigger condition — waiting to hear "現在幾點？" before answering briefly.
+    The heading and the closing line are what keep the block a demonstration.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    assert "示範語氣，不是觸發條件" in block
+    assert "不是要你等到聽見這些句子才這樣講" in block
