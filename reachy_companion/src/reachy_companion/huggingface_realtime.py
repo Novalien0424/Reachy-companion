@@ -2036,7 +2036,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if self.connection is None:
             return True
         loop = self._handler_loop
-        if loop is None or loop.is_closed():
+        # `is_running()` as well as `is_closed()` (Task 9 review, Minor 3): an
+        # open-but-stopped loop accepts `run_coroutine_threadsafe` and then
+        # never runs the coroutine, so the marshalled branch below would stall
+        # the full eleven seconds before giving up. A loop that is not turning
+        # cannot finish a response either, so this is the dead-session answer.
+        if loop is None or loop.is_closed() or not loop.is_running():
             return True
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -3570,11 +3575,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 # finish, so end the wait rather than let it burn its timeout
                 # (Codex round 3, finding 2). Conn-guarded for the same reason
                 # as `_end_session_updates(conn)` above: a reconnect's
-                # replacement session owns both of these by the time this runs,
-                # and must not have them cleared out from under it.
+                # replacement session owns this event by the time this runs, and
+                # must not have it set out from under an active response.
+                #
+                # `_handler_loop` is deliberately NOT cleared here (Task 9
+                # review, Important 1). The replacement session captures it near
+                # the top of `_run_realtime_session`, BEFORE it publishes its
+                # connection, so a dying session's `finally` landing in that
+                # window passes the guard above and would null the loop the LIVE
+                # session just captured — after which `wait_for_reply_finished`
+                # short-circuits `True` for the rest of that session and the
+                # goodbye gets cut off again. One handler runs on one loop, so
+                # the field is never stale in a way that matters; `__init__` and
+                # `shutdown()` are where it goes back to None.
                 if self.connection is None or self.connection is conn:
                     self._response_done_event.set()
-                    self._handler_loop = None
 
                 # Solo barge-in (Task 8): a pause must never outlive the session
                 # that opened it — it would hold audio the next session cannot
@@ -3708,6 +3723,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
         # Unblock the response sender worker so it can exit
         self._response_done_event.set()
+        # This handler is done; a rebuilt one captures its own loop and
+        # `build_handler` re-points `deps.wait_for_reply_finished` at it. Unlike
+        # the session `finally`, shutdown is not racing a replacement session of
+        # THIS handler, so nulling here cannot strand a live one (Task 9 review,
+        # Important 1).
+        self._handler_loop = None
 
         # Task 8: second line of defence for a pause left open, exactly as the
         # session `finally` is the first.

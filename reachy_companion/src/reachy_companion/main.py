@@ -335,6 +335,15 @@ def run(
             # Silencing already happened in the tool (deps.begin_sleep); repeat
             # it here so the timeout/inactivity paths, which reach this closure
             # without the tool, get it too. Both calls are idempotent.
+            #
+            # The repeat is not purely idempotent in one narrow window: if a
+            # barge pause opened between the tool's disarm and this one — from
+            # audio the server had already buffered before the mute — this
+            # `on_external_interrupt()` drops the held audio rather than
+            # resuming it, so the tail of the goodbye is lost. Accepted, and
+            # net-protective: a pause left open keeps `audio_drain.is_audible()`
+            # unconditionally True, which would peg the drain below at its full
+            # cap and delay the pose for nothing.
             app_lifecycle.begin_sleep_quiesce(stream_manager, logger)
             # The response has finished emitting by now, so what this waits on
             # is audio that genuinely exists: let the goodbye out of the speaker

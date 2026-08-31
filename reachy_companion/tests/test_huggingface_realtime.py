@@ -1271,3 +1271,65 @@ async def test_a_tool_result_without_a_picture_creates_no_image_item(monkeypatch
 
     (output,) = handler.connection.created_items
     assert output["type"] == "function_call_output"
+
+
+@pytest.mark.asyncio
+async def test_session_teardown_leaves_the_handler_loop_alone(monkeypatch: Any) -> None:
+    """A dying session must not null the loop a replacement just captured.
+
+    `_run_realtime_session` captures `_handler_loop` near its top, BEFORE it
+    publishes `self.connection`. So a reconnect can interleave: the replacement
+    session captures the loop, and only then does the old session's `finally`
+    run — with `self.connection` still None, which passes the conn guard. If
+    that block cleared `_handler_loop`, `wait_for_reply_finished` would
+    short-circuit `True` for the rest of the live session and the goodbye would
+    be cut off exactly as before (Task 9 review, Important 1).
+
+    The interleaving is injected at `_end_session_updates`, the first statement
+    of that `finally`.
+    """
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
+
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = _make_fake_realtime_client()
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    running_loop = asyncio.get_running_loop()
+
+    def _replacement_session_takes_over(_conn: Any) -> None:
+        # Exactly the window that matters: the replacement has captured the
+        # loop; it has not published its connection yet.
+        handler.connection = None
+        handler._handler_loop = running_loop
+
+    monkeypatch.setattr(handler, "_end_session_updates", _replacement_session_takes_over)
+
+    await handler._run_realtime_session()
+
+    assert handler._handler_loop is running_loop
+    # The event still gets set: nothing may be left waiting on a response the
+    # dead session can no longer finish.
+    assert handler._response_done_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_reply_finished_gives_up_on_a_stopped_loop() -> None:
+    """An open but not-running loop accepts the coroutine and never runs it.
+
+    Marshalling onto it would stall the whole eleven-second budget before
+    giving up, so it counts as a dead session (Task 9 review, Minor 3).
+    """
+    handler = HuggingFaceRealtimeHandler.__new__(HuggingFaceRealtimeHandler)
+    handler.connection = object()
+    handler._response_done_event = asyncio.Event()  # deliberately NOT set
+    stopped = asyncio.new_event_loop()  # open, never run
+    handler._handler_loop = stopped
+    try:
+        started = asyncio.get_running_loop().time()
+        assert await handler.wait_for_reply_finished() is True
+        assert asyncio.get_running_loop().time() - started < 1.0
+    finally:
+        stopped.close()

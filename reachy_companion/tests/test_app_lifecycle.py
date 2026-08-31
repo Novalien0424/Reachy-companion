@@ -1,3 +1,4 @@
+import time
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
@@ -242,12 +243,21 @@ def test_wait_for_reply_finished_is_safe_from_another_loop() -> None:
     def _run_handler_loop() -> None:
         loop = _asyncio.new_event_loop()
         _asyncio.set_event_loop(loop)
-        handler._response_done_event = _asyncio.Event()
-        handler._handler_loop = loop
-        ready.set()
-        loop.run_until_complete(_asyncio.sleep(0.05))
-        handler._response_done_event.set()
-        loop.run_until_complete(_asyncio.sleep(0.15))
+
+        async def _session() -> None:
+            # Built and signalled from INSIDE the running loop, exactly as the
+            # real handler does. Signalling before `run_until_complete` would
+            # release the caller while the loop was still stopped, and the
+            # `is_running()` guard would then answer from the dead-session
+            # branch — passing this test without ever marshalling anything.
+            handler._response_done_event = _asyncio.Event()
+            handler._handler_loop = loop
+            ready.set()
+            await _asyncio.sleep(0.05)
+            handler._response_done_event.set()  # `response.done` arrives
+            await _asyncio.sleep(0.15)
+
+        loop.run_until_complete(_session())
         stop.set()
         loop.close()
 
@@ -255,10 +265,15 @@ def test_wait_for_reply_finished_is_safe_from_another_loop() -> None:
     thread.start()
     ready.wait(timeout=2.0)
     # A DIFFERENT loop, exactly as `run_go_to_sleep_tool` creates.
+    started = time.monotonic()
     results.append(_asyncio.run(handler.wait_for_reply_finished()))
+    waited = time.monotonic() - started
     stop.wait(timeout=2.0)
     thread.join(timeout=2.0)
     assert results == [True]
+    # It really marshalled and really waited: the handler's loop does not set
+    # the event until 50 ms in. A short-circuit would return in microseconds.
+    assert waited >= 0.04
 
 
 def test_wait_for_reply_finished_gives_up_when_the_loop_is_gone() -> None:
