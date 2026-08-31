@@ -14,11 +14,16 @@ the pre-Task-8 path must come back byte for byte.
 import time
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+
+# `tests/` has no __init__.py, so pytest's prepend import mode puts the
+# directory itself on sys.path — import the sibling harnesses by bare name.
+from test_huggingface_realtime import _FakeEvent, _make_fake_realtime_client
 from test_openai_realtime_config import _emit_ready_handler
 
 from reachy_companion import huggingface_realtime as hf_mod
@@ -26,6 +31,7 @@ from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.console import LocalStream
 from reachy_companion.streaming import AdditionalOutputs
 from reachy_companion.openai_realtime import ROBOT_RATE, OpenAIRealtimeHandler, _turn_detection
+from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
     _barge_confirm_s,
@@ -46,6 +52,7 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_paused_response_id = None
     handler._barge_partial_committed_item = None
     handler._barge_resumed_response_id = None
+    handler._barge_late_eligible = False
     handler._held_audio = deque()
     # `_pause_playback` captures the live response id; a handler built for the
     # emit path alone has no party state, so fill it in without clobbering a
@@ -1246,14 +1253,275 @@ def test_external_interrupt_clears_the_resumed_id() -> None:
     assert h._barge_resumed_response_id is None
 
 
-def test_the_late_interrupt_is_wired_into_the_session_loop() -> None:
-    """A late path nothing calls is the same bug as no late path at all."""
+def test_external_interrupt_clears_late_eligibility() -> None:
+    """Whatever took the turn over, this utterance's onset no longer decides anything."""
+    h = _solo_handler()
+    h._barge_late_eligible = True
+    h.on_external_interrupt()
+    assert h._barge_late_eligible is False
+
+
+# --- eligibility at speech onset (fix round 1, finding 1) ------------------
+
+
+@pytest.mark.asyncio
+async def test_an_idle_start_is_not_late_eligible() -> None:
+    """A turn begun in silence must never cancel the answer being made for it.
+
+    Fix round 1, finding 1: `response.created` for that answer routinely
+    precedes the turn's own `transcription.completed`, so a named question from
+    silence would otherwise reach the late path with a live response that IS
+    its answer — cut, then repeated by the watchdog 1.5 s later.
+    """
+    h = _solo_handler()  # `_response_done_event` set, no queued audio: silent
+    h._solo_speech_started()
+    assert h._barge_late_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_speech_over_a_talking_robot_is_late_eligible() -> None:
+    """The three cases the late path exists for all begin over an audible reply."""
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    assert h._barge_late_eligible is True
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_cooldown_suppressed_onset_is_still_late_eligible() -> None:
+    """Eligibility is recorded ahead of the cooldown return, which owns a real case.
+
+    A name spoken inside the post-barge cooldown never gets a pause at all, so
+    the late path is the only thing that can silence the reply for it.
+    """
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._barge_cooldown_until = time.monotonic() + 5
+    h._solo_speech_started()
+    assert h._barge_pending is False, "the cooldown suppressed the pause"
+    assert h._barge_late_eligible is True
+
+
+@pytest.mark.asyncio
+async def test_late_interrupt_keeps_speech_open_through_the_real_console_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The late flush must not wipe the speech state its own watchdog reads.
+
+    Fix round 1, finding 2 — the analogue of
+    `test_confirm_keeps_speech_open_through_the_real_console_flush`. In
+    production `_clear_queue` is the real `console.clear_audio_queue`, which
+    calls `on_external_interrupt()`. If that reset takes `_barge_speech_open`
+    with it, the watchdog armed moments later has nothing left to stop it from
+    firing a response at a user who is still talking. Wired through the REAL
+    console, not a bare mock.
+    """
+    monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
+    h = _solo_handler()
+    audio = SimpleNamespace(clear_player=MagicMock())
+    robot = SimpleNamespace(media=SimpleNamespace(audio=audio))
+    LocalStream(h, robot)  # installs the real clear_audio_queue as _clear_queue
+    _make_audible()
+    h._response_done_event.clear()
+    h._barge_speech_open = True  # the user is talking on, past their committed turn
+
+    await h._late_solo_interrupt()
+
+    audio.clear_player.assert_called_once()  # the real console flush really ran
+    assert h._barge_speech_open is True, "the user is still mid-sentence"
+
+    # ... and the watchdog therefore stands down instead of talking over them.
+    h._response_done_event.set()
+    h._barge_response_seen = False
+    await h._barge_response_watchdog(h._party_utterance_seq)
+    assert h._pending_responses.qsize() == 0
+    h.on_external_interrupt()
+
+
+# --- the decision, driven through the real event loop (fix round 1, finding 3)
+
+
+def _loop_handler(events: tuple[_FakeEvent, ...]) -> HuggingFaceRealtimeHandler:
+    """Build a real handler whose realtime session replays `events` (music-barge harness)."""
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.client = _make_fake_realtime_client(events=events)
+    return handler
+
+
+def _quiet_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise everything a session touches except the barge decision."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
+    monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
+    monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)
+    monkeypatch.setattr(hf_mod, "on_user_speech_candidate", lambda _deps: None)
+    monkeypatch.setattr(hf_mod, "on_turn_without_response", lambda _deps: None)
+
+
+def _state_at_speech_start(
+    *,
+    audible: bool = True,
+    eligible: bool = True,
+    party: bool = False,
+    active_id: str | None = "resp_A",
+    partial_item: str | None = None,
+):
+    """Stand in for `_solo_speech_started`, planting the state under test.
+
+    The session-boundary reset runs inside `_run_realtime_session`, so the state
+    a completed transcript is judged against has to be installed from *within*
+    the loop — the same monkeypatch seam
+    `test_the_loop_routes_solo_speech_through_the_barge_hooks` uses.
+    """
+
+    def _apply(self: HuggingFaceRealtimeHandler) -> None:
+        if audible:
+            self._response_done_event.clear()
+        else:
+            self._response_done_event.set()
+        self._barge_late_eligible = eligible
+        self._party_mode = party
+        self._active_response_id = active_id
+        self._barge_partial_committed_item = partial_item
+
+    return _apply
+
+
+async def _run_late_path(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    transcript: str = "瑞奇你等一下",
+    **state: Any,
+) -> tuple[list[str], HuggingFaceRealtimeHandler]:
+    """Replay speech-start → committed transcript; report whether the late path fired."""
+    _quiet_session(monkeypatch)
+    fired: list[str] = []
+
+    async def _record(self: HuggingFaceRealtimeHandler) -> None:
+        fired.append("late")
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _state_at_speech_start(**state))
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_late_solo_interrupt", _record)
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript=transcript,
+                item_id="item_1",
+            ),
+        )
+    )
+    await handler._run_realtime_session()
+    return fired, handler
+
+
+@pytest.mark.asyncio
+async def test_the_loop_late_interrupts_an_addressed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole point, reached through the real event loop rather than by hand."""
+    fired, handler = await _run_late_path(monkeypatch)
+    assert fired == ["late"]
+    assert handler._barge_resumed_response_id is None  # the turn is decided
+    assert handler._barge_late_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_an_idle_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 1, finding 1: a named question from silence keeps its own answer."""
+    fired, handler = await _run_late_path(monkeypatch, eligible=False)
+    assert fired == []
+    assert handler._active_response_id == "resp_A", "the answer to this very turn is untouched"
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_a_partial_committed_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial-committed turn already interrupted; the reply now playing is its answer."""
+    fired, handler = await _run_late_path(monkeypatch, partial_item="item_1")
+    assert fired == []
+    assert handler._barge_partial_committed_item is None, "the marker is consumed, not left to rot"
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_a_silent_robot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing to talk over: the reply drained before the transcript landed."""
+    fired, _ = await _run_late_path(monkeypatch, audible=False, active_id=None)
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_in_party_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Party mode owns its own gate and its own barge timer; the solo path stays out."""
+    fired, _ = await _run_late_path(monkeypatch, party=True)
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_an_unaddressed_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audible and eligible, but nobody said the name: Reachy talks on."""
+    fired, _ = await _run_late_path(monkeypatch, transcript="我們晚餐要吃什麼呢這麼晚了")
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_late_interrupts_a_control_phrase_with_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A robot you cannot silence is worse than any false positive: 「停」 beats the flag."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
+    fired, _ = await _run_late_path(monkeypatch, transcript="停")
+    assert fired == ["late"]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_never_late_interrupts_on_the_legacy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REALTIME_SOLO_CLIENT_BARGE=0 is the pre-plan wiring, untouched."""
+    monkeypatch.setenv("REALTIME_SOLO_CLIENT_BARGE", "0")
+    fired, _ = await _run_late_path(monkeypatch)
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_clears_the_resumed_id_when_that_reply_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resumed reply ending naturally is the bounded cleanup for its id."""
+    _quiet_session(monkeypatch)
+
+    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+        self._barge_resumed_response_id = "resp_A"
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started"),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_other")),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_A")),
+        )
+    )
+    await handler._run_realtime_session()
+    assert handler._barge_resumed_response_id is None
+
+
+def test_the_late_interrupt_runs_before_the_turn_clears_its_state() -> None:
+    """Source ordering the behavioral tests above cannot see.
+
+    The trailing clear must stay *below* the late block: moved above it, the
+    newer-answer guard would read a field this same handler had just wiped.
+    """
     import inspect
 
     source = inspect.getsource(HuggingFaceRealtimeHandler._run_realtime_session)
-    assert "_late_solo_interrupt(" in source
-    assert "_barge_resumed_response_id = None" in source
-    assert "_barge_partial_committed_item" in source
+    assert source.index("await self._late_solo_interrupt()") < source.rindex("self._barge_resumed_response_id = None")
 
 
 def test_the_gate_silences_the_confirm_race_warning(
@@ -1301,6 +1569,7 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_barge_response_seen",
         "_barge_partial_committed_item",
         "_barge_resumed_response_id",
+        "_barge_late_eligible",
         "_held_audio",
     ):
         assert field in source, field

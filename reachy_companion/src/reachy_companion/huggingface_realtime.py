@@ -558,6 +558,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # utterance that caused the rollback: cleared once that turn is decided,
         # never on `response.created` (Codex round 2, finding 1).
         self._barge_resumed_response_id: str | None = None
+        # Was Reachy audible when the current utterance BEGAN? Only then can a
+        # late interrupt be talking over anything (Task 4 fix round, finding 1).
+        # A turn started from silence is answered by the response that is live
+        # by the time its transcript lands, so cancelling that response would
+        # cut the answer to the very turn being decided.
+        self._barge_late_eligible: bool = False
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
         # --- sleep-time engagement memory (D-027) ----------------------------
@@ -865,6 +871,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_paused_response_id = None
         self._barge_partial_committed_item = None
         self._barge_resumed_response_id = None
+        self._barge_late_eligible = False
         self._held_audio.clear()
         audio_drain.note_paused(False)
 
@@ -918,6 +925,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
 
         self._barge_speech_open = True
+        # Task 4 fix round, finding 1: whether a LATE interrupt may fire for
+        # this utterance is decided here, at its onset, and nowhere else. Set
+        # before the cooldown return on purpose — the cooldown-swallowed pause
+        # is one of the cases the late path exists for — while a turn that
+        # started in silence records False and can never cancel the answer the
+        # server is producing for it.
+        self._barge_late_eligible = self._robot_audible()
         on_user_speech_candidate(self.deps)
         if time.monotonic() < self._barge_cooldown_until:
             # The tail of the reply we just cancelled (or its echo) is the most
@@ -1106,8 +1120,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         resumed id to compare against (Codex round 1, finding 6): with no
         resumed id, an active response is simply the reply being talked over —
         refusing to cancel it would make the robot unsilenceable during the
-        post-barge cooldown. The rare mis-cancel of a racing answer self-heals
-        through the watchdog below.
+        post-barge cooldown. Eligibility (`_barge_late_eligible`, fix round
+        finding 1) is what keeps that permissive branch honest: it fires only
+        for an utterance that began while Reachy was already talking. The rare
+        mis-cancel of a racing answer self-heals through the watchdog below.
         """
         resumed = self._barge_resumed_response_id
         answer_already_live = (
@@ -1116,10 +1132,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if answer_already_live:
             logger.info("late solo interrupt: a newer response is live; leaving it be")
             return
+        # Fix round, finding 2 — the same hazard `_commit_solo_barge` guards:
+        # in production `_clear_queue` IS `console.clear_audio_queue`, which
+        # runs `on_external_interrupt()` and would wipe `_barge_speech_open`.
+        # That flag is what stops the watchdog armed below from firing a
+        # response at a user who is already talking again.
+        speech_open = self._barge_speech_open
         await self._cancel_active_response()
         if self._clear_queue:
             self._clear_queue()
+        self._barge_speech_open = speech_open
         self._barge_resumed_response_id = None
+        self._barge_late_eligible = False
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
         # The addressed turn must not end in silence (Codex round 1, finding 5):
         # its auto-response may have been rejected against the reply we just
@@ -1191,6 +1215,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # own clear (Codex round 3, finding 1). Left set, it would only suppress
         # the newer-answer guard on some future turn.
         self._barge_resumed_response_id = None
+        self._barge_late_eligible = False
         if transcript:
             kind = "unaddressed" if _solo_name_gate() and is_substantive(transcript) else "backchannel"
             logger.info("solo barge rolled back (%s)", kind)
@@ -1211,6 +1236,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         3, findings 1 and 2).
         """
         self._barge_resumed_response_id = None
+        self._barge_late_eligible = False
         self._barge_partial_committed_item = None
         if not self._barge_pending:
             return
@@ -2307,6 +2333,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # end of that id's meaning — the bounded cleanup for a
                         # timer rollback whose speech never produced a
                         # transcript at all (Codex round 3, finding 1).
+                        # `_barge_late_eligible` deliberately does NOT reset
+                        # here (fix round, finding 1): it records what was true
+                        # at the utterance's onset, and a reply keeps draining
+                        # out of the speaker long after `response.done` — this
+                        # is exactly when 「停」 over a resumed reply arrives.
                         done_id = getattr(getattr(event, "response", None), "id", None)
                         if done_id is not None and done_id == self._barge_resumed_response_id:
                             self._barge_resumed_response_id = None
@@ -2408,11 +2439,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # never armed — but this committed turn addresses the
                         # robot while it is still audible. Silence it now, or
                         # the name gate's worst case is Reachy talking over the
-                        # person who called its name.
+                        # person who called its name. `_barge_late_eligible`
+                        # (fix round, finding 1) restricts that to utterances
+                        # that began over a talking robot: from silence, the
+                        # audible response IS this turn's answer.
                         if (
                             not self._party_mode
                             and _solo_client_barge()
                             and not pause_committed
+                            and self._barge_late_eligible
                             and self._robot_audible()
                         ):
                             accepted, reason = _gate_text_accepts(transcript)
@@ -2422,8 +2457,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if not self._party_mode:
                             # The rollback's utterance is now decided either way;
                             # a lingering resumed-id would suppress a future real
-                            # interrupt (round 2, finding 1 lifecycle).
+                            # interrupt (round 2, finding 1 lifecycle), and the
+                            # onset audibility belongs to the utterance that is
+                            # now over.
                             self._barge_resumed_response_id = None
+                            self._barge_late_eligible = False
 
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
