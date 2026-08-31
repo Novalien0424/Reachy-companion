@@ -875,20 +875,128 @@ async def test_the_send_happens_inside_the_lock_that_built_the_payload(
 
 
 @pytest.mark.asyncio
-async def test_rapid_flips_coalesce_to_the_latest_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A snapshot queued behind a newer flip is dropped, not sent (P1-4)."""
+async def test_rapid_flips_coalesce_to_the_latest_mode(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A snapshot queued behind a newer flip is dropped, not sent (P1-4).
+
+    The drop path only exists while an update is genuinely in flight, so the
+    first send holds its acknowledgement until two more flips have taken
+    tickets behind it (review Minor 4). Against an immediately-acking fake
+    every flip finds the lock free, and this test passed whether or not the
+    coalescing code existed at all.
+    """
+    import logging
+
     h = _mode_handler()
     h._boot_gate_active = True
     h.instance_path = None
-    h.connection = _acking_connection(h)
+    calls: list[dict[str, Any]] = []
+    first_sent = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _update(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            first_sent.set()
+            await release_first.wait()  # the lock is held for this whole wait
+        h._note_session_updated()
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
     monkeypatch.setattr(h, "_mode_instructions", lambda: f"INSTRUCTIONS-{h._conversation_mode.value}")
-    first = asyncio.create_task(h.set_conversation_mode("group"))
-    second = asyncio.create_task(h.set_conversation_mode("record"))
-    await asyncio.gather(first, second)
-    assert h._conversation_mode is ConversationMode.RECORD
-    # Whatever reached the wire last describes the mode the handler is in.
-    assert h.connection.calls[-1]["session"]["instructions"] == "INSTRUCTIONS-record"
-    assert len(h.connection.calls) <= 2
+
+    with caplog.at_level(logging.DEBUG, logger="reachy_companion.openai_realtime"):
+        first = asyncio.create_task(h.set_conversation_mode("group"))
+        await first_sent.wait()
+        # Both queue behind the in-flight update; the second takes the newer
+        # ticket, which is what makes the first of the two obsolete.
+        second = asyncio.create_task(h.set_conversation_mode("record"))
+        third = asyncio.create_task(h.set_conversation_mode("one_on_one"))
+        while h._mode_update_seq < 3:
+            await asyncio.sleep(0)
+        release_first.set()
+        await asyncio.gather(first, second, third)
+
+    assert h._conversation_mode is ConversationMode.ONE_ON_ONE
+    # Two payloads, not three: 紀錄模式 never reached the wire, because by the
+    # time its builder ran the handler was already somewhere else.
+    assert [call["session"]["instructions"] for call in calls] == [
+        "INSTRUCTIONS-group",
+        "INSTRUCTIONS-one_on_one",
+    ]
+    assert "superseded by 3" in caplog.text, "the superseded builder never returned None"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_sessions_teardown_cannot_zero_the_new_sessions_debt() -> None:
+    """`_restart_session` overlaps two sessions; the old finally must not reset.
+
+    Review item 1. `_restart_session` clears `self.connection` and spawns the
+    replacement, so the dead session's `finally` can run AFTER the new session
+    has connected and booked the +1 its connect-time config owes. Zeroing the
+    debt there would let the connect acknowledgement resolve the first live
+    flip's waiter — the exact false positive the debt exists to prevent.
+    """
+    h = _mode_handler()
+    old_conn = SimpleNamespace(name="old")
+    new_conn = SimpleNamespace(name="new")
+    h.connection = new_conn  # the replacement is already live
+    h._receive_loop_active = True  # and its receive loop is running
+    h._session_update_ack_debt = 1  # its connect config, still unacknowledged
+
+    h._end_session_updates(old_conn)  # the dead session's finally, late
+
+    assert h._session_update_ack_debt == 1
+    assert h._receive_loop_active is True
+
+    # The session that still owns the connection does close its own books.
+    h._end_session_updates(new_conn)
+    assert h._session_update_ack_debt == 0
+    assert h._receive_loop_active is False
+
+
+@pytest.mark.asyncio
+async def test_apply_personality_does_not_block_on_the_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The restart right after it is the real apply; waiting only delays it.
+
+    Review Minor 5: `apply_personality` used to pay up to the full ack timeout
+    before an unconditional `_restart_session()`, so a server slow to answer
+    made a personality switch feel like a hang for nothing. The send still goes
+    through the one mechanism — same lock, same single flight — it just books
+    the acknowledgement as debt instead of waiting for it.
+    """
+    from unittest.mock import AsyncMock
+
+    from reachy_companion import openai_realtime as oai_mod
+    from reachy_companion import huggingface_realtime as hf_mod
+
+    monkeypatch.setattr(oai_mod, "_SESSION_UPDATE_ACK_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(hf_mod, "set_custom_profile", lambda profile: None)
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda instance_path=None: "BASE")
+    monkeypatch.setattr(hf_mod.core_tools, "initialize_tools", lambda force=False: None)
+    h = _mode_handler()
+    h.instance_path = None
+    h._receive_loop_active = True
+    monkeypatch.setattr(h, "get_current_voice", lambda: "cedar")
+    monkeypatch.setattr(h, "_restart_session", AsyncMock(return_value=None))
+    sent: list[dict[str, Any]] = []
+
+    async def _update(**kwargs: Any) -> None:
+        sent.append(kwargs)  # sent, and deliberately never acknowledged
+
+    h.connection = SimpleNamespace(session=SimpleNamespace(update=_update))
+    started = asyncio.get_running_loop().time()
+    result = await h.apply_personality("mars_rover")
+
+    assert asyncio.get_running_loop().time() - started < 1.0
+    assert "restarted realtime session" in result.lower()
+    assert len(sent) == 1, "the update must still be sent, just not waited on"
+    # Booked, so the acknowledgement it eventually produces cannot resolve a
+    # later mode flip's waiter.
+    assert h._session_update_ack_debt == 1
+    assert h._session_update_waiter is None
 
 
 def test_mode_instructions_append_the_mode_block(monkeypatch: pytest.MonkeyPatch) -> None:

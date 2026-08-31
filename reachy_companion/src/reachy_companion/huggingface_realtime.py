@@ -912,21 +912,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         build_session: Callable[[], RealtimeSessionCreateRequestParam | None],
         *,
         what: str,
+        wait_for_ack: bool = True,
     ) -> bool:
         """Send one session update, reporting whether it left the client.
 
-        The base has no ordering or acknowledgement machinery: the Hugging Face
-        compatible server does not echo `session.updated` in a shape we can
-        correlate, and there is no client-driven mode surface here to keep in
-        step. What it does have is the three live-session updates that predate
-        the modes work — `change_voice`, `apply_personality` and (on the
-        subclass) turn detection — and those must keep reaching the server
-        exactly as they did before, so this sends and reports the send.
+        The base sends and reports the send, nothing more. It installs no
+        waiter, so the `session.updated` the receive loop hands to
+        `_note_session_updated` here only ever pays down debt or falls through
+        as a no-op — there is never anything for it to resolve. That is enough
+        for this backend: the three live-session updates that predate the modes
+        work — `change_voice`, `apply_personality` and (on the subclass) turn
+        detection — must keep reaching the server exactly as they did before,
+        and the mode surface an acknowledgement would protect is the subclass's.
 
         `OpenAIRealtimeHandler` overrides it with the real ordered,
         acknowledged, single-flight mechanism (design decision 9). A builder
         returning None means "superseded, send nothing", which is success:
-        the newer update is the one that should land.
+        the newer update is the one that should land. `wait_for_ack` is honored
+        only there; the base never waits.
         """
         if not self.connection:
             return False
@@ -985,18 +988,43 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     def _resolve_session_update(self, applied: bool, detail: str | None) -> None:
         """Resolve the in-flight session update's waiter, exactly once.
 
-        Called from `_note_session_updated` once older debts are paid, and from
-        the `error` branch when the error names the update's own `event_id` —
-        that path is correlated, so it bypasses the debt entirely. Safe to call
-        when nothing is in flight.
+        Called from `_note_session_updated` once older debts are paid, from the
+        `error` branch when the error names the update's own `event_id` — that
+        path is correlated, so it bypasses the debt entirely — and from
+        `_end_session_updates` when the websocket goes away underneath a waiter.
+        `detail` carries WHY it was not applied, because those two are different
+        events and a journal that called both "rejected" would read false.
+        Safe to call when nothing is in flight.
         """
         waiter, self._session_update_waiter = self._session_update_waiter, None
         self._session_update_event_id = None
         if waiter is None or waiter.done():
             return
         if not applied:
-            logger.warning("session update rejected by the server: %s", detail)
+            logger.warning("session update was not applied: %s", detail)
         waiter.set_result(applied)
+
+    def _end_session_updates(self, conn: Any) -> None:
+        """Close the session-update books for the session that owned *conn*.
+
+        The `finally` this runs from can be LATE: `_restart_session` clears
+        `self.connection` and spawns the replacement immediately, so the dead
+        session's teardown can land after the new session has already connected
+        and booked the +1 its connect-time config owes. Zeroing the debt there
+        would hand that connect acknowledgement to the first live mode flip's
+        waiter, which is the precise false positive the debt exists to prevent.
+        So the two pieces of per-session state are reset only while this
+        session still owns the live connection — the same "am I still the live
+        one?" guard `_finish_boot_gate` uses (review item 1).
+
+        The waiter is resolved unconditionally: one left installed would sit out
+        its whole timeout for an acknowledgement that can no longer arrive, and
+        the resolve is idempotent when there is nothing in flight.
+        """
+        if self.connection is conn:
+            self._receive_loop_active = False
+            self._session_update_ack_debt = 0
+        self._resolve_session_update(False, "the realtime session ended")
 
     # --- boot gate (Task 6) -------------------------------------------------
     async def _finish_boot_gate(self, reason: str, conn: Any | None = None) -> None:
@@ -1984,7 +2012,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return f"Failed to apply personality: {exc}"
 
         if self.connection is not None:
-            # Same single-flight mechanism as every other live update (Task 3).
+            # Same single-flight mechanism as every other live update (Task 3),
+            # but deliberately without the acknowledgement wait (review Minor
+            # 5): the `_restart_session()` two lines down is unconditional and
+            # is what actually applies the personality, so waiting out the ack
+            # first would only delay it. The send is still ordered and its ack
+            # still booked, so it cannot disturb a mode flip.
             def _build() -> RealtimeSessionCreateRequestParam | None:
                 return RealtimeSessionCreateRequestParam(
                     type="realtime",
@@ -1996,7 +2029,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                     ),
                 )
 
-            if await self._apply_session_update(_build, what=f"personality {profile or 'default'}"):
+            if await self._apply_session_update(
+                _build, what=f"personality {profile or 'default'}", wait_for_ack=False
+            ):
                 logger.info("Applied personality via live update: %s", profile or "default")
             else:
                 logger.warning("Live update failed; will restart session")
@@ -3315,7 +3350,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # `_response_started_or_rejected_event`, which would
                             # falsely wake `_response_sender_loop` mid-
                             # `response.create` (Codex round 1, P1-3).
-                            self._resolve_session_update(False, f"{code}: {msg}")
+                            self._resolve_session_update(False, f"rejected by the server ({code}: {msg})")
                             continue
 
                         if code == "conversation_already_has_active_response":
@@ -3342,12 +3377,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             )
             finally:
                 # Session updates (Task 3): no acknowledgement can be observed
-                # once this loop is over. An update still waiting is told so
-                # now rather than being left to burn its whole timeout, and the
-                # debt this websocket owed dies with it.
-                self._receive_loop_active = False
-                self._session_update_ack_debt = 0
-                self._resolve_session_update(False, "the realtime session ended")
+                # once this loop is over. Conn-guarded inside, because this can
+                # run after a restart's replacement session is already live.
+                self._end_session_updates(conn)
 
                 # Solo barge-in (Task 8): a pause must never outlive the session
                 # that opened it — it would hold audio the next session cannot

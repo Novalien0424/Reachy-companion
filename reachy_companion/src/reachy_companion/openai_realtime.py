@@ -500,6 +500,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         build_session: Callable[[], RealtimeSessionCreateRequestParam | None],
         *,
         what: str,
+        wait_for_ack: bool = True,
     ) -> bool:
         """Build, send and confirm one session update, all under one lock.
 
@@ -537,6 +538,13 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         full five seconds and log a failure for an update that was fine. So when
         the loop is not yet active the update is sent and reported applied, and
         the acknowledgement it will eventually produce is recorded as debt.
+
+        `wait_for_ack=False` takes that same no-wait path deliberately, for a
+        caller that has nothing to do with the answer: `apply_personality`
+        restarts the session unconditionally on the next line, so waiting up to
+        five seconds first only delays the restart that is the real apply
+        (review Minor 5). It is not a way out of the mechanism — the lock, the
+        ordering and the debt booking are identical; only the wait is skipped.
         """
         if not self.connection:
             return False
@@ -545,7 +553,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
             if session is None:
                 return True
             event_id = f"appupd_{uuid.uuid4().hex}"
-            waiting = self._receive_loop_active
+            waiting = self._receive_loop_active and wait_for_ack
             waiter: asyncio.Future[bool] | None = None
             if waiting:
                 loop = asyncio.get_running_loop()
@@ -560,12 +568,19 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
                 self._session_update_waiter = None
                 return False
             if waiter is None:
-                # Sent before the receive loop could observe an acknowledgement.
-                # It will arrive once the loop starts, with nobody waiting on
-                # it, so it is booked as debt rather than allowed to resolve
-                # whichever waiter happens to exist by then.
+                # Sent with nobody waiting on it — the receive loop cannot
+                # observe an acknowledgement yet, or the caller asked not to
+                # wait for one. Either way it arrives later with no waiter, so
+                # it is booked as debt rather than allowed to resolve whichever
+                # waiter happens to exist by then.
                 self._session_update_ack_debt += 1
-                logger.info("session updated (%s, sent before the receive loop)", what)
+                logger.info(
+                    "session updated (%s, %s)",
+                    what,
+                    "sent before the receive loop"
+                    if not self._receive_loop_active
+                    else "not waiting for the acknowledgement",
+                )
                 return True
             try:
                 applied = await asyncio.wait_for(waiter, timeout=_SESSION_UPDATE_ACK_TIMEOUT_S)
