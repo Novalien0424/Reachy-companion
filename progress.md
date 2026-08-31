@@ -22,7 +22,7 @@ model stops believing it finished replies nobody heard, patience defaults move
 (VAD silence 800 → **1000**, barge confirm 1400 → **1600** and now gate-off-only,
 `reasoning.effort` pinned **low**), `REALTIME_MAX_OUTPUT_TOKENS=900` is a loudly
 logged runaway rail, and brevity is taught by prompt calibration rather than a
-sentence cap. Gates on the branch: robot suite **1568 passed / 30 skipped**,
+sentence cap. Gates on the branch: robot suite **1569 passed / 30 skipped**,
 `ruff check .` and `mypy --strict src` clean. **Nothing of this is on the robot**
 — the whole wave rides the **seventeenth install**, and `persona.md` changed in
 Task 8, so it additionally needs the operator's scp + sha256 re-sync (D-016) or
@@ -386,7 +386,7 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   on the device.
 - **2026-08-30/31** — `engagement-memory` merged and the **sixteenth install**
   deployed and booted clean; then the **human-like-conversation wave**, 9 tasks
-  on branch `name-gate-patience`, **D-028** (1468/30 → **1568/30**): name-gated
+  on branch `name-gate-patience`, **D-028** (1468/30 → **1569/30**): name-gated
   solo barge-in, a bounded unaddressed pause with a late-interrupt catch,
   `conversation.item.truncate` on every committed interruption, patience
   defaults (VAD silence 1000, confirm 1600 gate-off-only, `reasoning.effort`

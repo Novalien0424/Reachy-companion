@@ -1973,6 +1973,32 @@ async def test_the_loop_accumulates_enqueued_ms_per_audio_item(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_the_loop_skips_accounting_for_an_id_less_audio_delta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A delta naming no item must not inflate the live item's tally (D-028 §5).
+
+    `_audio_item_enqueued_ms` is the numerator of the `conversation.item.truncate`
+    position, and an `audio_end_ms` above the item's real duration is a server
+    error — the one failure mode this accounting has. Frames we cannot attribute
+    are therefore dropped from the per-item total (they still play, and still
+    count toward the drain accounting): under-counting only under-truncates,
+    which is the safe direction.
+    """
+    handler, seen = _audio_item_probe(
+        monkeypatch,
+        (
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_1"),
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS),
+            _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_1"),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_A")),
+        ),
+    )
+    await handler._run_realtime_session()
+    # Two attributable 15 ms deltas, not three: the id-less one is skipped, and
+    # it neither reset the item nor took ownership of the tally.
+    assert seen == [("item_1", pytest.approx(30.0, abs=0.01))]
+
+
+@pytest.mark.asyncio
 async def test_the_loop_keeps_the_audio_item_across_a_new_response(monkeypatch: pytest.MonkeyPatch) -> None:
     """`response.created` is NOT the moment the previous reply stops being heard.
 

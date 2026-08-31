@@ -1108,7 +1108,7 @@ primitive, but it means an on-device spotter (LiveKit ships `livekit-wakeword`),
 and short names like "Reachy" degrade spotter accuracy — out of POC scope, while
 transcript gating fits the machine we already run (research §4).
 
-**Verified against the unit suites only** — robot **1568 passed / 30 skipped**,
+**Verified against the unit suites only** — robot **1569 passed / 30 skipped**,
 `ruff check .` and `mypy --strict src` clean. The five live rows
 `VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`
 and `VOICE-BREVITY` in `feature_list.json` are the gate, and all of them ride the

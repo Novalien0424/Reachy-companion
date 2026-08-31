@@ -2695,13 +2695,25 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # its own duration minus the slack — still under the
                         # real duration, so never a server error, and the item
                         # was heard in full anyway.
+                        #
+                        # A delta that names NO item is not accounted for at all
+                        # (D-028 §5): its frames belong to an item we cannot
+                        # identify, and adding them to whichever tally happens
+                        # to be live would push `enqueued` past that item's real
+                        # duration — the one input that can make `audio_end_ms`
+                        # exceed the item and turn the truncate into a server
+                        # error. The audio itself still plays and still counts
+                        # toward the drain accounting above; only the per-item
+                        # numerator skips it, which under-counts, the safe
+                        # direction.
                         audio_item_id = getattr(event, "item_id", None)
-                        if audio_item_id is not None and audio_item_id != self._audio_item_id:
-                            self._audio_item_id = audio_item_id
-                            self._audio_item_enqueued_ms = 0.0
-                        self._audio_item_enqueued_ms += (
-                            (len(decoded_pcm_bytes) // 2) / float(self.SAMPLE_RATE) * 1000.0
-                        )
+                        if audio_item_id is not None:
+                            if audio_item_id != self._audio_item_id:
+                                self._audio_item_id = audio_item_id
+                                self._audio_item_enqueued_ms = 0.0
+                            self._audio_item_enqueued_ms += (
+                                (len(decoded_pcm_bytes) // 2) / float(self.SAMPLE_RATE) * 1000.0
+                            )
                         if self._turn_user_done_at is not None and self._turn_first_audio_at is None:
                             self._turn_first_audio_at = time.perf_counter()
                             delta_ms = (self._turn_first_audio_at - self._turn_user_done_at) * 1000
