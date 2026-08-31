@@ -5,6 +5,22 @@ history of this file.
 
 ## Current state
 
+**2026-09-01 accuracy tuning (no code change, robot-side `.env` only): the
+instance `.env` now pins `REALTIME_VAD_TYPE=semantic_vad`,
+`REALTIME_VAD_EAGERNESS=low`, `REALTIME_REASONING_EFFORT=high`** (operator
+ask: slower, more deliberate, more accurate answers; an intermediate
+`medium` step booted clean at 00:07 before the operator raised it). All
+three are shipped v1.19.0 knobs — no wheel rebuild. Verification boot
+00:09 robot time: `Realtime session updated successfully` (a rejected
+config would have logged the fallback that strips `reasoning`), boot gate
+released, zero tracebacks. The stale `REALTIME_VAD_SILENCE_DURATION_MS=800`
+line remains but semantic_vad ignores it (it re-applies if the operator
+reverts to server_vad). **ROBOT LEFT AWAKE AND RUNNING for the operator's
+live test.** Watchpoints for this config: barge-in confirm timing was tuned
+against server_vad — check interruption feel; `high` reasoning adds
+pre-speech latency by design and may emit more commentary-phase preambles
+(already suppressed).
+
 **THE NINETEENTH INSTALL (v1.19.0, the conversation-modes wave) IS ON THE
 ROBOT WITH A CLEAN FIRST BOOT — ROBOT LEFT ASLEEP (2026-08-31 ~21:08 robot
 time).** Merged to `main` (fast-forward to `5a92832`, 22 commits, pushed)
