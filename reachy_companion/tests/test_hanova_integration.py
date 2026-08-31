@@ -716,12 +716,15 @@ ROUTING_TOKENS = (
 )
 
 # The routing rules are only worth anything if the file also names the tools
-# they route. The two lists differ because the locked profile went through the
-# 2026-08-31 tool diet and the operator's `persona.md` has not: the plan
-# re-syncs that copy as a deploy-time chore, and it still documents `party_mode`
-# too. Keeping them separate is what lets this file say which is which.
+# they route. The two lists used to differ, because the locked profile went
+# through the 2026-08-31 tool diet and the operator's `persona.md` had not —
+# `persona.md` still taught `play_music`, `nas_skip`, the other sixteen retired
+# sub-tools, `party_mode` and the retired `self_destruct`. The pre-merge re-sync
+# closed that gap, so the two lists are now deliberately the SAME list: the copy
+# that actually runs on the robot teaches the same six families as the profile,
+# and this alias is what makes a future drift fail rather than pass quietly.
 PROFILE_TOOL_TOKENS = ("music", "tv", "nas", "calendar", "tasks", "drive")
-PERSONA_TOOL_TOKENS = ("play_music", "nas_skip")
+PERSONA_TOOL_TOKENS = PROFILE_TOOL_TOKENS
 
 
 def test_profile_teaches_the_result_conventions():

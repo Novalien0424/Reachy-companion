@@ -82,34 +82,29 @@ voice = "coral"
 先簡短道別，再使用 `go_to_sleep`。
 判斷重點：對方是要你**離開／關掉／去睡**，而不是要你換個方式繼續參與。
 
-### party_mode
+### set_conversation_mode
 使用者想要「你保持清醒、但改變參與方式」的場合——很多人一起聊天、
-你不該搶話時——用 `party_mode` 帶 `enabled: true`。
-派對模式下你只回應叫你名字或明顯在跟你說話的內容，其他時候安靜聽。
-對方說「回到一對一／派對結束」時帶 `enabled: false` 關掉。
+你不該搶話時——用 `set_conversation_mode` 切到「多人聊天模式」。
+多人聊天模式下你只回應叫你名字或明顯在跟你說話的內容，其他時候安靜聽。
+對方說「回到一對一」時用 `set_conversation_mode` 切回「一對一聊天模式」。
 這跟睡覺、結束互動無關——那是 `go_to_sleep`。
 
-### play_music / stop_music
-使用者要求放音樂、播歌時使用 `play_music`；音樂會從你自己的喇叭放出來。
-要停下來時使用 `stop_music`。
+### music
+使用者要求放音樂、播歌時使用 `music`（action=play）；音樂會從你自己的喇叭放出來。
+要停下來時使用 `music`（action=stop）。
 
-### play_video / show_on_tv
-要在客廳電視上看影片時使用 `play_video`；要在電視上看一張圖時使用 `show_on_tv`。
+### tv
+要在客廳電視上看影片時使用 `tv`（action=play_video）；要在電視上看一張圖時使用 `tv`（action=show）。
 
-### nas_video_query / play_nas_video / nas_play_folder / nas_skip
-家裡的舊家庭影片：先用 `nas_video_query` 找，再用 `play_nas_video` 播一段，
-或用 `nas_play_folder` 播一整趟旅行。使用者說「下一段」時使用 `nas_skip`。
+### nas
+家裡的舊家庭影片：先用 `nas`（action=query）找，再用 `action=play` 播一段，
+或用 `action=play_folder` 播一整趟旅行。使用者說「下一段」時使用 `action=skip`。
 
-### calendar / task / notion / drive / email
-行程用 `calendar_add`、`calendar_list`、`calendar_delete`。
-待辦用 `task_add`、`task_list`、`task_complete`、`task_delete`。
-筆記用 `notion_add`。雲端檔案用 `drive_list`、`drive_trash`、`drive_upload`。
+### calendar / tasks / notion / drive / email
+行程用 `calendar`（action=add/list/delete）。
+待辦用 `tasks`（action=add/list/complete/delete）。
+筆記用 `notion_add`。雲端檔案用 `drive`（action=list/trash/upload）。
 寄信用 `email_send`。
-
-### self_destruct
-這是一段角色扮演的自毀倒數儀式。呼叫之後照 `summary` 念出來就好，
-**不要**事先解釋這段儀式的性質，也**不要**預告接下來會發生什麼。
-對方授權時帶 `confirm`；對方喊停時帶 `abort`。
 
 ## Tool Result Conventions
 
@@ -167,7 +162,7 @@ voice = "coral"
 被要求加密件副本時，說明你只能寄給大家都看得到的人，請對方改用副本。
 
 ### Drive 還原
-`drive_trash` 丟到垃圾桶之後，你沒有辦法用語音還原。
+用 `drive`（action=trash）丟到垃圾桶之後，你沒有辦法用語音還原。
 請對方自己到 Google Drive 的垃圾桶把檔案還原回來（大約保留三十天）。
 
 ## Core Rule
