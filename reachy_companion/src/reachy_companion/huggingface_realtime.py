@@ -1167,15 +1167,24 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._resume_playback(rolled_back=False)
             self._barge_speech_open = speech_open
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
+        if not answer_already_live:
+            self._barge_response_seen = False
+            self._arm_barge_watchdog()
+        # Dead last, below the watchdog arm (fix round 1, finding 3). This is
+        # the only `await` between the flush and the arm, and when the commit
+        # runs from the confirm timer the receive loop is free to process a
+        # whole short reply — `response.created` *and* `response.done` — inside
+        # it. `_barge_response_seen = False` would then erase the proof that the
+        # reply existed and the watchdog would ask for a second one, i.e. Reachy
+        # speaking unprompted. The truncate is best-effort and order-independent
+        # down here.
+        #
         # Unconditional across both branches (Codex round 2, finding 4): even
         # when the answer to the barged turn is already live, the paused reply's
         # tail was still dropped, and its unheard text must still leave the
         # model's context.
         if truncate_item is not None:
             await self._truncate_heard_audio(truncate_item, truncate_ms)
-        if not answer_already_live:
-            self._barge_response_seen = False
-            self._arm_barge_watchdog()
 
     async def _late_solo_interrupt(self) -> None:
         """Silence a reply the transcript proved the user was talking over.
@@ -2415,11 +2424,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         on_response_created()
                         self._mark_activity("response_created")
                         self._active_response_id = getattr(getattr(event, "response", None), "id", None)
-                        # Task 5: a new response speaks new items; carrying the
-                        # previous one's tally forward would truncate past what
-                        # the next item actually contains.
-                        self._audio_item_id = None
-                        self._audio_item_enqueued_ms = 0.0
+                        # Task 5, fix round 1 finding 2: `_audio_item_id` is
+                        # deliberately NOT reset here. `response.created` is not
+                        # the moment the previous reply stops being audible — a
+                        # tool turn creates its follow-up response while the
+                        # first reply's PCM is still coming out of the speaker,
+                        # and a barge in that window would find no item to
+                        # truncate. The delta handler's item-change reset covers
+                        # the real hazard on its own: item ids are unique, so
+                        # the first delta of any new item zeroes the tally
+                        # before anything can read it.
                         self.deps.movement_manager.set_speaking(True)
                         self._notify_response_started()
                         # Task 8: a reply exists, so the post-barge watchdog has
@@ -2646,6 +2660,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # like the drain accounting above, because this is the
                         # one place that sees every frame — including the ones
                         # a barge-in pause later diverts into `_held_audio`.
+                        #
+                        # This item-change branch is the ONLY reset (fix round
+                        # 1, finding 2). Accepted residual: an item that has
+                        # fully drained keeps its id until the next item's first
+                        # delta, so a barge in that gap truncates it at roughly
+                        # its own duration minus the slack — still under the
+                        # real duration, so never a server error, and the item
+                        # was heard in full anyway.
                         audio_item_id = getattr(event, "item_id", None)
                         if audio_item_id is not None and audio_item_id != self._audio_item_id:
                             self._audio_item_id = audio_item_id

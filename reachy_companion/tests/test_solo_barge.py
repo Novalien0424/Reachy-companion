@@ -1624,6 +1624,24 @@ def _truncating_handler() -> OpenAIRealtimeHandler:
     return h
 
 
+def _production_flush(handler: OpenAIRealtimeHandler):
+    """Return a `_clear_queue` that destroys what the real flush destroys.
+
+    In the app `_clear_queue` IS `console.clear_audio_queue`: it calls
+    `on_external_interrupt()` (which forgets the audio item and the pause stash)
+    and `audio_drain.note_cleared()` (which zeroes `outstanding` and the
+    device-buffer estimate). A `MagicMock()` does neither, so a truncate capture
+    that had drifted below the flush would keep passing — the mutation the
+    capture-before-flush ordering exists to prevent.
+    """
+
+    def _flush() -> None:
+        handler.on_external_interrupt()
+        audio_drain.note_cleared()
+
+    return _flush
+
+
 @pytest.mark.asyncio
 async def test_commit_sends_truncate_with_heard_ms() -> None:
     """A committed barge truncates the paused item at the heard position."""
@@ -1770,8 +1788,16 @@ async def test_commit_truncates_even_when_the_answer_is_already_live() -> None:
 
 @pytest.mark.asyncio
 async def test_late_interrupt_truncates_the_live_item() -> None:
-    """The late path has no pause, so it measures the item that is speaking now."""
+    """The late path has no pause, so it measures the item that is speaking now.
+
+    `_clear_queue` gets its production semantics here on purpose: in the app it
+    IS `console.clear_audio_queue`, which runs `on_external_interrupt()` (the
+    item id goes) and `audio_drain.note_cleared()` (the drain counters go). With
+    a bare mock, a capture moved below the flush would still pass while
+    production silently lost the truncate.
+    """
     h = _truncating_handler()
+    h._clear_queue = _production_flush(h)
     truncate = h.connection.conversation.item.truncate
     generation = audio_drain.begin_response()
     audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms
@@ -1785,6 +1811,22 @@ async def test_late_interrupt_truncates_the_live_item() -> None:
     assert kwargs["content_index"] == 0
     assert 0 < kwargs["audio_end_ms"] <= 1200
     h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+def test_the_commit_truncate_runs_below_the_watchdog_arm() -> None:
+    """Source ordering the behavioral tests cannot see (fix round 1, finding 3).
+
+    The truncate is the only `await` between the flush and the watchdog arm.
+    Run above the arm, the receive loop can process a whole short reply —
+    `response.created` and `response.done` — inside it; the
+    `_barge_response_seen = False` below would then erase the proof that reply
+    existed, and the watchdog would ask for a second one. Reachy speaking
+    unprompted is a worse failure than a truncate sent a few milliseconds late.
+    """
+    import inspect
+
+    source = inspect.getsource(HuggingFaceRealtimeHandler._commit_solo_barge)
+    assert source.index("self._arm_barge_watchdog()") < source.index("await self._truncate_heard_audio(")
 
 
 @pytest.mark.asyncio
@@ -1915,8 +1957,13 @@ async def test_the_loop_accumulates_enqueued_ms_per_audio_item(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_the_loop_forgets_the_audio_item_on_a_new_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`response.created` is a clean slate; a stale tally would over-truncate."""
+async def test_the_loop_keeps_the_audio_item_across_a_new_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`response.created` is NOT the moment the previous reply stops being heard.
+
+    Fix round 1, finding 2. A tool turn creates its follow-up response while the
+    first reply's PCM is still coming out of the speaker, so resetting the item
+    there would leave a barge in that window with nothing to truncate.
+    """
     handler, seen = _audio_item_probe(
         monkeypatch,
         (
@@ -1926,4 +1973,45 @@ async def test_the_loop_forgets_the_audio_item_on_a_new_response(monkeypatch: py
         ),
     )
     await handler._run_realtime_session()
-    assert seen == [(None, 0.0)]
+    assert seen == [("item_1", pytest.approx(15.0, abs=0.01))]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_truncates_across_a_tool_follow_up_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole reachable hole finding 2 closed, end to end through the loop.
+
+    R1 speaks item A and finishes; the tool result asks for R2, whose
+    `response.created` lands while A is still audible; the user barges in and
+    says 「停」. The truncate must still name item A — a reset at
+    `response.created` would have stashed `(None, 0)` and sent nothing, leaving
+    every unheard word of A in the model's context.
+    """
+    _quiet_session(monkeypatch)
+    monkeypatch.setattr(hf_mod, "on_response_audio", lambda sample_count, sample_rate: None)
+    sent: list[tuple[str, int]] = []
+
+    async def _record(_self: HuggingFaceRealtimeHandler, item_id: str, audio_end_ms: int) -> None:
+        sent.append((item_id, audio_end_ms))
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_truncate_heard_audio", _record)
+
+    # 100 deltas x 15 ms = 1500 ms of item A, none of it left outstanding
+    # (`on_response_audio` is stubbed out), so heard = 1500 − 300 slack.
+    deltas = tuple(
+        _FakeEvent("response.output_audio.delta", delta=_DELTA_15MS, item_id="item_A") for _ in range(100)
+    )
+    handler = _loop_handler(
+        deltas
+        + (
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_1")),
+            _FakeEvent("response.created", response=SimpleNamespace(id="resp_2")),
+            _FakeEvent("input_audio_buffer.speech_started"),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                item_id="user_1",
+                transcript="停",
+            ),
+        )
+    )
+    await handler._run_realtime_session()
+    assert sent == [("item_A", 1200)]

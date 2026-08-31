@@ -11,7 +11,7 @@ from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_solo_barge import _install_barge_state
+from test_solo_barge import _production_flush, _install_barge_state
 
 from reachy_companion.hanova import audio_drain, music_hooks
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler, _turn_detection
@@ -312,10 +312,14 @@ async def test_a_confirmed_party_barge_truncates_the_live_item(monkeypatch: pyte
     """WebSocket: the server keeps every unheard word unless we cut the item.
 
     Party mode never pauses, so the pair is measured live, before the flush
-    zeroes the drain counters.
+    zeroes the drain counters. `_clear_queue` therefore gets its production
+    semantics here (`on_external_interrupt()` + `audio_drain.note_cleared()`):
+    against a bare mock a capture that had drifted below the flush would still
+    pass while production silently lost the truncate.
     """
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
     h = _party_handler()
+    h._clear_queue = _production_flush(h)
     truncate = AsyncMock()
     h.connection = SimpleNamespace(
         response=SimpleNamespace(cancel=AsyncMock()),
