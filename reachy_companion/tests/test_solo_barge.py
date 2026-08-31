@@ -692,14 +692,16 @@ async def test_legacy_env_restores_old_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert h._barge_paused is False and h._barge_pending is False
     assert h._barge_confirm_task is None
     assert _turn_detection(False)["interrupt_response"] is True
-    assert "create_response" not in _turn_detection(False)
+    # The legacy flag restores server-side INTERRUPTION only; since 2026-08-31
+    # answering is the client's job in every mode (mode plan, Task 2).
+    assert _turn_detection(False)["create_response"] is False
 
 
 def test_solo_turn_detection_hands_the_decision_to_the_client() -> None:
     """With the new default the server must not interrupt: the client owns it."""
     td = _turn_detection(party=False)
     assert td["interrupt_response"] is False
-    assert "create_response" not in td, "solo still relies on the server auto-answering"
+    assert td["create_response"] is False, "solo answers through the client's answer gate"
 
 
 # --------------------------------------------------------------------------

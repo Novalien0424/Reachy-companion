@@ -202,6 +202,45 @@ def _gate_text_accepts(text: str) -> tuple[bool, str]:
     return False, "unaddressed"
 
 
+_ONE_ON_ONE_ANSWER_GATES: Final[tuple[str, ...]] = ("name_only", "open")
+
+
+def _one_on_one_answer_gate() -> str:
+    """Which turns 一對一聊天模式 answers: `open` (default) or `name_only`.
+
+    Its OWN variable, deliberately not `REALTIME_SOLO_NAME_GATE` (2026-08-31
+    plan, Open question 1). That one keeps its 2026-08-30 meaning — the
+    *interruption* gate, default on, "Reachy talks through speech aimed at
+    someone else" — and the robot's instance `.env` ships it explicitly set,
+    with the deploy ritual restoring `.env` from backup on every install. An
+    overloaded variable would therefore have flipped one-on-one to name-only
+    answering on every single deploy, silently, forever.
+
+    `open` is the default because the whole point of one-on-one is that a single
+    person does not have to say the robot's name to be answered. `name_only` is
+    the field fallback if open answering turns out to pick up too much of the
+    room; it makes this mode answer on the same rule 紀錄模式 uses.
+
+    Degrades with a warning rather than raising, like every other mode knob.
+    """
+    raw = (os.getenv("REALTIME_ONE_ON_ONE_ANSWER_GATE") or "").strip().lower()
+    if not raw:
+        return "open"
+    if raw not in _ONE_ON_ONE_ANSWER_GATES:
+        logger.warning("Ignoring invalid REALTIME_ONE_ON_ONE_ANSWER_GATE=%r; using open.", raw)
+        return "open"
+    return raw
+
+
+# The journal line each mode prints when it hears a turn it will not answer.
+# GROUP's is unchanged from party mode: `feature_list.json` rows cite it.
+_ANSWER_DENY_LOG: Final[dict[ConversationMode, str]] = {
+    ConversationMode.ONE_ON_ONE: "one-on-one gate: no answer for a non-substantive turn",
+    ConversationMode.GROUP: "party gate: denied ambient turn",
+    ConversationMode.RECORD: "record gate: transcribed without answering",
+}
+
+
 def _vad_silence_duration_ms() -> int:
     """Silence the server VAD needs before it will report `speech_stopped`.
 
@@ -283,6 +322,10 @@ _TRUNCATE_SLACK_MS: Final[int] = 300
 # ~1100 ms knee where the robot starts to feel sluggish instead of patient
 # (research doc §1).
 _VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 1000
+# Bound on the per-item turn-mode stamps. One entry lives from `speech_started`
+# to that item's `transcription.completed`/`.failed`, so the map is normally
+# one or two deep; the cap only matters if transcripts stop arriving at all.
+_TURN_MODE_MAX_ITEMS: Final[int] = 16
 _BARGE_CONFIRM_WARNED = False
 
 
@@ -919,6 +962,70 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             logger.info("party gate: accepted via engaged face (%d chars)", len(transcript))
             return True
         return False
+
+    def _answer_gate_accepts(self, transcript: str, mode: ConversationMode) -> bool:
+        """Whether this committed turn earns a spoken reply, under *mode*.
+
+        The mode is passed in, never read from `self` (Codex round 1, P1-2):
+        the verdict belongs to the mode the utterance BEGAN in. Reading the live
+        field here would let a flip that happened while someone was still
+        talking retroactively reclassify their half-spoken sentence — ambient
+        room chatter answered because the mode became 一對一 mid-utterance, or a
+        direct question silently dropped because 紀錄模式 started after it.
+
+        Distinct from the barge gate on purpose (2026-08-31 plan, decision 2):
+        `_gate_text_accepts` / the name gate decide what may CUT OFF a playing
+        reply; this decides what gets ANSWERED. Conflating them is what produced
+        the observed pile-up — a turn rolled back as an interruption still got a
+        full spoken answer from the server.
+
+        * GROUP keeps `_party_gate_accepts` exactly as it is, ordering included.
+        * RECORD accepts only an address name or a control phrase: no engaged
+          face, no follow-up window. Quiet-scribe posture — every command needs
+          the name, and everything else is transcribed silently.
+        * ONE_ON_ONE accepts anything substantive, so a single person never has
+          to say the robot's name; only backchannels and empties fall through.
+          `REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only` tightens it to RECORD's
+          rule — a separate variable from the interruption gate, on purpose
+          (Open question 1).
+        """
+        if mode is ConversationMode.GROUP:
+            return self._party_gate_accepts(transcript)
+        accepted, _reason = _gate_text_accepts(transcript)
+        if mode is ConversationMode.RECORD or _one_on_one_answer_gate() == "name_only":
+            return accepted
+        return accepted or is_substantive(transcript)
+
+    def _stamp_turn_mode(self, item_id: str | None) -> None:
+        """Record the mode this utterance began in, keyed by its input item.
+
+        Every verdict about a turn is taken under the mode it started in, so a
+        flip mid-sentence cannot retroactively reclassify speech that is already
+        half-spoken (Codex round 1, P1-2).
+
+        Keyed per item rather than held in one field (Codex round 2, 2a-4):
+        `transcription.completed` can arrive a second or more after the NEXT
+        utterance has already started, and a single field would by then be
+        describing the wrong turn. `_turn_mode` stays as the fallback for an
+        event that carries no id, and as the value a mode flip re-stamps when
+        nobody is speaking.
+        """
+        mode = self._conversation_mode
+        self._turn_mode = mode
+        if item_id:
+            if len(self._turn_modes) >= _TURN_MODE_MAX_ITEMS:
+                # Only reachable if transcripts stop arriving entirely; drop the
+                # oldest so a stuck session cannot grow this without bound.
+                self._turn_modes.pop(next(iter(self._turn_modes)), None)
+            self._turn_modes[item_id] = mode
+
+    def _take_turn_mode(self, item_id: str | None) -> ConversationMode:
+        """Pop the mode stamped for this input item, or the fallback stamp."""
+        if item_id:
+            stamped = self._turn_modes.pop(item_id, None)
+            if stamped is not None:
+                return stamped
+        return self._turn_mode
 
     def _face_engaged(self) -> bool:
         """Whether a person is currently facing the robot, as an address signal.
@@ -2540,6 +2647,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 async for event in self.connection:
                     logger.debug("Realtime event: %s", event.type)
                     if event.type == "input_audio_buffer.speech_started":
+                        self._stamp_turn_mode(getattr(event, "item_id", None))
                         self._user_has_spoken = True
                         self._mark_activity("user_speech_started")
                         self._turn_user_done_at = None
@@ -2710,6 +2818,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._mark_activity("user_transcription_completed")
                         raw_transcript = event.transcript or ""
                         transcript = raw_transcript.strip()
+                        # Popped at the TOP, not at the gate: the branch has
+                        # three `continue`s before the gate (empty transcript,
+                        # rolled-back pause, partial-commit marker) and a stamp
+                        # left behind by any of them would leak.
+                        turn_mode = self._take_turn_mode(getattr(event, "item_id", None))
                         logger.debug("User transcript: %s", raw_transcript)
                         self.deps.movement_manager.set_listening(False)
 
@@ -2740,13 +2853,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             logger.debug("Ignoring empty user transcript")
                             continue
 
-                        if self._party_mode and not self._party_gate_accepts(transcript):
-                            # Ambient chatter: keep it as context (it is already
-                            # in the conversation), close the turn for the music
-                            # hooks (finding 4), and touch nothing else — the
-                            # tool-batch state belongs to an accepted turn that
-                            # may still be running (finding 7).
-                            logger.info("party gate: denied ambient turn (%d chars)", len(transcript))
+                        if not self._answer_gate_accepts(transcript, turn_mode):
+                            # Heard, kept as context (it is already in the
+                            # conversation), and left unanswered. Close the turn
+                            # for the music hooks (party plan, finding 4) and
+                            # touch nothing else — the tool-batch state belongs
+                            # to an accepted turn that may still be running.
+                            logger.info("%s (%d chars)", _ANSWER_DENY_LOG[turn_mode], len(transcript))
                             on_turn_without_response(self.deps)
                             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                             self._emit_transcript("user", transcript, True)
@@ -2796,15 +2909,23 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # not part of the conversation it will summarize.
                         record_transcript(self.deps, "user", transcript)
 
-                        if self._party_mode:
-                            # create_response is off in party mode: this turn was
-                            # addressed to us, so answer it — through the sender
-                            # queue, never the raw connection (finding 1).
+                        if turn_mode is ConversationMode.GROUP:
+                            # The follow-up window is a GROUP concept: it lets a
+                            # conversation continue without re-addressing by
+                            # name. RECORD deliberately has none. Keyed on the
+                            # turn's own mode for the same reason the verdict is.
                             self._party_last_accept_at = time.monotonic()
-                            await self._safe_response_create()
+                        # `create_response` is off in every mode since
+                        # 2026-08-31: this turn passed its mode's answer gate, so
+                        # answer it — through the sender queue, never the raw
+                        # connection (party plan, finding 1).
+                        await self._safe_response_create()
 
                     if event.type == "conversation.item.input_audio_transcription.failed":
                         self._mark_activity("user_transcription_failed")
+                        # No transcript will ever arrive for this item, so its
+                        # stamp has no reader left; pop it rather than leak it.
+                        self._take_turn_mode(getattr(event, "item_id", None))
                         if self._party_mode:
                             # No transcript will ever arrive for this turn, so no
                             # gate decision and no response: close it for the

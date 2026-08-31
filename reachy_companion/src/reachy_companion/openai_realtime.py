@@ -193,12 +193,14 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
     what counts as an interruption, and the address gate decides which turns
     deserve a response.
 
-    Solo mode now does the same for interruption alone (Task 8): with
-    `REALTIME_SOLO_CLIENT_BARGE` on — the default — the server must not cancel
-    the reply on the first syllable, because the handler pauses it and decides
-    for itself. `create_response` stays absent in solo, so the server still
-    auto-answers committed turns. `REALTIME_SOLO_CLIENT_BARGE=0` restores the
-    pre-Task-8 config byte for byte.
+    Since 2026-08-31 `create_response` is **false in every mode**. The server
+    still commits and transcribes turns; it never answers one. The client
+    answers exactly the turns its per-mode answer gate accepts, through
+    `_safe_response_create()`. That is what makes a rolled-back turn produce no
+    answer at all — with the server auto-answering, every gated turn still got a
+    full spoken reply queued behind the resumed audio, which is the pile-up the
+    operator saw as "five tries to get a reply".
+    `REALTIME_SOLO_CLIENT_BARGE=0` restores server-side INTERRUPTION only.
     """
     server_interrupts = not party and not _solo_client_barge()
     warn_if_barge_confirm_races_vad()
@@ -209,8 +211,7 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
             eagerness=_eagerness(),
             interrupt_response=server_interrupts,
         )
-        if party:
-            semantic["create_response"] = False
+        semantic["create_response"] = False
         return semantic
     if vad_type != "server_vad":
         logger.warning("Ignoring invalid REALTIME_VAD_TYPE=%r; using server_vad.", vad_type)
@@ -222,8 +223,7 @@ def _turn_detection(party: bool = False) -> RealtimeAudioInputTurnDetectionParam
         # Shared with the barge-in confirm window, which must outlast it.
         silence_duration_ms=_vad_silence_duration_ms(),
     )
-    if party:
-        server["create_response"] = False
+    server["create_response"] = False
     return server
 
 

@@ -75,21 +75,27 @@ def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
 # --------------------------------------------------------------------------
 
 
-def test_solo_turn_detection_keeps_the_server_answering(monkeypatch: pytest.MonkeyPatch):
-    """Solo differs from party in exactly one way: the server still auto-answers.
+def test_every_mode_turns_off_server_auto_answer(monkeypatch: pytest.MonkeyPatch):
+    """2026-08-31: the client answers gate-accepted turns in EVERY mode.
 
-    Since Task 8 the interrupt decision is the client's in both modes (see
-    `tests/test_solo_barge.py`); `REALTIME_SOLO_CLIENT_BARGE=0` is what restores
-    the pre-party config byte for byte.
+    This is the core of the double-answer fix: with `create_response` left
+    absent in solo, a turn the client rolled back still got a full spoken answer
+    queued behind the resumed reply.
     """
-    td = _turn_detection(party=False)
-    assert td["interrupt_response"] is False
-    assert "create_response" not in td
+    solo = _turn_detection(party=False)
+    assert solo["interrupt_response"] is False
+    assert solo["create_response"] is False
+
+    room = _turn_detection(party=True)
+    assert room["interrupt_response"] is False
+    assert room["create_response"] is False
 
     monkeypatch.setenv("REALTIME_SOLO_CLIENT_BARGE", "0")
     legacy = _turn_detection(party=False)
+    # The legacy flag restores server-side INTERRUPTION only; answering stays
+    # the client's job.
     assert legacy["interrupt_response"] is True
-    assert "create_response" not in legacy
+    assert legacy["create_response"] is False
 
 
 def test_party_turn_detection_disables_server_autonomy():
