@@ -219,6 +219,13 @@ class MovementManager:
         # Tracking state when the hold was taken, so the release can tell a
         # deferred "tracking off" apart from a hold that never tracked at all.
         self._hold_entry_head_tracking = False
+        # Manual head windows (2026-09-01 instructing wave). A tool that sends the
+        # head somewhere and needs it to STAY there owns this for the length of
+        # its window; `_tracking_suspended_state` is the tracking state to hand
+        # back, captured inside the worker at suspend time so no caller can race
+        # it across threads.
+        self._tracking_suspended_by: str | None = None
+        self._tracking_suspended_state: bool = False
         self._track_anchor: NDArray[np.float64] | None = None
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(self.state.last_primary_pose)
         self._listening_antennas: Tuple[float, float] = self._last_commanded_pose[1]
@@ -294,6 +301,37 @@ class MovementManager:
     def set_head_tracking(self, enabled: bool) -> None:
         """Start or stop following the user's face; thread-safe via the command queue."""
         self._command_queue.put(("set_head_tracking", enabled))
+
+    def suspend_head_tracking(self, owner: str) -> None:
+        """Stop daemon face tracking for a manual head window; thread-safe.
+
+        NOT `set_speaking(True)`: that captures a look-at anchor, and
+        `_get_primary_pose` falls back to it once the queued goto completes —
+        which would undo the very move the window exists to make visible (the
+        review's critical catch). NOT `set_hold_still(True)` either: that drops
+        queued moves, and the move is the point. This suspends tracking and
+        touches nothing else.
+
+        One owner at a time, and `restore_head_tracking` accepts only that owner,
+        so a tool delegating its motion to another tool cannot have the window
+        closed out from under it.
+        """
+        self._command_queue.put(("suspend_head_tracking", owner))
+
+    def restore_head_tracking(self, owner: str) -> None:
+        """Hand the head back to whatever tracking state was in force at suspend."""
+        self._command_queue.put(("restore_head_tracking", owner))
+
+    def head_tracking_desired(self) -> bool:
+        """Return the tracking state the app has asked for, suspension aside.
+
+        Read-only observability for tools and tests. The restore path does NOT
+        consult this: it uses the state captured inside the worker at suspend
+        time, which is the only value no other thread can have moved since.
+        """
+        if self._tracking_suspended_by is not None:
+            return self._tracking_suspended_state
+        return self._head_tracking
 
     def set_speaking(self, speaking: bool) -> None:
         """Pause head tracking while the assistant speaks, resume it afterwards.
@@ -393,6 +431,18 @@ class MovementManager:
             self.state.update_activity()
         elif command == "set_head_tracking":
             enabled = bool(payload)
+            if self._tracking_suspended_by is not None:
+                # A manual head window owns the head. Record what was asked for
+                # so the restore hands back the state the caller last chose, and
+                # issue no robot call: re-arming here would yank the head off the
+                # pose the window was opened to show.
+                self._tracking_suspended_state = enabled
+                logger.debug(
+                    "Head-tracking toggle deferred by the %s head window: %s",
+                    self._tracking_suspended_by,
+                    enabled,
+                )
+                return
             if self._head_tracking == enabled:
                 return
             self._head_tracking = enabled
@@ -472,6 +522,65 @@ class MovementManager:
                     self.current_robot.stop_head_tracking()
             except Exception as e:
                 logger.warning("Hold-still toggle failed: %s", e)
+        elif command == "suspend_head_tracking":
+            owner = str(payload)
+            if self._tracking_suspended_by is not None:
+                logger.debug(
+                    "Head window already held by %s; %s did not take it",
+                    self._tracking_suspended_by,
+                    owner,
+                )
+                return
+            self._tracking_suspended_by = owner
+            self._tracking_suspended_state = self._head_tracking
+            # No anchor is captured, deliberately: a non-None `_track_anchor` is
+            # what `_get_primary_pose` restores over a completed move.
+            self._track_anchor = None
+            # `set_speaking` is gated on `_head_tracking`, so clearing the flag
+            # below makes the speaking handoff a no-op for the whole window.
+            self._is_speaking = False
+            if not self._head_tracking:
+                logger.debug("Head window %s opened with tracking already off", owner)
+                return
+            self._head_tracking = False
+            if self._hold_still:
+                # Deferred for the same reason a toggle is: the release edge
+                # applies whatever the flags then demand.
+                logger.debug("Head-tracking suspend deferred by the still-pose hold: %s", owner)
+                return
+            try:
+                self.current_robot.stop_head_tracking()
+            except Exception as e:
+                logger.warning("Head-tracking suspend failed: %s", e)
+            logger.info("Head tracking suspended for the %s window", owner)
+        elif command == "restore_head_tracking":
+            owner = str(payload)
+            if self._tracking_suspended_by != owner:
+                logger.debug(
+                    "Head-window restore from %s ignored; the window is held by %s",
+                    owner,
+                    self._tracking_suspended_by,
+                )
+                return
+            desired = self._tracking_suspended_state
+            self._tracking_suspended_by = None
+            self._tracking_suspended_state = False
+            logger.info("Head window %s closed; head tracking restored to %s", owner, desired)
+            if self._head_tracking == desired:
+                return
+            self._head_tracking = desired
+            self._track_anchor = None
+            self._is_speaking = False
+            if self._hold_still:
+                logger.debug("Head-tracking restore deferred by the still-pose hold: %s", desired)
+                return
+            try:
+                if desired:
+                    self.current_robot.start_head_tracking(weight=1.0)
+                else:
+                    self.current_robot.stop_head_tracking()
+            except Exception as e:
+                logger.warning("Head-tracking restore failed: %s", e)
         else:
             logger.warning("Unknown command received by MovementManager: %s", command)
 

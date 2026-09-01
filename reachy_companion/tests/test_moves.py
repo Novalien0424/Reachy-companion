@@ -335,3 +335,171 @@ def test_speaking_anchor_composes_emotions_and_holds_dances_from_neutral() -> No
     manager.state.move_start_time = manager._now()
     head, _, _ = manager._get_primary_pose(manager._now())
     assert np.allclose(head, dance_head)
+
+
+# --------------------------------------------------------------------------
+# Manual head windows (2026-09-01 instructing wave, spec §2)
+# --------------------------------------------------------------------------
+
+
+def _apply_suspend(manager: MovementManager, owner: str) -> None:
+    """Post the public command and let the loop's own drain apply it."""
+    manager.suspend_head_tracking(owner)
+    manager._poll_signals(manager._now())
+
+
+def _apply_restore(manager: MovementManager, owner: str) -> None:
+    manager.restore_head_tracking(owner)
+    manager._poll_signals(manager._now())
+
+
+def test_a_head_window_stops_tracking_without_anchoring() -> None:
+    """The critical catch: an anchor would be restored over the completed move.
+
+    `set_speaking(True)` captures `_track_anchor`, and `_get_primary_pose` falls
+    back to it the moment the queued goto ends — which is precisely how the head
+    snapped back to the user after every `look_around` on 2026-09-01. A window
+    suspends and captures nothing.
+    """
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 12, degrees=True)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_suspend(manager, "look_around")
+
+    assert manager._tracking_suspended_by == "look_around"
+    assert manager._head_tracking is False
+    assert manager._track_anchor is None
+    robot.stop_head_tracking.assert_called_once_with()
+    robot.start_head_tracking.assert_not_called()
+
+
+def test_a_head_window_leaves_the_completed_move_on_screen() -> None:
+    """With no anchor, the pose the loop keeps commanding is the move's own."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = create_head_pose(0, 0, 0, 0, 0, 12, degrees=True)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+    _apply_suspend(manager, "look_around")
+
+    turned = create_head_pose(0, 0, 0, 0, 0, -40, degrees=True)
+    manager.state.last_primary_pose = (turned, (0.0, 0.0), 0.0)
+
+    head, _, _ = manager._get_primary_pose(manager._now())
+
+    np.testing.assert_allclose(head, turned)
+
+
+def test_a_head_window_restores_the_state_it_found() -> None:
+    """Restore hands back what was in force at suspend, never an unconditional on."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_suspend(manager, "look_around")
+    _apply_restore(manager, "look_around")
+
+    assert manager._tracking_suspended_by is None
+    assert manager._head_tracking is True
+    assert robot.start_head_tracking.call_args_list == [call(weight=1.0)]
+
+
+def test_a_head_window_taken_with_tracking_off_touches_the_robot_at_all() -> None:
+    """The operator may have turned tracking off; a window must not turn it back on."""
+    robot = MagicMock()
+    manager = MovementManager(robot)
+
+    _apply_suspend(manager, "move_head")
+    _apply_restore(manager, "move_head")
+
+    robot.stop_head_tracking.assert_not_called()
+    robot.start_head_tracking.assert_not_called()
+    assert manager._head_tracking is False
+
+
+def test_only_the_owner_closes_the_window() -> None:
+    """Single ownership: a delegate cannot restore its caller's window."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_suspend(manager, "look_around")
+    _apply_restore(manager, "move_head")
+
+    assert manager._tracking_suspended_by == "look_around"
+    robot.start_head_tracking.assert_not_called()
+
+    _apply_restore(manager, "look_around")
+
+    assert manager._tracking_suspended_by is None
+    assert robot.start_head_tracking.call_args_list == [call(weight=1.0)]
+
+
+def test_a_nested_suspend_does_not_take_the_window() -> None:
+    """look_around delegating its motion must not open a second window."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    _apply_suspend(manager, "look_around")
+    _apply_suspend(manager, "move_head")
+
+    assert manager._tracking_suspended_by == "look_around"
+    robot.stop_head_tracking.assert_called_once_with()
+
+
+def test_speech_cannot_rearm_the_head_mid_window() -> None:
+    """`set_speaking` is gated on `_head_tracking`, which the window clears."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+    _apply_suspend(manager, "look_around")
+    robot.start_head_tracking.reset_mock()
+
+    manager.set_speaking(True)
+    manager._poll_signals(manager._now())
+    manager.set_speaking(False)
+    manager._poll_signals(manager._now())
+
+    robot.start_head_tracking.assert_not_called()
+    assert manager._track_anchor is None
+
+
+def test_a_tracking_toggle_mid_window_lands_on_the_restore() -> None:
+    """"Stop following me" during a look is honoured — at the end of the look."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+    _apply_suspend(manager, "look_around")
+    robot.stop_head_tracking.reset_mock()
+
+    manager.set_head_tracking(False)
+    manager._poll_signals(manager._now())
+    assert manager._tracking_suspended_state is False
+    robot.stop_head_tracking.assert_not_called()
+
+    _apply_restore(manager, "look_around")
+
+    assert manager._head_tracking is False
+    robot.start_head_tracking.assert_not_called()
+    robot.stop_head_tracking.assert_not_called()
+
+
+def test_head_tracking_desired_reports_through_a_window() -> None:
+    """Observability only — the restore uses the state captured in the worker."""
+    robot = MagicMock()
+    robot.get_current_head_pose.return_value = np.eye(4)
+    manager = MovementManager(robot)
+    manager._head_tracking = True
+
+    assert manager.head_tracking_desired() is True
+    _apply_suspend(manager, "look_around")
+    assert manager.head_tracking_desired() is True
+    _apply_restore(manager, "look_around")
+    assert manager.head_tracking_desired() is True
