@@ -1,7 +1,6 @@
 """Helpers for app startup and shutdown lifecycle behavior."""
 
 import time
-import asyncio
 import logging
 import urllib.error
 import urllib.request
@@ -16,7 +15,6 @@ from reachy_mini.utils.interpolation import distance_between_poses
 from reachy_companion.hanova import audio_drain
 from reachy_companion.audio.envparse import env_float
 from reachy_companion.tools.core_tools import ToolDependencies
-from reachy_companion.tools.go_to_sleep import GoToSleep
 
 
 _STOP_CURRENT_APP_PATH = "/api/apps/stop-current-app"
@@ -159,10 +157,31 @@ def wait_for_speaker_quiet(logger: logging.Logger) -> float:
     return waited
 
 
-def run_go_to_sleep_tool(deps: ToolDependencies, logger: logging.Logger) -> dict[str, object]:
-    """Run the shared go_to_sleep tool from synchronous shutdown paths."""
+def run_lifecycle_sleep(deps: ToolDependencies, logger: logging.Logger) -> dict[str, object]:
+    """Put Reachy to sleep from a path with no live model turn.
+
+    Deliberately NOT the `go_to_sleep` tool. Since the instructing wave that tool
+    only silences the inputs and hands the turn back to the model for a spoken
+    goodbye, with the session-ending branch in `huggingface_realtime` owning the
+    pose afterwards. The inactivity timeout and the shutdown path have no model
+    turn to speak into and nothing downstream to run the pose, so they do both
+    halves here — which is exactly what this path did before the split (Codex
+    round 1, critical catch 3).
+
+    Order is the same as everywhere else: silence, then pose. `begin_sleep` mutes
+    the microphone and disarms the barge machine; `go_to_sleep` repeats that
+    idempotently, drains the speaker, stops the movement manager, poses, and asks
+    the daemon to stop the app.
+    """
+    if deps.go_to_sleep is None:
+        return {"error": "go_to_sleep is unavailable in this runtime"}
+    if deps.begin_sleep is not None:
+        try:
+            deps.begin_sleep()
+        except Exception as e:  # noqa: BLE001 - quiesce is best effort; the pose is required
+            logger.warning("Failed to silence Reachy before lifecycle sleep; continuing to pose: %s", e)
     try:
-        return asyncio.run(GoToSleep()(deps))
+        return deps.go_to_sleep()
     except Exception as e:
-        logger.error("Failed to run go_to_sleep tool during shutdown: %s", e)
+        logger.error("Failed to put Reachy to sleep from the lifecycle path: %s", e)
         return {"error": f"go_to_sleep failed: {type(e).__name__}: {e}"}

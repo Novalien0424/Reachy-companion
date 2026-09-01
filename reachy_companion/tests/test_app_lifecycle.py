@@ -63,20 +63,74 @@ def test_wake_up_if_sleeping_skips_non_sleep_head_pose() -> None:
     robot.wake_up.assert_not_called()
 
 
-def test_run_go_to_sleep_tool_uses_runtime_callback() -> None:
-    """Synchronous lifecycle paths should enter through the go_to_sleep tool."""
+def test_run_lifecycle_sleep_silences_then_poses_directly() -> None:
+    """Inactivity and shutdown have no model turn, so they never wait for a goodbye.
+
+    Since the instructing wave the `go_to_sleep` TOOL only silences the inputs and
+    hands the turn back for a spoken farewell. These paths have nobody to speak, so
+    they silence and pose themselves (Codex round 1, critical catch 3).
+    """
+    order: list[str] = []
     expected = {"status": "sleeping"}
-    go_to_sleep = MagicMock(return_value=expected)
     deps = ToolDependencies(
         reachy_mini=MagicMock(),
         movement_manager=MagicMock(),
-        go_to_sleep=go_to_sleep,
+        begin_sleep=lambda: order.append("silence"),
+        go_to_sleep=lambda: (order.append("sleep"), expected)[1],
     )
 
-    result = app_lifecycle.run_go_to_sleep_tool(deps, MagicMock())
+    result = app_lifecycle.run_lifecycle_sleep(deps, MagicMock())
 
+    assert order == ["silence", "sleep"]
     assert result == expected
-    go_to_sleep.assert_called_once_with()
+
+
+def test_run_lifecycle_sleep_still_poses_when_silencing_fails() -> None:
+    """Best-effort input quiesce must not prevent the actual sleep pose."""
+    order: list[str] = []
+    expected = {"status": "sleeping"}
+
+    def _boom() -> None:
+        order.append("silence")
+        raise RuntimeError("stream gone")
+
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        begin_sleep=_boom,
+        go_to_sleep=lambda: (order.append("sleep"), expected)[1],
+    )
+
+    result = app_lifecycle.run_lifecycle_sleep(deps, MagicMock())
+
+    assert order == ["silence", "sleep"]
+    assert result == expected
+
+
+def test_run_lifecycle_sleep_reports_an_unwired_runtime() -> None:
+    """No sleep callback means no sleep — say so instead of pretending."""
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+
+    assert app_lifecycle.run_lifecycle_sleep(deps, MagicMock()) == {
+        "error": "go_to_sleep is unavailable in this runtime"
+    }
+
+
+def test_run_lifecycle_sleep_survives_a_failing_pose() -> None:
+    """A raising closure must not kill the inactivity thread."""
+
+    def _boom() -> dict[str, object]:
+        raise RuntimeError("motors offline")
+
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        go_to_sleep=_boom,
+    )
+
+    result = app_lifecycle.run_lifecycle_sleep(deps, MagicMock())
+
+    assert result == {"error": "go_to_sleep failed: RuntimeError: motors offline"}
 
 
 # --------------------------------------------------------------------------
@@ -223,11 +277,10 @@ async def test_the_sleep_tool_works_without_the_new_seams() -> None:
 
 
 def test_wait_for_reply_finished_is_safe_from_another_loop() -> None:
-    """The inactivity path runs the tool under its own `asyncio.run` loop.
+    """The wait seam handles callers outside the handler's event loop.
 
-    `app_lifecycle.run_go_to_sleep_tool` does exactly that on a daemon thread,
-    so awaiting the handler's `asyncio.Event` directly there is undefined
-    (Codex round 2, 2a-5). The seam must marshal, or give up cleanly.
+    Awaiting the handler's `asyncio.Event` directly from another loop is
+    undefined (Codex round 2, 2a-5). The seam must marshal, or give up cleanly.
     """
     import asyncio as _asyncio
     import threading
@@ -264,7 +317,7 @@ def test_wait_for_reply_finished_is_safe_from_another_loop() -> None:
     thread = threading.Thread(target=_run_handler_loop, daemon=True)
     thread.start()
     ready.wait(timeout=2.0)
-    # A DIFFERENT loop, exactly as `run_go_to_sleep_tool` creates.
+    # A DIFFERENT loop from the handler's loop.
     started = time.monotonic()
     results.append(_asyncio.run(handler.wait_for_reply_finished()))
     waited = time.monotonic() - started

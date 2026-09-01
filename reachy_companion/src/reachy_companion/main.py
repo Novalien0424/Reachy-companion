@@ -416,8 +416,9 @@ def run(
     # which is never rebuilt, so it is wired once here.
     deps.begin_sleep = begin_sleep
 
-    def run_go_to_sleep_tool() -> dict[str, Any]:
-        return app_lifecycle.run_go_to_sleep_tool(deps, logger)
+    def run_lifecycle_sleep() -> dict[str, Any]:
+        """Silence and pose for inactivity timeout, with no goodbye turn."""
+        return app_lifecycle.run_lifecycle_sleep(deps, logger)
 
     if args.ui and settings_app is None and effective_settings_app is not None:
         import uvicorn
@@ -480,7 +481,7 @@ def run(
 
     timeout_minutes = resolve_app_timeout_minutes()
     if timeout_minutes is not None:
-        _start_inactivity_timeout_thread(timeout_minutes, stream_manager, logger, app_stop_event, run_go_to_sleep_tool)
+        _start_inactivity_timeout_thread(timeout_minutes, stream_manager, logger, app_stop_event, run_lifecycle_sleep)
 
     def poll_stop_event() -> None:
         """Poll the stop event to allow graceful shutdown.
