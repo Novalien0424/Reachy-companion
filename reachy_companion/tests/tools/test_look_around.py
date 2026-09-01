@@ -42,15 +42,15 @@ async def test_look_around_moves_then_captures(monkeypatch: pytest.MonkeyPatch) 
     """The whole point of the composite: the move happens BEFORE the picture."""
     order: list[str] = []
 
-    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
-        order.append(f"move:{kwargs['direction']}")
-        return {"status": f"looking {kwargs['direction']}"}
+    async def _queue(self: MoveHead, deps: Any, direction: str) -> dict[str, Any]:
+        order.append(f"move:{direction}")
+        return {"status": "move_queued", "direction_requested": direction}
 
     async def _camera(self: Camera, deps: Any, **kwargs: Any) -> dict[str, Any]:
         order.append("camera")
         return {"b64_im": base64.b64encode(b"jpeg").decode("utf-8")}
 
-    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
     monkeypatch.setattr(Camera, "__call__", _camera)
     monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
 
@@ -84,10 +84,10 @@ async def test_look_around_reports_a_failed_move_without_claiming_it(
 ) -> None:
     """No direction field on a failed move: the model must not narrate a turn."""
 
-    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
+    async def _queue(self: MoveHead, deps: Any, direction: str) -> dict[str, Any]:
         return {"error": "move_head failed: RuntimeError: motors off"}
 
-    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
     monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
     result = await LookAround()(_deps(), direction="left")
     assert "error" in result
@@ -100,13 +100,13 @@ async def test_look_around_reports_a_failed_capture_but_keeps_the_move(
 ) -> None:
     """The head really did turn, so say so — and say the picture failed."""
 
-    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"status": "looking up"}
+    async def _queue(self: MoveHead, deps: Any, direction: str) -> dict[str, Any]:
+        return {"status": "move_queued", "direction_requested": direction}
 
     async def _camera(self: Camera, deps: Any, **kwargs: Any) -> dict[str, Any]:
         return {"error": "No frame available"}
 
-    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
     monkeypatch.setattr(Camera, "__call__", _camera)
     monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
     result = await LookAround()(_deps(), direction="up")
@@ -128,13 +128,13 @@ async def test_look_around_reports_a_raised_capture_as_a_capture_failure(
     when in fact it did (review round 1, minor 2).
     """
 
-    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"status": "looking down"}
+    async def _queue(self: MoveHead, deps: Any, direction: str) -> dict[str, Any]:
+        return {"status": "move_queued", "direction_requested": direction}
 
     async def _camera(self: Camera, deps: Any, **kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("v4l2 device disappeared")
 
-    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
     monkeypatch.setattr(Camera, "__call__", _camera)
     monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
 
@@ -149,18 +149,84 @@ async def test_look_around_defaults_the_question(monkeypatch: pytest.MonkeyPatch
     """A caller that names only a direction still gets a describable picture."""
     seen: list[str] = []
 
-    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"status": "ok"}
+    async def _queue(self: MoveHead, deps: Any, direction: str) -> dict[str, Any]:
+        return {"status": "move_queued", "direction_requested": direction}
 
     async def _camera(self: Camera, deps: Any, **kwargs: Any) -> dict[str, Any]:
         seen.append(kwargs["question"])
         return {"b64_im": "x"}
 
-    monkeypatch.setattr(MoveHead, "__call__", _move)
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
     monkeypatch.setattr(Camera, "__call__", _camera)
     monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
     await LookAround()(_deps(), direction="front")
     assert seen == ["描述你現在看到什麼"]
+
+
+@pytest.mark.asyncio
+async def test_look_around_owns_one_window_across_move_settle_and_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single ownership (spec §2): the delegate must not close the window early."""
+    monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
+    deps = _deps()
+    deps.motion_duration_s = 0.0
+    order: list[str] = []
+    deps.movement_manager.suspend_head_tracking.side_effect = lambda owner: order.append(f"suspend:{owner}")
+    deps.movement_manager.restore_head_tracking.side_effect = lambda owner: order.append(f"restore:{owner}")
+
+    async def _queue(self, deps_, direction):  # noqa: ANN001
+        order.append(f"move:{direction}")
+        return {"status": "move_queued", "direction_requested": direction}
+
+    async def _shoot(self, deps_, **kwargs):  # noqa: ANN001
+        order.append("camera")
+        return {"b64_im": "AAA="}
+
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
+    monkeypatch.setattr(Camera, "__call__", _shoot)
+
+    result = await LookAround()(deps, direction="right", question="誰在那邊")
+
+    assert order == ["suspend:look_around", "move:right", "camera", "restore:look_around"]
+    assert result == {"direction_requested": "right", "question": "誰在那邊", "b64_im": "AAA="}
+
+
+@pytest.mark.asyncio
+async def test_look_around_restores_tracking_when_the_capture_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every exit closes the window — the `face_support.hold_still` contract."""
+    monkeypatch.setattr("reachy_companion.tools.look_around.LOOK_AROUND_SETTLE_S", 0.0)
+    deps = _deps()
+    deps.motion_duration_s = 0.0
+
+    async def _queue(self, deps_, direction):  # noqa: ANN001
+        return {"status": "move_queued", "direction_requested": direction}
+
+    async def _boom(self, deps_, **kwargs):  # noqa: ANN001
+        raise RuntimeError("camera driver fault")
+
+    monkeypatch.setattr(MoveHead, "queue_direction", _queue)
+    monkeypatch.setattr(Camera, "__call__", _boom)
+
+    result = await LookAround()(deps, direction="up")
+
+    assert result["direction_requested"] == "up"
+    assert "RuntimeError" in result["error"]
+    deps.movement_manager.restore_head_tracking.assert_called_once_with("look_around")
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_direction_opens_no_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validation runs before the body is touched, so nothing needs restoring."""
+    deps = _deps()
+
+    result = await LookAround()(deps, direction="behind")
+
+    assert result["error"] == "direction must be one of left, right, up, down, front"
+    deps.movement_manager.suspend_head_tracking.assert_not_called()
+    deps.movement_manager.restore_head_tracking.assert_not_called()
 
 
 def test_descriptions_are_symmetric_and_route_directional_looks() -> None:

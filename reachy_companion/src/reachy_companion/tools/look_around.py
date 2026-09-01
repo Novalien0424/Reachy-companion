@@ -21,6 +21,7 @@ from typing import Any, Dict, Final
 from reachy_companion.tools.camera import Camera
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
+from reachy_companion.tools.head_window import head_window
 
 
 logger = logging.getLogger(__name__)
@@ -98,28 +99,37 @@ class LookAround(Tool):
         except Exception as exc:  # noqa: BLE001 - a manager without the seam still gets a look
             logger.debug("look_around: could not clear the move queue: %s", exc)
 
-        moved = await MoveHead()(deps, direction=direction)
-        if "error" in moved:
-            # No direction field at all on this path: nothing was even asked of
-            # the body, so there is nothing for the model to narrate.
-            return {"error": moved["error"]}
-        await asyncio.sleep(float(deps.motion_duration_s) + LOOK_AROUND_SETTLE_S)
+        # ONE window covering move, settle and capture (spec §2, single
+        # ownership): `queue_direction` deliberately opens none of its own, so
+        # nothing hands the head back to the daemon face tracker before the
+        # shutter. Suspension, not the `set_speaking` anchor: that anchor is
+        # restored over the finished move, which is how three correct calls on
+        # 2026-09-01 each photographed the person straight ahead.
+        async with head_window(deps, self.name):
+            moved = await MoveHead().queue_direction(deps, direction)
+            if "error" in moved:
+                # No direction field at all on this path: nothing was even asked
+                # of the body, so there is nothing for the model to narrate.
+                return {"error": moved["error"]}
+            await asyncio.sleep(float(deps.motion_duration_s) + LOOK_AROUND_SETTLE_S)
 
-        # Guarded, because from here on the head HAS been sent and every exit
-        # owes the model the capture-failure envelope. `Camera` returns
-        # `{"error": …}` for the faults it anticipates, but a driver fault
-        # raises — and an exception escaping here would be turned into a bare
-        # `{"error": …}` by the dispatcher, which is the *move*-failure shape and
-        # would tell the model the head never moved (review round 1, minor 2).
-        try:
-            shot = await Camera()(deps, question=question)
-        except asyncio.CancelledError:
-            # A cancelled tool call is the caller unwinding the turn, not a
-            # capture failure; it must keep propagating.
-            raise
-        except Exception as exc:  # noqa: BLE001 - the move already happened; report it honestly
-            logger.warning("look_around: capture raised after the move: %s: %s", type(exc).__name__, exc)
-            shot = {"error": f"camera failed: {type(exc).__name__}: {exc}"}
+            # Guarded, because from here on the head HAS been sent and every exit
+            # owes the model the capture-failure envelope. `Camera` returns
+            # `{"error": …}` for the faults it anticipates, but a driver fault
+            # raises — and an exception escaping here would be turned into a bare
+            # `{"error": …}` by the dispatcher, which is the *move*-failure shape
+            # and would tell the model the head never moved (review round 1,
+            # minor 2).
+            try:
+                shot = await Camera()(deps, question=question)
+            except asyncio.CancelledError:
+                # A cancelled tool call is the caller unwinding the turn, not a
+                # capture failure; it must keep propagating. The window still
+                # closes — that is what the context manager's `finally` is for.
+                raise
+            except Exception as exc:  # noqa: BLE001 - the move already happened; report it honestly
+                logger.warning("look_around: capture raised after the move: %s: %s", type(exc).__name__, exc)
+                shot = {"error": f"camera failed: {type(exc).__name__}: {exc}"}
         # `direction_requested`, not `direction_moved`: `MoveHead` returns once
         # the move is QUEUED, and `MovementManager` publishes no accepted- or
         # completed-move signal for us to wait on (`moves.py:245-266`, `:764`) —
