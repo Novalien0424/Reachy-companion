@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final, Tuple, Optional
 from collections import deque
+from dataclasses import dataclass
 from collections.abc import Callable
 
 import httpx
@@ -441,6 +442,74 @@ def _item_id(item: Any) -> str | None:
     return item_id if isinstance(item_id, str) else None
 
 
+@dataclass
+class ResponseCycle:
+    """The completion of one specific queued response, correlated by its id.
+
+    Spec §1: the farewell must be waited on by *identity*, not by "whatever
+    response finishes next". `_response_done_event` answers the second question
+    and is set by the response that was already running when the tool call
+    arrived - waiting on it would pose the robot before the goodbye had started,
+    which is the original bug.
+    """
+
+    done: asyncio.Future[str | None]
+    response_id: str | None = None
+
+    def resolve(self, response_id: str | None) -> None:
+        """Hand the observed response id to the waiter, exactly once."""
+        if not self.done.done():
+            self.done.set_result(response_id)
+
+
+@dataclass
+class ResponseStartWaiter:
+    """The start/rejection edge for one just-sent `response.create`.
+
+    The old `_response_started_or_rejected_event` is process-wide and the receive
+    loop also sets it for unrelated realtime errors. This waiter is installed
+    only around the request the sender just emitted. Rejections are correlated by
+    the request's client `event_id`; `response.created` is correlated by the
+    serialized sender having no other response-create request in flight.
+    """
+
+    done: asyncio.Future[str | None]
+    event_id: str
+    cycle: ResponseCycle | None = None
+    rejected: bool = False
+
+    def resolve_started(self, response_id: str | None) -> None:
+        """Resolve the waiter with the response id observed at start."""
+        if not self.done.done():
+            self.done.set_result(response_id)
+
+    def resolve_rejected(self) -> None:
+        """Mark the request rejected and resolve the waiter with no response id."""
+        self.rejected = True
+        if not self.done.done():
+            self.done.set_result(None)
+
+
+@dataclass
+class ResponseRequest:
+    """One queued `response.create`, plus the cycle a caller may be waiting on.
+
+    The sender loop is the only component that can install a request-scoped
+    start waiter. The receive loop then resolves that waiter at `response.created`
+    and resolves any attached cycle only when the matching `response.done` arrives.
+    Everything that does not care attaches no cycle and the queue behaves exactly
+    as before.
+    """
+
+    kwargs: dict[str, Any]
+    cycle: ResponseCycle | None = None
+
+    @property
+    def is_coalescable(self) -> bool:
+        """An empty request nobody is waiting on may be merged into another."""
+        return not self.kwargs and self.cycle is None
+
+
 def _current_task() -> "asyncio.Task[Any] | None":
     """Return the running task, or None when called from outside the event loop.
 
@@ -669,7 +738,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Response-in-progress guard: the Realtime API only allows one active
         # response per conversation at a time.  A dedicated worker task
         # (_response_sender_loop) dequeues and sends one request at a time
-        self._pending_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._pending_responses: asyncio.Queue[ResponseRequest] = asyncio.Queue()
         self._response_done_event: asyncio.Event = asyncio.Event()
         self._response_done_event.set()
         # The loop this handler's session runs on, captured in
@@ -680,6 +749,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._handler_loop: asyncio.AbstractEventLoop | None = None
         self._response_started_or_rejected_event: asyncio.Event = asyncio.Event()
         self._last_response_rejected: bool = False
+        self._response_start_waiter: ResponseStartWaiter | None = None
+        self._response_cycles_by_id: dict[str, ResponseCycle] = {}
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
@@ -2157,6 +2228,105 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             future.cancel()
             return False
 
+    async def run_farewell_response_cycle(self) -> str | None:
+        """Queue the goodbye response and wait for THAT response to finish.
+
+        The boundary-moment protocol from the instructing contract: the model
+        composes the words, the app decides when they are spoken and what may
+        ride along. `tool_choice: "none"` is what stops a late tool call from
+        joining the goodbye; the nested `response=` shape is the SDK's own
+        (openai 2.28.0: `AsyncRealtimeResponseResource.create` takes a nested
+        `response` object). No per-response `instructions` are sent - those
+        REPLACE the session prompt for that response and would drop the persona,
+        the Chinese pin and the anti-fabrication rules at the exact moment the
+        robot says its last sentence (the override trap).
+
+        Returns the id of the response that completed, or None when it never
+        started (rejected, disconnected, or the wait expired). Never raises: the
+        sleep must reach the pose either way.
+        """
+        if self.connection is None:
+            # Nothing will drain the queue, so waiting is ten seconds of nothing
+            # on every sleep that follows a dropped websocket.
+            logger.info("sleep: no live session for the farewell; going straight to the pose")
+            return None
+        loop = asyncio.get_running_loop()
+        cycle = ResponseCycle(done=loop.create_future())
+        await self._safe_response_create(cycle=cycle, response={"tool_choice": "none"})
+        try:
+            response_id = await asyncio.wait_for(cycle.done, timeout=_GOODBYE_RESPONSE_WAIT_S)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "sleep: the farewell response did not finish within %.0fs; sleeping anyway",
+                _GOODBYE_RESPONSE_WAIT_S,
+            )
+            cycle.resolve(None)
+            return None
+        except Exception as exc:  # noqa: BLE001 - a dead session must still reach the pose
+            logger.warning("sleep: the farewell response cycle failed (%s); sleeping anyway", exc)
+            return None
+        logger.info("sleep: farewell response finished (id=%s)", response_id)
+        return response_id
+
+    def _resolve_response_start(self, response_id: str | None) -> None:
+        """Resolve the waiter for the response-create request now being sent.
+
+        The receive loop may also see unrelated errors while the sender is
+        waiting. Those errors must not satisfy this waiter; only `response.created`
+        can say the request started. When a cycle is attached, register it before
+        waking the sender so a very short `response.done` cannot outrun the map.
+        """
+        waiter = self._response_start_waiter
+        if waiter is None:
+            return
+        if response_id is not None and waiter.cycle is not None:
+            waiter.cycle.response_id = response_id
+            self._response_cycles_by_id[response_id] = waiter.cycle
+        waiter.resolve_started(response_id)
+
+    def _resolve_response_rejection(self, event_id: object) -> bool:
+        """Resolve the current response-create waiter only for its own rejection."""
+        waiter = self._response_start_waiter
+        if waiter is None or not isinstance(event_id, str) or event_id != waiter.event_id:
+            return False
+        self._last_response_rejected = True
+        waiter.resolve_rejected()
+        return True
+
+    def _resolve_response_done(self, response_id: str | None) -> None:
+        """Resolve a waited-on cycle only when its own response reaches done."""
+        if response_id is None:
+            return
+        cycle = self._response_cycles_by_id.pop(response_id, None)
+        if cycle is not None:
+            cycle.resolve(response_id)
+
+    def _resolve_response_disconnect(self) -> None:
+        """Resolve any response-cycle waiters owned by a session that just died."""
+        retained_requests: list[ResponseRequest] = []
+        while not self._pending_responses.empty():
+            try:
+                request = self._pending_responses.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if request.cycle is None:
+                retained_requests.append(request)
+            else:
+                request.cycle.resolve(None)
+        for request in retained_requests:
+            self._pending_responses.put_nowait(request)
+
+        waiter = self._response_start_waiter
+        if waiter is not None:
+            waiter.resolve_started(None)
+            self._response_start_waiter = None
+            if waiter.cycle is not None:
+                waiter.cycle.resolve(None)
+        cycles = list(self._response_cycles_by_id.values())
+        self._response_cycles_by_id.clear()
+        for cycle in cycles:
+            cycle.resolve(None)
+
     def _resolve_backend_voice(
         self,
         voice: str | None,
@@ -2410,12 +2580,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         except Exception as e:
             logger.warning("_restart_session failed: %s", e)
 
-    async def _safe_response_create(self, **kwargs: Any) -> None:
+    async def _safe_response_create(self, *, cycle: ResponseCycle | None = None, **kwargs: Any) -> None:
         """Enqueue a response.create() kwargs for the sender worker _response_sender_loop().
 
-        This method never blocks the caller.
+        This method never blocks the caller. `cycle`, when given, is resolved by
+        the receive-loop hooks with the id of the response THIS request produced
+        - the only correlation that survives the queue.
         """
-        await self._pending_responses.put(kwargs)
+        await self._pending_responses.put(ResponseRequest(kwargs=kwargs, cycle=cycle))
 
     async def say(self, text: str) -> None:
         """Inject ``text`` as a turn and have the model voice it now.
@@ -2808,71 +2980,110 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """
         while self.connection:
             try:
-                kwargs = await self._pending_responses.get()
+                request = await self._pending_responses.get()
             except asyncio.CancelledError:
                 return
 
-            # Parallel tool calls enqueue duplicate empty requests; coalesce to one.
-            while not kwargs and not self._pending_responses.empty():
+            # Parallel tool calls enqueue duplicate empty requests; coalesce to
+            # one. A request carrying kwargs or a cycle is never discarded - the
+            # old unconditional drain would have thrown away a farewell queued
+            # behind a generic follow-up and hung its waiter, posing the robot
+            # in silence. A non-coalescable request found here is ADOPTED rather
+            # than dropped: the empty one it replaces asked only for "a
+            # response", which this one also produces.
+            while request.is_coalescable and not self._pending_responses.empty():
                 try:
-                    self._pending_responses.get_nowait()
+                    nxt = self._pending_responses.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-
-            sent = False
-            max_retries = 5
-            attempts = 0
-            while not sent and self.connection and attempts < max_retries:
-                try:
-                    await asyncio.wait_for(
-                        self._response_done_event.wait(),
-                        timeout=_RESPONSE_DONE_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    logger.debug("Timed out waiting for previous response to finish; forcing ahead")
-                    self._response_done_event.set()
-
-                if not self.connection:
+                if not nxt.is_coalescable:
+                    request = nxt
                     break
 
-                self._last_response_rejected = False
-                self._response_started_or_rejected_event.clear()
-                try:
-                    await self.connection.response.create(**kwargs)
-                except Exception as e:
-                    logger.debug("_response_sender_loop: send failed: %s", e)
-                    self._response_done_event.set()
-                    break
+            base_kwargs = dict(request.kwargs)
+            observed_id: str | None = None
+            try:
+                sent = False
+                max_retries = 5
+                attempts = 0
+                while not sent and self.connection and attempts < max_retries:
+                    try:
+                        await asyncio.wait_for(
+                            self._response_done_event.wait(),
+                            timeout=_RESPONSE_DONE_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.debug("Timed out waiting for previous response to finish; forcing ahead")
+                        self._response_done_event.set()
 
-                try:
-                    await asyncio.wait_for(
-                        self._response_started_or_rejected_event.wait(),
-                        timeout=_RESPONSE_DONE_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    logger.debug("Timed out waiting for response.created or response rejection")
-
-                # Check if the receiver loop observed an asynchronous rejection.
-                if self._last_response_rejected:
-                    attempts += 1
-                    if attempts >= max_retries:
-                        logger.debug("response.create rejected %d times; giving up", attempts)
+                    if not self.connection:
                         break
-                    logger.debug("response.create was rejected; retrying (%d/%d)", attempts, max_retries)
-                    await asyncio.sleep(_RESPONSE_REJECTION_RETRY_DELAY)
-                    continue
 
-                try:
-                    await asyncio.wait_for(
-                        self._response_done_event.wait(),
-                        timeout=_RESPONSE_DONE_TIMEOUT,
+                    self._last_response_rejected = False
+                    send_kwargs = dict(base_kwargs)
+                    event_id = str(send_kwargs.setdefault("event_id", f"response_create_{uuid.uuid4().hex}"))
+                    loop = asyncio.get_running_loop()
+                    start_waiter = ResponseStartWaiter(
+                        done=loop.create_future(),
+                        event_id=event_id,
+                        cycle=request.cycle,
                     )
-                except asyncio.TimeoutError:
-                    logger.debug("Timed out waiting for response.done; assuming response completed")
-                    self._response_done_event.set()
-                    break
+                    self._response_start_waiter = start_waiter
+                    try:
+                        await self.connection.response.create(**send_kwargs)
+                    except Exception as e:
+                        logger.debug("_response_sender_loop: send failed: %s", e)
+                        self._response_done_event.set()
+                        if self._response_start_waiter is start_waiter:
+                            self._response_start_waiter = None
+                        break
 
-                sent = True
+                    try:
+                        observed_id = await asyncio.wait_for(start_waiter.done, timeout=_RESPONSE_DONE_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.debug("Timed out waiting for response.created or correlated response rejection")
+                        if self._response_start_waiter is start_waiter:
+                            self._response_start_waiter = None
+                        break
+
+                    if self._response_start_waiter is start_waiter:
+                        self._response_start_waiter = None
+
+                    # Check if the receiver loop observed an asynchronous rejection.
+                    if start_waiter.rejected:
+                        attempts += 1
+                        if attempts >= max_retries:
+                            logger.debug("response.create rejected %d times; giving up", attempts)
+                            break
+                        logger.debug("response.create was rejected; retrying (%d/%d)", attempts, max_retries)
+                        await asyncio.sleep(_RESPONSE_REJECTION_RETRY_DELAY)
+                        continue
+
+                    if observed_id is None:
+                        logger.debug("response.created did not carry an id; cannot correlate response.done")
+                        break
+
+                    try:
+                        if request.cycle is not None:
+                            await asyncio.wait_for(request.cycle.done, timeout=_RESPONSE_DONE_TIMEOUT)
+                        else:
+                            await asyncio.wait_for(self._response_done_event.wait(), timeout=_RESPONSE_DONE_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.debug("Timed out waiting for response.done; assuming response completed")
+                        self._response_done_event.set()
+                        if request.cycle is not None:
+                            request.cycle.resolve(None)
+                        break
+
+                    sent = True
+            finally:
+                # Every exit resolves the cycle - rejection, disconnect, timeout
+                # and success alike. A waiter left unresolved here is a robot
+                # that never lies down.
+                if request.cycle is not None:
+                    request.cycle.resolve(None)
+                if observed_id is not None:
+                    self._response_cycles_by_id.pop(observed_id, None)
 
     async def _handle_tool_result(self, completed_tool: ToolNotification) -> None:
         """Process the result of a tool call and close its music-ducking phase.
@@ -3262,6 +3473,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # nothing left to repair.
                         self._barge_note_response_created()
                         self._response_done_event.clear()
+                        self._resolve_response_start(self._active_response_id)
                         self._response_started_or_rejected_event.set()
                         if self._turn_user_done_at is not None and self._turn_response_created_at is None:
                             self._turn_response_created_at = time.perf_counter()
@@ -3308,6 +3520,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 logger.info("response ended status=%s reason=%s", status, reason)
                         self._active_response_id = None
                         self._response_done_event.set()
+                        self._resolve_response_done(done_id)
                         self._response_started_or_rejected_event.set()
                         # Boot gate (Task 6): while gated, VAD is off, so the
                         # only response that can exist is the greeting or an
@@ -3679,14 +3892,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             continue
 
                         if code == "conversation_already_has_active_response":
-                            # response.create was rejected.  The sender worker
-                            # is waiting on _response_done_event; when the active
-                            # response finishes it will wake up and see this flag.
-                            self._last_response_rejected = True
-                            self._response_started_or_rejected_event.set()
-                            logger.debug("response.create rejected; worker will retry after active response finishes")
+                            # response.create was rejected. Only a rejection that
+                            # names the request we just sent may wake the sender;
+                            # other realtime errors are unrelated to this cycle.
+                            if self._resolve_response_rejection(getattr(err, "event_id", None)):
+                                logger.debug("response.create rejected; worker will retry after active response finishes")
+                            else:
+                                logger.debug(
+                                    "Ignoring stale response.create rejection for event_id=%s",
+                                    getattr(err, "event_id", None),
+                                )
                         else:
-                            self._response_started_or_rejected_event.set()
                             logger.error("Realtime error [%s]: %s (raw=%s)", code, msg, err)
 
                         if code == "input_audio_buffer_commit_empty":
@@ -3765,6 +3981,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         await response_sender_task
                     except asyncio.CancelledError:
                         pass
+                if self.connection is None or self.connection is conn:
+                    self._resolve_response_disconnect()
 
                 # Stop background tool manager tasks (listener + cleanup) in all paths.
                 await self.tool_manager.shutdown()
@@ -3885,6 +4103,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 logger.debug(f"connection.close() ignored: {e}")
             finally:
                 self.connection = None
+                self._resolve_response_disconnect()
 
         # Clear any remaining items in the output queue
         while not self.output_queue.empty():
