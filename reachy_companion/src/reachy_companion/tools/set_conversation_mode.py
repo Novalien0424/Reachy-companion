@@ -58,7 +58,14 @@ class SetConversationMode(Tool):
         if deps.set_conversation_mode is None:
             return {"ok": False, "error": "conversation modes are not wired on this build"}
         mode = kwargs.get("mode")
-        if not isinstance(mode, str):
-            return {"ok": False, "error": "mode must be a string", "modes": list(MODE_VALUES)}
+        if not isinstance(mode, str) or mode not in MODE_VALUES:
+            # The Chinese labels are what the user says and what the description
+            # teaches; the ARGUMENT is one of the three enum values, and a guess
+            # is corrected here rather than round-tripped through the handler.
+            return {
+                "ok": False,
+                "error": f"mode must be one of {', '.join(MODE_VALUES)}",
+                "modes": list(MODE_VALUES),
+            }
         logger.info("Tool call: set_conversation_mode mode=%s", mode)
         return await deps.set_conversation_mode(mode)

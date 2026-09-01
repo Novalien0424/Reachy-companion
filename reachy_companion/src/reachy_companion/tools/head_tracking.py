@@ -28,8 +28,13 @@ class HeadTracking(Tool):
     }
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
-        """Toggle head tracking."""
-        enabled = bool(kwargs.get("enabled", True))
+        """Toggle head tracking, refusing anything that is not a real boolean."""
+        enabled = kwargs.get("enabled")
+        if not isinstance(enabled, bool):
+            # `bool("false")` is True. On a platform with no structured-output
+            # guarantee that coercion is how "stop following me" silently became
+            # "follow me", so the value is refused with both options named.
+            return {"error": "enabled must be true or false (a boolean, not a string)"}
         logger.info("Tool call: head_tracking enabled=%s", enabled)
         deps.movement_manager.set_head_tracking(enabled)
         return {"status": "following" if enabled else "stopped following"}

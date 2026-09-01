@@ -56,7 +56,14 @@ class OpenToolbox(Tool):
         if deps.open_toolbox is None:
             return {"ok": False, "error": "dynamic toolboxes are not wired on this build"}
         category = kwargs.get("category")
-        if not isinstance(category, str):
-            return {"ok": False, "error": "category must be a string", "categories": list(TOOLBOX_CATEGORIES)}
+        if not isinstance(category, str) or category not in TOOLBOX_CATEGORIES:
+            # Validated here, ahead of the runtime seam: the enum in the schema
+            # is advisory on this platform, and a guessed category that reaches
+            # the handler costs a session update round trip to say no.
+            return {
+                "ok": False,
+                "error": f"category must be one of {', '.join(TOOLBOX_CATEGORIES)}",
+                "categories": list(TOOLBOX_CATEGORIES),
+            }
         logger.info("Tool call: open_toolbox category=%s", category)
         return await deps.open_toolbox(category)
