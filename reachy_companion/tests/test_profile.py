@@ -88,11 +88,18 @@ def test_locked_profile_can_be_told_to_go_to_sleep() -> None:
     `go_to_sleep` stops the app as well as posing the robot, so the model must
     only reach for it on an explicit request — the instruction line is what
     keeps it off idle turns and sleepy small talk.
+
+    The rule no longer says 先道別再調用 — speak-then-act is not promptable
+    (spec §1). The goodbye now happens in its own response after the tool
+    returns, so the prompt's job is to keep other speech OFF the tool-calling turn.
     """
     profile = read_profile(LOCKED_PROFILE)
 
     assert "go_to_sleep" in profile.default_tools
-    assert "当用户明确说想让你睡觉、休息或结束对话时，用 go_to_sleep 工具；先简短道别再调用。" in profile.instructions
+    assert (
+        "對方想結束這次互動、要你停下來休息時用 go_to_sleep。呼叫它的時候不要順便說別的話"
+        in profile.instructions
+    )
 
 
 def test_locked_profile_no_longer_compensates_for_a_tempo_side_effect() -> None:
@@ -105,9 +112,9 @@ def test_locked_profile_no_longer_compensates_for_a_tempo_side_effect() -> None:
     """
     instructions = read_profile(LOCKED_PROFILE).instructions
 
-    assert "语速放慢" not in instructions
-    assert "你的声音会被加速" not in instructions
-    assert "吐字清楚、语气轻快。" in instructions
+    assert "語速放慢" not in instructions and "语速放慢" not in instructions
+    assert "你的聲音會被加速" not in instructions and "你的声音会被加速" not in instructions
+    assert "吐字清楚、語氣輕快。" in instructions
 
 
 def test_locked_profile_can_remember_and_correct_facts_about_the_user() -> None:
@@ -121,10 +128,8 @@ def test_locked_profile_can_remember_and_correct_facts_about_the_user() -> None:
 
     assert "remember" in profile.default_tools
     assert "forget" in profile.default_tools
-    assert (
-        "用户告诉你关于他们自己的重要信息（名字、喜好、习惯）时，用 remember 记下来；说错了就用 forget 修正。"
-        in profile.instructions
-    )
+    assert "對方分享值得長期記住的個人資訊時用 remember" in profile.instructions
+    assert "資訊有誤或對方要你忘記時用 forget" in profile.instructions
 
 
 def test_locked_profile_can_remember_and_recall_a_face() -> None:
@@ -141,13 +146,10 @@ def test_locked_profile_can_remember_and_recall_a_face() -> None:
 
     assert "remember_face" in profile.default_tools
     assert "who_is_this" in profile.default_tools
+    assert "對方希望你記住他本人的長相時用 remember_face，不要用 camera。" in profile.instructions
     assert (
-        '当用户说"记住我"、"我叫X，记住我的样子"时，用 remember_face 工具记录他的名字和长相，不要用 camera。'
-        in profile.instructions
-    )
-    assert (
-        '只要问题是关于"这个人是谁"——"我是谁"、"你认得我吗"、"你还记得我吗"、"我叫什么名字"、'
-        "有人新走进来想知道是谁——一律用 who_is_this 工具，不要用 camera；认不出就坦率说认不出，不要猜。"
+        "問題是在問「某個人是誰」——包含對方在問你認不認得他自己——一律用 who_is_this，"
+        "不要用 camera；認不出就坦白說認不出，不要猜。"
     ) in profile.instructions
 
 
@@ -366,4 +368,4 @@ def test_the_confirm_retry_tells_the_model_to_resend_its_action() -> None:
     """
     body = read_profile(LOCKED_PROFILE).instructions
     confirm_rule = next(line for line in body.splitlines() if "needs_confirmation" in line)
-    assert "同样的 action" in confirm_rule, confirm_rule
+    assert "同樣的 action" in confirm_rule, confirm_rule
