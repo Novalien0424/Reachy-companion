@@ -764,6 +764,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._boot_gate_task: asyncio.Task[None] | None = None
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
+        self._pending_session_end = False
+        self._pending_session_end_needs_farewell = False
         # D-018 / round 3 finding 2: the token of the realtime session this
         # handler currently owns. 0 means "no session open". It is what stops a
         # late cleanup from a replaced connection tearing down its successor.
@@ -3134,6 +3136,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             tool_result = {"error": "No result returned from tool execution"}
             tool_result_for_model = tool_result
 
+        try:
+            tool = core_tools.get_tools().get(completed_tool.tool_name)
+        except Exception:
+            # A broken registry must not stop the response that closes the turn.
+            logger.exception("Tool registry lookup failed for '%s'", completed_tool.tool_name)
+            tool = None
+        session_ending = self._is_session_ending(tool, tool_result)
+
         # Connection may have closed while tool was running
         if not self.connection:
             logger.warning(
@@ -3141,6 +3151,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 completed_tool.tool_name,
                 completed_tool.id,
             )
+            if session_ending:
+                await self._finalize_session_sleep()
+                return True
             return False
 
         try:
@@ -3163,6 +3176,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         completed_tool.tool_name,
                         completed_tool.id,
                     )
+                    if session_ending:
+                        await self._finalize_session_sleep()
+                        return True
                     return False
                 else:
                     await self.connection.conversation.item.create(
@@ -3223,16 +3239,32 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             if isinstance(completed_tool.id, str):
                 self._in_flight_tool_calls.discard(completed_tool.id)
 
-            try:
-                tool = core_tools.get_tools().get(completed_tool.tool_name)
-            except Exception:
-                # The result is already submitted and the call is out of flight;
-                # a broken registry must not stop the response that closes the turn.
-                logger.exception("Tool registry lookup failed for '%s'", completed_tool.tool_name)
-                tool = None
+            if session_ending:
+                # This local result is enough to decide that the body must sleep.
+                # A farewell response is allowed only when the function_call_output
+                # reached the model; otherwise it has no context to say goodbye from.
+                self._pending_session_end = True
+                self._pending_session_end_needs_farewell = (
+                    self._pending_session_end_needs_farewell or model_result_submitted
+                )
+                self._tool_batch_needs_response = False
             # Always surface errors, skip the spoken follow-up for tools that opt out.
-            if model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
+            elif model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
                 self._tool_batch_needs_response = True
+
+            # A session-ending tool owns this turn's follow-up, but parallel
+            # tool calls in the same response may finish after it. Latch the
+            # sleep request, then finalize once the whole batch has drained.
+            if self._pending_session_end and not self._in_flight_tool_calls:
+                needs_farewell = self._pending_session_end_needs_farewell
+                self._pending_session_end = False
+                self._pending_session_end_needs_farewell = False
+                self._tool_batch_needs_response = False
+                if needs_farewell:
+                    await self._finish_session_after_farewell()
+                else:
+                    await self._finalize_session_sleep()
+                return True
 
             # Parallel tool calls in one turn: respond once every result is in, not per tool.
             if self._tool_batch_needs_response and not self._in_flight_tool_calls:
@@ -3244,9 +3276,58 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             logger.warning("Connection closed while sending tool result")
             self.connection = None
             self._response_done_event.set()
+            if session_ending:
+                await self._finalize_session_sleep()
+                return True
         # No follow-up response was asked for on this path, so nothing else will
         # end the turn (D-018, round 2 finding 1).
         return False
+
+    @staticmethod
+    def _is_session_ending(tool: Any, tool_result: Any) -> bool:
+        """Whether this result should end the visit after exactly one goodbye.
+
+        Two conditions, both required. The tool declares itself session-ending
+        (`Tool.ends_session`, so the rename A/B's alias inherits it for free),
+        AND the result actually says `sleeping_soon` — a tool that returned
+        `{"error": …}` because the runtime is unwired must never pose the robot.
+        """
+        if tool is None or not getattr(tool, "ends_session", False):
+            return False
+        return isinstance(tool_result, dict) and tool_result.get("status") == "sleeping_soon"
+
+    async def _finish_session_after_farewell(self) -> None:
+        """Goodbye, then the body — the voice sleep path, in order.
+
+        `run_farewell_response_cycle` resolves only when THAT response reaches
+        `response.done`, never on whichever response happened to be running when
+        the tool call arrived. `deps.go_to_sleep` is unchanged and still owns the
+        rest: it repeats the quiesce, runs the bounded audio drain, stops the
+        movement manager, poses, and asks the daemon to stop the app. It blocks,
+        so it goes to a thread — the receive loop must stay live while the
+        speaker drains.
+        """
+        await self.run_farewell_response_cycle()
+        await self._finalize_session_sleep()
+
+    async def _finalize_session_sleep(self) -> None:
+        """Run the body finalizer, without creating any more model output.
+
+        Used after the farewell response, and also when the sleep tool's local
+        result says `sleeping_soon` but the function_call_output could not be
+        submitted. In that failure mode the model has no tool-result context, so
+        a farewell response would be uninformed; the body still has to lie down.
+        """
+        finalize = self.deps.go_to_sleep
+        if finalize is None:
+            logger.error("sleep: no runtime sleep callback; the robot stays awake")
+            return
+        try:
+            result = await asyncio.to_thread(finalize)
+        except Exception as e:  # noqa: BLE001 - a failed pose must not kill the turn
+            logger.error("sleep: the sleep callback failed: %s", e)
+            return
+        logger.info("sleep: finalized (%s)", result)
 
     async def _run_realtime_session(self) -> None:
         """Establish and manage a single realtime session."""

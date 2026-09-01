@@ -139,10 +139,17 @@ class Tool(abc.ABC):
 
     Tools may override:
       - needs_response: bool = True  # set False to skip the spoken follow-up after this tool runs
+      - ends_session: bool = False   # set True when the visit ends after ONE spoken goodbye
     """
 
     _auto_register: ClassVar[bool] = True
     needs_response: ClassVar[bool] = True
+    # A session-ending tool does not get the generic follow-up response. The
+    # realtime handler issues one targeted response with `tool_choice: "none"`
+    # for the goodbye, waits for THAT response to finish, and only then poses.
+    # Declared on the class so an alias tool inherits the behaviour for free
+    # (the rename A/B is an alias, never a raw rename).
+    ends_session: ClassVar[bool] = False
 
     name: str
     description: str

@@ -179,6 +179,27 @@ async def test_started_farewell_cycle_resolves_when_the_connection_closes() -> N
 
 
 @pytest.mark.asyncio
+async def test_finish_session_after_farewell_still_poses_when_connection_closes() -> None:
+    """Finalize the body even when the farewell response dies with its session."""
+    handler, _ = _sender_handler()
+    connection = _ConnectionClosesAfterCreatedConnection()
+    connection.handler = handler
+    handler.connection = connection
+    order: list[str] = []
+    handler.deps = MagicMock()
+    handler.deps.go_to_sleep = lambda: order.append("pose") or {"status": "sleeping"}
+    sender = asyncio.create_task(handler._response_sender_loop())
+    try:
+        await asyncio.wait_for(handler._finish_session_after_farewell(), timeout=1.0)
+    finally:
+        handler.connection = None
+        sender.cancel()
+
+    assert len(connection.calls) == 1
+    assert order == ["pose"]
+
+
+@pytest.mark.asyncio
 async def test_queued_farewell_cycle_resolves_when_connection_closes_before_send() -> None:
     """A cycle still waiting in the sender queue belongs to the dead session too."""
     handler, _ = _sender_handler()
@@ -215,3 +236,203 @@ async def test_the_farewell_cycle_gives_up_at_once_without_a_session() -> None:
     handler.connection = None
 
     assert await asyncio.wait_for(handler.run_farewell_response_cycle(), timeout=1.0) is None
+
+
+# --------------------------------------------------------------------------
+# The session-ending dispatcher branch
+# --------------------------------------------------------------------------
+
+
+class _ToolNotification:
+    """The shape `_deliver_tool_result` reads off a finished background tool."""
+
+    def __init__(self, tool_name: str, result: dict[str, Any], call_id: str = "call_1") -> None:
+        self.tool_name = tool_name
+        self.id = call_id
+        self.result = result
+        self.error = None
+        self.is_idle_tool_call = False
+
+
+class _ItemCreatingConnection(_RecordingConnection):
+    """A connection that also accepts `conversation.item.create`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.items: list[dict[str, Any]] = []
+        self.conversation = SimpleNamespace(
+            item=SimpleNamespace(create=self._item_create),
+        )
+
+    async def _item_create(self, *, item: dict[str, Any]) -> None:
+        self.items.append(item)
+
+
+def _dispatch_handler(monkeypatch: pytest.MonkeyPatch) -> tuple[HuggingFaceRealtimeHandler, list[str]]:
+    """Wire a handler just enough to run `_deliver_tool_result` end to end."""
+    handler, _ = _sender_handler()
+    connection = _ItemCreatingConnection()
+    connection.handler = handler
+    handler.connection = connection
+    handler.output_queue = asyncio.Queue()
+    handler._in_flight_tool_calls = set()
+    handler._tool_batch_needs_response = False
+    handler._pending_session_end = False
+    handler._pending_session_end_needs_farewell = False
+    # `_deliver_tool_result` calls `_mark_activity`, which lives on
+    # `ConversationHandler` and reads these two off `self`; a `__new__`-built
+    # handler has neither.
+    handler._activity_observer = None
+    handler.last_activity_time = 0.0
+    order: list[str] = []
+    handler.deps = MagicMock()
+    handler.deps.go_to_sleep = lambda: order.append("pose") or {"status": "sleeping"}
+    monkeypatch.setattr(
+        HuggingFaceRealtimeHandler,
+        "_wait_for_response_done_before_tool_result",
+        lambda self: _true(),
+    )
+
+    async def _farewell(self: HuggingFaceRealtimeHandler) -> str | None:
+        order.append("farewell")
+        return "resp_farewell"
+
+    monkeypatch.setattr(HuggingFaceRealtimeHandler, "run_farewell_response_cycle", _farewell)
+    return handler, order
+
+
+async def _true() -> bool:
+    return True
+
+
+async def _false() -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_a_sleeping_soon_result_speaks_first_then_poses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole inversion in one assertion: goodbye, THEN the body."""
+    handler, order = _dispatch_handler(monkeypatch)
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool()},
+    )
+
+    followed_up = await handler._deliver_tool_result(
+        _ToolNotification("go_to_sleep", {"status": "sleeping_soon", "farewell_context": {}})
+    )
+
+    assert order == ["farewell", "pose"]
+    assert followed_up is True
+    assert handler._tool_batch_needs_response is False
+
+
+@pytest.mark.asyncio
+async def test_session_end_waits_for_parallel_tools_before_farewell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If sleep finishes first, remember it and finalize after the batch drains."""
+    handler, order = _dispatch_handler(monkeypatch)
+    handler._in_flight_tool_calls = {"call_sleep", "call_other"}
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool(), "lookup": _NeedsResponseTool()},
+    )
+
+    first_followed_up = await handler._deliver_tool_result(
+        _ToolNotification(
+            "go_to_sleep",
+            {"status": "sleeping_soon", "farewell_context": {}},
+            call_id="call_sleep",
+        )
+    )
+
+    assert first_followed_up is False
+    assert order == []
+    assert handler._pending_session_end is True
+    assert handler._tool_batch_needs_response is False
+
+    second_followed_up = await handler._deliver_tool_result(
+        _ToolNotification("lookup", {"status": "done"}, call_id="call_other")
+    )
+
+    assert second_followed_up is True
+    assert order == ["farewell", "pose"]
+    assert handler._pending_session_end is False
+    assert handler._tool_batch_needs_response is False
+    assert handler._pending_responses.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_session_end_finalizes_directly_when_tool_output_was_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No function_call_output context means no farewell response; still pose."""
+    handler, order = _dispatch_handler(monkeypatch)
+    monkeypatch.setattr(
+        HuggingFaceRealtimeHandler,
+        "_wait_for_response_done_before_tool_result",
+        lambda self: _false(),
+    )
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool()},
+    )
+
+    followed_up = await handler._deliver_tool_result(
+        _ToolNotification("go_to_sleep", {"status": "sleeping_soon", "farewell_context": {}})
+    )
+
+    assert followed_up is True
+    assert order == ["pose"]
+    assert handler._tool_batch_needs_response is False
+
+
+@pytest.mark.asyncio
+async def test_session_end_finalizes_directly_when_connection_closed_before_tool_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pose without a farewell when the session is gone before output submission."""
+    handler, order = _dispatch_handler(monkeypatch)
+    handler.connection = None
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool()},
+    )
+
+    followed_up = await handler._deliver_tool_result(
+        _ToolNotification("go_to_sleep", {"status": "sleeping_soon", "farewell_context": {}})
+    )
+
+    assert followed_up is True
+    assert order == ["pose"]
+
+
+@pytest.mark.asyncio
+async def test_an_error_from_the_session_ending_tool_never_poses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ends_session` alone must not be enough — the result has to say so too."""
+    handler, order = _dispatch_handler(monkeypatch)
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool()},
+    )
+
+    await handler._deliver_tool_result(
+        _ToolNotification("go_to_sleep", {"error": "go_to_sleep is unavailable in this runtime"})
+    )
+
+    assert order == []
+
+
+class _SessionEndingTool:
+    """Stand-in for the registered GoToSleep instance."""
+
+    name = "go_to_sleep"
+    needs_response = False
+    ends_session = True
+
+
+class _NeedsResponseTool:
+    """A parallel tool that would get a generic response if sleep had not latched."""
+
+    name = "lookup"
+    needs_response = True
+    ends_session = False

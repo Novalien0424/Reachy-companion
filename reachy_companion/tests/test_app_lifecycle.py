@@ -221,61 +221,6 @@ def test_wait_for_speaker_quiet_reports_a_real_drain_as_quiet(monkeypatch, caplo
     assert "drain cap reached" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_the_sleep_tool_silences_first_then_waits_then_sleeps() -> None:
-    """The whole ordering claim, as one assertion (Codex round 2, 2a-6).
-
-    Silence the inputs, THEN wait for the goodbye to finish generating, THEN
-    hand off to the thread that drains and poses. Waiting first leaves the mic
-    live; draining first measures audio that does not exist yet.
-    """
-    from reachy_companion.tools.go_to_sleep import GoToSleep
-
-    order: list[str] = []
-
-    async def _wait() -> bool:
-        order.append("wait")
-        return True
-
-    deps = SimpleNamespace(
-        begin_sleep=lambda: order.append("silence"),
-        wait_for_reply_finished=_wait,
-        go_to_sleep=lambda: (order.append("sleep"), {"status": "sleeping"})[1],
-    )
-    result = await GoToSleep()(deps)
-    assert order == ["silence", "wait", "sleep"]
-    assert result == {"status": "sleeping"}
-
-
-@pytest.mark.asyncio
-async def test_the_sleep_tool_still_sleeps_if_the_wait_times_out() -> None:
-    """A reply that never ends must not leave the robot permanently awake."""
-    from reachy_companion.tools.go_to_sleep import GoToSleep
-
-    async def _wait() -> bool:
-        return False
-
-    calls: list[str] = []
-    deps = SimpleNamespace(
-        begin_sleep=lambda: None,
-        wait_for_reply_finished=_wait,
-        go_to_sleep=lambda: (calls.append("sleep"), {"status": "sleeping"})[1],
-    )
-    assert (await GoToSleep()(deps))["status"] == "sleeping"
-    assert calls == ["sleep"]
-
-
-@pytest.mark.asyncio
-async def test_the_sleep_tool_works_without_the_new_seams() -> None:
-    """Older construction sites keep working with both seams simply absent."""
-    from reachy_companion.tools.go_to_sleep import GoToSleep
-
-    deps = SimpleNamespace(
-        begin_sleep=None, wait_for_reply_finished=None, go_to_sleep=lambda: {"status": "sleeping"}
-    )
-    assert (await GoToSleep()(deps))["status"] == "sleeping"
-
-
 def test_wait_for_reply_finished_is_safe_from_another_loop() -> None:
     """The wait seam handles callers outside the handler's event loop.
 
