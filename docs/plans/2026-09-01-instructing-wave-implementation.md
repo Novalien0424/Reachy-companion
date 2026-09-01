@@ -44,9 +44,9 @@ Model upgrade, new dependencies, daemon changes, reasoning-effort changes withou
 | # | Ambiguity | Resolution |
 |---|---|---|
 | A | Spec §2: `move_head` "either tracking stays suspended until a later command re-arms it, or the description/return changes to an honest temporary gesture. Decide at task decomposition." | **A bounded gesture window: suspend → move → hold → restore-previous**, with the description and return saying the hold is temporary. Leaving tracking suspended indefinitely would kill US-02 face tracking for the rest of a visit after one 「抬頭」, and nothing would re-arm it (a `head_tracking` call arriving mid-suspension is deferred by design). Doing nothing at all leaves the field bug alive for `move_head` — with a face in view the head visibly does not move. The bounded window is the only option where the head actually moves *and* the contract stays honest. |
-| B | Spec §1: "correlate by response id" — but `_safe_response_create` enqueues and returns, and no seam exposes which request produced which response. | Carry an optional `ResponseCycle` **alongside** the queued kwargs. The sender loop is serialized, so the `_active_response_id` it observes between sending and `response.done` belongs to the request it just sent; it stamps and resolves the cycle. No new receive-loop plumbing, no new event. |
+| B | Spec §1: "correlate by response id" — but `_safe_response_create` enqueues and returns, and the old sender event is also set by unrelated error events. | Carry an optional `ResponseCycle` **alongside** the queued kwargs and a request-scoped `ResponseStartWaiter` with a generated `event_id`. The receive loop resolves that waiter only on `response.created` for the active queued request or on a `conversation_already_has_active_response` rejection whose `error.event_id` matches the sent request. The final cycle resolves only when `response.done` names the response id captured at `response.created`; unrelated errors can log, but they cannot release the farewell wait. |
 | C | Spec §1: the tool "executes the input quiesce … but NOT the pose/stop" — but who runs pose/stop, and does the drain move? | `main.py`'s existing `go_to_sleep_and_stop_app` closure (`deps.go_to_sleep`) stays the **single finalizer for both paths**, unchanged: it already repeats the quiesce, runs the bounded drain, stops the movement manager, poses and stops the app, and holds the duplicate latch. The dispatcher calls it via `asyncio.to_thread` after the farewell cycle. "The existing bounded audio drain runs, then pose/stop" is satisfied *inside* that closure. |
-| D | `app_lifecycle.run_go_to_sleep_tool` **is** the tool (`asyncio.run(GoToSleep()(deps))`, `app_lifecycle.py:165`), wired at `main.py:419-420,483`. If the tool stops posing, the inactivity timeout silently stops sleeping the robot — the review's third critical catch. | Rename to `run_lifecycle_sleep(deps, logger)` and stop calling the Tool: silence via `deps.begin_sleep()`, then `deps.go_to_sleep()` directly. Done as its own behavior-preserving task (Task 2) *before* the tool changes (Task 3), so no intermediate commit leaves the robot unable to sleep. |
+| D | `app_lifecycle.run_go_to_sleep_tool` **is** the tool (`asyncio.run(GoToSleep()(deps))`, `app_lifecycle.py:165`), wired at `main.py:419-420,483`. If the tool stops posing, the inactivity timeout silently stops sleeping the robot — the review's third critical catch. | Rename to `run_lifecycle_sleep(deps, logger)` and stop calling the Tool: try/log `deps.begin_sleep()` as best-effort quiesce, then call `deps.go_to_sleep()` directly even if quiesce failed. Done as its own behavior-preserving task (Task 2) *before* the tool changes (Task 3), so no intermediate commit leaves the robot unable to sleep. |
 | E | Where does "this tool ends the session" live, so the alias A/B is free? | `Tool.ends_session: ClassVar[bool] = False`, `True` on `GoToSleep`. The dispatcher *additionally* requires the result to carry `status == "sleeping_soon"`, so an unwired-runtime error return can never pose the robot. An alias subclass inherits both for free. |
 | F | Shape of `farewell_context` — "fact/cue field, not an instruction-named field". | A dict of **facts only**: `reason`, `listening_stopped`, `person`. No `next_step`, no imperative field name. The *description* (higher authority) is what says "this is your cue to say one goodbye and then stay quiet". |
 | G | Spec §3: `# Preambles` block with commentary suppressed — what can it possibly say? | It teaches *where tool talk belongs* and, with its reason, that a spoken pre-tool opener is dropped by this client, so the positive action is to call the tool immediately and speak the result. It must **not** instruct the model to emit preambles: they would be silently discarded and cost latency for nothing. |
@@ -67,7 +67,7 @@ Model upgrade, new dependencies, daemon changes, reasoning-effort changes withou
 - Modify: `reachy_companion/src/reachy_companion/tools/core_tools.py` (`Tool.ends_session`)
 - Modify: `reachy_companion/src/reachy_companion/tools/go_to_sleep.py`, `look_around.py`, `move_head.py`, `head_tracking.py`, `open_toolbox.py`, `set_conversation_mode.py`, `stop_dance.py`, `stop_emotion.py`
 - Create: `reachy_companion/src/reachy_companion/tools/head_window.py` (the shared suspend/restore context manager)
-- Create: `reachy_companion/src/reachy_companion/tools/finish_session.py` (alias, Task 11, exposure-controlled)
+- Create: `reachy_companion/src/reachy_companion/finish_session_alias.py` (alias, Task 11, exposure-controlled)
 - Modify: `reachy_companion/profiles/_reachy_companion_locked_profile/profile.md`
 - Modify: `persona.md` (repo root — the copy that actually runs on the robot)
 - Create: `reachy_companion/tests/test_sleep_farewell.py`
@@ -83,14 +83,16 @@ Model upgrade, new dependencies, daemon changes, reasoning-effort changes withou
 Plumbing only — nothing calls the helper yet, so this task cannot change robot behavior. Spec §1 ("Sequencing is a named response-cycle helper, not loose calls"); Global Constraint 3; ambiguity B.
 
 **Files:**
-- Modify: `reachy_companion/src/reachy_companion/huggingface_realtime.py` (imports ~line 11; new module-level dataclasses after `_item_id()`; `__init__` line 672; `_safe_response_create` line 2413; `_response_sender_loop` line 2796; new `run_farewell_response_cycle`)
+- Modify: `reachy_companion/src/reachy_companion/huggingface_realtime.py` (imports ~line 11; new module-level dataclasses after `_item_id()`; `__init__` line 672; `_safe_response_create` line 2413; `_response_sender_loop` line 2796; new `run_farewell_response_cycle`; receive-loop response start/done/rejection hooks)
 - Create: `reachy_companion/tests/test_sleep_farewell.py`
 
 **Interfaces:**
 - Produces: `ResponseCycle` dataclass — `done: asyncio.Future[str | None]`, `response_id: str | None = None`, `resolve(response_id: str | None) -> None`.
+- Produces: `ResponseStartWaiter` dataclass — `done: asyncio.Future[str | None]`, `event_id: str`, `cycle: ResponseCycle | None = None`, `rejected: bool = False`.
 - Produces: `ResponseRequest` dataclass — `kwargs: dict[str, Any]`, `cycle: ResponseCycle | None = None`, property `is_coalescable -> bool`.
 - Changes: `HuggingFaceRealtimeHandler._safe_response_create(self, *, cycle: ResponseCycle | None = None, **kwargs: Any) -> None` (was `(self, **kwargs)`).
 - Changes: `HuggingFaceRealtimeHandler._pending_responses: asyncio.Queue[ResponseRequest]` (was `asyncio.Queue[dict[str, Any]]`).
+- Produces: `HuggingFaceRealtimeHandler._response_start_waiter: ResponseStartWaiter | None`; `._response_cycles_by_id: dict[str, ResponseCycle]`.
 - Produces: `HuggingFaceRealtimeHandler.run_farewell_response_cycle(self) -> str | None`.
 - Consumed by: Task 3 only.
 
@@ -101,8 +103,9 @@ Plumbing only — nothing calls the helper yet, so this task cannot change robot
 
 Spec §1 (2026-09-01 rev 2) and Codex round 1's critical catch: `_safe_response_create`
 enqueues and returns, so a bare `wait_for_reply_finished()` can resolve on whatever
-response was already running when the tool call landed — before the queued farewell
-has even started. These tests pin the correlation instead.
+response was already running when the tool call landed. The sender also cannot
+trust the old `_response_started_or_rejected_event`: unrelated realtime errors set
+it too. These tests pin request-scoped start correlation plus response-id completion.
 """
 
 from __future__ import annotations
@@ -135,15 +138,33 @@ class _RecordingConnection:
         assert self.handler is not None
         self.calls.append(kwargs)
         response_id = "resp_farewell" if kwargs.get("response") else f"resp_{len(self.calls)}"
+        self._start_response(response_id)
+
+    def _start_response(self, response_id: str) -> None:
+        assert self.handler is not None
         self.handler._active_response_id = response_id
         self.handler._response_done_event.clear()
-        self.handler._response_started_or_rejected_event.set()
-        asyncio.get_running_loop().call_soon(self._finish)
+        self.handler._resolve_response_start(response_id)
+        asyncio.get_running_loop().call_soon(self._finish, response_id)
 
-    def _finish(self) -> None:
+    def _finish(self, response_id: str) -> None:
         assert self.handler is not None
         self.handler._active_response_id = None
         self.handler._response_done_event.set()
+        self.handler._resolve_response_done(response_id)
+
+
+class _UnrelatedErrorBeforeCreatedConnection(_RecordingConnection):
+    """Simulate the live receive-loop hazard: an unrelated error before created."""
+
+    async def _create(self, **kwargs: Any) -> None:
+        assert self.handler is not None
+        self.calls.append(kwargs)
+        # This is what the current generic error branch does. The new sender must
+        # ignore it for the waited-on response cycle and keep waiting for created.
+        self.handler._response_started_or_rejected_event.set()
+        self.handler._resolve_response_rejection("evt_unrelated")
+        asyncio.get_running_loop().call_later(0.05, self._start_response, "resp_farewell")
 
 
 def _sender_handler() -> tuple[HuggingFaceRealtimeHandler, _RecordingConnection]:
@@ -155,6 +176,8 @@ def _sender_handler() -> tuple[HuggingFaceRealtimeHandler, _RecordingConnection]
     handler._response_done_event.set()
     handler._response_started_or_rejected_event = asyncio.Event()
     handler._last_response_rejected = False
+    handler._response_start_waiter = None
+    handler._response_cycles_by_id = {}
     handler._active_response_id = None
     connection = _RecordingConnection()
     connection.handler = handler
@@ -173,7 +196,9 @@ async def test_the_farewell_rides_the_serialized_sender_with_tool_choice_none() 
         handler.connection = None
         sender.cancel()
 
-    assert connection.calls == [{"response": {"tool_choice": "none"}}]
+    assert len(connection.calls) == 1
+    assert connection.calls[0]["response"] == {"tool_choice": "none"}
+    assert connection.calls[0]["event_id"].startswith("response_create_")
     assert response_id == "resp_farewell"
 
 
@@ -195,7 +220,25 @@ async def test_an_empty_follow_up_never_swallows_the_farewell() -> None:
         handler.connection = None
         sender.cancel()
 
-    assert connection.calls == [{"response": {"tool_choice": "none"}}]
+    assert len(connection.calls) == 1
+    assert connection.calls[0]["response"] == {"tool_choice": "none"}
+    assert response_id == "resp_farewell"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_error_events_do_not_release_the_farewell_wait() -> None:
+    """Only this request's created/rejection edge may resolve the start wait."""
+    handler, _ = _sender_handler()
+    connection = _UnrelatedErrorBeforeCreatedConnection()
+    connection.handler = handler
+    handler.connection = connection
+    sender = asyncio.create_task(handler._response_sender_loop())
+    try:
+        response_id = await asyncio.wait_for(handler.run_farewell_response_cycle(), timeout=2.0)
+    finally:
+        handler.connection = None
+        sender.cancel()
+
     assert response_id == "resp_farewell"
 
 
@@ -210,7 +253,9 @@ async def test_duplicate_empty_requests_still_coalesce_to_one() -> None:
     handler.connection = None
     sender.cancel()
 
-    assert connection.calls == [{}]
+    assert len(connection.calls) == 1
+    assert set(connection.calls[0]) == {"event_id"}
+    assert connection.calls[0]["event_id"].startswith("response_create_")
 
 
 @pytest.mark.asyncio
@@ -232,7 +277,7 @@ from dataclasses import dataclass
 
 (The file's imports are length-sorted; `ruff check --fix` will confirm the position.)
 
-- [ ] **Step 3: Add the two dataclasses** at module level, immediately after the `_item_id()` helper (~line 445, just above the handler class):
+- [ ] **Step 3: Add the three dataclasses** at module level, immediately after the `_item_id()` helper (~line 445, just above the handler class):
 
 ```python
 @dataclass
@@ -256,13 +301,40 @@ class ResponseCycle:
 
 
 @dataclass
+class ResponseStartWaiter:
+    """The start/rejection edge for one just-sent `response.create`.
+
+    The old `_response_started_or_rejected_event` is process-wide and the receive
+    loop also sets it for unrelated realtime errors. This waiter is installed
+    only around the request the sender just emitted. Rejections are correlated by
+    the request's client `event_id`; `response.created` is correlated by the
+    serialized sender having no other response-create request in flight.
+    """
+
+    done: asyncio.Future[str | None]
+    event_id: str
+    cycle: ResponseCycle | None = None
+    rejected: bool = False
+
+    def resolve_started(self, response_id: str | None) -> None:
+        if not self.done.done():
+            self.done.set_result(response_id)
+
+    def resolve_rejected(self) -> None:
+        self.rejected = True
+        if not self.done.done():
+            self.done.set_result(None)
+
+
+@dataclass
 class ResponseRequest:
     """One queued `response.create`, plus the cycle a caller may be waiting on.
 
-    The sender loop is the only component that can correlate a request with a
-    response: it is serialized, so the `_active_response_id` it reads between
-    sending and `response.done` belongs to the request it just sent. Everything
-    that does not care attaches no cycle and the queue behaves exactly as before.
+    The sender loop is the only component that can install a request-scoped
+    start waiter. The receive loop then resolves that waiter at `response.created`
+    and resolves any attached cycle only when the matching `response.done` arrives.
+    Everything that does not care attaches no cycle and the queue behaves exactly
+    as before.
     """
 
     kwargs: dict[str, Any]
@@ -274,7 +346,7 @@ class ResponseRequest:
         return not self.kwargs and self.cycle is None
 ```
 
-- [ ] **Step 4: Retype the queue.** Replace line 672:
+- [ ] **Step 4: Retype the queue and add the response-cycle correlation state.** Replace line 672:
 
 ```python
         self._pending_responses: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -286,6 +358,13 @@ with:
         self._pending_responses: asyncio.Queue[ResponseRequest] = asyncio.Queue()
 ```
 
+Then insert immediately after `_last_response_rejected` (line 682):
+
+```python
+        self._response_start_waiter: ResponseStartWaiter | None = None
+        self._response_cycles_by_id: dict[str, ResponseCycle] = {}
+```
+
 - [ ] **Step 5: Take a cycle in `_safe_response_create`.** Replace the whole method (line 2413):
 
 ```python
@@ -293,8 +372,8 @@ with:
         """Enqueue a response.create() kwargs for the sender worker _response_sender_loop().
 
         This method never blocks the caller. `cycle`, when given, is resolved by
-        the sender loop with the id of the response THIS request produced — the
-        only correlation that survives the queue.
+        the receive-loop hooks with the id of the response THIS request produced
+        — the only correlation that survives the queue.
         """
         await self._pending_responses.put(ResponseRequest(kwargs=kwargs, cycle=cycle))
 ```
@@ -324,7 +403,7 @@ with:
                     request = nxt
                     break
 
-            kwargs = request.kwargs
+            base_kwargs = dict(request.kwargs)
             observed_id: str | None = None
             try:
                 sent = False
@@ -344,24 +423,37 @@ with:
                         break
 
                     self._last_response_rejected = False
-                    self._response_started_or_rejected_event.clear()
+                    send_kwargs = dict(base_kwargs)
+                    event_id = str(send_kwargs.setdefault("event_id", f"response_create_{uuid.uuid4().hex}"))
+                    loop = asyncio.get_running_loop()
+                    start_waiter = ResponseStartWaiter(
+                        done=loop.create_future(),
+                        event_id=event_id,
+                        cycle=request.cycle,
+                    )
+                    self._response_start_waiter = start_waiter
                     try:
-                        await self.connection.response.create(**kwargs)
+                        await self.connection.response.create(**send_kwargs)
                     except Exception as e:
                         logger.debug("_response_sender_loop: send failed: %s", e)
                         self._response_done_event.set()
+                        if self._response_start_waiter is start_waiter:
+                            self._response_start_waiter = None
                         break
 
                     try:
-                        await asyncio.wait_for(
-                            self._response_started_or_rejected_event.wait(),
-                            timeout=_RESPONSE_DONE_TIMEOUT,
-                        )
+                        observed_id = await asyncio.wait_for(start_waiter.done, timeout=_RESPONSE_DONE_TIMEOUT)
                     except asyncio.TimeoutError:
-                        logger.debug("Timed out waiting for response.created or response rejection")
+                        logger.debug("Timed out waiting for response.created or correlated response rejection")
+                        if self._response_start_waiter is start_waiter:
+                            self._response_start_waiter = None
+                        break
+
+                    if self._response_start_waiter is start_waiter:
+                        self._response_start_waiter = None
 
                     # Check if the receiver loop observed an asynchronous rejection.
-                    if self._last_response_rejected:
+                    if start_waiter.rejected:
                         attempts += 1
                         if attempts >= max_retries:
                             logger.debug("response.create rejected %d times; giving up", attempts)
@@ -370,19 +462,20 @@ with:
                         await asyncio.sleep(_RESPONSE_REJECTION_RETRY_DELAY)
                         continue
 
-                    # Read the id here, between `response.created` and
-                    # `response.done`: this loop is serialized, so the active id
-                    # in this window is the one this request produced.
-                    observed_id = self._active_response_id
+                    if observed_id is None:
+                        logger.debug("response.created did not carry an id; cannot correlate response.done")
+                        break
 
                     try:
-                        await asyncio.wait_for(
-                            self._response_done_event.wait(),
-                            timeout=_RESPONSE_DONE_TIMEOUT,
-                        )
+                        if request.cycle is not None:
+                            await asyncio.wait_for(request.cycle.done, timeout=_RESPONSE_DONE_TIMEOUT)
+                        else:
+                            await asyncio.wait_for(self._response_done_event.wait(), timeout=_RESPONSE_DONE_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.debug("Timed out waiting for response.done; assuming response completed")
                         self._response_done_event.set()
+                        if request.cycle is not None:
+                            request.cycle.resolve(None)
                         break
 
                     sent = True
@@ -391,8 +484,9 @@ with:
                 # and success alike. A waiter left unresolved here is a robot
                 # that never lies down.
                 if request.cycle is not None:
-                    request.cycle.response_id = observed_id
-                    request.cycle.resolve(observed_id)
+                    request.cycle.resolve(None)
+                if observed_id is not None:
+                    self._response_cycles_by_id.pop(observed_id, None)
 ```
 
 - [ ] **Step 7: Add the helper.** Insert immediately after `wait_for_reply_finished` (which ends at line 2158) so the two sleep-path waits read together:
@@ -439,13 +533,80 @@ with:
         return response_id
 ```
 
-- [ ] **Step 8: Run the tests.** `cd reachy_companion && python -m pytest tests/test_sleep_farewell.py -q` — Expected: 4 passed.
+- [ ] **Step 8: Resolve only correlated start/done events.** Insert immediately after `run_farewell_response_cycle`:
 
-- [ ] **Step 9: Run the neighbours that touch this queue.** `cd reachy_companion && python -m pytest tests/test_solo_barge.py tests/test_huggingface_realtime.py -q` — Expected: green. `test_solo_barge.py` asserts `_pending_responses.qsize()` at nine sites; qsize is unaffected by the item type. If any assertion inspects a queued *item*, update it to read `.kwargs`.
+```python
+    def _resolve_response_start(self, response_id: str | None) -> None:
+        """Resolve the waiter for the response-create request now being sent.
 
-- [ ] **Step 10: Gates.** `cd reachy_companion && ruff check . && mypy` — Expected: clean.
+        The receive loop may also see unrelated errors while the sender is
+        waiting. Those errors must not satisfy this waiter; only `response.created`
+        can say the request started. When a cycle is attached, register it before
+        waking the sender so a very short `response.done` cannot outrun the map.
+        """
+        waiter = self._response_start_waiter
+        if waiter is None:
+            return
+        if response_id is not None and waiter.cycle is not None:
+            waiter.cycle.response_id = response_id
+            self._response_cycles_by_id[response_id] = waiter.cycle
+        waiter.resolve_started(response_id)
 
-- [ ] **Step 11: Commit.** `git add -A && git commit -m "feat(realtime): correlate a queued response.create with its own response.done"`
+    def _resolve_response_rejection(self, event_id: object) -> bool:
+        """Resolve the current response-create waiter only for its own rejection."""
+        waiter = self._response_start_waiter
+        if waiter is None or not isinstance(event_id, str) or event_id != waiter.event_id:
+            return False
+        self._last_response_rejected = True
+        waiter.resolve_rejected()
+        return True
+
+    def _resolve_response_done(self, response_id: str | None) -> None:
+        """Resolve a waited-on cycle only when its own response reaches done."""
+        if response_id is None:
+            return
+        cycle = self._response_cycles_by_id.pop(response_id, None)
+        if cycle is not None:
+            cycle.resolve(response_id)
+```
+
+In the `response.created` branch, replace the old generic event set:
+
+```python
+                        self._response_done_event.clear()
+                        self._resolve_response_start(self._active_response_id)
+```
+
+In the `response.done` branch, replace the old generic event set:
+
+```python
+                        self._active_response_id = None
+                        self._response_done_event.set()
+                        self._resolve_response_done(done_id)
+```
+
+In the `error` branch, replace the `conversation_already_has_active_response` / generic-error block with:
+
+```python
+                        if code == "conversation_already_has_active_response":
+                            # response.create was rejected. Only a rejection that
+                            # names the request we just sent may wake the sender;
+                            # other realtime errors are unrelated to this cycle.
+                            if self._resolve_response_rejection(getattr(err, "event_id", None)):
+                                logger.debug("response.create rejected; worker will retry after active response finishes")
+                            else:
+                                logger.debug("Ignoring stale response.create rejection for event_id=%s", getattr(err, "event_id", None))
+                        else:
+                            logger.error("Realtime error [%s]: %s (raw=%s)", code, msg, err)
+```
+
+- [ ] **Step 9: Run the tests.** `cd reachy_companion && python -m pytest tests/test_sleep_farewell.py -q` — Expected: 5 passed.
+
+- [ ] **Step 10: Run the neighbours that touch this queue.** `cd reachy_companion && python -m pytest tests/test_solo_barge.py tests/test_huggingface_realtime.py -q` — Expected: green. `test_solo_barge.py` asserts `_pending_responses.qsize()` at nine sites; qsize is unaffected by the item type. If any assertion inspects a queued *item*, update it to read `.kwargs`.
+
+- [ ] **Step 11: Gates.** `cd reachy_companion && ruff check . && mypy` — Expected: clean.
+
+- [ ] **Step 12: Commit.** `git add -A && git commit -m "feat(realtime): correlate a queued response.create with its own response.done"`
 
 ---
 
@@ -479,6 +640,28 @@ def test_run_lifecycle_sleep_silences_then_poses_directly() -> None:
         reachy_mini=MagicMock(),
         movement_manager=MagicMock(),
         begin_sleep=lambda: order.append("silence"),
+        go_to_sleep=lambda: (order.append("sleep"), expected)[1],
+    )
+
+    result = app_lifecycle.run_lifecycle_sleep(deps, MagicMock())
+
+    assert order == ["silence", "sleep"]
+    assert result == expected
+
+
+def test_run_lifecycle_sleep_still_poses_when_silencing_fails() -> None:
+    """Best-effort input quiesce must not prevent the actual sleep pose."""
+    order: list[str] = []
+    expected = {"status": "sleeping"}
+
+    def _boom() -> None:
+        order.append("silence")
+        raise RuntimeError("stream gone")
+
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(),
+        movement_manager=MagicMock(),
+        begin_sleep=_boom,
         go_to_sleep=lambda: (order.append("sleep"), expected)[1],
     )
 
@@ -537,9 +720,12 @@ def run_lifecycle_sleep(deps: ToolDependencies, logger: logging.Logger) -> dict[
     """
     if deps.go_to_sleep is None:
         return {"error": "go_to_sleep is unavailable in this runtime"}
-    try:
-        if deps.begin_sleep is not None:
+    if deps.begin_sleep is not None:
+        try:
             deps.begin_sleep()
+        except Exception as e:  # noqa: BLE001 - quiesce is best effort; the pose is required
+            logger.warning("Failed to silence Reachy before lifecycle sleep; continuing to pose: %s", e)
+    try:
         return deps.go_to_sleep()
     except Exception as e:
         logger.error("Failed to put Reachy to sleep from the lifecycle path: %s", e)
@@ -584,7 +770,7 @@ The field-bug fix. Spec §1 in full; Global Constraints 3, 6, 11; ambiguities C,
 **Files:**
 - Modify: `reachy_companion/src/reachy_companion/tools/core_tools.py` (`Tool`, lines 132-163)
 - Modify: `reachy_companion/src/reachy_companion/tools/go_to_sleep.py` (whole file)
-- Modify: `reachy_companion/src/reachy_companion/huggingface_realtime.py` (`_deliver_tool_result`, lines 3012-3030; two new methods)
+- Modify: `reachy_companion/src/reachy_companion/huggingface_realtime.py` (`_deliver_tool_result`, lines 3012-3030; pending-session-end latch; three new methods)
 - Modify: `reachy_companion/tests/tools/test_go_to_sleep.py`
 - Modify: `reachy_companion/tests/test_app_lifecycle.py` (the four tool-ordering tests, lines 170-222)
 - Modify: `reachy_companion/tests/test_sleep_farewell.py` (add the dispatcher tests)
@@ -592,8 +778,10 @@ The field-bug fix. Spec §1 in full; Global Constraints 3, 6, 11; ambiguities C,
 **Interfaces:**
 - Produces: `Tool.ends_session: ClassVar[bool] = False`; `GoToSleep.ends_session = True`.
 - Changes: `GoToSleep.__call__` returns `{"status": "sleeping_soon", "farewell_context": {"reason": str, "listening_stopped": bool, "person": str | None}}` on success, `{"error": str}` when unwired. It no longer calls `deps.wait_for_reply_finished` or `deps.go_to_sleep`.
+- Produces: `HuggingFaceRealtimeHandler._pending_session_end: bool`; `._pending_session_end_needs_farewell: bool`.
 - Produces: `HuggingFaceRealtimeHandler._is_session_ending(tool: Tool | None, tool_result: Any) -> bool` (staticmethod).
 - Produces: `HuggingFaceRealtimeHandler._finish_session_after_farewell(self) -> None`.
+- Produces: `HuggingFaceRealtimeHandler._finalize_session_sleep(self) -> None`.
 - Consumes: `run_farewell_response_cycle` (Task 1), `deps.go_to_sleep` (unchanged `main.py` closure).
 
 - [ ] **Step 1: Write the failing tests.** Replace `reachy_companion/tests/tools/test_go_to_sleep.py` entirely:
@@ -699,9 +887,9 @@ Then append the dispatcher tests to `reachy_companion/tests/test_sleep_farewell.
 class _ToolNotification:
     """The shape `_deliver_tool_result` reads off a finished background tool."""
 
-    def __init__(self, tool_name: str, result: dict[str, Any]) -> None:
+    def __init__(self, tool_name: str, result: dict[str, Any], call_id: str = "call_1") -> None:
         self.tool_name = tool_name
-        self.id = "call_1"
+        self.id = call_id
         self.result = result
         self.error = None
         self.is_idle_tool_call = False
@@ -730,6 +918,8 @@ def _dispatch_handler(monkeypatch: pytest.MonkeyPatch) -> tuple[HuggingFaceRealt
     handler.output_queue = asyncio.Queue()
     handler._in_flight_tool_calls = set()
     handler._tool_batch_needs_response = False
+    handler._pending_session_end = False
+    handler._pending_session_end_needs_farewell = False
     # `_deliver_tool_result` calls `_mark_activity`, which lives on
     # `ConversationHandler` and reads these two off `self`; a `__new__`-built
     # handler has neither.
@@ -756,6 +946,10 @@ async def _true() -> bool:
     return True
 
 
+async def _false() -> bool:
+    return False
+
+
 @pytest.mark.asyncio
 async def test_a_sleeping_soon_result_speaks_first_then_poses(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole inversion in one assertion: goodbye, THEN the body."""
@@ -771,6 +965,65 @@ async def test_a_sleeping_soon_result_speaks_first_then_poses(monkeypatch: pytes
 
     assert order == ["farewell", "pose"]
     assert followed_up is True
+    assert handler._tool_batch_needs_response is False
+
+
+@pytest.mark.asyncio
+async def test_session_end_waits_for_parallel_tools_before_farewell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If sleep finishes first, remember it and finalize after the batch drains."""
+    handler, order = _dispatch_handler(monkeypatch)
+    handler._in_flight_tool_calls = {"call_sleep", "call_other"}
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool(), "lookup": _NeedsResponseTool()},
+    )
+
+    first_followed_up = await handler._deliver_tool_result(
+        _ToolNotification(
+            "go_to_sleep",
+            {"status": "sleeping_soon", "farewell_context": {}},
+            call_id="call_sleep",
+        )
+    )
+
+    assert first_followed_up is False
+    assert order == []
+    assert handler._pending_session_end is True
+    assert handler._tool_batch_needs_response is False
+
+    second_followed_up = await handler._deliver_tool_result(
+        _ToolNotification("lookup", {"status": "done"}, call_id="call_other")
+    )
+
+    assert second_followed_up is True
+    assert order == ["farewell", "pose"]
+    assert handler._pending_session_end is False
+    assert handler._tool_batch_needs_response is False
+    assert handler._pending_responses.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_session_end_finalizes_directly_when_tool_output_was_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No function_call_output context means no farewell response; still pose."""
+    handler, order = _dispatch_handler(monkeypatch)
+    monkeypatch.setattr(
+        HuggingFaceRealtimeHandler,
+        "_wait_for_response_done_before_tool_result",
+        lambda self: _false(),
+    )
+    monkeypatch.setattr(
+        "reachy_companion.tools.core_tools.get_tools",
+        lambda: {"go_to_sleep": _SessionEndingTool()},
+    )
+
+    followed_up = await handler._deliver_tool_result(
+        _ToolNotification("go_to_sleep", {"status": "sleeping_soon", "farewell_context": {}})
+    )
+
+    assert followed_up is True
+    assert order == ["pose"]
     assert handler._tool_batch_needs_response is False
 
 
@@ -796,6 +1049,14 @@ class _SessionEndingTool:
     name = "go_to_sleep"
     needs_response = False
     ends_session = True
+
+
+class _NeedsResponseTool:
+    """A parallel tool that would get a generic response if sleep had not latched."""
+
+    name = "lookup"
+    needs_response = True
+    ends_session = False
 ```
 
 Run: `cd reachy_companion && python -m pytest tests/tools/test_go_to_sleep.py tests/test_sleep_farewell.py -q` — Expected: FAIL.
@@ -907,7 +1168,14 @@ class GoToSleep(Tool):
         }
 ```
 
-- [ ] **Step 4: Add the dispatcher branch.** In `huggingface_realtime.py`, inside `_deliver_tool_result`, replace lines 3022-3030:
+- [ ] **Step 4: Add the pending-session-end latch and dispatcher branch.** In `huggingface_realtime.py`, initialize the latch immediately after `_tool_batch_needs_response` in `__init__`:
+
+```python
+        self._pending_session_end = False
+        self._pending_session_end_needs_farewell = False
+```
+
+Then, inside `_deliver_tool_result`, replace lines 3022-3030:
 
 ```python
             # Always surface errors, skip the spoken follow-up for tools that opt out.
@@ -924,19 +1192,33 @@ class GoToSleep(Tool):
 with:
 
 ```python
+            session_ending = self._is_session_ending(tool, tool_result)
+            if session_ending:
+                # This local result is enough to decide that the body must sleep.
+                # A farewell response is allowed only when the function_call_output
+                # reached the model; otherwise it has no context to say goodbye from.
+                self._pending_session_end = True
+                self._pending_session_end_needs_farewell = (
+                    self._pending_session_end_needs_farewell or model_result_submitted
+                )
+                self._tool_batch_needs_response = False
             # Always surface errors, skip the spoken follow-up for tools that opt out.
-            if model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
+            elif model_result_submitted and (completed_tool.error is not None or tool is None or tool.needs_response):
                 self._tool_batch_needs_response = True
 
-            # A session-ending tool owns this turn's follow-up. The generic
-            # `response.create` below is untargeted — a late tool call could ride
-            # it, and two responses would race — so it is cancelled here rather
-            # than allowed to run alongside the goodbye.
-            if model_result_submitted and self._is_session_ending(tool, tool_result):
+            # A session-ending tool owns this turn's follow-up, but parallel
+            # tool calls in the same response may finish after it. Latch the
+            # sleep request, then finalize once the whole batch has drained.
+            if self._pending_session_end and not self._in_flight_tool_calls:
+                needs_farewell = self._pending_session_end_needs_farewell
+                self._pending_session_end = False
+                self._pending_session_end_needs_farewell = False
                 self._tool_batch_needs_response = False
-                if not self._in_flight_tool_calls:
+                if needs_farewell:
                     await self._finish_session_after_farewell()
-                    return True
+                else:
+                    await self._finalize_session_sleep()
+                return True
 
             # Parallel tool calls in one turn: respond once every result is in, not per tool.
             if self._tool_batch_needs_response and not self._in_flight_tool_calls:
@@ -945,7 +1227,7 @@ with:
                 return True
 ```
 
-- [ ] **Step 5: Add the two methods**, immediately after `_deliver_tool_result` (which ends at line 3038):
+- [ ] **Step 5: Add the three methods**, immediately after `_deliver_tool_result` (which ends at line 3038):
 
 ```python
     @staticmethod
@@ -973,6 +1255,16 @@ with:
         speaker drains.
         """
         await self.run_farewell_response_cycle()
+        await self._finalize_session_sleep()
+
+    async def _finalize_session_sleep(self) -> None:
+        """Run the body finalizer, without creating any more model output.
+
+        Used after the farewell response, and also when the sleep tool's local
+        result says `sleeping_soon` but the function_call_output could not be
+        submitted. In that failure mode the model has no tool-result context, so
+        a farewell response would be uninformed; the body still has to lie down.
+        """
         finalize = self.deps.go_to_sleep
         if finalize is None:
             logger.error("sleep: no runtime sleep callback; the robot stays awake")
@@ -2054,13 +2346,48 @@ async def test_no_physical_tool_status_claims_a_completed_motion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_already_honest_returns_are_left_alone() -> None:
+async def test_the_already_honest_returns_are_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     """dance and play_emotion already say `queued`; the audit confirms, not churns."""
+    from reachy_companion.tools import dance as dance_module
+    from reachy_companion.tools import play_emotion as emotion_module
     from reachy_companion.tools.dance import Dance
     from reachy_companion.tools.play_emotion import PlayEmotion
 
-    assert "queued" in Dance().__call__.__doc__ or True  # documentation-only anchor
-    assert Dance.name == "dance" and PlayEmotion.name == "play_emotion"
+    class _DanceQueueMove:
+        def __init__(self, move_name: str) -> None:
+            self.move_name = move_name
+
+    class _RecordedMoves:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def list_moves(self) -> list[str]:
+            return ["laughing2"]
+
+    class _EmotionQueueMove:
+        def __init__(self, emotion_name: str, library: object) -> None:
+            self.emotion_name = emotion_name
+            self.library = library
+
+    monkeypatch.setattr(dance_module, "DANCE_AVAILABLE", True)
+    monkeypatch.setattr(
+        dance_module,
+        "AVAILABLE_MOVES",
+        {"mini_wave": (lambda: None, {}, {"description": "wave"})},
+    )
+    monkeypatch.setattr(dance_module, "DanceQueueMove", _DanceQueueMove)
+    monkeypatch.setattr(emotion_module, "EMOTION_AVAILABLE", True)
+    monkeypatch.setattr(emotion_module, "RecordedMoves", _RecordedMoves)
+    monkeypatch.setattr(emotion_module, "EmotionQueueMove", _EmotionQueueMove)
+    monkeypatch.setattr(PlayEmotion, "_library", None)
+    deps = _deps()
+
+    dance_result = await Dance()(deps, move="mini_wave", repeat=2)
+    emotion_result = await PlayEmotion()(deps, emotion="happy")
+
+    assert dance_result == {"status": "queued", "move": "mini_wave", "repeat": 2}
+    assert emotion_result == {"status": "queued", "emotion": "laughing2"}
+    assert deps.movement_manager.queue_move.call_count == 3
 ```
 
 - [ ] **Step 2: `head_tracking.py`** — replace the return line:
@@ -2947,5 +3274,9 @@ Deploy through the `reachy-deploy` skill (app only, never the daemon; the person
 
 **Type consistency across tasks.** `ResponseCycle.done` is `asyncio.Future[str | None]` in Task 1 and the helper's return is `str | None`, matching. `ResponseRequest.kwargs` is `dict[str, Any]`, and the sender's `self.connection.response.create(**kwargs)` is unchanged. `MoveHead.queue_direction` returns `Dict[str, Any]` in Task 5 and is consumed as a dict by `look_around` and by Task 7's audit test. `head_window` is an `AsyncIterator[None]` context manager used with `async with` in both callers. `Tool.ends_session` is `ClassVar[bool]`, read through `getattr(tool, "ends_session", False)` in the dispatcher so a non-`Tool` registry entry cannot raise. `MovementManager.suspend_head_tracking(owner: str)` and `restore_head_tracking(owner: str)` take the same `str` the tools pass as `self.name`. `format_memory_for_prompt` still returns `str` (empty when there are no facts), so `get_session_instructions`'s truthiness check is unchanged.
 
-**Two hazards the spec did not name, both handled.** (1) The sender loop's coalescing discarded *every* following queued request whenever the one in hand was empty — a farewell queued behind a generic tool follow-up would have been dropped and its waiter hung until the timeout, posing the robot in silence; Task 1 makes coalescing cycle-aware and pins it with a test. (2) `app_lifecycle.run_go_to_sleep_tool` *is* the tool, so changing the tool alone would have silently stopped the inactivity timeout from ever sleeping the robot; Task 2 splits it first, as its own behavior-preserving commit.
+**Three hazards the spec did not name, all handled.** (1) The sender loop's coalescing discarded *every* following queued request whenever the one in hand was empty — a farewell queued behind a generic tool follow-up would have been dropped and its waiter hung until the timeout, posing the robot in silence; Task 1 makes coalescing cycle-aware and pins it with a test. (2) `_response_started_or_rejected_event` was also set by unrelated realtime errors, so a farewell wait could release before the request's own `response.created`; Task 1 replaces that with a request-scoped start waiter and matching `response.done` id. (3) `app_lifecycle.run_go_to_sleep_tool` *is* the tool, so changing the tool alone would have silently stopped the inactivity timeout from ever sleeping the robot; Task 2 splits it first, as its own behavior-preserving commit.
 
+## Review log
+
+- Round 1 (Codex, 2026-09-01): 5 findings, 5 accepted, applied.
+- Sender-sync resolution (Codex, 2026-09-01): hazard is real for the farewell wait. Task 1 now resolves a queued response cycle only from the current request's `response.created`, a `conversation_already_has_active_response` rejection correlated by the sent `event_id`, and the matching `response.done` id; unrelated realtime errors no longer release the wait.
