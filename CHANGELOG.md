@@ -9,6 +9,52 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.20.0] — 2026-09-01 · the LLM-first instructing wave
+
+Deployed as the twentieth install (commit `…`, wheel sha `…`).
+Design record D-030.
+
+The rule this release is built on: the model decides what to say and which tools
+to call; the app instructs it and holds the safety rails.
+
+- **It says goodbye before it lies down.** 「睡覺吧」 used to produce a tool call
+  with no words at all, and the robot posed in silence. Now the sleep tool only
+  mutes the microphone and hands the turn back; the goodbye gets a response of
+  its own that nothing else can ride along with, and the body waits for that
+  sentence to finish playing before it moves. The inactivity timeout, which has
+  nobody to say goodbye to, still just lies down.
+- **Its head actually turns when you tell it to look somewhere.** 「看右邊」 sent
+  the right command every time and the daemon's face tracker overrode it within
+  a frame, so the photo came back showing whoever was straight ahead. Manual head
+  moves now hold the head against face-following for as long as they need it, and
+  hand it back exactly as they found it — off stays off.
+- **It stops guessing at bad arguments.** A direction it does not recognise, the
+  string "false" where a yes/no belonged, a toolbox that does not exist: all of
+  them used to be quietly coerced into *something*. They now come back as a
+  correction naming what is allowed, so the robot can fix its own mistake in the
+  same breath.
+- **It stops claiming things it has only started.** "Looking right" was said the
+  moment the movement was queued. The robot now reports what is actually true —
+  the direction it asked for — and the prompt tells it that is what to say.
+- **It reads one set of instructions instead of two.** The character file said
+  "use the calendar", the system rules said "open the toolbox first"; the
+  character file said "follow whatever language they use", the system rules said
+  "stay in Taiwanese Mandarin". One authority each now, all in Taiwan Traditional
+  Chinese, with the sentence-count rules replaced by "length follows content".
+- **What it remembers about you is labelled as background, not as orders** — and
+  says out loud that what you tell it now wins.
+
+### For contributors
+
+- The `finish_session` rename is an A/B alias, not the shipped name. It is
+  exposed only when `INSTRUCTING_FINISH_SESSION_ALIAS` is set; the default
+  surface still carries `go_to_sleep`.
+- Two controller fix loops are part of the reviewed state: the Task 3 farewell
+  tests now patch the dispatcher's imported `core_tools` module rather than a
+  reloadable string path, and Task 12 reconciled the commentary-only test with
+  the request-scoped response waiter while removing the last stale
+  `run_go_to_sleep_tool` comment.
+
 ## [1.19.0] — 2026-08-31 · the conversation-modes wave
 
 Deployed as the nineteenth install (commit `…`, wheel sha `…`).

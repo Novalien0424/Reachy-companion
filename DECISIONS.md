@@ -1495,3 +1495,85 @@ tool belt that no longer exists in front of the model. The re-sync must edit
 `tests/test_hanova_integration.py`'s `PERSONA_TOOL_TOKENS` in the same change —
 it currently pins `("play_music", "nas_skip")`, i.e. the *stale* state, exactly
 so this file can say which copy is which.
+
+## D-030 — LLM-first instructing with boundary code only (2026-09-01)
+
+This release closes the two 2026-09-01 field bugs — voice sleep produced no
+goodbye, and 「看右邊」 queued a head move that face tracking immediately erased
+— under the house rule from the instructing research: the model chooses the
+words and the tools; the app writes the tool surface, context, validation and
+execution-boundary rails.
+
+**Escalation ladder used in this wave.** Rung 1, *fix the tool*, covers runtime
+argument validation, corrective model-readable errors, honest physical-action
+returns, the `go_to_sleep` return cue, and the report-only rename check. Schema
+enums are not enough on this Realtime surface, so every robot-action boundary
+rejects bad values instead of coercing them. Rung 2, *fix the context*, covers
+the prompt restructure: the profile/persona carry character, `prompts.py`
+carries the 2.x policy blocks and the single `## Tool Availability` authority,
+memory is appended as labeled background with an explicit "current user wins"
+priority, and Taiwan Traditional Chinese plus content-calibrated length replace
+the old contradictory language and sentence-count rules. Rung 3, *code only at
+the execution boundary*, is used only for timing and physical-state truth: the
+farewell response cycle and the manual head-tracking suspension.
+
+**Voice sleep is an instructed generation turn.** `go_to_sleep` no longer poses
+the robot. It mutes inputs and returns facts plus `farewell_context`; the tool
+description, not the return field names, tells the model how to read that cue.
+The app then queues exactly one follow-up response through the existing
+serialized sender with `response={"tool_choice": "none"}`. The model composes
+the goodbye; the app owns when that generation happens, prevents another tool
+call from riding along, waits for that specific response id to finish, drains
+speaker audio, and only then calls the sleep finalizer. The Task 1 sender fix is
+part of the decision: request-scoped start and done correlation replaced the
+old generic `_response_started_or_rejected_event`, because unrelated realtime
+errors could otherwise release the sleep wait early.
+
+**Lifecycle sleeps still pose directly.** Inactivity, shutdown and other
+lifecycle paths have no live model turn and no person waiting for a goodbye.
+They therefore keep the direct quiesce/pose/stop closure through
+`run_lifecycle_sleep`: silence inputs best-effort, then call `deps.go_to_sleep`
+even if silencing failed. Routing those paths through the tool would strand the
+robot awake now that the tool deliberately does not pose.
+
+**Manual head windows are suspension, not speech anchoring.** The field bug was
+the daemon face tracker overwriting a correct queued goto. `MovementManager`
+therefore gained owner-gated `suspend_head_tracking` /
+`restore_head_tracking`, and `look_around` / `move_head` use a bounded window
+around the move, hold and capture. This deliberately avoids the existing
+`set_speaking` anchor: `set_speaking(True)` captures `_track_anchor`, and
+`_get_primary_pose` restores that anchor over a finished move, which would undo
+the very look the window exists to make visible. `set_hold_still` is avoided
+too because it clears the move queue. The window restores the prior tracking
+state exactly; off stays off.
+
+**Return facts stay honest.** `direction_requested` stays until motion is
+verifiable. `MoveHead` returns when a command is queued, and the movement
+manager exposes no completed-pose signal; publishing `direction_moved` without
+that evidence would create a better-looking lie. Other physical-action returns
+follow the same rule: requested, queued or stopped-as-requested facts only.
+
+**Preambles and renames.** Commentary-phase suppression stays in place, and the
+spoken-preamble goal is dropped for this wave; the prompt teaches where tool
+talk belongs, while a selective allow-commentary policy is deferred to a
+separately tested wave. Renames are alias A/Bs, never edits. The
+`finish_session` alias subclasses `GoToSleep`, inherits `ends_session`, and is
+registered through `EXTRA_TOOLS` only when `INSTRUCTING_FINISH_SESSION_ALIAS` is
+truthy; with the default off, profile lists, toolboxes, the record allowlist and
+surface-count tests continue to advertise `go_to_sleep`.
+
+**Verification status.** Layer 1 is SDK-simulated and covered by the merged
+tests: the farewell output reaches the model, the follow-up request carries
+`tool_choice: none`, pose waits for the farewell's own completion plus drain,
+head tracking suspension restores prior state, bad arguments produce
+corrective errors, and lifecycle sleeps still pose directly. Two controller
+fix loops are part of the accepted state: `1f831c2` repaired the Task 3
+test-pollution failure by patching the dispatcher's imported `core_tools`
+module, and `b652d05` reconciled the commentary-only test with the
+request-scoped response waiter while removing stale sleep-wrapper wording. No
+on-robot proof has run in this task, so the two field-bug rows in
+`feature_list.json` remain blocked on the deploy-time journal probes. Residuals
+to watch there: `MOVE_HEAD_HOLD_S=1.5` is a feel-based guess, the gesture window
+adds latency to `move_head`, and `reasoning.effort` intentionally stays
+untouched unless a later three-metric A/B or one-shot full-`gpt-realtime-2.1`
+diagnostic justifies a change.
