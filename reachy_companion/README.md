@@ -96,6 +96,10 @@ replaces — the deploy skill backs up and restores `.env`, `persona.md`,
 `memory.v1.json` and `faces.v1.json` around every install. `PERSONA_FILE` is
 documented above, under the persona override.
 
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `INSTRUCTING_FINISH_SESSION_ALIAS` | `0` | Exposes `finish_session` as a second name for `go_to_sleep` for a measured rename A/B only. |
+
 ## Tests
 
 Run from `reachy_companion/`, using the project-root virtualenv (a bare `python`

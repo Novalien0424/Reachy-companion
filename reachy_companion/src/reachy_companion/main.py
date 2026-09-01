@@ -441,6 +441,12 @@ def run(
     # core_tools keeps them registered even if the registry is rebuilt later.
     _discover_remote_mcp_tools(logger)
 
+    # Rename A/B (spec section 1): off unless the operator sets the flag.
+    # Registered before the first registry build, so the first session sees it.
+    from reachy_companion.finish_session_alias import register_finish_session_alias
+
+    register_finish_session_alias()
+
     try:
         initialize_tools(instance_path=instance_path)
     except Exception as e:
