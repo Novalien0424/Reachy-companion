@@ -37,4 +37,8 @@ class HeadTracking(Tool):
             return {"error": "enabled must be true or false (a boolean, not a string)"}
         logger.info("Tool call: head_tracking enabled=%s", enabled)
         deps.movement_manager.set_head_tracking(enabled)
-        return {"status": "following" if enabled else "stopped following"}
+        # `tracking_requested`, not "following": `set_head_tracking` posts a
+        # command to the movement manager's queue and the worker swallows tracking
+        # errors, so at this instant nobody is being followed yet. `head_tracking`
+        # carries the state as a named field the model may cite.
+        return {"status": "tracking_requested", "head_tracking": enabled}

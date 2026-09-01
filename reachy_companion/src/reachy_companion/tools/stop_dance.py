@@ -24,4 +24,6 @@ class StopDance(Tool):
         logger.info("Tool call: stop_dance")
         movement_manager = deps.movement_manager
         movement_manager.clear_move_queue()
-        return {"status": "stopped dance and cleared queue"}
+        # `stop_queued`: `clear_move_queue` is a queued command too, so the dance
+        # is not yet stopped when this returns.
+        return {"status": "stop_queued", "stopped": "dance"}

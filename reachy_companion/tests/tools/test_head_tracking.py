@@ -13,8 +13,8 @@ async def test_head_tracking_enables_and_disables() -> None:
 
     result = await HeadTracking()(deps, enabled=True)
     deps.movement_manager.set_head_tracking.assert_called_with(True)
-    assert result == {"status": "following"}
+    assert result == {"status": "tracking_requested", "head_tracking": True}
 
     result = await HeadTracking()(deps, enabled=False)
     deps.movement_manager.set_head_tracking.assert_called_with(False)
-    assert result == {"status": "stopped following"}
+    assert result == {"status": "tracking_requested", "head_tracking": False}
