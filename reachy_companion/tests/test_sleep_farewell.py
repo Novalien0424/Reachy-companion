@@ -313,8 +313,13 @@ async def _false() -> bool:
 async def test_a_sleeping_soon_result_speaks_first_then_poses(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole inversion in one assertion: goodbye, THEN the body."""
     handler, order = _dispatch_handler(monkeypatch)
+    # Patch the module object the dispatcher actually reads
+    # (huggingface_realtime.py:3140 resolves through ITS imported core_tools).
+    # The string path breaks when test_external_loading.py has reloaded
+    # core_tools in sys.modules: the fresh module gets the patch, the
+    # dispatcher keeps the old one.
     monkeypatch.setattr(
-        "reachy_companion.tools.core_tools.get_tools",
+        "reachy_companion.huggingface_realtime.core_tools.get_tools",
         lambda: {"go_to_sleep": _SessionEndingTool()},
     )
 
@@ -332,8 +337,13 @@ async def test_session_end_waits_for_parallel_tools_before_farewell(monkeypatch:
     """If sleep finishes first, remember it and finalize after the batch drains."""
     handler, order = _dispatch_handler(monkeypatch)
     handler._in_flight_tool_calls = {"call_sleep", "call_other"}
+    # Patch the module object the dispatcher actually reads
+    # (huggingface_realtime.py:3140 resolves through ITS imported core_tools).
+    # The string path breaks when test_external_loading.py has reloaded
+    # core_tools in sys.modules: the fresh module gets the patch, the
+    # dispatcher keeps the old one.
     monkeypatch.setattr(
-        "reachy_companion.tools.core_tools.get_tools",
+        "reachy_companion.huggingface_realtime.core_tools.get_tools",
         lambda: {"go_to_sleep": _SessionEndingTool(), "lookup": _NeedsResponseTool()},
     )
 
@@ -372,8 +382,13 @@ async def test_session_end_finalizes_directly_when_tool_output_was_dropped(
         "_wait_for_response_done_before_tool_result",
         lambda self: _false(),
     )
+    # Patch the module object the dispatcher actually reads
+    # (huggingface_realtime.py:3140 resolves through ITS imported core_tools).
+    # The string path breaks when test_external_loading.py has reloaded
+    # core_tools in sys.modules: the fresh module gets the patch, the
+    # dispatcher keeps the old one.
     monkeypatch.setattr(
-        "reachy_companion.tools.core_tools.get_tools",
+        "reachy_companion.huggingface_realtime.core_tools.get_tools",
         lambda: {"go_to_sleep": _SessionEndingTool()},
     )
 
@@ -393,8 +408,13 @@ async def test_session_end_finalizes_directly_when_connection_closed_before_tool
     """Pose without a farewell when the session is gone before output submission."""
     handler, order = _dispatch_handler(monkeypatch)
     handler.connection = None
+    # Patch the module object the dispatcher actually reads
+    # (huggingface_realtime.py:3140 resolves through ITS imported core_tools).
+    # The string path breaks when test_external_loading.py has reloaded
+    # core_tools in sys.modules: the fresh module gets the patch, the
+    # dispatcher keeps the old one.
     monkeypatch.setattr(
-        "reachy_companion.tools.core_tools.get_tools",
+        "reachy_companion.huggingface_realtime.core_tools.get_tools",
         lambda: {"go_to_sleep": _SessionEndingTool()},
     )
 
@@ -410,8 +430,13 @@ async def test_session_end_finalizes_directly_when_connection_closed_before_tool
 async def test_an_error_from_the_session_ending_tool_never_poses(monkeypatch: pytest.MonkeyPatch) -> None:
     """`ends_session` alone must not be enough — the result has to say so too."""
     handler, order = _dispatch_handler(monkeypatch)
+    # Patch the module object the dispatcher actually reads
+    # (huggingface_realtime.py:3140 resolves through ITS imported core_tools).
+    # The string path breaks when test_external_loading.py has reloaded
+    # core_tools in sys.modules: the fresh module gets the patch, the
+    # dispatcher keeps the old one.
     monkeypatch.setattr(
-        "reachy_companion.tools.core_tools.get_tools",
+        "reachy_companion.huggingface_realtime.core_tools.get_tools",
         lambda: {"go_to_sleep": _SessionEndingTool()},
     )
 
