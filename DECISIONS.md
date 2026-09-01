@@ -1529,12 +1529,14 @@ part of the decision: request-scoped start and done correlation replaced the
 old generic `_response_started_or_rejected_event`, because unrelated realtime
 errors could otherwise release the sleep wait early.
 
-**Lifecycle sleeps still pose directly.** Inactivity, shutdown and other
-lifecycle paths have no live model turn and no person waiting for a goodbye.
-They therefore keep the direct quiesce/pose/stop closure through
-`run_lifecycle_sleep`: silence inputs best-effort, then call `deps.go_to_sleep`
-even if silencing failed. Routing those paths through the tool would strand the
-robot awake now that the tool deliberately does not pose.
+**Lifecycle sleeps still pose directly.** The inactivity timeout has no live
+model turn and no person waiting for a goodbye. It therefore keeps the direct
+quiesce/pose/stop closure through `run_lifecycle_sleep`: silence inputs
+best-effort, then call `deps.go_to_sleep` even if silencing failed. Routing it
+through the tool would strand the robot awake now that the tool deliberately
+does not pose. (A plain external app stop — dashboard or API — was never a
+sleep path and remains untouched: it shuts the app down without posing, as
+before this wave; final-review clarification 2026-09-01.)
 
 **Manual head windows are suspension, not speech anchoring.** The field bug was
 the daemon face tracker overwriting a correct queued goto. `MovementManager`

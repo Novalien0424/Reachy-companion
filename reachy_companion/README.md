@@ -55,19 +55,14 @@ install.
 
 ## Tools
 
-Seventeen tools reach the model: the fifteen listed in `default_tools` plus two
-system tools for asynchronous work.
-
-| Category            | Tools                                                             |
-| ------------------- | ----------------------------------------------------------------- |
-| Expression & motion | `play_emotion`, `dance`, `stop_emotion`, `stop_dance`, `move_head`, `head_tracking`, `sweep_look` |
-| Vision              | `camera`                                                          |
-| Knowledge           | `pollen_robotics_reachy_mini_search_tool__search_web`             |
-| Home                | `home_control`                                                    |
-| Memory              | `remember`, `forget`                                              |
-| Face memory         | `remember_face`, `who_is_this`                                    |
-| Lifecycle           | `go_to_sleep`                                                     |
-| System              | `task_status`, `task_cancel`                                      |
+Since v1.19.0 the model sees a static core surface (22 tools: vision,
+motion incl. `look_around`, faces, memory, home control, music, search,
+conversation modes, sleep, waiting, system) plus two on-demand toolboxes
+loaded by the model itself via `open_toolbox` — `productivity`
+(calendar/tasks/drive/notion/email families) and `media` (tv/nas). The
+authoritative lists live in `src/reachy_companion/toolboxes.py`; the
+startup journal logs the live surface as `Tools in session (<mode>,
+boxes=…, <count>)`.
 
 ## Adding a tool or Skill
 
