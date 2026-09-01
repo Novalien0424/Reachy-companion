@@ -2605,7 +2605,7 @@ Leave `## Tool Result Conventions`, `## What Reachy Cannot Do` and `## Core Rule
 Rung 2, the authoritative half. Spec §3 bullets 1, 2, 5, 6 and 7; Global Constraints 5, 7, 8, 9; ambiguities G, H, I.
 
 **Files:**
-- Modify: `reachy_companion/src/reachy_companion/prompts.py` (`_HARDENING_BLOCK` lines 27-87; `get_session_instructions` lines 158-164)
+- Modify: `reachy_companion/src/reachy_companion/prompts.py` (`DEFAULT_GREETING_PROMPT` lines 22-25; `_HARDENING_BLOCK` lines 27-87; `get_session_instructions` lines 158-164)
 - Modify: `reachy_companion/src/reachy_companion/memory.py` (`format_memory_for_prompt` lines 199-212)
 - Modify: `reachy_companion/tests/test_prompts_hardening.py`, `reachy_companion/tests/test_profile.py` (the memory round-trip test)
 
@@ -2652,6 +2652,18 @@ def test_the_block_states_no_numeric_length_cap_anywhere() -> None:
         assert banned not in block
 
 
+def test_default_greeting_is_taiwan_chinese_without_numeric_cap() -> None:
+    """The profile fallback must match the prompt language and brevity policy."""
+    from reachy_companion.prompts import DEFAULT_GREETING_PROMPT
+
+    assert DEFAULT_GREETING_PROMPT == (
+        "現在用簡短自然的台灣中文主動問候使用者，順口介紹一下你自己是 Reachy。"
+        "語氣自然、有角色感，每次換一種順口的說法。"
+    )
+    assert "一句" not in DEFAULT_GREETING_PROMPT
+    assert "1" not in DEFAULT_GREETING_PROMPT
+
+
 def test_every_negative_rule_carries_its_reason_or_an_alternative() -> None:
     """Bare negation costs 23-32% accuracy; the alternative to a ban is a TOOL."""
     from reachy_companion.prompts import hardening_block
@@ -2695,7 +2707,16 @@ And in `reachy_companion/tests/test_profile.py`, update the memory round-trip te
 
 Run: `cd reachy_companion && python -m pytest tests/test_prompts_hardening.py tests/test_profile.py -q` — Expected: FAIL.
 
-- [ ] **Step 2: Replace `_HARDENING_BLOCK`** in `prompts.py` (lines 27-87) with:
+- [ ] **Step 2: Normalize `DEFAULT_GREETING_PROMPT`.** In `prompts.py`, replace lines 22-25 with:
+
+```python
+DEFAULT_GREETING_PROMPT = (
+    "現在用簡短自然的台灣中文主動問候使用者，順口介紹一下你自己是 Reachy。"
+    "語氣自然、有角色感，每次換一種順口的說法。"
+)
+```
+
+- [ ] **Step 3: Replace `_HARDENING_BLOCK`** in `prompts.py` (lines 27-87) with:
 
 ```python
 _HARDENING_BLOCK = """
@@ -2749,15 +2770,19 @@ final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不
 以上只是語氣示範，不是要你等到聽見這些句子才這樣講。
 
 ## Tool Availability
-- 一直都在手上、可以直接呼叫的能力：看東西與轉頭、表情與跳舞、認人與記憶、家裡的燈、
-  放音樂和關音樂、上網搜尋、切換對話模式、去睡覺、wait_for_user。這些直接用。
-- 不在手上、要先開工具箱的能力：行程／約／會議／待辦／任務／提醒／郵件／寄信／雲端
-  檔案／Notion 屬於 productivity；電視、影片、MV、NAS 上的家庭影片屬於 media。
-  先呼叫 open_toolbox，再呼叫真正要用的那個工具。
-- open_toolbox 回來之後，那一組工具就在你的工具清單裡了：同一輪直接接著呼叫，不要再問
-  使用者一次，也不要說「我幫你打開了工具」。
+- 你可以直接呼叫已經在工具清單裡的能力：看見眼前狀況、移動頭部、做表情或跳舞、辨認與
+  記住人、控制家裡設備、播放或停止音樂、查最新資訊、切換對話模式、進入睡眠、等待使用者。
+  這些不需要先開工具箱。
+- 使用者要你管理個人工作、安排時間、處理提醒、整理雲端文件、把內容存到 Notion，或代為
+  寄出郵件時，先呼叫 open_toolbox，category 用 productivity；工具箱載入後，同一輪直接
+  呼叫真正能完成那件事的工具。
+- 使用者要你控制電視上的觀看內容、播放電視媒體，或取用家裡 NAS 裡的影片時，先呼叫
+  open_toolbox，category 用 media；工具箱載入後，同一輪直接呼叫真正能完成那件事的工具。
+- open_toolbox 回來之後，那一組工具就在你的工具清單裡了：不要再問使用者一次，也不要說
+  「我幫你打開了工具」。
 - open_toolbox 回報失敗的時候，就說你現在拿不到那個功能，不要假裝做過了。
-- 音樂一直都在：「放首歌」「音樂關掉」直接用音樂工具，不要先開工具箱。
+- 音樂播放和停止一直都是直接能力：使用者要聽音樂或停掉音樂時，直接呼叫音樂工具，不要
+  先開工具箱。
 - 你的工具清單上沒有、工具箱也載不進來的事，就說你做不到，不要自己演一遍。
 
 ### 工具結果要照著唸
@@ -2774,7 +2799,7 @@ final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不
 """.strip()
 ```
 
-- [ ] **Step 3: Move the memory block.** In `prompts.py`, replace `get_session_instructions`'s tail (lines 158-164):
+- [ ] **Step 4: Move the memory block.** In `prompts.py`, replace `get_session_instructions`'s tail (lines 158-164):
 
 ```python
     block = hardening_block()
@@ -2791,7 +2816,7 @@ final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不
     return instructions
 ```
 
-- [ ] **Step 4: Label the memory block.** In `memory.py`, replace `format_memory_for_prompt` (lines 199-212):
+- [ ] **Step 5: Label the memory block.** In `memory.py`, replace `format_memory_for_prompt` (lines 199-212):
 
 ```python
 def format_memory_for_prompt(instance_path: str | Path | None = None) -> str:
@@ -2821,11 +2846,11 @@ def format_memory_for_prompt(instance_path: str | Path | None = None) -> str:
     )
 ```
 
-- [ ] **Step 5: Run the prompt suite.** `cd reachy_companion && python -m pytest tests/test_prompts_hardening.py tests/test_profile.py tests/test_persona.py tests/test_toolboxes.py tests/test_memory.py -q` — Expected: green. `test_persona.py`'s two exact-equality assertions go through `with_hardening()` and stay valid because those tests write no memory file.
+- [ ] **Step 6: Run the prompt suite.** `cd reachy_companion && python -m pytest tests/test_prompts_hardening.py tests/test_profile.py tests/test_persona.py tests/test_toolboxes.py tests/test_memory.py -q` — Expected: green. `test_persona.py`'s two exact-equality assertions go through `with_hardening()` and stay valid because those tests write no memory file.
 
-- [ ] **Step 6: Gates.** `cd reachy_companion && ruff check . && mypy` — Expected: clean.
+- [ ] **Step 7: Gates.** `cd reachy_companion && ruff check . && mypy` — Expected: clean.
 
-- [ ] **Step 7: Commit.** `git add -A && git commit -m "feat(prompt): 2.x message-channel, preamble, reasoning and tool-availability blocks; labeled memory"`
+- [ ] **Step 8: Commit.** `git add -A && git commit -m "feat(prompt): 2.x message-channel, preamble, reasoning and tool-availability blocks; labeled memory"`
 
 ---
 
@@ -3158,17 +3183,42 @@ Everything above ran targeted subsets. This task runs the whole suite once and r
 - [ ] **Step 2: Reconcile, in this order of suspicion** (the survey identified each as a live pin):
   - `tests/test_solo_barge.py` — nine `_pending_responses.qsize()` assertions. Sizes are unaffected by Task 1; if one inspects a queued *item*, read `.kwargs`.
   - `tests/test_huggingface_realtime.py:1251` — `look_around`'s sanitized payload by exact equality. Failure here means a key was added to its success dict; remove it (Global Constraint 4).
-  - `tests/test_huggingface_realtime.py` L1341-1518 — the five commentary tests. **These must pass untouched.** A failure means the session-ending branch reached into the suppression path, which Global Constraint 5 forbids.
+  - `tests/test_huggingface_realtime.py` L1341-1518 — the five commentary tests. **Only the explicit state-sample update in Step 3 is allowed.** Any other failure means the session-ending branch reached into the suppression path, which Global Constraint 5 forbids.
   - `tests/test_profile.py` scanners — `_RETIRED_TOOL_NAMES` (23 names, every bundled profile *and* the hardening block *and* every built tool spec's full JSON), `test_every_action_value_in_a_bundled_profile_is_real`. Fix the prose, never the scanner.
   - `tests/test_persona.py:66,141` — exact equality on the composed prompt through `with_hardening()`. If Task 9's join changed, update `with_hardening`, not the assertions.
   - `tests/test_toolboxes.py` L98-99, L157-160, L196 — the surface counts. These must be **unchanged**: no task in this plan adds, removes, or reclassifies a registered tool (Task 11's alias lives in `EXTRA_TOOLS`, which those assertions already subtract).
   - `tests/test_face_tools.py` — `hold_still` call-list assertions. Task 4's window defers under a hold rather than fighting it; a failure means the deferral logic is wrong, not the test.
 
-- [ ] **Step 3: Static gates.** `cd reachy_companion && ruff check . && ruff format --check . && mypy` — Expected: clean. `mypy` is strict over `src/` only.
+- [ ] **Step 3: Update the commentary-only state sample.** In `tests/test_huggingface_realtime.py::test_a_commentary_only_response_still_completes`, replace the `_response_started_or_rejected_event` sample and assertion with the new request-scoped waiter contract:
 
-- [ ] **Step 4: Dead-code sweep.** `cd reachy_companion && grep -rn "run_go_to_sleep_tool\|wait_for_reply_finished\|dummy" src/ | grep -v ".venv"` — Expected: `run_go_to_sleep_tool` gone entirely; `wait_for_reply_finished` surviving only as the handler method and its `ToolDependencies` field (still wired in `build_handler`, still covered by three tests, and still the right seam for any future caller — leaving the seam is deliberate, removing it is a separate decision); no `dummy` in any schema.
+```python
+    def _sample_state_inside_the_loop() -> None:
+        seen["done"] = handler._response_done_event.is_set()
+        seen["response_start_waiter"] = handler._response_start_waiter
+        seen["response_cycles_by_id"] = dict(handler._response_cycles_by_id)
+        seen["active_response_id"] = handler._active_response_id
 
-- [ ] **Step 5: Commit.** `git add -A && git commit -m "test: reconcile the suite with the instructing wave"`
+    monkeypatch.setattr(handler, "_note_session_updated", _sample_state_inside_the_loop)
+
+    await handler._run_realtime_session()
+
+    assert seen["done"] is True
+    assert seen["response_start_waiter"] is None
+    assert seen["response_cycles_by_id"] == {}
+    assert seen["active_response_id"] is None
+    assert transcripts == []
+    assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
+```
+
+The point of this test is unchanged: commentary-only output is suppressed but `response.done` bookkeeping still completes. What changed is the synchronization primitive — the old process-wide start-or-reject event is gone, so the assertion is that no `ResponseStartWaiter` or response-cycle mapping remains after `response.done`.
+
+- [ ] **Step 4: Static gates.** `cd reachy_companion && ruff check . && ruff format --check . && mypy` — Expected: clean. `mypy` is strict over `src/` only.
+
+- [ ] **Step 5: Dead-code sweep.** `cd reachy_companion && grep -rn "run_go_to_sleep_tool\|wait_for_reply_finished\|dummy" src/ | grep -v ".venv"` — Expected:
+  - Removed by the sweep: every `run_go_to_sleep_tool` occurrence (`app_lifecycle.py`, the `main.py` wrapper and inactivity callback name, and stale comments), `deps.wait_for_reply_finished` inside `tools/go_to_sleep.py`, and the `dummy` schemas, descriptions and required lists in `tools/stop_dance.py` and `tools/stop_emotion.py`.
+  - Remaining on purpose: `tools/core_tools.py`'s `ToolDependencies.wait_for_reply_finished` field; `main.py`'s `deps.wait_for_reply_finished = handler.wait_for_reply_finished` wiring and its nearby comment; `huggingface_realtime.py`'s `wait_for_reply_finished` method and local comments that explain that handler-owned wait. Those are still the lifecycle/handler seam and are not phantom diffs.
+
+- [ ] **Step 6: Commit.** `git add -A && git commit -m "test: reconcile the suite with the instructing wave"`
 
 ---
 
@@ -3280,3 +3330,4 @@ Deploy through the `reachy-deploy` skill (app only, never the daemon; the person
 
 - Round 1 (Codex, 2026-09-01): 5 findings, 5 accepted, applied.
 - Sender-sync resolution (Codex, 2026-09-01): hazard is real for the farewell wait. Task 1 now resolves a queued response cycle only from the current request's `response.created`, a `conversation_already_has_active_response` rejection correlated by the sent `event_id`, and the matching `response.done` id; unrelated realtime errors no longer release the wait.
+- Round 2 (Codex, scoped, 2026-09-01): 4 findings, 4 accepted, applied. Residual: callback-concurrency and connection-closed edges of the sleep finalizer were not fully re-verified because the round cap was reached; per-task review must cover them in Tasks 1 and 3.
