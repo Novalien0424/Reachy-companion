@@ -2202,13 +2202,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         microphone and the barge machine are already silenced by the time this
         runs (round 2, 2a-6), so the wait cannot let a new turn in.
 
-        **Loop-aware** (round 2, 2a-5): the inactivity path reaches `GoToSleep`
-        through `app_lifecycle.run_go_to_sleep_tool`, which does
-        `asyncio.run(...)` on a daemon thread with its own fresh loop. Awaiting
-        `_response_done_event` — an `asyncio.Event` bound to the handler's
-        loop — from there is undefined behavior, so a caller on any other loop
-        is marshalled across. No handler loop at all means nothing to wait for,
-        which is success, not failure.
+        **Loop-aware** (round 2, 2a-5): lifecycle sleep can reach the same
+        handler-owned wait from a daemon thread with its own fresh event loop.
+        Awaiting `_response_done_event` — an `asyncio.Event` bound to the
+        handler's loop — from there is undefined behavior, so a caller on any
+        other loop is marshalled across. No handler loop at all means nothing to
+        wait for, which is success, not failure.
         """
         event = self._response_done_event
         if event.is_set():

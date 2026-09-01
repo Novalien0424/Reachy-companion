@@ -1496,7 +1496,8 @@ async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> N
 
     def _sample_state_inside_the_loop() -> None:
         seen["done"] = handler._response_done_event.is_set()
-        seen["started_or_rejected"] = handler._response_started_or_rejected_event.is_set()
+        seen["response_start_waiter"] = handler._response_start_waiter
+        seen["response_cycles_by_id"] = dict(handler._response_cycles_by_id)
         seen["active_response_id"] = handler._active_response_id
 
     monkeypatch.setattr(handler, "_note_session_updated", _sample_state_inside_the_loop)
@@ -1504,7 +1505,8 @@ async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> N
     await handler._run_realtime_session()
 
     assert seen["done"] is True
-    assert seen["started_or_rejected"] is True
+    assert seen["response_start_waiter"] is None
+    assert seen["response_cycles_by_id"] == {}
     assert seen["active_response_id"] is None
     assert transcripts == []
     assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
