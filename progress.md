@@ -5,6 +5,30 @@ history of this file.
 
 ## Current state
 
+**THE TWENTIETH INSTALL (v1.20.0, the LLM-first instructing wave) IS ON THE
+ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE for the operator's voice test
+(2026-09-01 ~09:01 robot time).** Wave `1687a03..f81086b` (13 tasks, D-030):
+goodbye-then-sleep inversion (tool returns `sleeping_soon`, dispatcher owns
+one `tool_choice:none` farewell response, pose waits for its `response.done`),
+owner-gated head-tracking windows for `look_around`/`move_head`, runtime
+validation + honest returns across robot tools, profile/persona/system-prompt
+restructure (2.x blocks, semantic Tool Availability, no caps/trigger lists),
+off-by-default `finish_session` alias. Codex implemented under controller
+review (operator steering); plan review 2 rounds (5/5 + 4/4), final
+whole-branch review adjudicated. Suite 1819/30. Deploy: wheel sha
+`e8f0cd86…`, backup `20260901T075934Z-25343` (memory + face_snapshots
+absent as before), restore verified (4 faces + 4 people), persona pushed
+post-restore (sha `a50a4a95` — Task 8 rewrite). Boot gates: instance
+persona, `Tools in session (group, boxes=none, startup, 22)`, session
+acked, greeting played, zero tracebacks. Robot `.env` still pins
+semantic_vad/low + reasoning medium from the 2026-09-01 tuning.
+**Voice probes pending (operator):** 「睡覺吧」→ goodbye THEN pose (journal:
+`farewell response finished` before the pose); 「看右邊」→ head physically
+turns (journal: `Head tracking suspended for the look_around window`);
+「抬頭」→ up, hold, tracking resumes; cold 「幫我加個行程」→ toolbox
+continuation without re-asking; the restructured prompt's feel.
+
+
 **2026-09-01 accuracy tuning (no code change, robot-side `.env` only): the
 instance `.env` now pins `REALTIME_VAD_TYPE=semantic_vad`,
 `REALTIME_VAD_EAGERNESS=low`, `REALTIME_REASONING_EFFORT=high`** (operator
