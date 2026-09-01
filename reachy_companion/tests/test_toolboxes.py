@@ -47,6 +47,15 @@ def registry(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")
     monkeypatch.setattr(tb_mod, "get_tools", core_tools.get_tools)
     monkeypatch.setattr(tb_mod, "EXTRA_TOOLS", core_tools.EXTRA_TOOLS)
+    # The realtime handlers carry their own module-level `get_tool_specs`
+    # bindings, and the active-surface log counts through THOSE — left stale,
+    # the logged count and this fixture's expected count read two different
+    # registries (fix loop for the Task 10 audit test).
+    from reachy_companion import openai_realtime as _oai
+    from reachy_companion import huggingface_realtime as _hf
+
+    monkeypatch.setattr(_oai, "get_tool_specs", core_tools.get_tool_specs)
+    monkeypatch.setattr(_hf, "get_tool_specs", core_tools.get_tool_specs)
     core_tools.initialize_tools(force=True)
     yield core_tools
     core_tools._TOOLS_SIGNATURE = None
@@ -161,6 +170,53 @@ def test_the_documented_surface_sizes_hold(registry: ModuleType) -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_surface_log_carries_mode_boxes_and_count(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    registry: ModuleType,
+) -> None:
+    """The journal exposes the exact active tool surface after every update."""
+    import logging
+
+    from reachy_companion import openai_realtime as oai_mod
+
+    async def _update_for(handler: OpenAIRealtimeHandler, **kwargs: Any) -> None:
+        handler._last_session_update = kwargs
+        handler._note_session_updated()
+
+    scenarios = (
+        (ConversationMode.ONE_ON_ONE, set(), "none"),
+        (ConversationMode.GROUP, {"productivity"}, "productivity"),
+        (ConversationMode.RECORD, {"media", "productivity"}, "media,productivity"),
+    )
+
+    for mode, boxes, boxes_label in scenarios:
+        h = _box_handler(mode)
+        h._boot_gate_active = True
+        h.instance_path = None
+        h._open_toolboxes = set(boxes)
+        h.connection = SimpleNamespace(
+            session=SimpleNamespace(update=lambda **kwargs: _update_for(h, **kwargs)),
+        )
+        monkeypatch.setattr(h, "_mode_instructions", lambda: "INSTRUCTIONS")
+        caplog.clear()
+
+        with caplog.at_level(logging.INFO, logger=oai_mod.logger.name):
+            assert await h._push_mode_update() is True
+
+        expected_count = len(
+            {
+                spec["name"]
+                for spec in registry.get_tool_specs(exclusion_list=session_tool_exclusions(mode, boxes))
+            }
+        )
+        assert any(
+            record.message.startswith(f"Tools in session ({mode.value}, boxes={boxes_label}, {expected_count}): ")
+            for record in caplog.records
+        )
+
+
+@pytest.mark.asyncio
 async def test_a_second_box_adds_to_the_first(monkeypatch: pytest.MonkeyPatch) -> None:
     """Opening media must not close productivity mid-turn (design decision 8)."""
     h = _box_handler()
@@ -227,6 +283,36 @@ async def test_open_toolbox_pushes_the_update_before_returning(monkeypatch: pyte
     assert result["category"] == "productivity"
     assert set(result["tools"]) == set(TOOLBOXES["productivity"])
     assert h._open_toolboxes == {"productivity"}
+
+
+def test_a_loaded_box_reports_that_the_session_really_changed() -> None:
+    """The one fact the model cannot infer: the server acknowledged the update.
+
+    `open_toolbox` awaits the ack before returning (design decision 9), so this
+    field is true by construction — and it is a FACT, not a cue. The instruction
+    to keep going in the same turn lives in the tool description and the
+    `## Tool Availability` block, which are the surfaces that hold authority.
+    """
+    handler = _box_handler()
+    handler._push_mode_update = AsyncMock(return_value=True)
+
+    result = asyncio.run(handler.open_toolbox("productivity"))
+
+    assert result["ok"] is True
+    assert result["status"] == "loaded"
+    assert result["session_updated"] is True
+    assert set(result["tools"]) == set(TOOLBOXES["productivity"])
+
+
+def test_a_failed_box_never_claims_the_session_changed() -> None:
+    """A refused update must not advertise tools that never reached the session."""
+    handler = _box_handler()
+    handler._push_mode_update = AsyncMock(return_value=False)
+
+    result = asyncio.run(handler.open_toolbox("media"))
+
+    assert result["ok"] is False
+    assert result.get("session_updated") is not True
 
 
 @pytest.mark.asyncio
@@ -388,6 +474,13 @@ def test_tool_description_enumerates_the_chinese_routing_triggers() -> None:
     for phrase in ("行程", "待辦", "郵件", "雲端", "音樂", "電視", "NAS", "productivity", "media"):
         assert phrase in description
     assert "Use when:" in description and "Do NOT use when:" in description
+
+
+def test_the_open_toolbox_description_owns_the_continuation_rule() -> None:
+    """The return states facts; the description is where the policy lives."""
+    description = OpenToolbox().description
+    assert "in the same turn" in description
+    assert "without asking the user again" in description
 
 
 def test_the_prompt_carries_the_same_routing_rules() -> None:

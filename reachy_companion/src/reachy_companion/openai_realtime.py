@@ -689,8 +689,10 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
                 audio_input = self._get_session_config(tool_specs=[])["audio"]["input"]
                 session["audio"] = RealtimeAudioConfigParam(input=audio_input)
             logger.info(
-                "Tools in session (%s): %s",
+                "Tools in session (%s, boxes=%s, %d): %s",
                 mode.value,
+                ",".join(sorted(self._open_toolboxes)) or "none",
+                len(tool_specs),
                 [spec["name"] for spec in tool_specs],
             )
             return session

@@ -1078,7 +1078,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             }
         tools = list(TOOLBOXES[category])
         if category in self._open_toolboxes:
-            return {"ok": True, "status": "already_open", "category": category, "tools": tools}
+            return {
+                "ok": True,
+                "status": "already_open",
+                "category": category,
+                "tools": tools,
+                "session_updated": True,
+            }
         self._open_toolboxes.add(category)
         if not await self._push_mode_update() or category not in self._open_toolboxes:
             self._open_toolboxes.discard(category)
@@ -1091,7 +1097,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 "categories": list(TOOLBOX_CATEGORIES),
             }
         logger.info("toolbox opened: %s (%s)", category, ", ".join(tools))
-        return {"ok": True, "status": "loaded", "category": category, "tools": tools}
+        # `session_updated` is the one fact the model cannot infer: the update was
+        # not merely sent but ACKNOWLEDGED before this returned, so the tools it
+        # is about to reach for genuinely exist on the server. The instruction to
+        # continue in the same turn is not here; it belongs to the description
+        # and the `## Tool Availability` block, which hold authority.
+        return {
+            "ok": True,
+            "status": "loaded",
+            "category": category,
+            "tools": tools,
+            "session_updated": True,
+        }
 
     def close_toolboxes(self, reason: str) -> None:
         """Drop every open toolbox. Caller owns pushing the smaller surface."""
@@ -3364,8 +3381,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # about the one replacing it.
         self.close_toolboxes("new session")
         tool_specs = get_tool_specs(exclusion_list=self._mode_tool_exclusions())
+        # One greppable prefix for the whole active-surface audit: this line and
+        # `_push_mode_update`'s both start `Tools in session (`, so a journal grep
+        # returns the surface at boot and after every mode flip or box open.
         logger.info(
-            "Tools to be used in conversation: %s",
+            "Tools in session (%s, boxes=none, startup, %d): %s",
+            self._current_mode().value,
+            len(tool_specs),
             [tool["name"] for tool in tool_specs],
         )
         connect_kwargs: dict[str, Any] = {}
