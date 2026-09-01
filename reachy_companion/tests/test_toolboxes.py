@@ -391,11 +391,11 @@ def test_tool_description_enumerates_the_chinese_routing_triggers() -> None:
 
 
 def test_the_prompt_carries_the_same_routing_rules() -> None:
-    """Research §A3: state the rule in both places, worded the same way."""
+    """Research §A3: state the routing rule in both places, semantically."""
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
     assert "工具箱" in block
     assert "open_toolbox" in block
-    for phrase in ("productivity", "media", "行程", "音樂"):
+    for phrase in ("productivity", "media", "安排時間", "音樂"):
         assert phrase in block

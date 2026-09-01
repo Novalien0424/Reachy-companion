@@ -129,3 +129,77 @@ def test_length_examples_are_labelled_as_style_not_as_triggers() -> None:
     block = hardening_block()
     assert "示範語氣，不是觸發條件" in block
     assert "不是要你等到聽見這些句子才這樣講" in block
+
+
+def test_the_block_carries_the_2x_structure_the_models_expect() -> None:
+    """§C6 of the realtime research: 2.x models read these blocks by name."""
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    for heading in ("訊息頻道", "開場白", "思考", "Tool Availability"):
+        assert heading in block
+
+
+def test_the_preamble_block_does_not_promise_audible_preambles() -> None:
+    """Ruling for this wave: keep commentary suppression, drop the spoken goal.
+
+    The client drops `phase == "commentary"` items and 2.x puts preambles in that
+    channel, so an instruction to speak before a tool call produces latency and
+    silence. The block explains the channel and gives the positive action instead.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    assert "commentary" in block
+    assert "final_answer" in block
+    assert "不會發出聲音" in block
+
+
+def test_the_block_states_no_numeric_length_cap_anywhere() -> None:
+    """Extends the existing pin to the caps this wave removed (operator rule)."""
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    for banned in ("一到兩句", "不超過兩句", "最多三句", "1-2 sentences", "一句話答完", "1～3 句"):
+        assert banned not in block
+
+
+def test_default_greeting_is_taiwan_chinese_without_numeric_cap() -> None:
+    """The profile fallback must match the prompt language and brevity policy."""
+    from reachy_companion.prompts import DEFAULT_GREETING_PROMPT
+
+    assert DEFAULT_GREETING_PROMPT == (
+        "現在用簡短自然的台灣中文主動問候使用者，順口介紹一下你自己是 Reachy。"
+        "語氣自然、有角色感，每次換一種順口的說法。"
+    )
+    assert "一句" not in DEFAULT_GREETING_PROMPT
+    assert "1" not in DEFAULT_GREETING_PROMPT
+
+
+def test_every_negative_rule_carries_its_reason_or_an_alternative() -> None:
+    """Bare negation costs 23-32% accuracy; the alternative to a ban is a TOOL."""
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    # The one enumerated banlist this block used to carry is gone, replaced by
+    # the tool that is the affirmative action for the same situation.
+    assert "「我在這裡」" not in block
+    assert "wait_for_user" in block
+    assert "比忍住不說話可靠" in block
+
+
+def test_the_prompt_names_no_boxed_tool_outside_tool_availability() -> None:
+    """Skill: a prompt naming an absent tool invites the model to SIMULATE it."""
+    from itertools import chain
+
+    from reachy_companion.prompts import hardening_block
+    from reachy_companion.toolboxes import TOOLBOXES
+
+    block = hardening_block()
+    availability_at = block.index("## Tool Availability")
+    for name in sorted(set(chain.from_iterable(TOOLBOXES.values()))):
+        position = block.find(name)
+        if position == -1:
+            continue
+        assert position > availability_at, f"{name} is named before the Tool Availability block"
+    assert "open_toolbox" in block[availability_at:]

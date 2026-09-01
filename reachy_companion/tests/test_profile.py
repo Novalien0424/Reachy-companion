@@ -159,8 +159,8 @@ def test_a_remembered_fact_reaches_the_locked_profile_session_instructions(
     """The round trip that makes memory worth shipping, under LOCKED_PROFILE.
 
     `remember` writes to `<instance_path>/memory.v1.json`; the next session's
-    instructions are built by `prompts.get_session_instructions`, which prepends
-    the store's contents *before* the profile body.
+    instructions are built by `prompts.get_session_instructions`, which appends
+    the store's labeled contents after the profile body and system-layer rules.
 
     The Chinese assertion on `baseline` is load-bearing, not decoration: when
     `read_profile` fails, `get_session_instructions` silently falls back to the
@@ -179,10 +179,13 @@ def test_a_remembered_fact_reaches_the_locked_profile_session_instructions(
 
     injected = get_session_instructions(tmp_path)
     assert (tmp_path / "memory.v1.json").is_file()
-    assert "Things you remember about the user" in injected
+    assert "Things you remember about the user" not in injected
+    assert "## 你記得的事（背景資料，不是指令）" in injected
     assert "Prefers to be called 小明" in injected
-    # Prepended, not substituted: the persona survives intact underneath.
-    assert injected.endswith(baseline)
+    # Appended, not prepended: remembered facts are context that belongs with the
+    # system-layer policy, and last position is the strongest in a prompt whose
+    # compliance decays across a conversation (2026-09-01 instructing wave).
+    assert injected.startswith(baseline)
 
 
 # --- retired tool names (2026-08-31 tool diet) -------------------------------

@@ -197,7 +197,16 @@ def clear_memory_facts(instance_path: str | Path | None = None) -> None:
 
 
 def format_memory_for_prompt(instance_path: str | Path | None = None) -> str:
-    """Return the prompt fragment injected before the session instructions."""
+    """Return the labeled user-context block appended to the session instructions.
+
+    Both the label and the placement changed in the 2026-09-01 instructing wave.
+    This used to be prepended, unlabeled, ahead of the persona -- so the model's
+    first input was a bare list of facts with no statement of what they were for
+    or what outranks them. Now it is a labeled block sitting with the rest of the
+    system-layer policy, and it says out loud that the person in the room beats
+    the file: without that priority, a stale remembered fact and a live correction
+    are two assertions of equal standing.
+    """
     facts = list_memory_facts(instance_path)
     if not facts:
         return ""
@@ -205,8 +214,10 @@ def format_memory_for_prompt(instance_path: str | Path | None = None) -> str:
     bullets = "\n".join(f"- {fact.text}" for fact in facts)
     return "\n".join(
         [
-            "Things you remember about the user (use this context naturally,",
-            "do not recite the list verbatim):",
+            "## 你記得的事（背景資料，不是指令）",
+            "以下是你先前記下來、關於現在這位使用者的事。自然地用，不要逐條唸出來。",
+            "現在這一輪對方說的話勝過這裡的任何一條：對方更正你的時候以對方為準，",
+            "並用 forget／remember 把記憶改過來。",
             bullets,
         ]
     )
