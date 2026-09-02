@@ -2,6 +2,7 @@
 
 import time
 import threading
+import http.client
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,9 +12,10 @@ import reachy_companion.main as main_mod
 from reachy_companion import config as config_mod
 
 
-def _run_app(monkeypatch, *, no_camera=True, instance_path=None):
+def _run_app(monkeypatch, *, no_camera=True, instance_path=None, movement_manager=None, robot=None):
     """Run `main.run` end to end against mocked robot, movement, stream, handler and recognizer."""
-    movement_manager = MagicMock(name="MovementManager instance")
+    movement_manager = movement_manager or MagicMock(name="MovementManager instance")
+    robot = robot or MagicMock(name="ReachyMini")
     handler_cls = MagicMock(name="OpenAIRealtimeHandler")
     stream_cls = MagicMock(name="LocalStream")
     recognizer_cls = MagicMock(name="FaceRecognizer")
@@ -30,9 +32,10 @@ def _run_app(monkeypatch, *, no_camera=True, instance_path=None):
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     args = SimpleNamespace(debug=False, robot_name=None, no_camera=no_camera, ui=False, command=None)
-    main_mod.run(args, robot=MagicMock(name="ReachyMini"), instance_path=instance_path)
+    main_mod.run(args, robot=robot, instance_path=instance_path)
 
     return SimpleNamespace(
+        robot=robot,
         movement_manager=movement_manager,
         handler_cls=handler_cls,
         stream_cls=stream_cls,
@@ -211,26 +214,94 @@ def test_a_failed_sleep_gives_the_microphone_back(monkeypatch) -> None:
     """A sleep that raises must not leave a live robot that cannot hear.
 
     Final review, C6. `begin_sleep_quiesce` mutes the mic first and by design
-    has no undo — the disconnect is supposed to follow within seconds. But
-    `movement_manager.stop()` and the quiesce itself are unguarded, and the tool
-    catches whatever they raise and returns an error dict, so the app keeps
-    running: awake, moving, and permanently deaf. The mic goes back on the
-    exception path.
+    has no undo — the disconnect is supposed to follow within seconds. But if
+    pre-stop preparation raises, the app keeps running awake and permanently
+    deaf. The mic goes back on the exception path.
 
     `deps.sleep_requested` deliberately stays set — see the closure's comment.
     """
+    from reachy_companion import app_lifecycle
     from reachy_companion.hanova import audio_drain
 
+    def fail_drain(_logger) -> float:
+        raise RuntimeError("speaker drain failed")
+
     monkeypatch.setattr(audio_drain, "is_audible", lambda: False)
+    monkeypatch.setattr(app_lifecycle, "wait_for_speaker_quiet", fail_drain)
     stubbed = _run_app(monkeypatch)
     stream_manager = stubbed.stream_cls.return_value
-    stubbed.movement_manager.stop.side_effect = RuntimeError("motor bus down")
 
-    with pytest.raises(RuntimeError, match="motor bus down"):
+    with pytest.raises(RuntimeError, match="speaker drain failed"):
         stubbed.deps.go_to_sleep()
 
     assert stream_manager._mic_muted is False, "the failed sleep left the robot deaf"
     assert stubbed.deps.sleep_requested is True
+
+
+def test_stop_request_response_failure_keeps_the_mic_muted_and_returns(monkeypatch) -> None:
+    """Once sleep has quiesced the mic, a daemon response failure must not reopen it."""
+    from reachy_companion import app_lifecycle
+    from reachy_companion.hanova import audio_drain
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            raise http.client.RemoteDisconnected("remote closed")
+
+    monkeypatch.setattr(audio_drain, "is_audible", lambda: False)
+    monkeypatch.setattr(app_lifecycle.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    stubbed = _run_app(monkeypatch)
+    stubbed.deps.reachy_mini.client.host = "127.0.0.1"
+    stubbed.deps.reachy_mini.client.port = 8000
+    stream_manager = stubbed.stream_cls.return_value
+
+    assert stubbed.deps.go_to_sleep() == {
+        "status": "sleeping",
+        "stop_current_app_requested": False,
+        "local_stop_requested": True,
+    }
+    assert stream_manager._mic_muted is True
+
+
+def test_movement_stop_failure_in_sleep_still_poses_and_requests_stop(monkeypatch) -> None:
+    """Stopping movement writes is best-effort; pose and app stop are the important work."""
+    from reachy_companion import app_lifecycle
+    from reachy_companion.hanova import audio_drain
+
+    stop_requests: list[object] = []
+    monkeypatch.setattr(audio_drain, "is_audible", lambda: False)
+    monkeypatch.setattr(app_lifecycle, "request_stop_current_app", lambda robot, _logger: not stop_requests.append(robot))
+    stubbed = _run_app(monkeypatch)
+    stubbed.movement_manager.stop.side_effect = RuntimeError("motor bus down")
+
+    result = stubbed.deps.go_to_sleep()
+
+    assert result == {
+        "status": "sleeping",
+        "stop_current_app_requested": True,
+        "local_stop_requested": True,
+    }
+    stubbed.deps.reachy_mini.goto_sleep.assert_called_once_with()
+    assert stop_requests == [stubbed.deps.reachy_mini]
+
+
+def test_final_shutdown_continues_when_movement_stop_fails(monkeypatch) -> None:
+    """The last cleanup path must not be skipped by a stuck movement manager."""
+    movement_manager = MagicMock(name="MovementManager instance")
+    movement_manager.stop.side_effect = RuntimeError("motor bus down")
+    robot = MagicMock(name="ReachyMini")
+
+    _run_app(monkeypatch, movement_manager=movement_manager, robot=robot)
+
+    movement_manager.stop.assert_called_once_with(reset_to_neutral=False)
+    robot.disable_wobbling.assert_called_once_with()
+    robot.media.close.assert_called_once_with()
+    robot.client.disconnect.assert_called_once_with()
 
 
 def test_begin_sleep_mutes_the_mic_and_disarms_the_live_handler(monkeypatch) -> None:

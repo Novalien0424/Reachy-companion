@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
@@ -194,23 +195,28 @@ def test_who_is_this_records_recognized_person(tmp_path: Path) -> None:
 class _FakeCompletions:
     """Records every create() call and answers with one scripted payload."""
 
-    def __init__(self, payload: str | Exception) -> None:
-        self.payload: str | Exception = payload
+    def __init__(self, payload: str | Exception | list[str | Exception]) -> None:
+        self.payloads = payload if isinstance(payload, list) else [payload]
         self.calls: list[dict[str, Any]] = []
 
-    async def create(self, **kwargs: Any) -> Any:
-        """Return the scripted completion, or raise the scripted failure."""
+    def create(self, **kwargs: Any) -> Any:
+        """Return an awaitable completion, or raise the scripted failure."""
         self.calls.append(kwargs)
-        if isinstance(self.payload, Exception):
-            raise self.payload
-        msg = SimpleNamespace(content=self.payload)
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        payload = self.payloads[min(len(self.calls) - 1, len(self.payloads) - 1)]
+
+        async def answer() -> Any:
+            if isinstance(payload, Exception):
+                raise payload
+            msg = SimpleNamespace(content=payload)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        return answer()
 
 
 class _FakeClient:
     """Shape-compatible with AsyncOpenAI for `async with` + chat.completions.create."""
 
-    def __init__(self, payload: str | Exception) -> None:
+    def __init__(self, payload: str | Exception | list[str | Exception]) -> None:
         self.chat = SimpleNamespace(completions=_FakeCompletions(payload))
 
     async def __aenter__(self) -> "_FakeClient":  # special methods live on the CLASS
@@ -222,7 +228,7 @@ class _FakeClient:
         return False
 
 
-def _client(payload: str | Exception) -> tuple[_FakeClient, _FakeCompletions]:
+def _client(payload: str | Exception | list[str | Exception]) -> tuple[_FakeClient, _FakeCompletions]:
     """Build a fake OpenAI client and hand back its completions spy."""
     client = _FakeClient(payload)
     return client, client.chat.completions
@@ -485,9 +491,69 @@ def test_write_sleep_summaries_filters_nobody_while_the_tail_covers_the_whole_vi
 
 def test_write_sleep_summaries_survives_client_failure(tmp_path: Path) -> None:
     """A failing model call is swallowed — shutdown must never break on memory."""
-    client, _ = _client(RuntimeError("boom"))
+    client, fake = _client(RuntimeError("boom"))
     deps = _visit_deps(tmp_path, "小諾")
     assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 0
+    assert len(fake.calls) == 1
+    assert people.facts_for_person(tmp_path, "小諾") == []
+
+
+def _close_awaitable(awaitable: Any) -> None:
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+
+
+def test_write_sleep_summaries_retries_one_timeout_and_writes(
+    tmp_path: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One wait_for timeout gets one fixed-budget retry, then the fact is written."""
+    client, fake = _client(["{}", json.dumps({"小諾": "聊到下週的考試"})])
+    deps = _visit_deps(tmp_path, "小諾")
+    wait_timeouts: list[float] = []
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        wait_timeouts.append(timeout)
+        if len(wait_timeouts) == 1:
+            _close_awaitable(awaitable)
+            raise TimeoutError()
+        return await awaitable
+
+    monkeypatch.setenv("MEMORY_LAST_CHAT_TIMEOUT_S", "30")
+    monkeypatch.setattr(sleep_summary.asyncio, "wait_for", fake_wait_for)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 1
+
+    assert wait_timeouts == [30.0, 4.0]
+    assert len(fake.calls) == 2
+    assert "attempt 1/2" in caplog.text
+    assert people.facts_for_person(tmp_path, "小諾") != []
+
+
+def test_write_sleep_summaries_retries_one_timeout_then_gives_up(
+    tmp_path: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two wait_for timeouts write nothing and do not loop past one retry."""
+    client, fake = _client([json.dumps({"小諾": "unused"}), json.dumps({"小諾": "unused"})])
+    deps = _visit_deps(tmp_path, "小諾")
+    wait_timeouts: list[float] = []
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        wait_timeouts.append(timeout)
+        _close_awaitable(awaitable)
+        raise TimeoutError()
+
+    monkeypatch.setenv("MEMORY_LAST_CHAT_TIMEOUT_S", "30")
+    monkeypatch.setattr(sleep_summary.asyncio, "wait_for", fake_wait_for)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(sleep_summary.write_sleep_summaries(deps, client=client)) == 0
+
+    assert wait_timeouts == [30.0, 4.0]
+    assert len(fake.calls) == 2
+    assert "attempt 2/2" in caplog.text
+    assert "giving up" in caplog.text
     assert people.facts_for_person(tmp_path, "小諾") == []
 
 

@@ -1,5 +1,6 @@
 import time
 import logging
+import http.client
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
@@ -34,6 +35,38 @@ def test_request_stop_current_app_posts_to_daemon(monkeypatch) -> None:
     robot = SimpleNamespace(client=SimpleNamespace(host="192.168.1.42", port=8000))
 
     assert app_lifecycle.request_stop_current_app(robot, MagicMock())
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        http.client.RemoteDisconnected("remote closed"),
+        ConnectionResetError("connection reset"),
+        http.client.BadStatusLine("bad status"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_request_stop_current_app_catches_response_failures(monkeypatch, caplog, exc: Exception) -> None:
+    """Daemon response-path failures degrade to the local stop path."""
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            raise exc
+
+    monkeypatch.setattr(app_lifecycle.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+    robot = SimpleNamespace(client=SimpleNamespace(host="reachy.local", port=8000))
+
+    with caplog.at_level(logging.ERROR):
+        assert not app_lifecycle.request_stop_current_app(robot, logging.getLogger("test"))
+
+    assert type(exc).__name__ in caplog.text
+    assert str(exc) in caplog.text
 
 
 def test_wake_up_if_sleeping_enables_motors_before_wake_up() -> None:

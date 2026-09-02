@@ -2,6 +2,7 @@
 
 import time
 import logging
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any, Final
@@ -30,8 +31,14 @@ def request_stop_current_app(robot: ReachyMini, logger: logging.Logger) -> bool:
     try:
         with urllib.request.urlopen(request, timeout=_STOP_CURRENT_APP_TIMEOUT_S) as response:
             response.read()
-    except urllib.error.URLError as e:
-        logger.error("Failed to request current app stop via %s: %s", stop_current_app_url, e)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+        # plan rev 3 C1: the daemon can accept the POST, then close mid-response.
+        logger.error(
+            "Failed to request current app stop via %s: %s: %s",
+            stop_current_app_url,
+            type(e).__name__,
+            e,
+        )
         return False
 
     logger.info("Requested current app stop via %s", stop_current_app_url)

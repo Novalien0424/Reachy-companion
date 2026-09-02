@@ -161,18 +161,40 @@ async def write_sleep_summaries(deps: ToolDependencies, *, client: Any | None = 
         lines = "\n".join(f"{'user' if role == 'user' else 'reachy'}: {text}" for role, text, _ in transcript)
         user_prompt = f"在場的人：{'、'.join(names)}\n\n對話記錄：\n{lines}"
         timeout_s = env_float("MEMORY_LAST_CHAT_TIMEOUT_S", 8.0, lo=1.0, hi=30.0)
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
         async with client:
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=_default_model(),
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                ),
-                timeout=timeout_s,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=_default_model(),
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                    ),
+                    timeout=timeout_s,
+                )
+            except TimeoutError:
+                retry_timeout_s = 4.0
+                # plan rev 3 C3: retry only the transient wait_for timeout, with fixed added delay.
+                logger.info(
+                    "Sleep summary attempt 1/2 timed out with TimeoutError; "
+                    "retrying attempt 2/2 with %.1fs timeout.",
+                    retry_timeout_s,
+                )
+                try:
+                    response = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            model=_default_model(),
+                            messages=messages,
+                            response_format={"type": "json_object"},
+                        ),
+                        timeout=retry_timeout_s,
+                    )
+                except TimeoutError:
+                    logger.warning("Sleep summary attempt 2/2 timed out with TimeoutError; giving up.")
+                    return 0
         raw = response.choices[0].message.content or ""
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):

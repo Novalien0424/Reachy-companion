@@ -332,37 +332,60 @@ def run(
             logger.info("Going to sleep before stopping conversation app.")
             sleep_error: str | None = None
 
-            # Silencing already happened in the tool (deps.begin_sleep); repeat
-            # it here so the timeout/inactivity paths, which reach this closure
-            # without the tool, get it too. Both calls are idempotent.
-            #
-            # The repeat is not purely idempotent in one narrow window: if a
-            # barge pause opened between the tool's disarm and this one — from
-            # audio the server had already buffered before the mute — this
-            # `on_external_interrupt()` drops the held audio rather than
-            # resuming it, so the tail of the goodbye is lost. Accepted, and
-            # net-protective: a pause left open keeps `audio_drain.is_audible()`
-            # unconditionally True, which would peg the drain below at its full
-            # cap and delay the pose for nothing.
-            app_lifecycle.begin_sleep_quiesce(stream_manager, logger)
-            # The response has finished emitting by now, so what this waits on
-            # is audio that genuinely exists: let the goodbye out of the speaker
-            # before the body lies down.
-            app_lifecycle.wait_for_speaker_quiet(logger)
-
             try:
-                robot.disable_wobbling()
-            except Exception as e:
-                logger.debug("Error disabling wobbling before sleep: %s", e)
+                # Silencing already happened in the tool (deps.begin_sleep); repeat
+                # it here so the timeout/inactivity paths, which reach this closure
+                # without the tool, get it too. Both calls are idempotent.
+                #
+                # The repeat is not purely idempotent in one narrow window: if a
+                # barge pause opened between the tool's disarm and this one — from
+                # audio the server had already buffered before the mute — this
+                # `on_external_interrupt()` drops the held audio rather than
+                # resuming it, so the tail of the goodbye is lost. Accepted, and
+                # net-protective: a pause left open keeps `audio_drain.is_audible()`
+                # unconditionally True, which would peg the drain below at its full
+                # cap and delay the pose for nothing.
+                app_lifecycle.begin_sleep_quiesce(stream_manager, logger)
+                # The response has finished emitting by now, so what this waits on
+                # is audio that genuinely exists: let the goodbye out of the speaker
+                # before the body lies down.
+                app_lifecycle.wait_for_speaker_quiet(logger)
 
-            movement_manager.stop(reset_to_neutral=False)
+                try:
+                    robot.disable_wobbling()
+                except Exception as e:
+                    logger.debug("Error disabling wobbling before sleep: %s", e)
 
-            try:
-                robot.goto_sleep()
-            except Exception as e:
-                sleep_error = f"{type(e).__name__}: {e}"
-                logger.error("Failed to move Reachy Mini to sleep pose: %s", e)
+                try:
+                    # plan rev 3 C2: a motion-writer stop failure must not skip the sleep pose.
+                    movement_manager.stop(reset_to_neutral=False)
+                except Exception as e:
+                    logger.error("Error stopping movement manager before sleep pose: %s", e)
 
+                try:
+                    robot.goto_sleep()
+                except Exception as e:
+                    sleep_error = f"{type(e).__name__}: {e}"
+                    logger.error("Failed to move Reachy Mini to sleep pose: %s", e)
+            except Exception:
+                # Final review, C6. `begin_sleep_quiesce` mutes the microphone first
+                # and has no undo by design — the disconnect is meant to follow
+                # within seconds. If the app keeps running because the pre-stop
+                # preparation failed, give the microphone back.
+                #
+                # `deps.sleep_requested` deliberately STAYS set. Leaving it set can
+                # cost one spurious summary at a later settings restart, but clearing
+                # it here can cost the visit its D-027 sleep summary.
+                if stream_manager is not None:
+                    try:
+                        stream_manager._mic_muted = False
+                        logger.warning("go_to_sleep failed before the stop; microphone unmuted")
+                    except Exception as e:  # noqa: BLE001 - never mask the original failure
+                        logger.error("Could not unmute the microphone after a failed sleep: %s", e)
+                raise
+
+            # plan rev 3 C2: stop/local shutdown are past intentional mic quiesce,
+            # so failures here must never enter the C6 unmute-recovery boundary.
             stop_current_app_requested = False
             if app_stop_event is None or not app_stop_event.is_set():
                 stop_current_app_requested = app_lifecycle.request_stop_current_app(robot, logger)
@@ -384,28 +407,6 @@ def run(
             if sleep_error is not None:
                 result["error"] = f"go_to_sleep movement failed: {sleep_error}"
             return result
-        except Exception:
-            # Final review, C6. `begin_sleep_quiesce` mutes the microphone first
-            # and has no undo by design — the disconnect is meant to follow
-            # within seconds. But `movement_manager.stop()` and the quiesce
-            # itself are unguarded, and `tools/go_to_sleep.py` catches whatever
-            # escapes here and returns an error dict, so the app keeps running:
-            # awake, moving, and permanently deaf. Give the microphone back.
-            #
-            # `deps.sleep_requested` deliberately STAYS set. By the time we get
-            # here we cannot tell whether the app stop already went through —
-            # `request_stop_current_app` and `app_stop_event.set()` live in the
-            # same block — and clearing it on a path where it did would cost the
-            # visit its D-027 sleep summary. A lost memory is the worse failure
-            # than one spurious summary at a later settings restart, which is
-            # what leaving it set can cost.
-            if stream_manager is not None:
-                try:
-                    stream_manager._mic_muted = False
-                    logger.warning("go_to_sleep failed before the stop; microphone unmuted")
-                except Exception as e:  # noqa: BLE001 - never mask the original failure
-                    logger.error("Could not unmute the microphone after a failed sleep: %s", e)
-            raise
         finally:
             go_to_sleep_lock.release()
 
@@ -523,7 +524,11 @@ def run(
         # the shutdown came from the voice go_to_sleep tool the robot is
         # already in the sleep pose; on a plain stop it stays awake and
         # the daemon returns it to neutral once the process exits.
-        movement_manager.stop(reset_to_neutral=False)
+        try:
+            # plan rev 3 C2: shutdown cleanup must continue even if motion writes are stuck.
+            movement_manager.stop(reset_to_neutral=False)
+        except Exception as e:
+            logger.error("Error stopping movement manager during shutdown: %s", e)
         try:
             robot.disable_wobbling()
         except Exception as e:
