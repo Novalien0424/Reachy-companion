@@ -45,6 +45,9 @@ itself on the inactivity timeout if nobody talks to it.
 
 ## Notes
 
+- 2026-09-03: speaker volume is **95** (was 90 since D-021), persisted in
+  `asound.state`; next loudness lever is VoiceFX output gain, not the mixer.
+
 - `reference/` clone is MISSING on this Mac; nothing today needed it.
 - Codex `--profile nova-auto` lives in a separate config file and works; its
   sandbox always shows 3 environmental test failures — re-run the suite

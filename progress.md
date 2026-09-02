@@ -5,6 +5,8 @@ history of this file.
 
 ## Current state
 
+**2026-09-03 — speaker volume 90 → 95 (operator ask), set via `/api/volume/set` and persisted with `alsactl store`; D-021 amendment has the reasoning and the upstream low-volume complaints.**
+
 **THE TWENTY-SECOND INSTALL (v1.22.0, calibration + tool-surface symmetry)
 IS ON THE ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING
 (2026-09-02 15:56 robot time).** Same-day follow-up to v1.21.0 after the

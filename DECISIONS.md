@@ -397,6 +397,22 @@ journald on the robot is now **persistent and capped**:
 `SystemMaxUse=100M`) plus `/var/log/journal`. This touches systemd only, not the
 Reachy daemon, and reverts by deleting that file and directory.
 
+**Amendment (2026-09-03) — speaker volume 90 → 95.** Operator ask. Set via
+`POST /api/volume/set {"volume": 95}` (daemon reports `{"volume":95,
+"device":"Reachy Mini Audio"}`; ALSA PCM playback 57/60 = 95 %, −3 dB) and
+persisted with `sudo alsactl store` (`/var/lib/alsa/asound.state` rewritten,
+PCM value 57). Why 95 and not 100: the last 5 % is the soft-knee headroom the
+VoiceFX chain already drives into (+5 dB into a knee at −1 dBFS, D-017); 100 %
+would trade loudness for clipping on the pitch-shifted voice. External
+context: low volume is a documented Reachy Mini complaint — the official
+troubleshooting page lists "low audio volume" as a known issue (fixed by
+updating past 1.2.3, then `alsamixer` PCM as the global control), and
+upstream issue pollen-robotics/reachy_mini#569 "[Improvement] louder sound"
+asks for more output in noisy rooms or with people who are not close. Our
+robot is past that firmware; what is left is the mixer, which is what this
+amendment moves. If 95 is still not enough in a noisy room, the next lever is
+the VoiceFX output gain (D-017), not the mixer.
+
 ## D-022 — TV cast fixed: HA cast-entity churn, scripts retargeted, runbook (2026-08-24)
 
 "Cast succeeds but TV shows nothing" was **entity churn in Home Assistant**, not
