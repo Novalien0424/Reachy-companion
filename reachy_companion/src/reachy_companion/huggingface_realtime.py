@@ -278,6 +278,16 @@ def _vad_silence_duration_ms() -> int:
     return env_int("REALTIME_VAD_SILENCE_DURATION_MS", _VAD_SILENCE_DURATION_DEFAULT_MS, lo=0)
 
 
+def _commit_holdoff_ms() -> int:
+    """Accepted-turn hold-off before the client requests a response."""
+    return env_int(
+        "REALTIME_COMMIT_HOLDOFF_MS",
+        _COMMIT_HOLDOFF_DEFAULT_MS,
+        lo=0,
+        hi=_COMMIT_HOLDOFF_MAX_MS,
+    )
+
+
 def _barge_confirm_s() -> float:
     """How long speech must persist during a pause before it is a real barge.
 
@@ -348,6 +358,10 @@ _TRUNCATE_SLACK_MS: Final[int] = 300
 # ~1100 ms knee where the robot starts to feel sluggish instead of patient
 # (research doc §1).
 _VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 1000
+# Client-owned delay between an accepted committed transcript and the
+# `response.create` request. 0 is the revert-to-today switch (plan rev 3 A1).
+_COMMIT_HOLDOFF_DEFAULT_MS: Final[int] = 700
+_COMMIT_HOLDOFF_MAX_MS: Final[int] = 3000
 # Bound on the per-item turn-mode stamps. One entry lives from `speech_started`
 # to that item's `transcription.completed`/`.failed`, so the map is normally
 # one or two deep; the cap only matters if transcripts stop arriving at all.
@@ -790,6 +804,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # bound is small because entries only survive until their own transcript
         # lands, and a dropped stamp falls back to `_turn_mode`.
         self._turn_modes: dict[str, ConversationMode] = {}
+        # Accepted-turn response hold-off (plan rev 3 A1): all turn cleanup
+        # remains synchronous at acceptance, but the final `response.create`
+        # waits briefly so a renewed `speech_started` can merge a fragment with
+        # its continuation. The per-item sequence map mirrors `_turn_modes`:
+        # a transcript can arrive after the next item has already begun, so a
+        # single latest-speech flag would answer the wrong turn.
+        self._speech_started_seq: int = 0
+        self._speech_started_seqs_by_item: dict[str, int] = {}
+        self._holdoff_task: asyncio.Task[None] | None = None
         # Monotonic coalescing token for session updates (Task 3, decision 9):
         # a snapshot queued behind a newer flip is dropped rather than sent.
         self._mode_update_seq: int = 0
@@ -1142,6 +1165,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # re-anchored to the mode the new session actually opens in rather than
         # left pointing at whatever the last turn happened to begin in.
         self._turn_modes.clear()
+        speech_started_seqs_by_item: dict[str, int] | None = getattr(self, "_speech_started_seqs_by_item", None)
+        if speech_started_seqs_by_item is not None:
+            speech_started_seqs_by_item.clear()
         self._turn_mode = self._conversation_mode
 
     async def _push_turn_detection_update(self) -> None:
@@ -1480,6 +1506,89 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 return stamped
         return self._turn_mode
 
+    def _stamp_speech_started_seq(self, item_id: str | None) -> None:
+        """Record the ordered speech-start event for this input item."""
+        self._speech_started_seq += 1
+        if item_id:
+            if item_id not in self._speech_started_seqs_by_item and len(
+                self._speech_started_seqs_by_item
+            ) >= _TURN_MODE_MAX_ITEMS:
+                self._speech_started_seqs_by_item.pop(next(iter(self._speech_started_seqs_by_item)), None)
+            self._speech_started_seqs_by_item[item_id] = self._speech_started_seq
+
+    def _take_speech_started_seq(self, item_id: str | None) -> int | None:
+        """Pop the speech-start sequence stamped for this input item."""
+        if item_id:
+            return self._speech_started_seqs_by_item.pop(item_id, None)
+        return None
+
+    def _log_holdoff_skip(self, reason: str) -> None:
+        """Journal a hold-off skip with the plan rev 3 A1 operator-facing line."""
+        logger.info("turn hold-off: awaiting continuation (%s)", reason)
+
+    def _cancel_holdoff_task(self, current: "asyncio.Task[Any] | None" = None) -> bool:
+        """Cancel the accepted-turn hold-off task, if one is pending."""
+        task: asyncio.Task[None] | None = getattr(self, "_holdoff_task", None)
+        self._holdoff_task = None
+        if task is None or task is current or task.done():
+            return False
+        _cancel_barge_task(task, current)
+        return True
+
+    async def _request_accepted_turn_response(self, item_id: str | None) -> None:
+        """Request an accepted turn's answer, with the plan rev 3 A1 hold-off seam."""
+        started_seq = self._take_speech_started_seq(item_id)
+        holdoff_ms = _commit_holdoff_ms()
+        if holdoff_ms <= 0:
+            self._cancel_holdoff_task(_current_task())
+            await self._safe_response_create()
+            return
+
+        cancelled_older = self._cancel_holdoff_task(_current_task())
+        if started_seq is not None and self._speech_started_seq > started_seq:
+            # The continuation's `speech_started` event reached this receive
+            # loop before the previous transcript completed. No transcript text
+            # heuristic is needed; event order is the whole signal.
+            self._log_holdoff_skip("later speech already started")
+            return
+        if cancelled_older:
+            self._log_holdoff_skip("newer accepted turn")
+
+        bound_connection = self.connection
+        armed_seq = self._speech_started_seq
+
+        async def _finish_holdoff() -> None:
+            try:
+                await asyncio.sleep(holdoff_ms / 1000.0)
+            except asyncio.CancelledError:
+                return
+
+            current = asyncio.current_task()
+            drop_reason: str | None = None
+            if current is None or current is not self._holdoff_task:
+                drop_reason = "task no longer current"
+            elif current.cancelled() or current.cancelling():
+                drop_reason = "task cancelled"
+            elif self._speech_started_seq != armed_seq:
+                drop_reason = "speech started"
+            elif self.connection is not bound_connection:
+                drop_reason = "connection changed"
+            elif not self._receive_loop_active:
+                drop_reason = "receive loop inactive"
+
+            if drop_reason is not None:
+                if current is self._holdoff_task:
+                    self._holdoff_task = None
+                logger.debug("turn hold-off dropped: %s", drop_reason)
+                return
+
+            self._holdoff_task = None
+            logger.debug("turn hold-off expired after %d ms; requesting response", holdoff_ms)
+            await self._safe_response_create()
+
+        self._holdoff_task = asyncio.create_task(_finish_holdoff(), name="turn-holdoff")
+        logger.debug("turn hold-off armed for %d ms", holdoff_ms)
+
     def _face_engaged(self) -> bool:
         """Whether a person is currently facing the robot, as an address signal.
 
@@ -1629,10 +1738,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         does not land still leaves an inert timer.
         """
         current = _current_task()
-        tasks = (self._barge_confirm_task, self._barge_rollback_task, self._barge_watchdog_task)
+        holdoff_task: asyncio.Task[None] | None = getattr(self, "_holdoff_task", None)
+        tasks = (self._barge_confirm_task, self._barge_rollback_task, self._barge_watchdog_task, holdoff_task)
         self._barge_confirm_task = None
         self._barge_rollback_task = None
         self._barge_watchdog_task = None
+        self._holdoff_task = None
         for task in tasks:
             _cancel_barge_task(task, current)
         self._barge_paused = False
@@ -1675,9 +1786,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         session which replaced it.
         """
         current = _current_task()
+        holdoff_task: asyncio.Task[None] | None = getattr(self, "_holdoff_task", None)
         tasks = [
             task
-            for task in (self._barge_confirm_task, self._barge_rollback_task, self._barge_watchdog_task)
+            for task in (self._barge_confirm_task, self._barge_rollback_task, self._barge_watchdog_task, holdoff_task)
             if task is not None and task is not current
         ]
         self.on_external_interrupt()
@@ -3488,7 +3600,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._note_session_updated()
 
                     if event.type == "input_audio_buffer.speech_started":
-                        self._stamp_turn_mode(getattr(event, "item_id", None))
+                        item_id = getattr(event, "item_id", None)
+                        self._stamp_turn_mode(item_id)
+                        self._stamp_speech_started_seq(item_id)
+                        if self._cancel_holdoff_task(_current_task()):
+                            self._log_holdoff_skip("speech_started")
                         self._user_has_spoken = True
                         self._mark_activity("user_speech_started")
                         self._turn_user_done_at = None
@@ -3675,11 +3791,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._mark_activity("user_transcription_completed")
                         raw_transcript = event.transcript or ""
                         transcript = raw_transcript.strip()
+                        event_item_id = getattr(event, "item_id", None)
                         # Popped at the TOP, not at the gate: the branch has
                         # three `continue`s before the gate (empty transcript,
                         # rolled-back pause, partial-commit marker) and a stamp
                         # left behind by any of them would leak.
-                        turn_mode = self._take_turn_mode(getattr(event, "item_id", None))
+                        turn_mode = self._take_turn_mode(event_item_id)
                         logger.debug("User transcript: %s", raw_transcript)
                         self.deps.movement_manager.set_listening(False)
 
@@ -3695,11 +3812,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         pause_committed = False
                         if self._barge_pending:
                             if await self._resolve_solo_barge(transcript):
+                                self._take_speech_started_seq(event_item_id)
                                 continue
                             pause_committed = True
                         if (
                             self._barge_partial_committed_item is not None
-                            and event.item_id == self._barge_partial_committed_item
+                            and event_item_id == self._barge_partial_committed_item
                         ):
                             # This turn already interrupted via its partial
                             # transcript; the reply now playing is its answer.
@@ -3707,10 +3825,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             pause_committed = True
 
                         if not transcript:
+                            self._take_speech_started_seq(event_item_id)
                             logger.debug("Ignoring empty user transcript")
                             continue
 
                         if not self._answer_gate_accepts(transcript, turn_mode):
+                            self._take_speech_started_seq(event_item_id)
                             # Heard, kept as context (it is already in the
                             # conversation), and left unanswered. Close the turn
                             # for the music hooks (party plan, finding 4) and
@@ -3806,15 +3926,19 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             self._party_last_accept_at = time.monotonic()
                         # `create_response` is off in every mode since
                         # 2026-08-31: this turn passed its mode's answer gate, so
-                        # answer it — through the sender queue, never the raw
-                        # connection (party plan, finding 1).
-                        await self._safe_response_create()
+                        # answer it through the sender queue, never the raw
+                        # connection. Plan rev 3 A1 keeps every cleanup and
+                        # transcript side effect above at acceptance; only the
+                        # request itself waits for a continuation window.
+                        await self._request_accepted_turn_response(event_item_id)
 
                     if event.type == "conversation.item.input_audio_transcription.failed":
                         self._mark_activity("user_transcription_failed")
+                        event_item_id = getattr(event, "item_id", None)
                         # No transcript will ever arrive for this item, so its
                         # stamp has no reader left; pop it rather than leak it.
-                        self._take_turn_mode(getattr(event, "item_id", None))
+                        self._take_turn_mode(event_item_id)
+                        self._take_speech_started_seq(event_item_id)
                         if self._party_mode:
                             # No transcript will ever arrive for this turn, so no
                             # gate decision and no response: close it for the
@@ -3825,7 +3949,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # nothing is coming that could confirm it. The
                             # failing item is named so the partial-commit marker
                             # is only consumed when it is *this* turn's (T4 m5).
-                            self._resolve_solo_barge_failure(getattr(event, "item_id", None))
+                            self._resolve_solo_barge_failure(event_item_id)
                         logger.debug("User transcription failed")
 
                     # Handle assistant transcription
