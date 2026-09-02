@@ -29,12 +29,16 @@ _HARDENING_BLOCK = """
 
 ### 訊息頻道
 你的輸出分兩種：工具動作前後的旁白屬於 commentary 頻道，真正要說給對方聽的話屬於
-final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不會發出聲音。
+final_answer 頻道。這台機器會把兩個頻道的聲音都播出來：commentary 用來讓對方知道慢工作
+已經開始，final_answer 用來說結果。兩個頻道都跟對話使用同一種語言，這樣聽起來才像同一輪對話。
 
 ### 開場白
-既然 commentary 不會發出聲音，在呼叫工具之前先講一句「我看一下喔」只會被丟掉，
-對方還要多等。要用工具就直接用，拿到結果再把結果講出來。真的需要等比較久的操作，
-就把那句話當成正式回答講出來，而不是當成前導語。
+需要花明顯時間的工作，像查網路、找出能播放的音樂、呼叫遠端或 MCP 服務，先用和對話
+相同語言給自然的前導語，讓對方知道你已經開始處理；接著直接呼叫工具，拿到結果再說結果。
+前導語不是結果，也不能代替工具呼叫，因為那會讓對方聽到開始了卻沒有真正完成。
+快速的機器人動作，像移動、看向某處、表情、音量、模式切換，直接做；這些操作前加旁白
+只會讓對方多等。
+前導語只校準存在感：足夠讓人知道工作開始，不要播報每個步驟，因為逐步旁白會拖慢對話。
 
 ### 思考
 對方直接說出要做的事、一眼就看得懂的請求，就直接做，不要多想。
@@ -44,12 +48,6 @@ final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不
 最新的聲音是安靜、背景噪音、音樂、電視聲、旁人之間的對話、或不是對你說的話——
 呼叫 wait_for_user，然後保持安靜。這是一個可以「做」的動作，比忍住不說話可靠。
 呼叫之後不要再補話。只有當使用者清楚地對你說話或請你幫忙時才恢復回應。
-
-### 聽不清楚時
-- 只回應清楚的語音或文字。模糊、吵雜、只有雜音、被切斷、或你不確定對方確切說了什麼，
-  都算聽不清楚。
-- 聽不清楚時簡短地用台灣中文請對方再說一次，不要猜測、不要推理、不要呼叫其他工具。
-  同樣的澄清句不要連續說兩次；澄清的時候問一件事就好。
 
 ### 語言
 預設使用台灣中文（台灣國語、台灣繁體）。只有在使用者明確要求換語言，或用另一種語言
@@ -104,6 +102,16 @@ final_answer 頻道。這台機器只把 final_answer 播出來，commentary 不
 """.strip()
 
 
+# plan rev 3 B1/B2/B3/A3: placement beats volume for fragment recovery, so this follows mode rules.
+_UNCLEAR_AUDIO_BLOCK = """
+### 聽不清楚時
+只回應清楚的語音或文字。聽到片段、半句、被切斷的話、或不確定對方確切說了什麼時，
+用對話正在使用的語言簡短請對方再說一次，因為猜測會回答到沒人說過的事。
+這一輪不要呼叫其他工具，因為工具會把猜測變成動作或查詢；等對方說清楚再做。
+同樣的澄清說法不要連續重複，因為重複會像卡住；換一個自然問法就好。
+""".strip()
+
+
 def hardening_block() -> str:
     """Anti-mishearing prompt rules; REALTIME_PROMPT_HARDENING=0 disables."""
     if not env_bool("REALTIME_PROMPT_HARDENING", True):
@@ -145,7 +153,10 @@ _MODE_BLOCKS: Final[dict[ConversationMode, str]] = {
 
 def mode_rules_block(mode: ConversationMode) -> str:
     """Return the rules block for *mode*, appended to the session instructions."""
-    return _MODE_BLOCKS[mode]
+    block = _MODE_BLOCKS[mode]
+    if not env_bool("REALTIME_PROMPT_HARDENING", True):
+        return block
+    return f"{block}\n\n{_UNCLEAR_AUDIO_BLOCK}"
 
 
 def _active_profile() -> ProfileDefinition:

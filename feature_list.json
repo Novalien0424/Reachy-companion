@@ -295,11 +295,11 @@
     },
     {
       "id": "VOICE-COMMENTARY-SUPPRESS",
-      "behavior": "gpt-realtime-2.x preambles never play: an output item whose `phase` is `commentary` has its transcript and audio dropped client-side, while the item still closes its turn normally.",
-      "verification": "On-robot with the module at DEBUG: journal `suppressing commentary-phase item …` / `dropping commentary-phase audio for item …` with nothing audible for those items. If those lines NEVER appear across a whole visit, record that as `preambles not observed on this model snapshot` rather than a pass — and if they never appear WHILE preambles are still audible, the `phase` field is not arriving on `response.output_item.added` (it may only be on `output_item.done`, after the audio has streamed), which is a follow-up, not a fix.",
-      "state": "implemented-unverified",
+      "behavior": "SUPERSEDED by VOICE-SLOW-PREAMBLE (plan rev 3 B1, 2026-09-02): commentary-phase audio is audible again by design; only the transcript is withheld from persistence. The old contract (drop both) held from D-029/D-030 through v1.20.0.",
+      "verification": "Replaced by VOICE-SLOW-PREAMBLE's checks; the old journal lines `suppressing commentary-phase item …` / `dropping commentary-phase audio …` no longer exist.",
+      "state": "retired",
       "evidence": null,
-      "next_action": "operator on-robot: one visit at DEBUG for this module; grep for the two commentary lines and judge them against whether preambles were actually heard"
+      "next_action": "none — see VOICE-SLOW-PREAMBLE"
     },
     {
       "id": "TOOLS-CONSOLIDATED",
@@ -444,6 +444,30 @@
       "state": "known-defect-preexisting",
       "evidence": "Nineteenth-install verification 2026-08-31 21:05 robot time; isolation probes in session log.",
       "next_action": "Marshal handler.say onto the handler loop (run_coroutine_threadsafe, the wait_for_reply_finished pattern) before relying on the console say surface."
+    },
+    {
+      "id": "VOICE-TURN-FRAGMENTS",
+      "behavior": "A deliberately fragmented Mandarin sentence (pause mid-sentence long enough for semantic_vad to commit 「你。」「就是。」-style fragments) gets ONE answer covering the whole thought, not an answer per fragment. Client-side: after an ACCEPTED turn the handler waits REALTIME_COMMIT_HOLDOFF_MS (default 700; 0 = old behaviour) before response.create; a renewed speech_started inside the window, or one already seen since the item began, skips the request so the continuation's own answer covers both items. If the continuation produces no turn (empty/failed transcript, gate-denied, rollback) the held turn is answered after all. Plan rev 3 A1 (2026-09-01 field-test RCA-1).",
+      "verification": "On-robot, module at INFO: speak a sentence with a mid-sentence pause and finish it. Journal shows `turn hold-off: awaiting continuation (speech_started)` (or `(later speech already started)`) for the fragment and ONE reply that addresses the full sentence; no reply to the fragment alone. Negative: a fragment followed by a cough/noise only must still be answered — journal `turn hold-off: continuation produced no turn (…); answering the held turn`. Latency cost: at most the window per turn. DEBUG lines `turn hold-off armed for N ms` / `turn hold-off expired after N ms; requesting response` if the module is at DEBUG.",
+      "state": "implemented-unverified",
+      "evidence": "Unit: 19 pins in tests/test_turn_holdoff.py (commits 7f55584, 39aa60f); full suite green on the dev machine.",
+      "next_action": "operator on-robot after the twenty-first install: the fragmented-sentence probe above, plus a fragment+noise probe; judge whether 700 ms feels patient rather than sluggish (knob is live in the instance .env)."
+    },
+    {
+      "id": "VOICE-SLOW-PREAMBLE",
+      "behavior": "Before slow work (web search, resolving music, remote/MCP calls) Reachy says a brief natural lead-in and then does the work; for fast robot actions (moving, looking, expressions, volume, mode switches) it goes straight to work with no narration. Mechanism: commentary-phase items are audible again (plan rev 3 B1, code) while their transcripts stay out of the room log, operator transcript and sleep summary; the prompt's 訊息頻道/開場白 block and the slow tools' descriptions (search, music play, MCP wrap) instruct when a lead-in belongs (rung 1–2, plan B1/B2/B3). Selectivity is instruction-enforced by design; the B4 fallback (buffer until the tool name is known) is the reviewed next step if fast-action narration returns.",
+      "verification": "On-robot: a search turn (「幫我查一下今天台北天氣」) → an audible one-line-ish lead-in, then the answer, no dead air; journal (DEBUG) `commentary-phase item … is audible; transcript withheld` for that item and `withholding commentary-phase transcript for item …`; the RECORD summary / sleep summary for that visit must not contain the lead-in text. Negative: 「看右邊」 / 「抬頭」 → head moves with no spoken narration. Watchpoint: stale 「還在處理中」-style narration on fast tools = B4 follow-up, not a revert.",
+      "state": "implemented-unverified",
+      "evidence": "Unit: 7 pins in tests/test_huggingface_realtime.py (commit 6754f4d); prompt/description pins in tests/test_prompts_hardening.py and tests/test_tool_descriptions_preamble.py (B-2 commit).",
+      "next_action": "operator on-robot after the twenty-first install (persona re-synced): one search turn, one music-play turn, one fast head move; check the three journal signals and that the preamble is absent from the sleep summary."
+    },
+    {
+      "id": "SLEEP-CLEAN-STOP",
+      "behavior": "「睡覺吧」 → goodbye → pose → clean app stop, every time. The daemon may close the stop-request connection before answering (RemoteDisconnected, not a URLError); the guard now catches URLError, HTTPException and OSError, logs the exception type and continues to the local stop; the C6 mic-unmute recovery can no longer fire for failures at or after the stop request; movement_manager.stop() is guarded in both the sleep closure and final shutdown; the D-027 sleep summary retries once with a fixed 4 s budget. Plan rev 3 C1–C4 (RCA-6).",
+      "verification": "On-robot: 「睡覺吧」 → journal shows the goodbye finishing, the pose, then EITHER `Requested current app stop via …` OR the broadened-guard error naming the exception type — NEVER `go_to_sleep failed before the stop; microphone unmuted`; a sleep-summary line is present (or the retry line, then success/warning). App process is gone afterwards; the antenna wake restarts it.",
+      "state": "implemented-unverified",
+      "evidence": null,
+      "next_action": "Task C implementation (Codex) then the on-robot sleep probe after the twenty-first install."
     }
   ]
 }

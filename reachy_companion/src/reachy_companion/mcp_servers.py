@@ -146,7 +146,12 @@ async def register_mcp_tools() -> list[str]:
             tool = RemoteMcpTool(
                 slug=server.alias,
                 name=spec.namespaced_name,
-                description=spec.description,
+                # plan rev 3 B1/B2/B3/A3: remote tools take long enough to need an audible lead-in.
+                description=(
+                    f"{spec.description.rstrip()} "
+                    "Remote calls take a moment, so give a brief lead-in first in the same language as the "
+                    "conversation, then call this tool."
+                ),
                 parameters_schema=dict(spec.parameters_schema),
                 client_tool_name=spec.namespaced_name,
                 client=client,

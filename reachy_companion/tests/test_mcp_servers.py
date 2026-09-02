@@ -134,7 +134,9 @@ async def test_register_discovers_and_registers(monkeypatch: pytest.MonkeyPatch)
     module = core_tools()
     registered = module.EXTRA_TOOLS["notion__search_pages"]
     assert isinstance(registered, module.RemoteMcpTool)
-    assert registered.description == "search notion"
+    # plan rev 3 B2: the wrap point appends one lead-in policy sentence to every remote tool.
+    assert registered.description.startswith("search notion ")
+    assert registered.description.endswith("then call this tool.")
     assert registered.parameters_schema == {"type": "object", "properties": {}}
     assert registered._client is live_client
     # call_tool resolves by the namespaced name (mcp_client.py:332-341), exactly

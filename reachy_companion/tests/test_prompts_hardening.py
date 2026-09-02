@@ -1,24 +1,29 @@
 """Contract tests for the prompt-hardening block (unclear-audio + language pin)."""
 
 from reachy_companion import prompts
+from reachy_companion.conversation_mode import ConversationMode
+
+
+def _assembled_session_instructions(tmp_path, mode: ConversationMode = ConversationMode.RECORD) -> str:
+    return f"{prompts.get_session_instructions(tmp_path)}\n\n{prompts.mode_rules_block(mode)}"
 
 
 def test_hardening_block_appended_to_instructions(monkeypatch, tmp_path):
     """The hardening block is present by default, on top of the base instructions."""
     monkeypatch.delenv("REALTIME_PROMPT_HARDENING", raising=False)
-    text = prompts.get_session_instructions(tmp_path)
+    text = _assembled_session_instructions(tmp_path)
     assert "wait_for_user" in text
     assert "聽不清楚" in text  # unclear-audio clarifier
     assert "台灣中文" in text or "台灣國語" in text  # language pin
 
 
 def test_hardening_block_teaches_length_calibration(monkeypatch, tmp_path):
-    """Brevity rules: length follows content, no filler, no preambles."""
+    """Brevity rules: length follows content, no filler, selective preambles."""
     monkeypatch.delenv("REALTIME_PROMPT_HARDENING", raising=False)
     text = prompts.get_session_instructions(tmp_path)
     assert "回答長度" in text  # the section heading
     assert "長度跟著內容走" in text  # calibration, not a flat sentence cap
-    assert "前導語" in text  # no "let me think" openers
+    assert "前導語" in text  # selective slow-work lead-ins
 
 
 def test_hardening_survives_persona_override(monkeypatch, tmp_path):
@@ -41,6 +46,7 @@ def test_hardening_kill_switch(monkeypatch, tmp_path):
     """REALTIME_PROMPT_HARDENING=0 removes the block entirely."""
     monkeypatch.setenv("REALTIME_PROMPT_HARDENING", "0")
     assert "wait_for_user" not in prompts.get_session_instructions(tmp_path)
+    assert "聽不清楚時" not in prompts.mode_rules_block(ConversationMode.RECORD)
 
 
 def test_mode_rules_block_covers_every_mode() -> None:
@@ -140,19 +146,41 @@ def test_the_block_carries_the_2x_structure_the_models_expect() -> None:
         assert heading in block
 
 
-def test_the_preamble_block_does_not_promise_audible_preambles() -> None:
-    """Ruling for this wave: keep commentary suppression, drop the spoken goal.
-
-    The client drops `phase == "commentary"` items and 2.x puts preambles in that
-    channel, so an instruction to speak before a tool call produces latency and
-    silence. The block explains the channel and gives the positive action instead.
-    """
+def test_the_preamble_block_promises_slow_work_leadins_and_fast_actions_go_direct() -> None:
+    """Plan rev 3 B1: commentary is audible, but only slow work gets lead-ins."""
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
     assert "commentary" in block
     assert "final_answer" in block
-    assert "不會發出聲音" in block
+    assert "會把兩個頻道的聲音都播出來" in block
+    assert "讓對方知道慢工作" in block
+    assert "查網路" in block
+    assert "找出能播放的音樂" in block
+    assert "MCP" in block
+    assert "接著直接呼叫工具" in block
+    assert "拿到結果再說結果" in block
+    assert "快速的機器人動作" in block
+    assert "直接做" in block
+    assert "只會讓對方多等" in block
+    assert "不會發出聲音" not in block
+    assert "被丟掉" not in block
+
+
+def test_unclear_audio_rule_is_once_and_last_system_layer_section(monkeypatch, tmp_path) -> None:
+    """Plan rev 3 A3: fragment recovery is the last system-layer rule the model reads."""
+    monkeypatch.delenv("REALTIME_PROMPT_HARDENING", raising=False)
+    text = _assembled_session_instructions(tmp_path, ConversationMode.RECORD)
+    heading = "### 聽不清楚時"
+
+    assert text.count(heading) == 1
+    assert text.rstrip().endswith(
+        "同樣的澄清說法不要連續重複，因為重複會像卡住；換一個自然問法就好。"
+    )
+    assert text.index("### 目前模式：紀錄模式") < text.index(heading)
+    assert "片段、半句" in text
+    assert "因為猜測會回答到沒人說過的事" in text
+    assert "這一輪不要呼叫其他工具，因為工具會把猜測變成動作或查詢" in text
 
 
 def test_the_block_states_no_numeric_length_cap_anywhere() -> None:
