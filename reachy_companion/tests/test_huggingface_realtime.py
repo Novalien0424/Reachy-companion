@@ -18,9 +18,10 @@ from reachy_companion.tools import core_tools
 from reachy_companion.config import config, get_default_voice
 from reachy_companion.people import add_person_fact
 from reachy_companion.face_id import Identification
+from reachy_companion.streaming import AdditionalOutputs
 from reachy_companion.toolboxes import session_tool_exclusions
 from reachy_companion.tools.core_tools import ToolDependencies
-from reachy_companion.conversation_mode import MODE_LABELS
+from reachy_companion.conversation_mode import MODE_LABELS, ConversationMode
 from reachy_companion.huggingface_realtime import HuggingFaceRealtimeHandler
 from reachy_companion.tools.background_tool_manager import ToolState, ToolCallRoutine, ToolNotification
 
@@ -117,9 +118,18 @@ def _make_fake_realtime_client(
 
         async def __anext__(self) -> _FakeEvent:
             try:
-                return next(self._events)
+                event = next(self._events)
             except StopIteration:
                 raise StopAsyncIteration
+            delay = getattr(event, "_delay", 0.0)
+            if delay:
+                await asyncio.sleep(delay)
+            before_return = getattr(event, "_before_return", None)
+            if before_return is not None:
+                result = before_return()
+                if asyncio.iscoroutine(result):
+                    await result
+            return event
 
     class FakeRealtime:
         def connect(self, **kwargs: Any) -> FakeConn:
@@ -1369,6 +1379,16 @@ def _drain_queue(handler: HuggingFaceRealtimeHandler) -> list[Any]:
     return queued
 
 
+def _queued_audio_frames(queued: list[Any]) -> list[tuple[Any, Any]]:
+    """Return only the PCM frames enqueued for playback."""
+    return [item for item in queued if isinstance(item, tuple)]
+
+
+def _queued_messages(queued: list[Any]) -> list[Any]:
+    """Return only side-channel text messages from the mixed output queue."""
+    return [message for item in queued if isinstance(item, AdditionalOutputs) for message in item.args]
+
+
 def test_item_phase_reads_models_and_dicts() -> None:
     """The field is undeclared on the wire format, so read both shapes safely."""
     from reachy_companion.huggingface_realtime import _item_phase
@@ -1383,10 +1403,13 @@ def test_item_phase_reads_models_and_dicts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_commentary_audio_and_transcript_are_dropped(monkeypatch: Any) -> None:
-    """2.x emits preambles by default; they must not play as normal speech."""
+async def test_commentary_audio_is_audible_but_transcript_is_withheld(monkeypatch: Any) -> None:
+    """Plan rev 3 B1: preambles play, but are not persisted as answer text."""
     silence = _silent_delta()
     remembered: list[str] = []
+    audio_accounting: list[tuple[int, int]] = []
+    records: list[tuple[str, str]] = []
+    activities: list[str] = []
     handler = _commentary_handler(
         monkeypatch,
         (
@@ -1409,8 +1432,15 @@ async def test_commentary_audio_and_transcript_are_dropped(monkeypatch: Any) -> 
             _FakeEvent("session.updated"),
         ),
     )
-    transcripts: list[tuple[str, str]] = []
-    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text)))
+    transcripts: list[tuple[str, str, bool]] = []
+    handler.set_activity_observer(activities.append)
+    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text, final)))
+    monkeypatch.setattr(
+        hf_mod,
+        "on_response_audio",
+        lambda sample_count, sample_rate: audio_accounting.append((sample_count, sample_rate)),
+    )
+    monkeypatch.setattr(hf_mod, "record_transcript", lambda _deps, role, text: records.append((role, text)))
     # The session's own teardown runs `on_external_interrupt`, which forgets
     # every commentary id, so the list is sampled from a sentinel event still
     # inside the receiver loop.
@@ -1418,20 +1448,25 @@ async def test_commentary_audio_and_transcript_are_dropped(monkeypatch: Any) -> 
 
     await handler._run_realtime_session()
 
-    assert transcripts == [("assistant", "三點二十")]
-    # Exactly one audio tuple reached the output queue: the answer's, not the
-    # preamble's.
     queued = _drain_queue(handler)
-    assert len([item for item in queued if isinstance(item, tuple)]) == 1
+    assert transcripts == [("assistant", "三點二十", True)]
+    assert _queued_messages(queued) == [{"role": "assistant", "content": "三點二十"}]
+    assert len(_queued_audio_frames(queued)) == 2
+    assert audio_accounting == [(240, handler.SAMPLE_RATE), (240, handler.SAMPLE_RATE)]
+    assert activities.count("assistant_audio_delta") == 2
+    assert activities.count("assistant_transcript_done") == 1
+    assert records == [("assistant", "三點二十")]
     assert remembered == ["item_pre"]
     # And the session boundary forgets it, so it cannot suppress a fresh item.
     assert handler._commentary_item_ids == deque(maxlen=8)
 
 
 @pytest.mark.asyncio
-async def test_commentary_item_carried_on_a_pydantic_style_model_is_dropped(monkeypatch: Any) -> None:
+async def test_commentary_item_carried_on_a_pydantic_style_model_is_audible(monkeypatch: Any) -> None:
     """The real SDK hands us an `extra="allow"` model, not a dict."""
     remembered: list[str] = []
+    audio_accounting: list[tuple[int, int]] = []
+    item_tally: list[tuple[str | None, float]] = []
     handler = _commentary_handler(
         monkeypatch,
         (
@@ -1450,25 +1485,77 @@ async def test_commentary_item_carried_on_a_pydantic_style_model_is_dropped(monk
             _FakeEvent("session.updated"),
         ),
     )
-    monkeypatch.setattr(handler, "_note_session_updated", lambda: remembered.extend(handler._commentary_item_ids))
+    monkeypatch.setattr(
+        hf_mod,
+        "on_response_audio",
+        lambda sample_count, sample_rate: audio_accounting.append((sample_count, sample_rate)),
+    )
+
+    def _sample_commentary_state() -> None:
+        remembered.extend(handler._commentary_item_ids)
+        item_tally.append((handler._audio_item_id, handler._audio_item_enqueued_ms))
+
+    monkeypatch.setattr(handler, "_note_session_updated", _sample_commentary_state)
 
     await handler._run_realtime_session()
 
+    queued = _drain_queue(handler)
     assert remembered == ["item_pre"]
-    assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
+    assert len(_queued_audio_frames(queued)) == 1
+    assert audio_accounting == [(240, handler.SAMPLE_RATE)]
+    assert item_tally == [("item_pre", pytest.approx(15.0, abs=0.01))]
+
+
+@pytest.mark.asyncio
+async def test_barge_in_over_audible_commentary_truncates_the_preamble_item(monkeypatch: Any) -> None:
+    """The generic truncate path uses the commentary item once its audio plays."""
+    sent: list[tuple[str, int]] = []
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent("response.created", response=SimpleNamespace(id="resp_1")),
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_pre", response_id="resp_1", delta=_silent_delta(8000)),
+            _FakeEvent("input_audio_buffer.speech_started", item_id="user_1"),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                item_id="user_1",
+                transcript="停",
+            ),
+        ),
+    )
+    handler._conversation_mode = ConversationMode.ONE_ON_ONE
+    monkeypatch.setattr(hf_mod, "on_response_audio", lambda sample_count, sample_rate: None)
+    monkeypatch.setattr(handler, "_robot_audible", lambda: True)
+
+    async def _record_truncate(item_id: str, audio_end_ms: int) -> None:
+        sent.append((item_id, audio_end_ms))
+
+    monkeypatch.setattr(handler, "_truncate_heard_audio", _record_truncate)
+
+    await handler._run_realtime_session()
+
+    assert sent == [("item_pre", 200)]
 
 
 @pytest.mark.asyncio
 async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> None:
-    """Dropping every item of a response must not wedge the done bookkeeping.
+    """A preamble-only response still owns the normal response lifecycle.
 
-    Task 9's sleep wait blocks on `_response_done_event`; if suppression ever
-    short-circuited `response.created`/`response.done`, a preamble-only reply
-    would leave the robot waiting for a response that already finished. The
-    session's own `finally` sets the event too, so the state is sampled from a
-    sentinel event *inside* the loop, after `response.done`.
+    Task 9's sleep wait blocks on `_response_done_event`; if commentary
+    handling ever short-circuited `response.created`/`response.done`, a
+    preamble-only reply would leave the robot waiting for a response that
+    already finished. The session's own `finally` sets the event too, so the
+    state is sampled from a sentinel event inside the loop, after
+    `response.done`.
     """
     seen: dict[str, Any] = {}
+    records: list[tuple[str, str]] = []
     handler = _commentary_handler(
         monkeypatch,
         (
@@ -1493,6 +1580,7 @@ async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> N
     )
     transcripts: list[tuple[str, str]] = []
     handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text)))
+    monkeypatch.setattr(hf_mod, "record_transcript", lambda _deps, role, text: records.append((role, text)))
 
     def _sample_state_inside_the_loop() -> None:
         seen["done"] = handler._response_done_event.is_set()
@@ -1509,11 +1597,111 @@ async def test_a_commentary_only_response_still_completes(monkeypatch: Any) -> N
     assert seen["response_cycles_by_id"] == {}
     assert seen["active_response_id"] is None
     assert transcripts == []
-    assert [item for item in _drain_queue(handler) if isinstance(item, tuple)] == []
+    assert records == []
+    assert len(_queued_audio_frames(_drain_queue(handler))) == 1
+
+
+@pytest.mark.asyncio
+async def test_commentary_first_audio_counts_for_drain_before_boot_gate_release(monkeypatch: Any) -> None:
+    """Plan rev 3 B1: spoken preamble audio must keep the boot gate shut until drain."""
+    samples = 16
+    delta = _silent_delta(samples)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(hf_mod, "get_session_greeting_prompt", lambda: "hello")
+    monkeypatch.setattr(hf_mod, "_BOOT_GATE_DRAIN_POLL_S", 0.001)
+
+    def _boot_task_name(handler: HuggingFaceRealtimeHandler) -> str | None:
+        task = handler._boot_gate_task
+        return task.get_name() if task is not None else None
+
+    def _before_done() -> None:
+        seen["before_done"] = (
+            handler._boot_gate_active,
+            _boot_task_name(handler),
+            hf_mod.audio_drain.is_audible(),
+        )
+
+    def _after_done_before_drain() -> None:
+        seen["after_done_before_drain"] = (
+            handler._boot_gate_active,
+            _boot_task_name(handler),
+            hf_mod.audio_drain.is_audible(),
+        )
+
+    def _drain_audio() -> None:
+        hf_mod.audio_drain.note_chunk(samples, handler.SAMPLE_RATE)
+        hf_mod.audio_drain.note_queue_empty()
+
+    def _after_drain() -> None:
+        seen["after_drain"] = (handler._boot_gate_active, _boot_task_name(handler))
+
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent("response.created", response=SimpleNamespace(id="resp_1")),
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_pre", response_id="resp_1", delta=delta),
+            _FakeEvent("session.updated", _before_return=_before_done),
+            _FakeEvent("response.done", response=SimpleNamespace(id="resp_1", status="completed")),
+            _FakeEvent("session.updated", _delay=0.02, _before_return=_after_done_before_drain),
+            _FakeEvent("session.updated", _before_return=_drain_audio),
+            _FakeEvent("session.updated", _delay=0.03, _before_return=_after_drain),
+        ),
+    )
+    handler._boot_gate_active = True
+
+    await handler._run_realtime_session()
+
+    assert seen["before_done"][0] is True
+    assert seen["before_done"][1] != hf_mod._BOOT_GATE_DRAIN_TASK
+    assert seen["before_done"][2] is True
+    assert seen["after_done_before_drain"] == (True, hf_mod._BOOT_GATE_DRAIN_TASK, True)
+    assert seen["after_drain"] == (False, None)
+
+
+@pytest.mark.asyncio
+async def test_record_and_sleep_persistence_exclude_commentary_transcript(monkeypatch: Any) -> None:
+    """Plan rev 3 B1: a preamble is spoken, not kept as answer history."""
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_pre", transcript="我查一下"),
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_ans", "phase": "final_answer"},
+                response_id="resp_1",
+                output_index=1,
+            ),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_ans", transcript="答案是三點二十"),
+        ),
+    )
+    handler._conversation_mode = ConversationMode.RECORD
+    transcripts: list[tuple[str, str]] = []
+    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text)))
+
+    await handler._run_realtime_session()
+
+    assert transcripts == [("assistant", "答案是三點二十")]
+    assert _queued_messages(_drain_queue(handler)) == [{"role": "assistant", "content": "答案是三點二十"}]
+    assert [(role, text) for role, text, _stamp in handler.deps.record_log] == [("assistant", "答案是三點二十")]
+    assert [(role, text) for role, text, _stamp in handler.deps.session_transcript] == [
+        ("assistant", "答案是三點二十")
+    ]
 
 
 def test_external_interrupt_forgets_commentary_ids() -> None:
-    """A stale id must not suppress a real item in the session that replaces it."""
+    """A stale id must not withhold transcript for an unrelated future item."""
     handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
     handler._commentary_item_ids.append("item_pre")
     handler.on_external_interrupt()

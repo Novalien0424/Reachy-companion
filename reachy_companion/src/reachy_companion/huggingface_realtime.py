@@ -868,10 +868,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Late audio deltas from a cancelled response must not reach the
         # speaker (finding 8). Tiny bound: only very recent ids can race.
         self._cancelled_response_ids: deque[str] = deque(maxlen=8)
-        # Output items the model tagged `commentary` — 2.x preambles. Their
-        # audio and transcript are dropped so a 「讓我想想喔」 never plays as
-        # speech and never counts toward the reply the brevity rules judge.
-        # Tiny bound, same as above: only very recent ids can matter.
+        # Output items the model tagged `commentary` -- 2.x preambles.
+        # Plan rev 3 B1: their audio is spoken by design, while their transcripts stay
+        # out of answer persistence because a preamble is not the answer the
+        # room log or sleep memory should keep. Tiny bound, same as above: only
+        # very recent ids can matter.
         self._commentary_item_ids: deque[str] = deque(maxlen=8)
         # --- solo pause-then-decide barge-in (Task 8) ------------------------
         # `_barge_paused` and `_barge_pending` move together: paused means emit()
@@ -1781,9 +1782,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._audio_item_enqueued_ms = 0.0
         self._barge_paused_item_id = None
         self._barge_paused_heard_ms = 0
-        # Task 10: a commentary id from an abandoned turn must not suppress a
-        # real item in the session that replaces it (ids are unique, but the
-        # bound is small and a stale entry is pure risk).
+        # Plan rev 3 B1: a commentary id from an abandoned turn must not
+        # withhold transcript for a real item in the session that replaces it
+        # (ids are unique, but the bound is small and a stale entry is pure
+        # risk).
         self._commentary_item_ids.clear()
         audio_drain.note_paused(False)
 
@@ -3657,9 +3659,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         logger.debug("User speech stopped - server will auto-commit with VAD")
 
                     if event.type == "response.output_item.added":
-                        # Task 10: 2.x preambles arrive as ordinary output items
-                        # tagged `commentary`. Only the id is remembered here —
-                        # the response's own lifecycle (`response.created` /
+                        # Plan rev 3 B1: 2.x preambles arrive as ordinary output
+                        # items tagged `commentary`. Only the id is remembered
+                        # here: audio stays on the normal spoken path because
+                        # preambles are audible by design, while the transcript
+                        # branch uses the id to keep preamble text out of the
+                        # answer transcript, room log and sleep memory.
+                        # The response lifecycle (`response.created` /
                         # `response.done`, and the sender loop that waits on it)
                         # is deliberately untouched, so a reply that is nothing
                         # BUT commentary still closes its turn normally.
@@ -3668,7 +3674,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             item_id = _item_id(item)
                             if item_id is not None:
                                 self._commentary_item_ids.append(item_id)
-                                logger.debug("suppressing commentary-phase item %s", item_id)
+                                logger.debug("commentary-phase item %s is audible; transcript withheld", item_id)
 
                     if event.type == "response.output_audio.done":
                         self.deps.movement_manager.set_speaking(False)
@@ -3983,10 +3989,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                     # Handle assistant transcription
                     if event.type == "response.output_audio_transcript.done":
                         if getattr(event, "item_id", None) in self._commentary_item_ids:
-                            # A preamble is not part of the answer: it must not
-                            # reach the console, the observer, or the room log.
+                            # Plan rev 3 B1: the preamble may be spoken, but it
+                            # is not part of the answer; keep it out of the text
+                            # output queue, operator transcript, room log and
+                            # sleep-summary tail.
                             logger.debug(
-                                "dropping commentary-phase transcript for item %s",
+                                "withholding commentary-phase transcript for item %s",
                                 getattr(event, "item_id", None),
                             )
                             continue
@@ -4006,15 +4014,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # reach the speaker after the local flush.
                             logger.debug("Dropping audio delta from a cancelled response")
                             continue
-                        if getattr(event, "item_id", None) in self._commentary_item_ids:
-                            # Task 10: dropped before ANY accounting — the drain
-                            # tracker and the per-item truncate numerator must
-                            # only ever count frames that actually reach the
-                            # speaker, exactly as for a cancelled response above.
-                            logger.debug(
-                                "dropping commentary-phase audio for item %s", getattr(event, "item_id", None)
-                            )
-                            continue
+                        # Plan rev 3 B1: no commentary drop here. Preambles are
+                        # spoken by design, so the frames must take the same
+                        # drain tracking, per-item truncate accounting,
+                        # `_audio_item_id` bookkeeping and activity marking as
+                        # final-answer audio. Their transcript is withheld in
+                        # the transcript branch above because it is not answer
+                        # history.
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")
