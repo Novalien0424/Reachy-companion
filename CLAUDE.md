@@ -45,7 +45,7 @@ pattern, home control, thin glue around official APIs.
 ## Plan Review (Codex)
 
 Every implementation plan gets an external review by the Codex CLI before
-execution — **up to 3 iterations** of: submit plan → collect Codex findings →
+execution — **up to 2 iterations** of: submit plan → collect Codex findings →
 revise. Stop early when a round yields no accepted findings. Claude (the main
 session) **holds final judgement**: each Codex finding is accepted or rejected
 on evidence (PRD, research notes, source in `reference/`), and rejections are

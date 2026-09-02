@@ -32,3 +32,7 @@ artifacts/
 # The management backend's local data: real people's photos, names and facts.
 # It is the durable side of the person memory and it never enters the repo.
 companion_backend/data/
+.gstack/
+# uv writes this beside the dev venv; nothing consumes it (dev = `uv pip install -e`,
+# robot = wheel into apps_venv), so it is not tracked.
+reachy_companion/uv.lock

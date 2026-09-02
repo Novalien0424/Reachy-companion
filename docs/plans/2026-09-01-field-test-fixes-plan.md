@@ -1,4 +1,4 @@
-# Field-Test Fixes Wave — Plan (rev 2)
+# Field-Test Fixes Wave — Plan (rev 3)
 
 **Date:** 2026-09-01. **Source:** `session-handoff.md` consolidated RCA
 (operator session 12:49–12:57 robot time). **Operator scope order:** fix
@@ -92,6 +92,36 @@ later. (`docs/codex-research-turn-detection-2026-09.md` Q1/Q2.)
     turn is still pending its answer via the continuation.
   - A DENIED turn holds nothing; barge-in during a hold-off follows the
     existing barge machine, never a second path.
+  - **Non-blocking (review r2 finding 1):** the window is a per-turn
+    `asyncio.Task` (or loop timer handle) created at acceptance; the
+    receive loop returns to `async for event in self.connection` (`:3481`)
+    immediately. It must NEVER be an awaited sleep inside the
+    `transcription.completed` branch — that would stall the single receive
+    loop, so the `speech_started` branch (`:3490`) could not observe the
+    continuation and skip condition (b) would be dead code. The
+    `speech_started` branch cancels the pending hold-off (marks it skipped,
+    journal line); on expiry the task enqueues through
+    `_safe_response_create()` (`:2601`, a queue put that never blocks).
+  - **Lifecycle (review r2 finding 2):** `_pending_responses` is created
+    once in `__init__` (`:740`) and outlives sessions, while each session
+    starts a fresh sender worker (`:3451`) cancelled in the session
+    `finally` (`:4080-4084`) — so a hold-off that outlives its session
+    would enqueue a `response.create` that the NEXT session's sender sends
+    (a phantom answer on reconnect, or during shutdown). Rules: (i) the
+    handle is bound at arm time to the connection it was armed under, and
+    the fire path re-checks before enqueueing — not cancelled,
+    `self.connection` is still that bound connection, `_receive_loop_active`,
+    and no `speech_started` noted since arm — otherwise it drops with a
+    journal line; (ii) the hold-off joins the timer set that
+    `on_external_interrupt()` cancels (`:1617-1655`, same
+    `_cancel_barge_task` pattern), which already covers the RPC
+    `conversation.interrupt`/`say` flush, `_barge_reset_for_new_session`,
+    the shutdown reset, and the sleep closure's existing interrupt call;
+    (iii) `_barge_shutdown()` awaits it at session teardown beside the
+    barge timers. Test pins: expiry in-session enqueues exactly once;
+    `speech_started` inside the window enqueues nothing; teardown or
+    reconnect with a hold-off pending enqueues nothing into the next
+    session; `on_external_interrupt()` cancels a pending hold-off.
   Cost: up to the window per turn — the operator has already chosen
   patience over speed twice (VAD silence 1000, eagerness low).
 - **A2. Short-turn qualifier: DROPPED from this wave** (review r1 finding
@@ -143,9 +173,11 @@ that makes speech physically possible):**
   `_emit_transcript()`/`record_transcript()` boundary even as the audio
   drop is removed. The prompt's 訊息頻道/開場白 block flips from "act
   silently, pre-openers are dropped" to: preambles are spoken and belong
-  before *slow* work (search, music resolution, MCP calls) as one short
-  sentence; fast robot actions go straight to work. Semantic conditions,
-  no trigger lists. Deliberate, named tradeoff (review r1 finding 6,
+  before *slow* work (search, music resolution, MCP calls) as a brief,
+  natural lead-in — enough to show the work has started, never a narration
+  of the steps (a calibration principle, not a length cap: review r2
+  finding 3, Global constraint 3); fast robot actions go straight to work.
+  Semantic conditions, no trigger lists. Deliberate, named tradeoff (review r1 finding 6,
   accepted in part): selectivity is enforced by INSTRUCTION, not code —
   that is the escalation ladder's rung-2-first ruling, taken knowingly
   with B4's fallback pre-designed; code keeps no per-tool speech policy
@@ -247,7 +279,7 @@ of Item A + the cross-cutting self-knowledge family — next wave candidate);
 - New `feature_list.json` rows: `VOICE-TURN-FRAGMENTS` (A: a deliberately
   fragmented Mandarin sentence gets ONE answer covering the whole thought;
   journal shows the hold-off merge line), `VOICE-SLOW-PREAMBLE` (B: search
-  turn → audible one-line preamble then the answer; a fast robot action →
+  turn → audible brief preamble then the answer; a fast robot action →
   no narration), `SLEEP-CLEAN-STOP` (C: 「睡覺吧」 → goodbye → pose →
   journal shows either `Requested current app stop via` OR the new
   broadened-guard warning, NEVER C6 `microphone unmuted`; sleep summary
@@ -285,4 +317,30 @@ in part, 0 rejected; plan rev 1 → rev 2):**
 11. Important, ACCEPTED — `movement_manager.stop()` guarded in the final
     shutdown path too, not just the sleep closure (C2).
 
-Round 2 owed: rev 2 not yet re-reviewed (session ended at rev 2).
+**Round 2 (2026-09-02, `docs/plans/2026-09-01-field-test-fixes-review-r2.md`,
+3 findings — 0 Critical / 3 Important / 0 Minor; 3 accepted, 0 rejected;
+plan rev 2 → rev 3; `codex --profile nova-auto exec`, gpt-5.5, ~4 min):**
+
+1. Important, ACCEPTED — the hold-off must be non-blocking: an awaited sleep
+   inside the `transcription.completed` branch would stall the single
+   receive loop (`:3481`), so `speech_started` (`:3490`) could never cancel
+   it. A1 now requires a per-turn task/timer handle (A1 "Non-blocking").
+2. Important, ACCEPTED — the hold-off had no lifecycle: `_pending_responses`
+   (`:740`) outlives sessions while the sender worker is per-session
+   (`:3451`, `:4080`), so a stale hold-off could enqueue a `response.create`
+   the NEXT session sends. A1 now binds the handle to its connection,
+   re-checks at fire time, and joins the `on_external_interrupt()` /
+   `_barge_shutdown()` cancellation set (A1 "Lifecycle").
+3. Important, ACCEPTED — "one short sentence" in B1 was a numeric length cap
+   inside a prompt instruction (Global constraint 3; skill line 95).
+   Reworded as a calibration principle; the verification row's "one-line"
+   wording followed suit.
+
+Codex also verified sound against source: the A1 accepted-turn seam
+(`:3674-3811`), the r1 findings 2–4 folds, the B1/B5 transcript-persistence
+fold (`:3831-3847`), the B2 manifest deploy trap (`tool_spaces.py:215-220,
+336-342`), every C1–C4 seam, and that no item reopens an out-of-scope item.
+
+**Review closed at the round cap** (CLAUDE.md: up to 2 iterations, lowered
+from 3 on 2026-09-02). Two rounds, 14 findings: 13 accepted, 1 accepted in
+part, 0 rejected. **Rev 3 is cleared for execution.**

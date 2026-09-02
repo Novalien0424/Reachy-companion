@@ -5,6 +5,18 @@ history of this file.
 
 ## Current state
 
+**2026-09-02 — field-test fix-wave plan rev 3, review CLOSED, no code
+touched.** Codex round 2 (`docs/plans/2026-09-01-field-test-fixes-review-r2.md`)
+returned 3 Important findings, all accepted: the Item A hold-off must be a
+non-blocking per-turn task (an inline sleep would stall the receive loop), it
+needs a session-bound lifecycle (cancel via `on_external_interrupt()` /
+`_barge_shutdown()`, re-check the connection at fire time — `_pending_responses`
+outlives sessions), and B1's "one short sentence" was a numeric prompt cap.
+Review cap lowered to 2 rounds in CLAUDE.md; 14 findings over 2 rounds, 0
+rejected. `reachy_companion/uv.lock` is now gitignored (nothing consumes it;
+it was already stale). Robot untouched since 09-01. **Next: Codex implements
+rev 3 task-by-task under Claude review** (suite baseline 1819/30).
+
 **THE TWENTIETH INSTALL (v1.20.0, the LLM-first instructing wave) IS ON THE
 ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE for the operator's voice test
 (2026-09-01 ~09:01 robot time).** Wave `1687a03..f81086b` (13 tasks, D-030):

@@ -1,0 +1,13 @@
+1. Important — Item A — The hold-off window must be explicitly non-blocking. If implemented as an awaited sleep inside the transcript-completed branch, the receive loop cannot observe `speech_started` during the window, so the core skip condition becomes ineffective. Concrete fix: require a per-turn timer/task or event that lets `_run_realtime_session` keep consuming events while the window is open. Evidence: docs/plans/2026-09-01-field-test-fixes-plan.md:70; docs/plans/2026-09-01-field-test-fixes-plan.md:73; reachy_companion/src/reachy_companion/huggingface_realtime.py:3481; reachy_companion/src/reachy_companion/huggingface_realtime.py:3490; reachy_companion/src/reachy_companion/huggingface_realtime.py:3811.
+
+2. Important — Item A — The new hold-off task lifecycle is missing. `_pending_responses` survives across sessions, and each new session starts a fresh sender worker; a stale hold-off task could enqueue `_safe_response_create()` after session teardown/reconnect unless it is cancelled or connection-bound. Concrete fix: specify cleanup in the session `finally`/external interrupt path and require the delayed create to verify it still belongs to the same live connection/turn before enqueueing. Evidence: docs/plans/2026-09-01-field-test-fixes-plan.md:70; reachy_companion/src/reachy_companion/huggingface_realtime.py:740; reachy_companion/src/reachy_companion/huggingface_realtime.py:3451; reachy_companion/src/reachy_companion/huggingface_realtime.py:4079.
+
+3. Important — Global — B1 silently violates the no numeric prompt caps rule by instructing the prompt change to make preambles “one short sentence.” That is a model-facing numeric length cap, even though Global constraint 3 and the governing skill forbid numeric caps in prompts. Concrete fix: replace with non-numeric calibration such as “brief, natural preamble,” and keep any examples labeled as style, not trigger conditions. Evidence: docs/plans/2026-09-01-field-test-fixes-plan.md:23; docs/plans/2026-09-01-field-test-fixes-plan.md:144; docs/plans/2026-09-01-field-test-fixes-plan.md:146; .claude/skills/reachy-instructing-model/SKILL.md:95.
+
+Verified sound:
+A1 accepted-turn seam: huggingface_realtime.py:3674-3811 matches.
+R1 findings 2-4 folds: barge cleanup, denied-turn split, and A2 drop are sufficient.
+B1/B5 transcript persistence fold: commentary transcript drop at huggingface_realtime.py:3831-3847 matches.
+B2 deploy trap: manifest cache behavior at tool_spaces.py:215-220 and 336-342 matches.
+C1-C4 folds: app_lifecycle.py:26-38, main.py:347-408/522-539, sleep_summary.py:163-190 match.
+Out of scope: no item reopens RCA-2, fabricated self-knowledge, who_is_this, RPC-SAY, or mode persistence.
