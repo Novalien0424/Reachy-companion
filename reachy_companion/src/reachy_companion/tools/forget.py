@@ -14,9 +14,13 @@ class Forget(Tool):
 
     name = "forget"
     description = (
-        "Remove a previously saved fact from long-term memory. Call this when the user asks you to forget something, "
-        "or when saved information becomes obsolete. Match by a specific free-text phrase present in the fact. "
-        "Searches the recognized person's facts first, then general memory."
+        "Remove a saved text fact from long-term memory. "
+        "Use when: the user asks you to forget a saved fact, or saved information becomes obsolete; match a "
+        "specific phrase in the fact and search the recognized person's facts before general memory. "
+        "Do NOT use when: the user corrects or replaces a fact; use `remember` with the new fact because "
+        "correction updates memory. "
+        "Do NOT use when: the request is about faces or identity; `remember_face` and `who_is_this` own those, "
+        "so this tool never touches faces."
     )
     parameters_schema = {
         "type": "object",

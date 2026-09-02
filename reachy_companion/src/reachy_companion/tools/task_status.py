@@ -20,8 +20,10 @@ class TaskStatus(Tool):
 
     name = "task_status"
     description = (
-        "Check the status of background tool tasks. "
-        "Use this when the user asks about running tools or wants to know what's happening in the background."
+        "Check background tool task status. "
+        "Use when: the user asks what is running, whether a background tool is done, or what is happening in the "
+        "background. "
+        "Do NOT use when: the user wants a running task cancelled; that is `task_cancel`."
     )
     parameters_schema = {
         "type": "object",

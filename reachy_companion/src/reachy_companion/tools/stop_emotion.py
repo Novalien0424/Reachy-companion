@@ -11,7 +11,13 @@ class StopEmotion(Tool):
     """Stop the current emotion."""
 
     name = "stop_emotion"
-    description = "Stop the current emotion"
+    description = (
+        "Stop the current emotion motion. "
+        "Use when: the user wants a robot emotion stopped; stopping is instant with no preamble because they "
+        "want it ended now. "
+        "Do NOT use when: stopping dance motion is needed; that is `stop_dance`. "
+        "Do NOT use when: speaker music should stop; that is `music` with `action=stop`."
+    )
     needs_response = False
     parameters_schema = {
         "type": "object",

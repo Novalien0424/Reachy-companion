@@ -14,16 +14,16 @@ class Remember(Tool):
 
     name = "remember"
     description = (
-        "Save ONE short fact about the user to long-term memory so it is available in future sessions. "
-        "Use this for stable user information they explicitly shared: name, preferences, hobbies, recurring projects, "
-        "important people, or plans. "
-        "Prefer ongoing threads — plans, upcoming events, things in progress — over static traits, "
-        "and the fact may mention other people you know by name. "
-        "Keep each fact atomic and under one sentence. Do not save sensitive data "
-        "(passwords, addresses, payment info, health diagnoses) or fleeting details. "
-        "When you have recognized who you are talking to, the fact is saved about that specific person. "
-        "Use this silently in the "
-        'background; acknowledge naturally without saying "I will remember that".'
+        "Save a single short user fact to long-term memory for future sessions. "
+        "Use when: the person explicitly shares stable information: name, preferences, hobbies, recurring "
+        "projects, important people, plans, or ongoing threads; prefer ongoing threads over static traits, and "
+        "the fact may mention other named people. "
+        "Do NOT use when: the detail is transient for this turn, was not shared by the person speaking, or is "
+        "sensitive (passwords, addresses, payment info, health diagnoses), because those do not belong in "
+        "long-term memory. "
+        "Do NOT use when: the user asks to remove a saved fact; that is `forget`. "
+        "If you recognized the speaker, save it about that person; use this silently in the background and "
+        'acknowledge naturally without saying "I will remember that".'
     )
     parameters_schema = {
         "type": "object",

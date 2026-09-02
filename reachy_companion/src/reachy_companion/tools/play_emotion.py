@@ -235,7 +235,11 @@ class PlayEmotion(Tool):
     """Play a pre-recorded emotion."""
 
     name = "play_emotion"
-    description = "Play a robot emotion matching a requested emotional intent."
+    description = (
+        "Play a short expressive robot reaction matching a feeling. "
+        "Use when: the user wants a brief emotional cue from the robot's body. "
+        "Do NOT use when: the user wants a music-like move sequence; that is `dance`."
+    )
     needs_response = False
     parameters_schema = {
         "type": "object",

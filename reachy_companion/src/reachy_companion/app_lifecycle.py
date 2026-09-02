@@ -32,9 +32,14 @@ def request_stop_current_app(robot: ReachyMini, logger: logging.Logger) -> bool:
         with urllib.request.urlopen(request, timeout=_STOP_CURRENT_APP_TIMEOUT_S) as response:
             response.read()
     except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
-        # plan rev 3 C1: the daemon can accept the POST, then close mid-response.
-        logger.error(
-            "Failed to request current app stop via %s: %s: %s",
+        # plan rev 3 C1: the daemon can accept the POST, then close or stall
+        # mid-response (RemoteDisconnected, or a TimeoutError once it has begun
+        # stopping this very app). Live on 2026-09-02 the daemon logged
+        # "Stopping app" two seconds BEFORE this fired, so this is the expected
+        # shape of a successful stop, not a failure: WARNING, and the caller
+        # continues to the local stop.
+        logger.warning(
+            "Stop request to %s got no clean answer (%s: %s); continuing with the local stop",
             stop_current_app_url,
             type(e).__name__,
             e,

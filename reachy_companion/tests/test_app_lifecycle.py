@@ -62,7 +62,7 @@ def test_request_stop_current_app_catches_response_failures(monkeypatch, caplog,
     monkeypatch.setattr(app_lifecycle.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
     robot = SimpleNamespace(client=SimpleNamespace(host="reachy.local", port=8000))
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         assert not app_lifecycle.request_stop_current_app(robot, logging.getLogger("test"))
 
     assert type(exc).__name__ in caplog.text

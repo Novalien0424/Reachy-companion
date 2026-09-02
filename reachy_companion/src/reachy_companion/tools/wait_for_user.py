@@ -22,10 +22,11 @@ class WaitForUser(Tool):
 
     name = "wait_for_user"
     description = (
-        "Call this when the latest audio does not need a spoken response, "
-        "such as silence, background noise, music, TV audio, side "
-        "conversation, or speech not addressed to the assistant. This tool "
-        "helps end the turn without a spoken reply."
+        "Use when: the latest audio needs no spoken response: silence, background noise, music, TV audio, side "
+        "conversation, or speech not addressed to the assistant. "
+        "This is the official no-op action: it ends the turn without speaking. "
+        "Do NOT use when: someone clearly addressed the robot or asked for help; answer instead because they are "
+        "expecting a response."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

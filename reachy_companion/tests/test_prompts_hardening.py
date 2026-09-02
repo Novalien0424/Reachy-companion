@@ -1,11 +1,26 @@
 """Contract tests for the prompt-hardening block (unclear-audio + language pin)."""
 
+import re
+
 from reachy_companion import prompts
 from reachy_companion.conversation_mode import ConversationMode
 
 
+QUOTED_PHRASE_LIST = re.compile(r"(?:「[^」]+」[、，,；;\s]*){3,}")
+
+
 def _assembled_session_instructions(tmp_path, mode: ConversationMode = ConversationMode.RECORD) -> str:
     return f"{prompts.get_session_instructions(tmp_path)}\n\n{prompts.mode_rules_block(mode)}"
+
+
+def _hardening_section(block: str, heading: str) -> str:
+    marker = f"### {heading}"
+    start = block.index(marker) + len(marker)
+    next_section = block.find("\n### ", start)
+    next_major = block.find("\n## ", start)
+    end_candidates = [index for index in (next_section, next_major) if index != -1]
+    end = min(end_candidates) if end_candidates else len(block)
+    return block[start:end]
 
 
 def test_hardening_block_appended_to_instructions(monkeypatch, tmp_path):
@@ -165,6 +180,20 @@ def test_the_preamble_block_promises_slow_work_leadins_and_fast_actions_go_direc
     assert "只會讓對方多等" in block
     assert "不會發出聲音" not in block
     assert "被丟掉" not in block
+
+
+def test_hardening_block_carries_variety_rule_without_phrase_list() -> None:
+    """Audible lead-ins need varied wording without turning examples into triggers."""
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    assert block.count("### 變化") == 1
+    assert block.index("### 開場白") < block.index("### 變化") < block.index("### 思考")
+    section = _hardening_section(block, "變化")
+    assert "不要直接重複你上一輪剛用過的句子" in section
+    assert "會像錄音" in section
+    assert "示範語氣只是一種說法，不是唯一說法" in section
+    assert QUOTED_PHRASE_LIST.search(section) is None
 
 
 def test_unclear_audio_rule_is_once_and_last_system_layer_section(monkeypatch, tmp_path) -> None:

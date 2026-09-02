@@ -13,7 +13,9 @@ class HeadTracking(Tool):
     name = "head_tracking"
     description = (
         "Enable or disable following the user's face with the head. "
-        "Use when asked to follow, keep looking at, or stop following the user."
+        "Use when: the user asks for ongoing face following or to stop following. "
+        "Do NOT use when: the user asks for a one-off look or turn; use `look_around` to inspect, or `move_head` "
+        "for movement only."
     )
     needs_response = False
     parameters_schema = {

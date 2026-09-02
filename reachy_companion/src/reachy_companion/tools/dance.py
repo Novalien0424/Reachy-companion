@@ -38,7 +38,11 @@ class Dance(Tool):
     """Play a named or random dance move once (or repeat). Non-blocking."""
 
     name = "dance"
-    description = "Play a named or random dance move once (or repeat). Non-blocking."
+    description = (
+        "Play a named or random music-like move sequence once or repeated. Non-blocking. "
+        "Use when: the user wants a dance or choreographed groove. "
+        "Do NOT use when: the user wants a short expressive reaction matching a feeling; that is `play_emotion`."
+    )
     needs_response = False
     parameters_schema = {
         "type": "object",

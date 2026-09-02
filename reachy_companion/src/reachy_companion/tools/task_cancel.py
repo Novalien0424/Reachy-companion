@@ -20,8 +20,9 @@ class TaskCancel(Tool):
     name = "task_cancel"
     description = (
         "Cancel a running background tool task. "
-        "Use this when the user wants to stop a tool that's running in the background. "
-        "Requires confirmation before cancelling."
+        "Use when: the user wants a running background tool stopped or cancelled. "
+        "Requires confirmation before cancelling. "
+        "Do NOT use when: the user merely asks what is running or its status; that is `task_status`."
     )
     parameters_schema = {
         "type": "object",

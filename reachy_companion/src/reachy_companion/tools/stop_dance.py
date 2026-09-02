@@ -11,7 +11,13 @@ class StopDance(Tool):
     """Stop the current dance move."""
 
     name = "stop_dance"
-    description = "Stop the current dance move"
+    description = (
+        "Stop the current dance move sequence. "
+        "Use when: the user wants a robot dance stopped; stopping is instant with no preamble because the person "
+        "wants it ended now. "
+        "Do NOT use when: stopping emotion motion is needed; that is `stop_emotion`. "
+        "Do NOT use when: speaker music should stop; that is `music` with `action=stop`."
+    )
     needs_response = False
     parameters_schema = {
         "type": "object",
