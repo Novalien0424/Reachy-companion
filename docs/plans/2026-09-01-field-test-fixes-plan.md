@@ -1,5 +1,9 @@
 # Field-Test Fixes Wave — Plan (rev 3)
 
+**Status (2026-09-02): EXECUTED.** Seven commits `5715829..` on `main`; suite
+1819 → 1859 / 30 skipped; design record D-031; shipped as v1.21.0, the
+twenty-first install (deploy evidence in `progress.md`).
+
 **Date:** 2026-09-01. **Source:** `session-handoff.md` consolidated RCA
 (operator session 12:49–12:57 robot time). **Operator scope order:** fix
 turn-detection over-commit first ("the main issue"), do RCA-3 (spoken

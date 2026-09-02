@@ -1579,3 +1579,111 @@ to watch there: `MOVE_HEAD_HOLD_S=1.5` is a feel-based guess, the gesture window
 adds latency to `move_head`, and `reasoning.effort` intentionally stays
 untouched unless a later three-metric A/B or one-shot full-`gpt-realtime-2.1`
 diagnostic justifies a change.
+
+## D-031 — Field-test fix wave: answer hold-off, spoken lead-ins, clean sleep stop (2026-09-02)
+
+The v1.20.0 field test (2026-09-01, operator session 12:49–12:57 robot time)
+produced six RCA findings; the operator ordered three for this wave —
+turn-detection over-commit first ("the main issue"), spoken preambles for slow
+tools, and the end-of-sleep failure that unmuted the microphone. Plan:
+`docs/plans/2026-09-01-field-test-fixes-plan.md` (rev 3; two Codex review
+rounds, 14 findings, 13 accepted + 1 in part, 0 rejected — the first plan
+reviewed under the 2-round cap that replaced the 3-round cap in `CLAUDE.md`
+on 2026-09-02). Execution model, operator directive: Claude planned, reviewed
+diffs and integrated; Codex (`--profile nova-auto`) implemented and ran the
+suites. Reuse-first note: no new SDK call was introduced anywhere in the wave —
+every change wraps our own seams (response issuance, commentary bookkeeping,
+the daemon stop-endpoint glue), so the missing `reference/` clone on the dev
+machine did not gate it.
+
+**Decision 1 — the answer hold-off lives at the accepted-turn seam, in the
+client (rung 3, timing).** `semantic_vad` exposes only `eagerness`, and
+eagerness bounds the *maximum* wait while the classifier is unsure; a fragment
+with terminal prosody commits at once at any setting. Server tuning is
+exhausted (`docs/codex-research-turn-detection-2026-09.md`). Because
+`create_response=false` since D-029, the client already issues every
+`response.create`, so the fix is a bounded wait — `REALTIME_COMMIT_HOLDOFF_MS`,
+default 700, 0 restores the old path — between a turn being ACCEPTED and its
+request. Codex round 1 moved it from a commit-event seam that does not exist
+in this handler to the accepted-turn path, which keeps the GROUP/RECORD/name
+gates in front of it. The "already speaking" test is event order, not timing
+and not transcript content: a monotonic `speech_started` sequence, stamped per
+input item, compared at acceptance. Rules that round 2 and the implementation
+review added, all test-pinned: the window is a per-turn task (an inline sleep
+would stall the single receive loop and make the skip unobservable); the task
+is bound to its connection and re-checks sequence, connection identity and
+`_receive_loop_active` at fire because `_pending_responses` outlives sessions
+while the sender worker does not; `on_external_interrupt()` and
+`_barge_shutdown()` cancel it beside the barge timers; a newer accepted turn
+supersedes an older window; and — the gap the plan itself missed — a skip
+*owes* the held turn an answer when its continuation produces no turn (empty
+or failed transcript, gate denial, rollback), so a cough inside the window
+cannot eat a real question. Rejected: transcript-length gating (content
+heuristics on a fragment are exactly the guessing the prompt forbids), a
+short-turn qualifier (needs committed-audio duration the handler does not
+track — YAGNI until the flat window annoys), and any change to VAD type or
+eagerness (the on-robot A/B row stays the fallback).
+
+**Decision 2 — preambles are spoken again; selectivity is instructed, not
+coded (rungs 1–2 with one minimal seam change).** Dead air on search turns was
+by design: every commentary-phase item was dropped (D-029 Task 10, kept in
+D-030). The survey (`docs/codex-investigation-commentary-2026-09.md`) showed the
+tool name is unknowable at the drop point, so code cannot enforce "slow work
+only" without buffering. Under the escalation ladder the wave removes only the
+*audio* drop — preamble frames now take the normal speaker path with full
+drain, truncate and item bookkeeping — while commentary *transcripts* stay out
+of the output queue, operator transcript, RECORD room log and the D-027
+sleep-summary tail (Codex round 1: a preamble is not the answer those should
+keep). When a lead-in belongs is taught where the ladder says it works: the
+prompt's 訊息頻道/開場白 block (calibration principle — enough to show the work
+has started, never a narration of the steps; Codex round 2 struck the "one
+short sentence" cap), 示範語氣 preamble phrases in the slow tools' descriptions
+(bundled search, `music` play only, and one appended sentence on every remote
+MCP tool at the wrap point), and the persona/profile point-first line reworded
+to apply to the answer. Two riders rode the same description edits: the RCA-4
+routing contrast (media playback → `music`, not search; `music` owns YouTube
+playback), and the A3 placement move — the 聽不清楚時 rule now follows the mode
+block so it is the last system-layer text the model reads. Known risk, stated
+up front: fast-tool narration may return; the reviewed fallback is buffering
+commentary until `function_call_arguments.done` names the tool, as its own
+task — not a reason to hard-code speech now. Deploy trap (Codex round 1): a
+robot with an `installed_tool_spaces.json` manifest serves cached descriptions,
+so bundled specs now override the cache at read time for bundled slugs.
+
+**Decision 3 — sleep teardown treats the daemon's early hang-up as success
+(rung 3, execution-boundary correctness).** The daemon accepts
+`POST /api/apps/stop-current-app` and tears the app down before finishing
+the HTTP response, so `response.read()` raises `http.client.RemoteDisconnected`
+— a `ConnectionResetError`/`OSError`, not a `URLError` — past the old guard
+and into the C6 unmute recovery, which reopened the microphone about seven
+seconds before the process died (`docs/codex-investigation-sleep-2026-09.md`;
+journal 2026-09-01 12:57:15 `go_to_sleep failed before the stop; microphone
+unmuted`). The guard now catches `URLError`, `HTTPException` and `OSError`,
+logs the exception type, and lets the local stop proceed as today. The C6
+recovery boundary shrank to the genuinely pre-pose steps (quiesce, speaker
+wait, wobbling, movement stop, pose); the stop request and local shutdown sit
+outside it, because by then quiesce muted the microphone on purpose and
+reopening it contradicts sleep. `movement_manager.stop()` is log-and-continue
+in both the sleep closure and the final shutdown path (Codex round 1, finding
+11 — a raise there aborted wobbling-disable, media-close and disconnect). The
+D-027 sleep summary retries one `TimeoutError` with a fixed 4 s budget so the
+added shutdown delay is bounded regardless of `MEMORY_LAST_CHAT_TIMEOUT_S`
+(round 1, finding 10 — "2× env" could have held the still-open realtime
+connection for a minute). Rejected: persisting the transcript locally before
+summarising (the non-surgical follow-up, recorded if loss recurs).
+
+**Verification status.** Layer 1 is SDK-simulated and pinned: the suite
+went 1819 → 1859 passed / 30 skipped across seven commits, ruff and
+`mypy --strict` clean at each. Codex's sandboxed runs reported three
+environmental failures every time (two MCP tests cannot bind 127.0.0.1, one
+wheel test cannot read the uv cache); none reproduces outside the sandbox and
+the session re-ran the full suite on the dev machine before every commit.
+On-robot proof is the twenty-first install's three new rows in
+`feature_list.json` — `VOICE-TURN-FRAGMENTS`, `VOICE-SLOW-PREAMBLE`,
+`SLEEP-CLEAN-STOP` — all `implemented-unverified` until a person is in the
+room. Residuals to watch: the 700 ms window is a flat cost per turn (the
+short-turn qualifier is the recorded optimisation if it annoys); fast-tool
+narration may return under the audible-commentary contract (the B4 buffering
+fallback is the reviewed answer, not a revert); RCA-2, the RCA-4 fabrication
+half, RCA-5, the `who_is_this` too_far defect and `RPC-SAY-CROSS-LOOP` remain
+open and untouched.

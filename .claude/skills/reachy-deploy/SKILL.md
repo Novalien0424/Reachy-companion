@@ -257,6 +257,28 @@ is the proven alternative when ssh is unavailable.
    anything. `persona.md` is the one that does announce itself — read the
    `persona:` line in the startup log to confirm the restore took. Never bake
    secrets, an edited persona, memory or faces into the wheel.
+6b. **Verify the model-visible tool descriptions (plan rev 3 B2, review r1
+   finding 7).** A robot that already carries an `installed_tool_spaces.json`
+   manifest used to serve the CACHED description for the bundled search tool,
+   so a description edit shipped in the wheel never reached the model there.
+   Since D-031 the bundled spec overrides the cache at read time; prove it on
+   the robot, not on the dev box:
+
+   ```sh
+   /venvs/apps_venv/bin/python - <<'PY'
+   import pathlib, reachy_companion
+   from reachy_companion import tool_spaces
+   inst = pathlib.Path(reachy_companion.__file__).parent
+   manifest = tool_spaces.read_installed_tool_spaces(inst)
+   for space in manifest.spaces:
+       if space.slug in tool_spaces.PREINSTALLED_TOOL_SPACE_SPECS:
+           for tool in space.tools:
+               print(space.slug, tool.client_tool_name, "示範語氣" in tool.description, tool.description[:80])
+   PY
+   ```
+
+   Every bundled tool must print `True`; a `False` means the robot would talk
+   to a stale description and the install is not done.
 7. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
 8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the

@@ -9,6 +9,60 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.21.0] — 2026-09-02 · the field-test fix wave
+
+Deployed as the twenty-first install (commit `%%COMMIT%%`, wheel sha `%%SHA%%`).
+Design record D-031. Fixes three of the six findings from the 2026-09-01
+field test, in the operator's order.
+
+- **It waits for you to finish the sentence.** Mid-sentence pauses were being
+  committed as turns — 「你。」「就是。」 got answers in under half a second, and
+  the rest of the sentence got a second answer. After it accepts a turn the
+  robot now holds its reply for a short window; if you keep talking, the
+  fragment and the continuation are answered together. If what followed was
+  only a cough, the original question is still answered. The window is
+  `REALTIME_COMMIT_HOLDOFF_MS` (default 700 ms; 0 restores the old behaviour).
+- **It tells you it is looking before a slow lookup.** Web searches used to
+  mean eight to ten seconds of silence because every pre-tool remark was
+  swallowed on purpose. Those remarks are audible again, the instructions say
+  where they belong (before slow work — search, finding music, remote services
+  — and not before quick moves), and they never end up in the room log or the
+  sleep-time memory as if they were answers.
+- **It sends "play that" to the speaker, not to the search engine.** The
+  search and music tools now name the boundary between them, and YouTube
+  playback requests belong to `music`.
+- **It reads the "if you did not hear it, ask" rule last.** Moved to the end
+  of the instructions, restated positively, so it is the freshest rule at the
+  moment a fragment arrives.
+- **「睡覺吧」 ends cleanly.** The robot's own daemon hangs up on the stop
+  request a moment early, and that used to be mistaken for a failure that
+  switched the microphone back on seconds before the app died. The early
+  hang-up is now understood as the stop succeeding, the microphone stays off
+  once sleep has begun, and a stuck motion writer can no longer abort the
+  pose or the shutdown cleanup.
+- **It gets a second chance to remember the visit.** The end-of-visit summary
+  was a single eight-second call; one timeout lost the memory. It now retries
+  once, briefly.
+
+### For contributors
+
+- New env knob `REALTIME_COMMIT_HOLDOFF_MS`; documented in `.env.example` and
+  the README table.
+- Commentary-phase items: audio passes, transcript withheld. The journal lines
+  changed accordingly (`commentary-phase item … is audible; transcript
+  withheld`, `withholding commentary-phase transcript for item …`); the old
+  `suppressing …` / `dropping commentary-phase audio …` lines are gone.
+- Bundled tool-space specs override a manifest's cached description at read
+  time, so description edits reach a robot that already has a manifest.
+- `persona.md` and the locked profile changed one line each; the instance
+  persona must be re-synced at deploy (it was, sha in `progress.md`).
+- `request_stop_current_app` catches `URLError`, `HTTPException` and `OSError`
+  and logs the exception type; the C6 unmute recovery covers only pre-pose
+  failures; the sleep summary retries a `TimeoutError` once with a fixed 4 s
+  budget.
+- Plan and review log: `docs/plans/2026-09-01-field-test-fixes-plan.md`
+  (rev 3, two Codex rounds under the new 2-round cap, 14 findings, 0 rejected).
+
 ## [1.20.0] — 2026-09-01 · the LLM-first instructing wave
 
 Deployed as the twentieth install (commit `…`, wheel sha `…`).
