@@ -98,6 +98,17 @@ class _TimedClient:
         return _TimedConnection(self._events, tail_delay_s=self._tail_delay_s, probes=self._probes)
 
 
+class _FakeClock:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def set(self, now: float) -> None:
+        self.now = now
+
+
 @pytest.fixture(autouse=True)
 def _clean_holdoff_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
@@ -148,6 +159,10 @@ def _speech_started(item_id: str) -> _FakeEvent:
     return _FakeEvent("input_audio_buffer.speech_started", item_id=item_id)
 
 
+def _speech_stopped(item_id: str) -> _FakeEvent:
+    return _FakeEvent("input_audio_buffer.speech_stopped", item_id=item_id)
+
+
 def _accepted(item_id: str, transcript: str = "今天晚餐要吃什麼") -> _FakeEvent:
     return _FakeEvent(
         "conversation.item.input_audio_transcription.completed",
@@ -163,6 +178,18 @@ def _failed(item_id: str) -> _FakeEvent:
 def _assert_owed_answer_logged(caplog: pytest.LogCaptureFixture, reason: str) -> None:
     line = f"turn hold-off: continuation produced no turn ({reason}); answering the held turn"
     assert line in caplog.text
+
+
+def _patch_fake_monotonic(monkeypatch: pytest.MonkeyPatch, clock: _FakeClock) -> None:
+    monkeypatch.setattr(
+        hf_mod,
+        "time",
+        SimpleNamespace(monotonic=clock.monotonic, perf_counter=time.perf_counter),
+    )
+
+
+def _messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records]
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 1.0) -> None:
@@ -240,6 +267,38 @@ async def test_speech_started_inside_holdoff_skips_response_and_logs(
 
     assert handler._pending_responses.qsize() == 0
     assert "turn hold-off: awaiting continuation (" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_speech_started_holdoff_cancel_logs_gap_and_held_from_fake_clock(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A renewed speech start journals the observed gap and held window age."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "1000")
+    clock = _FakeClock()
+    _patch_fake_monotonic(monkeypatch, clock)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_stopped("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.01, _speech_started("item_2")),
+        ),
+        tail_delay_s=0.02,
+        probes={
+            0: lambda: clock.set(10.0),
+            1: lambda: clock.set(10.5),
+            2: lambda: clock.set(10.75),
+            3: lambda: clock.set(11.0),
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 0
+    assert "turn hold-off: awaiting continuation (speech_started) gap=500 held=250" in _messages(caplog)
 
 
 @pytest.mark.asyncio
@@ -379,6 +438,38 @@ async def test_later_segment_already_started_at_acceptance_skips_immediately(
 
 
 @pytest.mark.asyncio
+async def test_later_segment_acceptance_skip_logs_gap_from_fake_clock(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The acceptance-time skip journals the continuation gap."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    clock = _FakeClock()
+    _patch_fake_monotonic(monkeypatch, clock)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_stopped("item_1")),
+            (0.0, _speech_started("item_2")),
+            (0.0, _accepted("item_1")),
+        ),
+        tail_delay_s=0.03,
+        probes={
+            0: lambda: clock.set(20.0),
+            1: lambda: clock.set(20.5),
+            2: lambda: clock.set(20.75),
+            3: lambda: clock.set(21.0),
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 0
+    assert "turn hold-off: awaiting continuation (later speech already started) gap=250" in _messages(caplog)
+
+
+@pytest.mark.asyncio
 async def test_immediate_skip_empty_continuation_answers_held_turn(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -500,6 +591,115 @@ async def test_external_interrupt_cancels_pending_holdoff(monkeypatch: pytest.Mo
     await session
 
     assert handler._pending_responses.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_late_continuation_after_expired_window_logs_once_within_probe_window(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A start just after expiry is the plan rev 3 A1 calibration signal."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    clock = _FakeClock()
+    _patch_fake_monotonic(monkeypatch, clock)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_stopped("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.15, _speech_started("item_2")),
+            (0.0, _speech_started("item_3")),
+        ),
+        tail_delay_s=0.02,
+        probes={
+            0: lambda: clock.set(50.0),
+            1: lambda: clock.set(50.5),
+            2: lambda: clock.set(51.0),
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        session = asyncio.create_task(handler._run_realtime_session())
+        await _wait_until(lambda: getattr(handler, "_holdoff_task", None) is not None)
+        clock.set(51.02)
+        await _wait_until(lambda: getattr(handler, "_holdoff_fired_at", None) is not None)
+        clock.set(51.145)
+        await session
+
+    line = "turn hold-off: late continuation 125 ms after the window (window=20 ms)"
+    assert _messages(caplog).count(line) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_continuation_after_expired_window_beyond_probe_window_is_quiet(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A start beyond the calibration window does not journal a too-short signal."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    clock = _FakeClock()
+    _patch_fake_monotonic(monkeypatch, clock)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_stopped("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.15, _speech_started("item_2")),
+        ),
+        tail_delay_s=0.02,
+        probes={
+            0: lambda: clock.set(60.0),
+            1: lambda: clock.set(60.5),
+            2: lambda: clock.set(61.0),
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        session = asyncio.create_task(handler._run_realtime_session())
+        await _wait_until(lambda: getattr(handler, "_holdoff_task", None) is not None)
+        clock.set(61.02)
+        await _wait_until(lambda: getattr(handler, "_holdoff_fired_at", None) is not None)
+        clock.set(63.021)
+        await session
+
+    assert "turn hold-off: late continuation" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_external_interrupt_clears_expired_holdoff_marker(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """External ownership clears the fired-window calibration marker."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    clock = _FakeClock()
+    _patch_fake_monotonic(monkeypatch, clock)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_stopped("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.15, _speech_started("item_2")),
+        ),
+        tail_delay_s=0.02,
+        probes={
+            0: lambda: clock.set(70.0),
+            1: lambda: clock.set(70.5),
+            2: lambda: clock.set(71.0),
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        session = asyncio.create_task(handler._run_realtime_session())
+        await _wait_until(lambda: getattr(handler, "_holdoff_task", None) is not None)
+        clock.set(71.02)
+        await _wait_until(lambda: getattr(handler, "_holdoff_fired_at", None) is not None)
+        handler.on_external_interrupt()
+        assert getattr(handler, "_holdoff_fired_at", None) is None
+        clock.set(71.145)
+        await session
+
+    assert "turn hold-off: late continuation" not in caplog.text
 
 
 @pytest.mark.asyncio

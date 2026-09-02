@@ -7,7 +7,7 @@ import base64
 import random
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Final, Tuple, Optional
+from typing import TYPE_CHECKING, Any, Final, Tuple, TypeVar, Optional
 from collections import deque
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -362,11 +362,25 @@ _VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 1000
 # `response.create` request. 0 is the revert-to-today switch (plan rev 3 A1).
 _COMMIT_HOLDOFF_DEFAULT_MS: Final[int] = 700
 _COMMIT_HOLDOFF_MAX_MS: Final[int] = 3000
+_HOLDOFF_LATE_CONTINUATION_MS: Final[int] = 2000
 # Bound on the per-item turn-mode stamps. One entry lives from `speech_started`
 # to that item's `transcription.completed`/`.failed`, so the map is normally
 # one or two deep; the cap only matters if transcripts stop arriving at all.
 _TURN_MODE_MAX_ITEMS: Final[int] = 16
 _BARGE_CONFIRM_WARNED = False
+_StampKeyT = TypeVar("_StampKeyT")
+
+
+def _gap_ms(start: float | None, end: float | None) -> int | None:
+    """Return a non-negative integer monotonic delta in milliseconds."""
+    if start is None or end is None:
+        return None
+    return max(0, int(round((end - start) * 1000.0)))
+
+
+def _ms_field(value: int | None) -> str:
+    """Render an optional integer millisecond field for one-line journals."""
+    return "n/a" if value is None else str(value)
 
 
 def warn_if_barge_confirm_races_vad() -> None:
@@ -813,6 +827,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._speech_started_seq: int = 0
         self._speech_started_seqs_by_item: dict[str, int] = {}
         self._holdoff_task: asyncio.Task[None] | None = None
+        # plan rev 3 A1 calibration: measure real continuation gaps before
+        # changing the 700 ms design pick.
+        self._last_speech_started_at: float | None = None
+        self._last_speech_stopped_at: float | None = None
+        self._last_speech_stopped_item_id: str | None = None
+        self._speech_started_ats_by_seq: dict[int, float] = {}
+        self._speech_stopped_ats_by_item: dict[str, float] = {}
+        self._holdoff_armed_at: float | None = None
+        self._holdoff_fired_at: float | None = None
+        self._holdoff_fired_window_ms: int | None = None
         # True when an ACCEPTED turn skipped its answer for a continuation that
         # still might vanish (plan rev 3 A1, owed answer).
         self._holdoff_owed: bool = False
@@ -1172,6 +1196,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         speech_started_seqs_by_item: dict[str, int] | None = getattr(self, "_speech_started_seqs_by_item", None)
         if speech_started_seqs_by_item is not None:
             speech_started_seqs_by_item.clear()
+        self._last_speech_started_at = None
+        self._last_speech_stopped_at = None
+        self._last_speech_stopped_item_id = None
+        # Guarded like `_speech_started_seqs_by_item` above: some tests build
+        # the handler without the full constructor.
+        speech_started_ats: dict[int, float] | None = getattr(self, "_speech_started_ats_by_seq", None)
+        if speech_started_ats is not None:
+            speech_started_ats.clear()
+        speech_stopped_ats: dict[str, float] | None = getattr(self, "_speech_stopped_ats_by_item", None)
+        if speech_stopped_ats is not None:
+            speech_stopped_ats.clear()
+        self._holdoff_armed_at = None
+        self._holdoff_fired_at = None
+        self._holdoff_fired_window_ms = None
         self._holdoff_owed = False
         self._turn_mode = self._conversation_mode
 
@@ -1511,9 +1549,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 return stamped
         return self._turn_mode
 
-    def _stamp_speech_started_seq(self, item_id: str | None) -> None:
+    @staticmethod
+    def _remember_bounded_time(stamps: dict[_StampKeyT, float], key: _StampKeyT, value: float) -> None:
+        """Bound timestamp maps that wait on out-of-order realtime events."""
+        if key not in stamps and len(stamps) >= _TURN_MODE_MAX_ITEMS:
+            stamps.pop(next(iter(stamps)), None)
+        stamps[key] = value
+
+    def _stamp_speech_started_seq(self, item_id: str | None, started_at: float) -> None:
         """Record the ordered speech-start event for this input item."""
         self._speech_started_seq += 1
+        self._remember_bounded_time(self._speech_started_ats_by_seq, self._speech_started_seq, started_at)
         if item_id:
             if item_id not in self._speech_started_seqs_by_item and len(
                 self._speech_started_seqs_by_item
@@ -1521,15 +1567,77 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 self._speech_started_seqs_by_item.pop(next(iter(self._speech_started_seqs_by_item)), None)
             self._speech_started_seqs_by_item[item_id] = self._speech_started_seq
 
+    def _stamp_speech_started_at(self, item_id: str | None) -> float:
+        """Stamp speech onset timing for hold-off calibration."""
+        started_at = time.monotonic()
+        self._last_speech_started_at = started_at
+        self._stamp_speech_started_seq(item_id, started_at)
+        return started_at
+
+    def _stamp_speech_stopped_at(self, item_id: str | None) -> float:
+        """Stamp speech stop timing for hold-off calibration."""
+        stopped_at = time.monotonic()
+        self._last_speech_stopped_at = stopped_at
+        self._last_speech_stopped_item_id = item_id
+        if item_id:
+            self._remember_bounded_time(self._speech_stopped_ats_by_item, item_id, stopped_at)
+        return stopped_at
+
     def _take_speech_started_seq(self, item_id: str | None) -> int | None:
         """Pop the speech-start sequence stamped for this input item."""
         if item_id:
             return self._speech_started_seqs_by_item.pop(item_id, None)
         return None
 
-    def _log_holdoff_skip(self, reason: str) -> None:
+    def _take_speech_stopped_at(self, item_id: str | None) -> float | None:
+        """Pop the speech-stop timestamp for this input item."""
+        if item_id:
+            return self._speech_stopped_ats_by_item.pop(item_id, None)
+        return None
+
+    def _later_speech_started_at(self, started_seq: int | None) -> float | None:
+        """Return the first speech start after an item's own onset, if retained."""
+        if started_seq is None:
+            return None
+        later_seqs = [seq for seq in self._speech_started_ats_by_seq if seq > started_seq]
+        if later_seqs:
+            return self._speech_started_ats_by_seq[min(later_seqs)]
+        if self._speech_started_seq > started_seq:
+            return self._last_speech_started_at
+        return None
+
+    def _log_holdoff_skip(
+        self,
+        reason: str,
+        *,
+        gap_ms: int | None = None,
+        held_ms: int | None = None,
+        include_gap: bool = False,
+        include_held: bool = False,
+    ) -> None:
         """Journal a hold-off skip with the plan rev 3 A1 operator-facing line."""
-        logger.info("turn hold-off: awaiting continuation (%s)", reason)
+        fields: list[str] = []
+        if include_gap:
+            fields.append(f"gap={_ms_field(gap_ms)}")
+        if include_held:
+            fields.append(f"held={_ms_field(held_ms)}")
+        suffix = f" {' '.join(fields)}" if fields else ""
+        logger.info("turn hold-off: awaiting continuation (%s)%s", reason, suffix)
+
+    def _log_late_holdoff_continuation(self, speech_started_at: float) -> None:
+        """Log once when speech resumes right after a fired hold-off window."""
+        fired_at = self._holdoff_fired_at
+        window_ms = self._holdoff_fired_window_ms
+        self._holdoff_fired_at = None
+        self._holdoff_fired_window_ms = None
+        late_ms = _gap_ms(fired_at, speech_started_at)
+        if late_ms is None or window_ms is None or late_ms > _HOLDOFF_LATE_CONTINUATION_MS:
+            return
+        logger.info(
+            "turn hold-off: late continuation %d ms after the window (window=%d ms)",
+            late_ms,
+            window_ms,
+        )
 
     async def _answer_owed_holdoff(self, reason: str) -> bool:
         """Answer a skipped ACCEPTED turn when its continuation produced no turn."""
@@ -1555,9 +1663,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     async def _request_accepted_turn_response(self, item_id: str | None) -> None:
         """Request an accepted turn's answer, with the plan rev 3 A1 hold-off seam."""
         started_seq = self._take_speech_started_seq(item_id)
+        item_stopped_at = self._take_speech_stopped_at(item_id)
         holdoff_ms = _commit_holdoff_ms()
         if holdoff_ms <= 0:
             self._cancel_holdoff_task(_current_task())
+            self._holdoff_armed_at = None
             self._holdoff_owed = False
             await self._safe_response_create()
             return
@@ -1568,13 +1678,21 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # loop before the previous transcript completed. No transcript text
             # heuristic is needed; event order is the whole signal.
             self._holdoff_owed = True
-            self._log_holdoff_skip("later speech already started")
+            if item_stopped_at is None and (item_id is None or self._last_speech_stopped_item_id == item_id):
+                item_stopped_at = self._last_speech_stopped_at
+            self._holdoff_armed_at = None
+            self._log_holdoff_skip(
+                "later speech already started",
+                gap_ms=_gap_ms(item_stopped_at, self._later_speech_started_at(started_seq)),
+                include_gap=True,
+            )
             return
         if cancelled_older:
             self._log_holdoff_skip("newer accepted turn")
 
         bound_connection = self.connection
         armed_seq = self._speech_started_seq
+        self._holdoff_armed_at = time.monotonic()
         self._holdoff_owed = False
 
         async def _finish_holdoff() -> None:
@@ -1599,10 +1717,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             if drop_reason is not None:
                 if current is self._holdoff_task:
                     self._holdoff_task = None
+                    self._holdoff_armed_at = None
                 logger.debug("turn hold-off dropped: %s", drop_reason)
                 return
 
             self._holdoff_task = None
+            self._holdoff_armed_at = None
+            self._holdoff_fired_at = time.monotonic()
+            self._holdoff_fired_window_ms = holdoff_ms
             logger.debug("turn hold-off expired after %d ms; requesting response", holdoff_ms)
             await self._safe_response_create()
 
@@ -1764,6 +1886,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_rollback_task = None
         self._barge_watchdog_task = None
         self._holdoff_task = None
+        self._holdoff_armed_at = None
+        self._holdoff_fired_at = None
+        self._holdoff_fired_window_ms = None
         self._holdoff_owed = False
         for task in tasks:
             _cancel_barge_task(task, current)
@@ -3623,11 +3748,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     if event.type == "input_audio_buffer.speech_started":
                         item_id = getattr(event, "item_id", None)
+                        speech_started_at = self._stamp_speech_started_at(item_id)
+                        self._log_late_holdoff_continuation(speech_started_at)
                         self._stamp_turn_mode(item_id)
-                        self._stamp_speech_started_seq(item_id)
                         if self._cancel_holdoff_task(_current_task()):
                             self._holdoff_owed = True
-                            self._log_holdoff_skip("speech_started")
+                            held_ms = _gap_ms(self._holdoff_armed_at, speech_started_at)
+                            self._holdoff_armed_at = None
+                            self._log_holdoff_skip(
+                                "speech_started",
+                                gap_ms=_gap_ms(self._last_speech_stopped_at, speech_started_at),
+                                held_ms=held_ms,
+                                include_gap=True,
+                                include_held=True,
+                            )
                         self._user_has_spoken = True
                         self._mark_activity("user_speech_started")
                         self._turn_user_done_at = None
@@ -3651,6 +3785,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         logger.debug("User speech started")
 
                     if event.type == "input_audio_buffer.speech_stopped":
+                        self._stamp_speech_stopped_at(getattr(event, "item_id", None))
                         self._mark_activity("user_speech_stopped")
                         self._party_speech_open = False
                         if not self._party_mode:
@@ -3840,6 +3975,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if self._barge_pending:
                             if await self._resolve_solo_barge(transcript):
                                 self._take_speech_started_seq(event_item_id)
+                                self._take_speech_stopped_at(event_item_id)
                                 await self._answer_owed_holdoff("solo barge rollback")
                                 continue
                             pause_committed = True
@@ -3854,12 +3990,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         if not transcript:
                             self._take_speech_started_seq(event_item_id)
+                            self._take_speech_stopped_at(event_item_id)
                             logger.debug("Ignoring empty user transcript")
                             await self._answer_owed_holdoff("empty transcript")
                             continue
 
                         if not self._answer_gate_accepts(transcript, turn_mode):
                             self._take_speech_started_seq(event_item_id)
+                            self._take_speech_stopped_at(event_item_id)
                             # Heard, kept as context (it is already in the
                             # conversation), and left unanswered. Close the turn
                             # for the music hooks (party plan, finding 4) and
@@ -3972,6 +4110,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # stamp has no reader left; pop it rather than leak it.
                         self._take_turn_mode(event_item_id)
                         self._take_speech_started_seq(event_item_id)
+                        self._take_speech_stopped_at(event_item_id)
                         if self._party_mode:
                             # No transcript will ever arrive for this turn, so no
                             # gate decision and no response: close it for the
