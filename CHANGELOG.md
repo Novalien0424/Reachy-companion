@@ -11,7 +11,7 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.21.0] — 2026-09-02 · the field-test fix wave
 
-Deployed as the twenty-first install (commit `%%COMMIT%%`, wheel sha `%%SHA%%`).
+Deployed as the twenty-first install (commit `c3e46cf`, wheel sha `a96e06ed…`).
 Design record D-031. Fixes three of the six findings from the 2026-09-01
 field test, in the operator's order.
 

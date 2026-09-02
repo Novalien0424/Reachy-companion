@@ -277,8 +277,12 @@ is the proven alternative when ssh is unavailable.
    PY
    ```
 
-   Every bundled tool must print `True`; a `False` means the robot would talk
-   to a stale description and the install is not done.
+   The bundled **search** tool must print `True` (it is the one that carries a
+   示範語氣 preamble phrase; the bundled time and weather tools are fast and
+   print `False` by design). A `False` on search means the robot would talk to
+   a stale description and the install is not done. Also confirm
+   `manifest file present:` — when it is `False` the override had nothing to
+   do and the baked-in spec was served directly.
 7. **Verify discovery:** `GET http://$REACHY_HOST:8000/api/apps/list-available/installed`
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
 8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the

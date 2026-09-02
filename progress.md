@@ -5,6 +5,39 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-FIRST INSTALL (v1.21.0, the field-test fix wave) IS ON THE ROBOT
+WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's probes
+(2026-09-02 14:02 robot time).** Wave `5715829..c3e46cf` (8 commits, D-031,
+plan rev 3 executed): Item A accepted-turn answer hold-off
+(`REALTIME_COMMIT_HOLDOFF_MS`, default 700, 0 = old path; event-ordered
+skip; connection-bound task; owed-answer rule), Item B audible commentary
+preambles with transcripts withheld from persistence + prompt/description
+instructing of *when* a lead-in belongs + RCA-4 routing rider + 聽不清楚
+rule moved last + bundled-spec override for manifested robots, Item C
+broadened stop-request guard / C6 unmute only for pre-pose failures /
+guarded movement stops / sleep-summary retry. Codex implemented under
+session review (6 dispatches, 5–15 min each); suite 1819/30 → 1859/30,
+ruff + mypy --strict clean at every commit. Deploy: wheel
+`reachy_companion-1.21.0` sha `a96e06ed…`, backup
+`20260902T130104Z-39909` (memory + face_snapshots absent as before),
+two-step install, restore verified (4 faces + 4 people), **persona pushed
+post-restore** (sha `4fe06ac4`, one-line lead-in harmonisation), step 6b:
+no manifest on this robot, bundled search description carries 示範語氣.
+Boot gates: `persona: instance persona.md`, `Tools in session (group,
+boxes=none, startup, 22)`, `Realtime session updated successfully`, `boot
+gate released (greeting played)` at +28 s, 0 tracebacks / 0 errors / 0
+app warnings in 131 lines. Instance `.env` unchanged (semantic_vad / low /
+effort high), so the new knob runs at its 700 ms default.
+**Voice probes pending (operator):** the three new rows —
+`VOICE-TURN-FRAGMENTS` (a mid-sentence pause → ONE answer; journal
+`turn hold-off: awaiting continuation (…)`; fragment + cough → still
+answered via `continuation produced no turn`), `VOICE-SLOW-PREAMBLE`
+(search turn → audible lead-in, no dead air; 「看右邊」 → no narration;
+lead-in absent from the sleep summary), `SLEEP-CLEAN-STOP` (「睡覺吧」 →
+goodbye → pose → `Requested current app stop via …` or the typed guard
+error, NEVER `microphone unmuted`). Also still pending from v1.20.0: the
+D-030 probes listed below.
+
 **2026-09-02 — field-test fix-wave plan rev 3, review CLOSED, no code
 touched.** Codex round 2 (`docs/plans/2026-09-01-field-test-fixes-review-r2.md`)
 returned 3 Important findings, all accepted: the Item A hold-off must be a
