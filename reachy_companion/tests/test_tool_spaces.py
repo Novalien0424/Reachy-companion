@@ -1,5 +1,6 @@
 import sys
 import json
+import logging
 import threading
 from types import SimpleNamespace
 from pathlib import Path
@@ -15,6 +16,10 @@ import reachy_companion.config as config_mod
 from reachy_companion.main import main
 from reachy_companion.mcp_client import RemoteToolSpec, RemoteMcpToolClient
 from reachy_companion.tool_spaces import (
+    PREINSTALLED_TOOL_SPACE_SPECS,
+    InstalledToolSpace,
+    InstalledToolSpaceTool,
+    InstalledToolSpacesManifest,
     ToolSpaceProfileUpdateError,
     remove_tool_space,
     install_tool_space,
@@ -37,6 +42,9 @@ SEARCH_ALIAS = "example_search_tool"
 SEARCH_REMOTE_NAME = "search_tool_search_web"
 SEARCH_TOOL_ID = f"{SEARCH_ALIAS}__search_web"
 SEARCH_CLIENT_TOOL_ID = f"{SEARCH_ALIAS}__{SEARCH_REMOTE_NAME}"
+BUNDLED_SEARCH_SPACE_SLUG = "pollen-robotics/reachy-mini-search-tool"
+BUNDLED_SEARCH_ALIAS = "pollen_robotics_reachy_mini_search_tool"
+BUNDLED_SEARCH_TOOL_ID = f"{BUNDLED_SEARCH_ALIAS}__search_web"
 
 
 def _mock_public_space_info(slug: str) -> SimpleNamespace:
@@ -72,6 +80,61 @@ async def _mock_list_tool_specs(self: RemoteMcpToolClient) -> list[RemoteToolSpe
             },
         )
     ]
+
+
+def _bundled_search_spec() -> RemoteToolSpec:
+    (search_spec,) = PREINSTALLED_TOOL_SPACE_SPECS[BUNDLED_SEARCH_SPACE_SLUG]
+    return search_spec
+
+
+def _bundled_search_manifest_space(
+    *,
+    description: str = "Cached deployment search description.",
+    parameters_schema: dict[str, object] | None = None,
+) -> dict[str, object]:
+    search_spec = _bundled_search_spec()
+    return {
+        "slug": BUNDLED_SEARCH_SPACE_SLUG,
+        "alias": BUNDLED_SEARCH_ALIAS,
+        "mcp_url": "https://pollen-robotics-reachy-mini-search-tool.hf.space/gradio_api/mcp/",
+        "private": False,
+        "tools": [
+            {
+                "local_name": BUNDLED_SEARCH_TOOL_ID,
+                "client_tool_name": search_spec.namespaced_name,
+                "remote_name": search_spec.remote_name,
+                "description": description,
+                "parameters_schema": parameters_schema
+                or {
+                    "type": "object",
+                    "properties": {"stale_query": {"type": "string"}},
+                    "required": ["stale_query"],
+                },
+            }
+        ],
+    }
+
+
+def _non_bundled_search_manifest_space() -> dict[str, object]:
+    return {
+        "slug": SEARCH_SPACE_SLUG,
+        "alias": SEARCH_ALIAS,
+        "mcp_url": "https://example-search-tool.hf.space/gradio_api/mcp/",
+        "private": False,
+        "tools": [
+            {
+                "local_name": SEARCH_TOOL_ID,
+                "client_tool_name": SEARCH_CLIENT_TOOL_ID,
+                "remote_name": SEARCH_REMOTE_NAME,
+                "description": "Cached non-bundled search description.",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            }
+        ],
+    }
 
 
 def _run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
@@ -295,6 +358,105 @@ def test_read_installed_tool_spaces_rejects_non_hugging_face_endpoint(tmp_path: 
 
     with pytest.raises(ValueError, match="Invalid Hugging Face Space MCP URL"):
         read_installed_tool_spaces(tmp_path)
+
+
+def test_read_installed_tool_spaces_overrides_cached_bundled_search_metadata(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bundled Spaces should expose curated metadata even when the manifest cache is stale."""
+    search_spec = _bundled_search_spec()
+    manifest_path = tmp_path / "installed_tool_spaces.json"
+    payload = {"version": 2, "spaces": [_bundled_search_manifest_space()]}
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    original_manifest_text = manifest_path.read_text(encoding="utf-8")
+
+    caplog.set_level(logging.DEBUG, logger="reachy_companion.tool_spaces")
+    manifest = read_installed_tool_spaces(tmp_path)
+
+    search_tool = manifest.spaces[0].tools[0]
+    assert search_tool.description == search_spec.description
+    assert search_tool.parameters_schema == search_spec.parameters_schema
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest_text
+    assert "Applied bundled Tool Space metadata override" in caplog.text
+
+
+def test_read_installed_tool_spaces_preserves_non_bundled_cached_metadata(tmp_path: Path) -> None:
+    """Bundled overrides must not alter cached tools from user-installed Spaces."""
+    manifest_path = tmp_path / "installed_tool_spaces.json"
+    payload = {
+        "version": 2,
+        "spaces": [
+            _bundled_search_manifest_space(),
+            _non_bundled_search_manifest_space(),
+        ],
+    }
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = read_installed_tool_spaces(tmp_path)
+
+    non_bundled_space = next(space for space in manifest.spaces if space.slug == SEARCH_SPACE_SLUG)
+    non_bundled_tool = non_bundled_space.tools[0]
+    assert non_bundled_tool.description == "Cached non-bundled search description."
+    assert non_bundled_tool.parameters_schema == {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+
+
+def test_read_installed_tool_spaces_leaves_manifest_without_bundled_spaces_unchanged(tmp_path: Path) -> None:
+    """A manifest with no bundled Space should round-trip through the read model unchanged."""
+    manifest_path = tmp_path / "installed_tool_spaces.json"
+    payload = {"version": 2, "spaces": [_non_bundled_search_manifest_space()]}
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = read_installed_tool_spaces(tmp_path)
+
+    assert manifest == InstalledToolSpacesManifest(
+        spaces=[
+            InstalledToolSpace(
+                slug=SEARCH_SPACE_SLUG,
+                alias=SEARCH_ALIAS,
+                mcp_url="https://example-search-tool.hf.space/gradio_api/mcp/",
+                private=False,
+                tools=[
+                    InstalledToolSpaceTool(
+                        local_name=SEARCH_TOOL_ID,
+                        client_tool_name=SEARCH_CLIENT_TOOL_ID,
+                        remote_name=SEARCH_REMOTE_NAME,
+                        description="Cached non-bundled search description.",
+                        parameters_schema={
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                        },
+                    )
+                ],
+            )
+        ]
+    )
+
+
+def test_bundled_search_override_uses_current_preamble_description(tmp_path: Path) -> None:
+    """The search preamble wording pin should follow the bundled spec, not the cached manifest."""
+    bundled_description = _bundled_search_spec().description
+    assert "我查一下" in bundled_description
+    manifest_path = tmp_path / "installed_tool_spaces.json"
+    payload = {
+        "version": 2,
+        "spaces": [
+            _bundled_search_manifest_space(
+                description="Old deployed search instruction.",
+                parameters_schema={"type": "object", "properties": {}, "required": []},
+            )
+        ],
+    }
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = read_installed_tool_spaces(tmp_path)
+
+    assert manifest.spaces[0].tools[0].description == bundled_description
 
 
 def test_tool_spaces_add_rejects_alias_collision(

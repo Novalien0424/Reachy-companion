@@ -217,6 +217,54 @@ def _preinstalled_installed_spaces() -> list[InstalledToolSpace]:
     return spaces
 
 
+def _apply_preinstalled_tool_space_overrides(space: InstalledToolSpace) -> InstalledToolSpace:
+    remote_specs = PREINSTALLED_TOOL_SPACE_SPECS.get(space.slug)
+    if remote_specs is None:
+        return space
+
+    bundled_specs_by_tool = {
+        (remote_spec.remote_name, remote_spec.namespaced_name): remote_spec for remote_spec in remote_specs
+    }
+    tools: list[InstalledToolSpaceTool] = []
+    metadata_overridden = False
+    for tool in space.tools:
+        bundled_spec = bundled_specs_by_tool.get((tool.remote_name, tool.client_tool_name))
+        if bundled_spec is None:
+            tools.append(tool)
+            continue
+        if tool.description == bundled_spec.description and tool.parameters_schema == bundled_spec.parameters_schema:
+            tools.append(tool)
+            continue
+
+        # Bundled descriptions are our curated instruction surface. Edits here must reach
+        # robots that already have a cached manifest without a deploy-time file ritual.
+        tools.append(
+            InstalledToolSpaceTool(
+                local_name=tool.local_name,
+                client_tool_name=tool.client_tool_name,
+                remote_name=tool.remote_name,
+                description=bundled_spec.description,
+                parameters_schema=dict(bundled_spec.parameters_schema),
+            )
+        )
+        metadata_overridden = True
+        logger.debug(
+            "Applied bundled Tool Space metadata override for %s tool %s.",
+            space.slug,
+            tool.client_tool_name,
+        )
+
+    if not metadata_overridden:
+        return space
+    return InstalledToolSpace(
+        slug=space.slug,
+        alias=space.alias,
+        mcp_url=space.mcp_url,
+        private=space.private,
+        tools=tools,
+    )
+
+
 def read_installed_tool_spaces(instance_path: str | Path | None) -> InstalledToolSpacesManifest:
     """Read the installed tool-spaces manifest, or seed the bundled Pollen Spaces when none exists."""
     with _MANIFEST_LOCK:
@@ -350,12 +398,14 @@ def read_installed_tool_spaces(instance_path: str | Path | None) -> InstalledToo
         seen_slugs.add(slug)
         seen_aliases.add(alias)
         spaces.append(
-            InstalledToolSpace(
-                slug=slug,
-                alias=alias,
-                mcp_url=mcp_url,
-                private=raw_space["private"],
-                tools=cached_tools,
+            _apply_preinstalled_tool_space_overrides(
+                InstalledToolSpace(
+                    slug=slug,
+                    alias=alias,
+                    mcp_url=mcp_url,
+                    private=raw_space["private"],
+                    tools=cached_tools,
+                )
             )
         )
     return InstalledToolSpacesManifest(version=version, spaces=spaces)
