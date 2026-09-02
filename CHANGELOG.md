@@ -9,6 +9,35 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.22.0] — 2026-09-02 · calibration and tool-surface symmetry
+
+Deployed as the twenty-second install (commit `%%COMMIT%%`, wheel sha `%%SHA%%`).
+Design record D-031 (addendum). A same-day follow-up to 1.21.0 after the
+operator asked whether the 700 ms hold-off has a research basis (it did not).
+
+- **It now measures its own pauses.** Every time the hold-off merges a
+  fragment with its continuation the journal records how long the pause really
+  was and how long the robot had been holding; and when someone resumes
+  speaking within two seconds after a window already expired, it says so. A
+  handful of real turns will show whether 700 ms should move.
+- **Its tools say what they are not for.** Eleven always-on tools that had a
+  one-line description now carry matching use-when / do-not-use pairs, so
+  emotion versus dance, stop-emotion versus stop-dance, remember versus forget,
+  and status versus cancel are told apart by the description rather than by
+  luck.
+- **It varies how it says things.** A new rule asks for different lead-ins and
+  acknowledgements from turn to turn, because the lead-ins are audible now and
+  the same 「我查一下」 every time sounds like a recording.
+
+### For contributors
+
+- `docs/research-holdoff-calibration-2026-09.md` records the external evidence
+  for the window and the audit of the repo's research docs; D-031's addendum
+  lists the seven next-wave candidates in priority order.
+- New INFO journal lines: `turn hold-off: awaiting continuation (…) gap=<ms>
+  held=<ms>` and `turn hold-off: late continuation <ms> ms after the window
+  (window=<ms> ms)`.
+
 ## [1.21.0] — 2026-09-02 · the field-test fix wave
 
 Deployed as the twenty-first install (commit `c3e46cf`, wheel sha `a96e06ed…`).

@@ -1687,3 +1687,37 @@ narration may return under the audible-commentary contract (the B4 buffering
 fallback is the reviewed answer, not a revert); RCA-2, the RCA-4 fabrication
 half, RCA-5, the `who_is_this` too_far defect and `RPC-SAY-CROSS-LOOP` remain
 open and untouched.
+
+**Addendum (2026-09-02, later the same day) — the 700 ms question and the
+research audit.** The operator asked whether the hold-off default has a
+research basis. It does not: "700" appears in no research doc; it is the
+midpoint of an INFERRED "~600–900 ms" band whose vendor citations the source
+run never confirmed (`docs/research-holdoff-calibration-2026-09.md` has the
+audit and the external evidence: LiveKit endpointing 0.5/3.0 s defaults,
+within-speaker pause clusters ~150/500/1500 ms, Mandarin boundary pauses
+0.33/0.49 s, and the repo's own <500 ms and ~1100 ms bounds). Ruling: keep
+700 as the first value, measure, then set the knob from the operator's own
+gaps — v1.22.0 adds calibration telemetry (`gap=`/`held=` on the skip lines and
+a one-shot `late continuation` line when speech resumes within 2 s of an
+expired window). An Opus audit of all seven research docs against the code
+then ranked ten unapplied recommendations. Shipped in v1.22.0 without a
+separate plan round, as single-surface rung-1/2 items already recommended by
+reviewed research: symmetric use-when / do-NOT-use-when pairs on the eleven
+always-on core tools that were still one-liners (measured evidence: +17%
+selection accuracy, +60% success on description rewrites), and a `### 變化`
+rule so the newly audible lead-ins do not become one recorded sentence.
+Deliberately NOT shipped, recorded as next-wave candidates in priority order:
+(1) extend the verbatim JSON envelope to every recited result — search, MCP,
+`nas_video_query` return prose today (targets the open RCA-4 fabrication half;
+M); (2) end-of-context re-injection of the unclear-audio rule as a
+`conversation.item`, never `response.create.instructions` (targets RCA-5; M,
+needs on-robot); (3) B4 buffered selective commentary, gated on observing
+fast-tool narration live; (4) `reasoning.effort` A/B measured on selection,
+hallucination and adherence together, plus one diagnostic session on full
+`gpt-realtime-2.1` (both need a person in the room); (5) `# Reference
+Pronunciations` for the household's proper nouns (needs the operator's list);
+(6) out-of-band `conversation: "none"` responses for side tasks (no current
+need); (7) a Chinese voice regression set and eval loop (L — the thing that
+would settle the 700 ms and the effort questions with data instead of
+argument). `parallel_tool_calls` is available on 2.1-mini and unset; no
+current failure asks for it.
