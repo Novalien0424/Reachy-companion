@@ -122,6 +122,18 @@ later. (`docs/codex-research-turn-detection-2026-09.md` Q1/Q2.)
     `speech_started` inside the window enqueues nothing; teardown or
     reconnect with a hold-off pending enqueues nothing into the next
     session; `on_external_interrupt()` cancels a pending hold-off.
+  - **Owed answer (implementation review, 2026-09-02):** a skip assumes the
+    continuation will be ACCEPTED and answer both items. When the
+    continuation instead ends with no response — empty transcript,
+    `transcription.failed`, an answer-gate denial (GROUP/RECORD/name_only),
+    or a solo-barge rollback — the earlier accepted turn must still be
+    answered: a cough inside the window must not eat a real question. The
+    handler keeps `_holdoff_owed`; each no-response exit that finds it set
+    arms a fresh window for the held turn (journal `turn hold-off:
+    continuation produced no turn (…); answering the held turn`) and, on
+    the denied exit, does not run `on_turn_without_response()` for that
+    item because a response is coming. Cleared on any real request, on
+    `on_external_interrupt()`, and at new-session reset. Test-pinned.
   Cost: up to the window per turn — the operator has already chosen
   patience over speed twice (VAD silence 1000, eagerness low).
 - **A2. Short-turn qualifier: DROPPED from this wave** (review r1 finding

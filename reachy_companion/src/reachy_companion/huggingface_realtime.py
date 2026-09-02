@@ -813,6 +813,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._speech_started_seq: int = 0
         self._speech_started_seqs_by_item: dict[str, int] = {}
         self._holdoff_task: asyncio.Task[None] | None = None
+        # True when an ACCEPTED turn skipped its answer for a continuation that
+        # still might vanish (plan rev 3 A1, owed answer).
+        self._holdoff_owed: bool = False
         # Monotonic coalescing token for session updates (Task 3, decision 9):
         # a snapshot queued behind a newer flip is dropped rather than sent.
         self._mode_update_seq: int = 0
@@ -1168,6 +1171,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         speech_started_seqs_by_item: dict[str, int] | None = getattr(self, "_speech_started_seqs_by_item", None)
         if speech_started_seqs_by_item is not None:
             speech_started_seqs_by_item.clear()
+        self._holdoff_owed = False
         self._turn_mode = self._conversation_mode
 
     async def _push_turn_detection_update(self) -> None:
@@ -1526,6 +1530,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Journal a hold-off skip with the plan rev 3 A1 operator-facing line."""
         logger.info("turn hold-off: awaiting continuation (%s)", reason)
 
+    async def _answer_owed_holdoff(self, reason: str) -> bool:
+        """Answer a skipped ACCEPTED turn when its continuation produced no turn."""
+        if not self._holdoff_owed:
+            return False
+        self._holdoff_owed = False
+        logger.info(
+            "turn hold-off: continuation produced no turn (%s); answering the held turn",
+            reason,
+        )
+        await self._request_accepted_turn_response(None)
+        return True
+
     def _cancel_holdoff_task(self, current: "asyncio.Task[Any] | None" = None) -> bool:
         """Cancel the accepted-turn hold-off task, if one is pending."""
         task: asyncio.Task[None] | None = getattr(self, "_holdoff_task", None)
@@ -1541,6 +1557,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         holdoff_ms = _commit_holdoff_ms()
         if holdoff_ms <= 0:
             self._cancel_holdoff_task(_current_task())
+            self._holdoff_owed = False
             await self._safe_response_create()
             return
 
@@ -1549,6 +1566,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # The continuation's `speech_started` event reached this receive
             # loop before the previous transcript completed. No transcript text
             # heuristic is needed; event order is the whole signal.
+            self._holdoff_owed = True
             self._log_holdoff_skip("later speech already started")
             return
         if cancelled_older:
@@ -1556,6 +1574,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
         bound_connection = self.connection
         armed_seq = self._speech_started_seq
+        self._holdoff_owed = False
 
         async def _finish_holdoff() -> None:
             try:
@@ -1744,6 +1763,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_rollback_task = None
         self._barge_watchdog_task = None
         self._holdoff_task = None
+        self._holdoff_owed = False
         for task in tasks:
             _cancel_barge_task(task, current)
         self._barge_paused = False
@@ -3604,6 +3624,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._stamp_turn_mode(item_id)
                         self._stamp_speech_started_seq(item_id)
                         if self._cancel_holdoff_task(_current_task()):
+                            self._holdoff_owed = True
                             self._log_holdoff_skip("speech_started")
                         self._user_has_spoken = True
                         self._mark_activity("user_speech_started")
@@ -3813,6 +3834,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if self._barge_pending:
                             if await self._resolve_solo_barge(transcript):
                                 self._take_speech_started_seq(event_item_id)
+                                await self._answer_owed_holdoff("solo barge rollback")
                                 continue
                             pause_committed = True
                         if (
@@ -3827,6 +3849,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if not transcript:
                             self._take_speech_started_seq(event_item_id)
                             logger.debug("Ignoring empty user transcript")
+                            await self._answer_owed_holdoff("empty transcript")
                             continue
 
                         if not self._answer_gate_accepts(transcript, turn_mode):
@@ -3857,9 +3880,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 # where sustained speech confirms the barge and
                                 # name-only answering then denies it.
                                 self._stand_down_barge_watchdog()
-                            on_turn_without_response(self.deps)
+                            owed_answer = self._holdoff_owed
+                            if not owed_answer:
+                                on_turn_without_response(self.deps)
                             await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
                             self._emit_transcript("user", transcript, True)
+                            if owed_answer:
+                                await self._answer_owed_holdoff("gate denied")
                             continue
 
                         # Task 4 (2026-08-30 plan): the pause is over — rolled
@@ -3950,6 +3977,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # failing item is named so the partial-commit marker
                             # is only consumed when it is *this* turn's (T4 m5).
                             self._resolve_solo_barge_failure(event_item_id)
+                        await self._answer_owed_holdoff("transcription failed")
                         logger.debug("User transcription failed")
 
                     # Handle assistant transcription

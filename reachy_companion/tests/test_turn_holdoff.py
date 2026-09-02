@@ -156,6 +156,15 @@ def _accepted(item_id: str, transcript: str = "今天晚餐要吃什麼") -> _Fa
     )
 
 
+def _failed(item_id: str) -> _FakeEvent:
+    return _FakeEvent("conversation.item.input_audio_transcription.failed", item_id=item_id)
+
+
+def _assert_owed_answer_logged(caplog: pytest.LogCaptureFixture, reason: str) -> None:
+    line = f"turn hold-off: continuation produced no turn ({reason}); answering the held turn"
+    assert line in caplog.text
+
+
 async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 1.0) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -234,6 +243,119 @@ async def test_speech_started_inside_holdoff_skips_response_and_logs(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_window_empty_continuation_answers_held_turn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cough/empty continuation inside the window must not eat the accepted turn."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.005, _speech_started("item_2")),
+            (0.0, _accepted("item_2", "   ")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+    _assert_owed_answer_logged(caplog, "empty transcript")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_window_failed_continuation_answers_held_turn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed continuation transcript must release the held accepted answer."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.005, _speech_started("item_2")),
+            (0.0, _failed("item_2")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+    _assert_owed_answer_logged(caplog, "transcription failed")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_window_gate_denied_continuation_answers_held_turn_without_music_no_response(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A denied continuation stays as context but must not close music when the held turn answers."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    monkeypatch.setenv("REALTIME_ONE_ON_ONE_ANSWER_GATE", "name_only")
+    without_response = MagicMock()
+    monkeypatch.setattr(hf_mod, "on_turn_without_response", without_response)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1", "瑞奇今天晚餐吃什麼")),
+            (0.005, _speech_started("item_2")),
+            (0.0, _accepted("item_2", "我們晚餐要吃什麼呢")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+    without_response.assert_not_called()
+    _assert_owed_answer_logged(caplog, "gate denied")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_window_rollback_continuation_answers_held_turn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A solo-barge rollback continuation must not swallow the held answer."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    monkeypatch.setattr(hf_mod, "on_turn_without_response", lambda _deps: None)
+    calls = 0
+
+    def _plant_rollback_on_continuation(self: HuggingFaceRealtimeHandler) -> None:
+        nonlocal calls
+        calls += 1
+        if calls != 2:
+            return
+        self._barge_pending = True
+        self._barge_paused = True
+        self._barge_paused_response_id = "resp_held"
+
+    monkeypatch.setattr(HuggingFaceRealtimeHandler, "_solo_speech_started", _plant_rollback_on_continuation)
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.005, _speech_started("item_2")),
+            (0.0, _accepted("item_2", "嗯")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+    _assert_owed_answer_logged(caplog, "solo barge rollback")
+
+
+@pytest.mark.asyncio
 async def test_later_segment_already_started_at_acceptance_skips_immediately(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -257,6 +379,30 @@ async def test_later_segment_already_started_at_acceptance_skips_immediately(
 
 
 @pytest.mark.asyncio
+async def test_immediate_skip_empty_continuation_answers_held_turn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If later speech already started, an empty continuation still releases the held answer."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _speech_started("item_2")),
+            (0.0, _accepted("item_1")),
+            (0.0, _accepted("item_2", "")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+    _assert_owed_answer_logged(caplog, "empty transcript")
+
+
+@pytest.mark.asyncio
 async def test_newer_accepted_turn_supersedes_pending_window(monkeypatch: pytest.MonkeyPatch) -> None:
     """A newer accepted item owns the answer window for consecutive turns."""
     monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "50")
@@ -276,6 +422,28 @@ async def test_newer_accepted_turn_supersedes_pending_window(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_accepted_continuation_answers_once_after_cancelling_prior_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted continuation owns the single merged answer request."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "20")
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.005, _speech_started("item_2")),
+            (0.0, _accepted("item_2", "那如果吃麵呢")),
+        ),
+        tail_delay_s=0.06,
+    )
+
+    await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 1
+
+
+@pytest.mark.asyncio
 async def test_teardown_window_does_not_enqueue_into_next_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pending hold-off from a dead session cannot answer in the next one."""
     monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "50")
@@ -287,6 +455,31 @@ async def test_teardown_window_does_not_enqueue_into_next_session(monkeypatch: p
     await handler._run_realtime_session()
     handler.client = _TimedClient((), tail_delay_s=0.08)
     await handler._run_realtime_session()
+
+    assert handler._pending_responses.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_external_interrupt_clears_owed_holdoff_before_empty_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external interrupt takes ownership, so the held turn must stay silent afterward."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "60")
+    handler = _handler(
+        monkeypatch,
+        (
+            (0.0, _speech_started("item_1")),
+            (0.0, _accepted("item_1")),
+            (0.005, _speech_started("item_2")),
+            (0.04, _accepted("item_2", "")),
+        ),
+        tail_delay_s=0.08,
+    )
+
+    session = asyncio.create_task(handler._run_realtime_session())
+    await _wait_until(lambda: bool(getattr(handler, "_holdoff_owed", False)))
+    handler.on_external_interrupt()
+    await session
 
     assert handler._pending_responses.qsize() == 0
 
