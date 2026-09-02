@@ -5,6 +5,40 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-SECOND INSTALL (v1.22.0, calibration + tool-surface symmetry)
+IS ON THE ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING
+(2026-09-02 15:56 robot time).** Same-day follow-up to v1.21.0 after the
+operator asked whether the 700 ms hold-off has a research basis. It does
+not (`docs/research-holdoff-calibration-2026-09.md`: "700" appears in no
+research doc; midpoint of an INFERRED 600–900 band; external evidence —
+LiveKit endpointing 0.5/3.0 s, pause clusters ~150/500/1500 ms, Mandarin
+boundary pauses 0.33/0.49 s — says 700 covers the common cluster and misses
+thinking pauses). Shipped (`d68d55e`, `8771afb`, `5d0e9e2`; D-031 addendum):
+hold-off calibration telemetry (`gap=`/`held=` on skip lines, one-shot
+`late continuation` line within 2 s of an expired window; row
+`HOLDOFF-CALIBRATION`), symmetric use-when/do-NOT-use pairs on 11 core
+tools, a `### 變化` variety rule, and the C1 stop guard now WARNING with
+honest wording. Suite 1873/30, ruff + mypy --strict clean. Deploy: wheel
+sha `4ba4e698…`, backup `20260902T145544Z-41493` (memory + face_snapshots
+absent as before), restore 4 faces + 4 people, persona untouched (sha
+`4fe06ac4` both sides), step 6b search 示範語氣 True. Boot: instance
+persona, tools in session, `Realtime session updated successfully`,
+`boot gate released (greeting played)` +27 s, 0 tracebacks / errors /
+app warnings in 100 lines.
+
+**First live evidence from v1.21.0 (operator probe 14:36–14:37):**
+`SLEEP-CLEAN-STOP` VERIFIED on the voice path — goodbye finished before the
+pose, the daemon logged `Stopping app` at 14:37:05 and the 2 s stop request
+timed out at 14:37:07, the new guard caught it, `Shutdown complete`, and NO
+`microphone unmuted` line. `VOICE-TURN-FRAGMENTS`: a 3-char fragment
+accepted via engaged face hit `turn hold-off: awaiting continuation (later
+speech already started)` and was not answered alone; every turn shows
+`response.created ≈ 990 ms after user transcript` — the measured cost of
+the 700 ms window. Watchpoints seen: two `party gate: denied ambient turn`
+lines (RCA-2, still open by design) and `drain cap reached after 6.0s with
+audio still playing` on the goodbye (SLEEP_GOODBYE_DRAIN_CAP_S, operator
+knob). No sleep summary (nobody recognised).
+
 **THE TWENTY-FIRST INSTALL (v1.21.0, the field-test fix wave) IS ON THE ROBOT
 WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's probes
 (2026-09-02 14:02 robot time).** Wave `5715829..c3e46cf` (8 commits, D-031,

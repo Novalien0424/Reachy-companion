@@ -11,7 +11,7 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.22.0] — 2026-09-02 · calibration and tool-surface symmetry
 
-Deployed as the twenty-second install (commit `%%COMMIT%%`, wheel sha `%%SHA%%`).
+Deployed as the twenty-second install (commit `5d0e9e2`, wheel sha `4ba4e698…`).
 Design record D-031 (addendum). A same-day follow-up to 1.21.0 after the
 operator asked whether the 700 ms hold-off has a research basis (it did not).
 

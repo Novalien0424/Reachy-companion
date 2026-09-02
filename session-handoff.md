@@ -1,57 +1,51 @@
-# Session handoff — 2026-09-02 (v1.21.0 deployed; field-test fix wave COMPLETE)
+# Session handoff — 2026-09-02 (v1.22.0 deployed; fix wave + research follow-ups COMPLETE)
 
-State: **v1.21.0 (the field-test fix wave, D-031) is installed and RUNNING on
-the robot — left AWAKE at 14:02 robot time for the operator's voice probes.**
-`main` is pushed through the final docs commit. No work in flight.
+State: **v1.22.0 is installed and RUNNING on the robot — left AWAKE at 15:56
+robot time.** `main` is pushed. No work in flight. The robot will lie down by
+itself on the inactivity timeout if nobody talks to it.
 
-## What shipped (plan rev 3, all three items)
+## Shipped today (13 commits, `5715829..HEAD`)
 
-- **A — answer hold-off** at the accepted-turn seam: `REALTIME_COMMIT_HOLDOFF_MS`
-  (700 default, 0 = old behaviour); event-ordered skip on renewed speech;
-  connection-bound per-turn task; owed-answer rule when the continuation
-  yields no turn. Commits `7f55584`, `39aa60f`.
-- **B — spoken lead-ins**: commentary audio audible, transcripts withheld from
-  persistence (`6754f4d`); prompt 訊息頻道/開場白 flip, 聽不清楚 rule moved
-  last (A3), search/music/MCP description edits incl. the RCA-4 routing
-  contrast, persona + locked profile one-line harmonisation (`40d575c`);
-  bundled-spec override for manifested robots (`e4626b9`).
-- **C — clean sleep stop**: broadened stop-request guard, C6 unmute only for
-  pre-pose failures, guarded `movement_manager.stop()` ×2, sleep-summary
-  retry once / 4 s (`48153a7`).
-- Docs: D-031, CHANGELOG 1.21.0, plan marked EXECUTED, deploy skill step 6b,
-  three new `feature_list.json` rows (`VOICE-TURN-FRAGMENTS`,
-  `VOICE-SLOW-PREAMBLE`, `SLEEP-CLEAN-STOP`), `VOICE-COMMENTARY-SUPPRESS`
-  retired. CLAUDE.md review cap is now 2 Codex rounds. `uv.lock` gitignored.
+- v1.21.0 (D-031): plan rev 3 — hold-off (A), audible lead-ins (B), clean
+  sleep stop (C). Twenty-first install 14:02.
+- v1.22.0 (D-031 addendum): hold-off calibration telemetry, symmetric
+  use-when/do-NOT-use pairs on 11 core tools, `### 變化` rule, stop guard at
+  WARNING. Twenty-second install 15:56. Research note
+  `docs/research-holdoff-calibration-2026-09.md`.
+- CLAUDE.md review cap 3 → 2; `uv.lock` gitignored; deploy skill step 6b.
 
-## Deploy evidence (twenty-first install)
+## Live evidence so far (v1.21.0, operator probe 14:36–14:37)
 
-Wheel sha `a96e06ed…`; backup `20260902T130104Z-39909`; restore 4 faces +
-4 people (memory.v1.json + face_snapshots absent as before); persona pushed
-post-restore, sha `4fe06ac4` = repo `persona.md`; step 6b: no manifest on
-this robot, search description carries 示範語氣; boot: instance persona,
-22 tools, session updated OK, boot gate released +28 s, 0 tracebacks /
-errors / app warnings. Instance `.env` untouched (semantic_vad, low, high).
+- `SLEEP-CLEAN-STOP` → **verified** (goodbye → pose → guard caught the daemon's
+  stop-request timeout → clean shutdown, no unmute).
+- `VOICE-TURN-FRAGMENTS`: first skip line seen; response.created ≈ 990 ms
+  after transcript on every turn (the window's cost). Still needs the
+  fragmented-sentence probe and the new `gap=`/`late continuation` numbers.
+- `VOICE-SLOW-PREAMBLE`: not yet probed (no search turn).
 
 ## Next session
 
-1. **Operator voice probes** (robot is awake): the three new rows' scripts in
-   `feature_list.json`; then the still-pending D-030 probes. Read the journal
-   at INFO for `turn hold-off: …`, and at DEBUG for `commentary-phase item …
-   is audible; transcript withheld` if needed. 「睡覺吧」 both ends the
-   session and exercises `SLEEP-CLEAN-STOP`.
-2. Watchpoints: 700 ms window feels sluggish → tune the knob in the instance
-   `.env` (no rebuild); fast-tool narration returns → B4 buffering follow-up
-   (own task), not a revert; a hold-off line with no answer following → check
-   the owed-answer journal line.
-3. Still open, untouched: RCA-2 (GROUP default friction), RCA-4 fabrication
-   half, RCA-5 (now downstream of A — re-observe), `who_is_this` too_far
-   defect, `RPC-SAY-CROSS-LOOP`.
+1. **Operator probes on v1.22.0**: a normal conversation, one search turn,
+   one fast head move, a deliberately fragmented sentence, then 「睡覺吧」.
+   Then `journalctl | grep 'turn hold-off'` → set `REALTIME_COMMIT_HOLDOFF_MS`
+   from the gap distribution (rule of thumb in row `HOLDOFF-CALIBRATION`);
+   change it in the instance `.env`, no rebuild.
+2. Operator knobs to consider from the live watchpoints: raise
+   `SLEEP_GOODBYE_DRAIN_CAP_S` if the goodbye is audibly cut; GROUP-mode
+   ambient denials are RCA-2 (open, by design).
+3. Next-wave candidates, priority order (D-031 addendum): verbatim JSON
+   envelope on every recited result (RCA-4); end-of-context re-injection of
+   the unclear-audio rule as a `conversation.item` (RCA-5); B4 buffered
+   selective commentary (only if fast-tool narration returns);
+   `reasoning.effort` three-metric A/B + one full-2.1 diagnostic session;
+   `# Reference Pronunciations` (needs the operator's list); out-of-band
+   responses; a Chinese voice regression set.
+4. Still open, untouched: RCA-2, RCA-4 fabrication half, RCA-5,
+   `who_is_this` too_far defect, `RPC-SAY-CROSS-LOOP`.
 
 ## Notes
 
-- `reference/` (official SDK/app clones) is MISSING on this Mac; nothing in
-  this wave needed it (no new SDK call), but re-clone before SDK-facing work.
-- Codex: `--profile nova-auto` lives in a separate config file and works;
-  its sandbox always shows 3 environmental test failures — re-run the suite
-  outside the sandbox before trusting a count (memory
-  `codex-exec-dispatch-hygiene`).
+- `reference/` clone is MISSING on this Mac; nothing today needed it.
+- Codex `--profile nova-auto` lives in a separate config file and works; its
+  sandbox always shows 3 environmental test failures — re-run the suite
+  outside the sandbox before trusting a count.
