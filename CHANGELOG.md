@@ -9,6 +9,19 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [Unreleased]
+
+- **Reachy now boots into 一對一聊天模式.** Operator instruction 2026-09-04
+  (D-029 decision 5, amended): the code default, the `set_conversation_mode`
+  description and the dead-knob warning all follow; `REALTIME_DEFAULT_MODE=group`
+  restores the room posture. The robot's instance `.env` already carries the
+  new value, so the installed 1.22.0 wheel boots solo before this ships.
+- **RCA, no behaviour change:** `docs/rca-solo-interrupt-2026-09-04.md` —
+  why solo-mode interruption is hard (name gate + a pause cap that fires
+  before the transcript exists) and why the old reply plays out before the
+  new answer (rollback resumes fully-buffered audio; the new answer queues
+  behind it), plus first-audio latency growing 2 s → 10 s over a session.
+
 ## [1.22.0] — 2026-09-02 · calibration and tool-surface symmetry
 
 Deployed as the twenty-second install (commit `5d0e9e2`, wheel sha `4ba4e698…`).

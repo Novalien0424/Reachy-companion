@@ -5,6 +5,27 @@ history of this file.
 
 ## Current state
 
+**2026-09-04 — boot posture flipped to 一對一聊天模式 (operator instruction);
+solo-interrupt RCA written, no behaviour fix applied.** Code default
+`DEFAULT_MODE=ONE_ON_ONE`, `set_conversation_mode` description and dead-knob
+warning follow (D-029 decision 5 amended; suite 1873/30, ruff + mypy clean).
+Robot instance `.env` now carries `REALTIME_DEFAULT_MODE=one_on_one` (written
+12:32 robot time while the app was stopped; backup `.env.bak-20260904-mode`),
+so the installed v1.22.0 wheel boots solo before the next install. **Not yet
+booted — first antenna wake must show `Tools in session (one_on_one, …)`.**
+RCA (`docs/rca-solo-interrupt-2026-09-04.md`, from the 11:47–12:10 journal):
+in solo mode 19 of 22 speech onsets over a talking robot were rolled back —
+the name gate (`REALTIME_SOLO_NAME_GATE`, D-029 decision 1) only lets a name
+or 停 stop the reply, and the 4 s pause cap runs from onset while the
+transcript can only exist after the turn commits, so anything longer than
+~2 s of speech resumes over the user before its transcript lands. A rollback
+puts the fully-buffered old reply back in front of the new answer, which is
+the "finishes the previous reply first" symptom. Aggravating: first-audio
+latency grew 2 s → 10.6 s over the session (`reasoning.effort=medium`, no
+token telemetry). Six candidate fixes are listed in ladder order; fix 1
+(mode-aware interruption gate) needs an operator decision because it reverses
+D-029 decision 1 for solo mode.
+
 **2026-09-03 — speaker volume 90 → 95 (operator ask), set via `/api/volume/set` and persisted with `alsactl store`; D-021 amendment has the reasoning and the upstream low-volume complaints.**
 
 **THE TWENTY-SECOND INSTALL (v1.22.0, calibration + tool-surface symmetry)

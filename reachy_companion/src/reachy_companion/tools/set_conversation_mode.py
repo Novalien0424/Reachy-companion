@@ -23,10 +23,10 @@ class SetConversationMode(Tool):
     name = "set_conversation_mode"
     description = (
         "Switch how Reachy participates in the conversation while it STAYS awake. "
-        "Modes: `group` 多人聊天模式 — the mode Reachy starts in; a room with several people, so Reachy "
-        "stays quiet and answers only when someone says its name. "
-        "`one_on_one` 一對一聊天模式 — one person talking with Reachy; it answers normally, without "
-        "needing to be named. "
+        "Modes: `one_on_one` 一對一聊天模式 — the mode Reachy starts in; one person talking with Reachy, "
+        "so it answers normally, without needing to be named. "
+        "`group` 多人聊天模式 — a room with several people, so Reachy stays quiet and answers only when "
+        "someone says its name. "
         "`record` 紀錄模式 — a meeting or a long discussion; Reachy listens silently, writes everything "
         "down, and speaks only when its name is used, mainly to give a summary via summarize_conversation. "
         "Use when: the user asks to change how you listen or participate — 「開一對一模式」「切到多人聊天模式」"
@@ -42,7 +42,7 @@ class SetConversationMode(Tool):
             "mode": {
                 "type": "string",
                 "enum": list(MODE_VALUES),
-                "description": "group 多人聊天模式（開機預設）；one_on_one 一對一聊天模式；record 紀錄模式。",
+                "description": "one_on_one 一對一聊天模式（開機預設）；group 多人聊天模式；record 紀錄模式。",
             },
         },
         "required": ["mode"],

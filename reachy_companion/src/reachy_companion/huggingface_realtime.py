@@ -113,21 +113,19 @@ _PARTY_CONTROL_RE = re.compile(r"停|閉嘴|闭嘴|安靜|安静|睡覺|睡觉|�
 
 
 def _boot_conversation_mode() -> ConversationMode:
-    """Return the mode a fresh handler starts in (operator amendment, 2026-08-31).
+    """Return the mode a fresh handler starts in (operator instruction, 2026-09-04).
 
-    `GROUP` by default, deliberately. The robot sits in a room with several
-    people in it, and a robot that boots ready to answer every overheard
-    sentence is the exact failure the party-mode wave was built to fix — so a
-    fresh session answers only when addressed by name, and 一對一聊天模式 is
-    one spoken sentence away.
+    `ONE_ON_ONE` by default (D-029 decision 5, amended). The 2026-08-31
+    amendment booted into `GROUP` for the room posture; three days of live use
+    showed one person talking to the robot directly and opening every session
+    with the same spoken switch, so the boot posture follows the common case
+    and 多人聊天模式 is the one spoken sentence away.
 
     `REALTIME_PARTY_DEFAULT` (the 2026-08-24 knob) is deliberately no longer
-    read, and an instance `.env` still carrying it keeps working: the only mode
-    it could ever select was `GROUP`, which is now the default, so
-    `REALTIME_PARTY_DEFAULT=1` lands in exactly the mode it asked for. The one
-    case that changes is `REALTIME_PARTY_DEFAULT=0`, which now boots into
-    `GROUP` rather than solo — that IS the operator amendment, and
-    `REALTIME_DEFAULT_MODE=one_on_one` says it in the new vocabulary.
+    read. An instance `.env` still carrying `=0` lands where it asked (solo);
+    `=1` is the case that now stings — it used to mean "boot into the room
+    posture" and now selects nothing at all — so the warning below names
+    `REALTIME_DEFAULT_MODE=group` as its replacement.
 
     Degrades with a warning rather than raising, like every other mode knob.
     """
@@ -136,14 +134,14 @@ def _boot_conversation_mode() -> ConversationMode:
         if os.getenv("REALTIME_PARTY_DEFAULT") is not None:
             # Deploy visibility: an operator reading their own `.env` would
             # otherwise believe the boot mode is still theirs to set with the old
-            # knob. `REALTIME_PARTY_DEFAULT=0` is the case that stings — it used
-            # to mean "boot solo" and now selects nothing at all.
+            # knob. `REALTIME_PARTY_DEFAULT=1` is the case that stings — it used
+            # to mean "boot into the room posture" and now selects nothing at all.
             logger.warning(
                 "REALTIME_PARTY_DEFAULT is no longer read; the boot mode is REALTIME_DEFAULT_MODE, "
                 "now unset, so Reachy boots into %s. Set REALTIME_DEFAULT_MODE=%s for the old "
-                "one-on-one behaviour.",
+                "group behaviour.",
                 DEFAULT_MODE.value,
-                ConversationMode.ONE_ON_ONE.value,
+                ConversationMode.GROUP.value,
             )
         return DEFAULT_MODE
     mode = parse_mode(raw)

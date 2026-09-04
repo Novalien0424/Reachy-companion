@@ -1216,6 +1216,23 @@ amendment changed a default, not a mechanism — no gate, session-update,
 toolbox, sleep or record-log behavior moved with it — so it did not reopen the
 review.
 
+**Amendment 2026-09-04 — the boot posture is 一對一聊天模式.** Operator
+instruction after three days of live use: every session opened with the same
+spoken switch out of 多人聊天模式, and the 09-04 session's own transcript
+shows one person addressing the robot directly throughout. `DEFAULT_MODE` is
+now `ONE_ON_ONE`; `REALTIME_DEFAULT_MODE=group` restores the room posture,
+and the dead-knob warning now names that value as the replacement for
+`REALTIME_PARTY_DEFAULT=1` (the case that stings flipped with the default).
+The `set_conversation_mode` description and its `mode` enum text moved "the
+mode Reachy starts in / 開機預設" to `one_on_one` (instructing rung 1 — the
+description is where the model reads the boot posture). Mechanism untouched
+again; the robot's instance `.env` carries the value explicitly so the
+still-installed v1.22.0 wheel boots the same way before the next install.
+The reasons for the 08-31 GROUP default stand for a room; they no longer
+match how the robot is used. Related, not changed here: the interruption
+gate (`REALTIME_SOLO_NAME_GATE`) still applies in solo mode — see
+`docs/rca-solo-interrupt-2026-09-04.md`.
+
 **(6) `record_log` at 2000 and `session_transcript` at 40 are different data,
 not two sizes of the same data.** The D-027 transcript is forty accepted turns
 feeding a per-person 「上次聊天」 callback. A meeting record is the opposite on
