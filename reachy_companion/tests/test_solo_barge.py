@@ -1045,6 +1045,32 @@ def test_gate_text_accepts_name_and_control() -> None:
     assert not accepted and reason == "unaddressed"
 
 
+@pytest.mark.parametrize(
+    ("gate", "transcript", "expected"),
+    [
+        # Gate ON (`=1`): D-028's address rule, `_gate_text_accepts` verbatim.
+        ("1", "停", (True, "control phrase")),
+        ("1", "瑞奇你等一下", (True, "name")),
+        ("1", "我們晚餐要吃什麼呢這麼晚了", (False, "unaddressed")),
+        ("1", "嗯", (False, "unaddressed")),
+        ("1", "", (False, "unaddressed")),
+        # Gate OFF (the D-032 default): control phrases first, then any real
+        # sentence. A backchannel or an empty transcript still rolls back.
+        ("0", "停", (True, "control phrase")),
+        ("0", "瑞奇你等一下", (True, "substantive")),
+        ("0", "我們晚餐要吃什麼呢這麼晚了", (True, "substantive")),
+        ("0", "嗯", (False, "backchannel")),
+        ("0", "", (False, "backchannel")),
+    ],
+)
+def test_the_solo_interrupt_verdict_table(
+    monkeypatch: pytest.MonkeyPatch, gate: str, transcript: str, expected: tuple[bool, str]
+) -> None:
+    """One verdict decides both halves of an interruption: the pause and the late path."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", gate)
+    assert hf_mod._solo_interrupt_verdict(transcript) == expected
+
+
 @pytest.mark.asyncio
 async def test_resolve_rolls_back_unaddressed_substantive_transcript(
     monkeypatch: pytest.MonkeyPatch,
@@ -1648,8 +1674,35 @@ async def test_the_loop_does_not_late_interrupt_in_party_mode(monkeypatch: pytes
 async def test_the_loop_does_not_late_interrupt_an_unaddressed_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Audible and eligible, but nobody said the name: Reachy talks on."""
+    """Gate ON (`=1`): audible and eligible, but nobody said the name — Reachy talks on."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     fired, _ = await _run_late_path(monkeypatch, transcript="我們晚餐要吃什麼呢這麼晚了")
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_late_interrupts_a_plain_sentence_with_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """D-032: on the shipped default a plain sentence over a talking robot stops it.
+
+    RCA Finding 3's other half. The pause for this utterance was rolled back by
+    the 2 s rollback timer before its transcript existed, so without the late
+    path the answer would queue up *behind* the reply the user talked over.
+    """
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, transcript="我們晚餐要吃什麼呢這麼晚了")
+    assert fired == ["late"]
+    assert "late solo interrupt (substantive) on committed turn" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_loop_never_late_interrupts_on_a_backchannel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """「嗯」 is not an interruption under either gate; the one-on-one gate denies it first."""
+    fired, _ = await _run_late_path(monkeypatch, transcript="嗯")
     assert fired == []
 
 

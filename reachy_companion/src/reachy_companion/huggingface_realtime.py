@@ -239,6 +239,35 @@ def _gate_text_accepts(text: str) -> tuple[bool, str]:
     return False, "unaddressed"
 
 
+def _solo_interrupt_verdict(text: str) -> tuple[bool, str]:
+    """Whether *text* stops a solo reply: (accepted, reason).
+
+    The ONE rule for both halves of an interruption (D-032). The pause
+    (`_resolve_solo_barge`) and the late path (the `transcription.completed`
+    guard) are the same decision taken at two different moments — a transcript
+    that beat the rollback timer, or one that arrived after it — so they must
+    never be able to disagree. They did before: the late path fired only on a
+    control phrase or, with the gate on, a name, so with the gate off a
+    substantive turn whose pause had already rolled back was answered *behind*
+    the reply the user talked over (RCA Finding 3).
+
+    Gate on: `_gate_text_accepts` verbatim — an address name or a control
+    phrase. Gate off (the default): control phrases first, exactly as in
+    `_party_gate_accepts` — 「停」 is one character and `is_substantive` would
+    reject it against `REALTIME_MIN_TURN_CHARS`, and a robot you cannot silence
+    is worse than any false positive — then any substantive sentence. A
+    backchannel or an empty transcript is never an interruption under either
+    gate.
+    """
+    if _solo_name_gate():
+        return _gate_text_accepts(text)
+    if _PARTY_CONTROL_RE.search(text.casefold()):
+        return True, "control phrase"
+    if is_substantive(text):
+        return True, "substantive"
+    return False, "backchannel"
+
+
 _ONE_ON_ONE_ANSWER_GATES: Final[tuple[str, ...]] = ("name_only", "open")
 
 
@@ -2325,20 +2354,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """
         task, self._barge_rollback_task = self._barge_rollback_task, None
         _cancel_barge_task(task, _current_task())
-        # A robot you cannot silence is worse than any false positive (the party
-        # gate's first rule, review round finding 2). 「停」 is one character, so
-        # `is_substantive` rejects it against REALTIME_MIN_TURN_CHARS=2 and the
-        # reply would roll back and keep talking over the person telling it to
-        # stop. Control phrases are checked first, exactly as in `_party_gate_accepts`,
-        # and that ordering holds in both branches below: with the name gate on
-        # only an address name or a control phrase commits, and with it off the
-        # pre-gate substantive rule comes back unchanged.
-        if _solo_name_gate():
-            accepted, reason = _gate_text_accepts(transcript)
-        else:
-            control = bool(_PARTY_CONTROL_RE.search(transcript.casefold()))
-            accepted = control or is_substantive(transcript)
-            reason = "control phrase" if control else "substantive"
+        # `_solo_interrupt_verdict` owns the rule, and the late-interrupt guard
+        # in the completed handler reads the same function (D-032): a pause and
+        # a transcript that arrives after the rollback timer are one decision
+        # taken at two moments, and they must not be able to disagree.
+        accepted, reason = _solo_interrupt_verdict(transcript)
         if accepted:
             logger.info("solo barge-in confirmed by transcript (%s, %d chars)", reason, len(transcript))
             await self._commit_solo_barge()
@@ -4056,10 +4076,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                         # Task 4 (2026-08-30 plan): the pause is over — rolled
                         # back at the max pause, swallowed by the cooldown, or
-                        # never armed — but this committed turn addresses the
-                        # robot while it is still audible. Silence it now, or
-                        # the name gate's worst case is Reachy talking over the
-                        # person who called its name. `_barge_late_eligible`
+                        # never armed — but this committed turn is an
+                        # interruption and the robot is still audible. Silence
+                        # it now, or the worst case is Reachy talking over the
+                        # person who just spoke to it. `_barge_late_eligible`
                         # (fix round, finding 1) restricts that to utterances
                         # that began over a talking robot: from silence, the
                         # audible response IS this turn's answer.
@@ -4070,8 +4090,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             and self._barge_late_eligible
                             and self._robot_audible()
                         ):
-                            accepted, reason = _gate_text_accepts(transcript)
-                            if accepted and (reason == "control phrase" or _solo_name_gate()):
+                            # The SAME verdict the pause would have taken
+                            # (D-032). With the gate off that adds
+                            # `substantive`: a plain sentence whose pause the
+                            # 2 s rollback timer already resumed still stops
+                            # the reply here, instead of being answered behind
+                            # it (RCA Finding 3).
+                            accepted, reason = _solo_interrupt_verdict(transcript)
+                            if accepted:
                                 logger.info("late solo interrupt (%s) on committed turn", reason)
                                 await self._late_solo_interrupt()
                         if not self._party_mode:
