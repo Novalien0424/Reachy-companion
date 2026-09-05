@@ -201,14 +201,27 @@ def _solo_client_barge() -> bool:
 
 
 def _solo_name_gate() -> bool:
-    """Whether solo barge-in requires being addressed by name (2026-08-30 plan).
+    """Whether solo barge-in requires being addressed by name.
 
-    The operator's ask: like a person telling a story, Reachy should stop for
-    「瑞奇…」 or 「停」, and keep talking through speech aimed at someone else.
-    `0` restores the substantive-transcript rule. Only meaningful when
-    `REALTIME_SOLO_CLIENT_BARGE` is on — the legacy path never sees it.
+    **Default OFF since 2026-09-05 (D-032).** The operator's ruling after the
+    2026-09-04 session, in which 19 of 22 interruptions were rolled back
+    (`docs/rca-solo-interrupt-2026-09-04.md`): in 一對一聊天模式 *any real
+    sentence stops the reply*. In a one-person room there is nobody else the
+    speech could be aimed at, and the robot itself tells the operator that the
+    name is not needed in this mode. So a pause is decided by the substantive
+    rule again — the D-023 path, which has shipped all along as the `0` branch.
+
+    `=1` restores D-028's story-telling posture as a knob: like a person
+    telling a story, Reachy stops for 「瑞奇…」 or 「停」 and keeps talking
+    through speech aimed at someone else. That posture is why the gate exists
+    and it is still the right one for a noisy room, but GROUP and RECORD get
+    room protection from `_party_mode` (which short-circuits every solo barge
+    site) rather than from this flag, so the default only ever governed solo.
+
+    Only meaningful when `REALTIME_SOLO_CLIENT_BARGE` is on — the legacy path
+    never sees it.
     """
-    return env_bool("REALTIME_SOLO_NAME_GATE", True)
+    return env_bool("REALTIME_SOLO_NAME_GATE", False)
 
 
 def _gate_text_accepts(text: str) -> tuple[bool, str]:
@@ -289,11 +302,13 @@ def _commit_holdoff_ms() -> int:
 def _barge_confirm_s() -> float:
     """How long speech must persist during a pause before it is a real barge.
 
-    **Gate-off knob only.** With `REALTIME_SOLO_NAME_GATE` on — the default —
-    this timer no longer commits anything; the confirm window is
-    `REALTIME_BARGE_MAX_PAUSE_MS`, after which an unaddressed pause rolls back
-    and the reply resumes. This value still governs the legacy
-    `REALTIME_SOLO_NAME_GATE=0` path, which stays shipped.
+    **The live commit backstop** since the 2026-09-05 default flip (D-032):
+    with `REALTIME_SOLO_NAME_GATE` off — now the default — this timer commits
+    a pause whose speech outlasts it, no transcript required. That is what
+    stops a long interjection at 1.6 s instead of resuming the reply at the
+    4 s cap (RCA Finding 2). With the gate turned back on (`=1`) it commits
+    nothing; the window is `REALTIME_BARGE_MAX_PAUSE_MS` instead, after which
+    an unaddressed pause rolls back and the reply resumes.
 
     **The default must outlast `REALTIME_VAD_SILENCE_DURATION_MS`** (review
     round, finding 1). `_confirm_solo_barge` confirms iff `_barge_speech_open`
@@ -317,7 +332,9 @@ def _barge_confirm_s() -> float:
 def _barge_max_pause_s() -> float:
     """Longest a reply stays paused for speech that never addresses the robot.
 
-    Gate mode only. A name can only arrive by transcript, so sustained speech
+    `REALTIME_SOLO_NAME_GATE=1` only, i.e. off the default path since D-032:
+    with the gate off the confirm timer commits sustained speech and this cap
+    is never armed. A name can only arrive by transcript, so sustained speech
     proves nothing; but an unaddressed 30-second side conversation must not
     hold the reply hostage either. When this cap fires, the reply resumes —
     Reachy keeps talking while the room talks past it — and a name that lands
@@ -394,10 +411,12 @@ def warn_if_barge_confirm_races_vad() -> None:
 
     Two windows, checked independently because they gate different modes:
 
-    * `REALTIME_BARGE_CONFIRM_MS` is the SOLO window, and only the legacy
-      `REALTIME_SOLO_NAME_GATE=0` path still lets it commit anything (under the
-      gate it is a max pause that rolls back). It is also meaningless without
-      `REALTIME_SOLO_CLIENT_BARGE`. Both conditions still gate that half.
+    * `REALTIME_BARGE_CONFIRM_MS` is the SOLO window. Since D-032 flipped
+      `REALTIME_SOLO_NAME_GATE` off by default this half is normally LIVE —
+      sustained speech commits — so the advisory is no longer a legacy-path
+      curiosity. Turning the gate back on (`=1`) makes the window a max pause
+      that rolls back and stands this half down again; it is also meaningless
+      without `REALTIME_SOLO_CLIENT_BARGE`. Both conditions still gate it.
     * `REALTIME_PARTY_BARGE_CONFIRM_MS` is the ROOM window, used by GROUP and
       RECORD — and GROUP is the boot default, so this one is normally live. It
       has no gate and no legacy switch: `_party_barge_confirm` always commits.
@@ -2023,11 +2042,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
     async def _confirm_solo_barge(self, seq: int) -> None:
         """Resolve a pause whose speech outlasted the confirm/max-pause window.
 
-        Gate off: sustained speech IS the proof — commit (pre-plan behavior).
-        Gate on: sustained speech proves nothing about address — roll back and
-        resume; the transcript paths (partial, completed, late) keep the final
-        say. The mode is read once, before the sleep, so the delay and the
-        outcome can never come from two different rules.
+        Gate off (the default since D-032): sustained speech IS the proof —
+        commit. This is the live backstop for an interjection long enough that
+        its transcript cannot arrive in time, which is exactly the case the
+        2026-09-04 RCA found resuming the reply over the operator.
+        Gate on (`REALTIME_SOLO_NAME_GATE=1`): sustained speech proves nothing
+        about address — roll back and resume; the transcript paths (partial,
+        completed, late) keep the final say. The mode is read once, before the
+        sleep, so the delay and the outcome can never come from two different
+        rules.
         """
         gate = _solo_name_gate()
         try:

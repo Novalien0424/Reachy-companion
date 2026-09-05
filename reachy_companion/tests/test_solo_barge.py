@@ -1019,6 +1019,23 @@ async def test_the_watchdog_stands_down_when_a_response_arrived(monkeypatch: pyt
 # --------------------------------------------------------------------------
 
 
+def test_the_solo_name_gate_defaults_off() -> None:
+    """D-032 (2026-09-05): in 一對一聊天模式 any real sentence stops the reply.
+
+    The operator's ruling flips D-028's default: with the env unset the
+    interruption gate is OFF, so a paused reply is decided by the substantive
+    rule rather than by the robot's name. `=1` restores the story-telling
+    posture as a knob.
+    """
+    assert hf_mod._solo_name_gate() is False
+
+
+def test_the_solo_name_gate_is_still_a_knob(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`REALTIME_SOLO_NAME_GATE=1` brings D-028's address requirement back."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
+    assert hf_mod._solo_name_gate() is True
+
+
 def test_gate_text_accepts_name_and_control() -> None:
     """Names and control phrases pass; substantive unaddressed speech does not."""
     assert hf_mod._gate_text_accepts("瑞奇你說錯了") == (True, "name")
@@ -1032,7 +1049,8 @@ def test_gate_text_accepts_name_and_control() -> None:
 async def test_resolve_rolls_back_unaddressed_substantive_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Gate ON: substantive speech without a name resumes the reply."""
+    """Gate ON (`=1`, no longer the default): substantive speech without a name resumes."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -1046,7 +1064,8 @@ async def test_resolve_rolls_back_unaddressed_substantive_transcript(
 
 @pytest.mark.asyncio
 async def test_resolve_commits_on_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Gate ON: the robot's name in the transcript commits the barge."""
+    """Gate ON (`=1`): the robot's name in the transcript commits the barge."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -1075,8 +1094,14 @@ async def test_gate_off_restores_substantive_rule(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_partial_transcript_with_name_commits_early() -> None:
-    """A delta containing the name resolves the pause without waiting for completed."""
+async def test_partial_transcript_with_name_commits_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A delta containing the name resolves the pause without waiting for completed.
+
+    Pinned with the gate ON (`=1`) because that is the posture the name path was
+    built for; `test_a_partial_name_commits_with_the_gate_off` pins the same
+    behaviour on the shipped default (D-032, T3).
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -1149,8 +1174,9 @@ async def test_partial_commit_is_inert_in_party_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_incremental_deltas_accumulate_and_commit_split_name() -> None:
+async def test_incremental_deltas_accumulate_and_commit_split_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """GA deltas are incremental: 瑞 + 奇 across two deltas must still match (round 2, finding 3)."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
@@ -1178,12 +1204,15 @@ def test_base_handler_partial_deltas_stay_snapshots() -> None:
 
 
 @pytest.mark.asyncio
-async def test_partial_commit_survives_the_flush_that_resets_barge_state() -> None:
+async def test_partial_commit_survives_the_flush_that_resets_barge_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """In production `_clear_queue` IS `console.clear_audio_queue`, which resets everything.
 
     `_commit_solo_barge` flushes through it, so the committed item can only be
     recorded *after* that call returns — recording it first would be wiped.
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     h = _solo_handler()
     h._clear_queue = h.on_external_interrupt
     _make_audible()
@@ -1210,7 +1239,8 @@ def test_partial_committed_item_is_cleared_by_an_external_interrupt() -> None:
 async def test_sustained_unaddressed_speech_resumes_at_max_pause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Gate ON: long speech with no name rolls the pause back instead of committing."""
+    """Gate ON (`=1`): long speech with no name rolls the pause back instead of committing."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
     h = _solo_handler()
     _make_audible()
@@ -1251,8 +1281,10 @@ async def test_a_rolled_back_max_pause_arms_no_orphan_timer(
 
     The rollback already ended the pause, so `_solo_speech_stopped` has nothing
     left to decide — it must return without arming a rollback timer that would
-    later resume a reply nobody paused.
+    later resume a reply nobody paused. The cap is gate-on-only code, so the
+    knob is set explicitly (D-032 flipped the default off).
     """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
     h = _solo_handler()
     _make_audible()
@@ -1329,12 +1361,15 @@ async def test_a_transcript_decided_rollback_clears_the_resumed_id() -> None:
     Its caller `continue`s before the completed handler's trailing clear, so a
     resumed id left behind here would sit through later turns and suppress the
     next real late interrupt.
+
+    Driven on the shipped default (gate off, D-032), where the transcript that
+    rolls a pause back is a backchannel rather than an unaddressed sentence.
     """
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
     h._solo_speech_started()
-    assert await h._resolve_solo_barge("我們晚餐要吃什麼呢這麼晚了") is True
+    assert await h._resolve_solo_barge("嗯") is True
     assert h._barge_resumed_response_id is None
 
 
@@ -1565,7 +1600,12 @@ async def _run_late_path(
 
 @pytest.mark.asyncio
 async def test_the_loop_late_interrupts_an_addressed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole point, reached through the real event loop rather than by hand."""
+    """The whole point, reached through the real event loop rather than by hand.
+
+    Gate ON (`=1`): the name is what makes this turn addressed. The gate-off
+    default has its own pin — a plain sentence with no name (D-032, T2).
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     fired, handler = await _run_late_path(monkeypatch)
     assert fired == ["late"]
     assert handler._barge_resumed_response_id is None  # the turn is decided
@@ -1670,7 +1710,8 @@ def test_the_late_interrupt_runs_before_the_turn_clears_its_state() -> None:
 def test_the_gate_silences_the_confirm_race_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """With the gate on there is no confirm-commit branch left to warn about."""
+    """With the gate on (`=1`) there is no confirm-commit branch left to warn about."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     monkeypatch.setattr(hf_mod, "_BARGE_CONFIRM_WARNED", False)
     monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "250")
     with caplog.at_level("WARNING"):
@@ -1792,7 +1833,11 @@ async def test_rollback_never_truncates() -> None:
 
 @pytest.mark.asyncio
 async def test_max_pause_rollback_never_truncates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The patience cap resumes the reply, so its transcript must stay whole."""
+    """The patience cap resumes the reply, so its transcript must stay whole.
+
+    Gate-on-only code (`=1`) since D-032 flipped the default off.
+    """
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
     monkeypatch.setenv("REALTIME_BARGE_MAX_PAUSE_MS", "10")
     h = _truncating_handler()
     truncate = h.connection.conversation.item.truncate
