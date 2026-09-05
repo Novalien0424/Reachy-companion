@@ -1627,6 +1627,31 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 return stamped
         return self._barge_late_eligible
 
+    def _late_interrupt_was_possible(self, item_id: str | None, pause_committed: bool) -> bool:
+        """Whether this committed turn could still have interrupted a talking robot.
+
+        Solo, client-owned barge, no commit already made for this turn, and an
+        onset that happened while Reachy was audible. Consumes the item's
+        eligibility stamp (D-032 T2d), so it is called exactly once per turn —
+        on whichever of the completed handler's exits that turn takes.
+        """
+        if self._party_mode or not _solo_client_barge() or pause_committed:
+            return False
+        return self._take_late_eligible(item_id)
+
+    def _log_declined_late_interrupt(self, audible: bool, verdict: str) -> None:
+        """Name why a turn that began over a talking robot did NOT interrupt it.
+
+        RCA Finding 3's open case (`docs/rca-solo-interrupt-2026-09-04.md`): on
+        2026-09-04 the 11:51:23 turn carried the robot's name, was eligible on
+        paper and still went unhonoured, and the journal had no line on the
+        declined branch to say which input refused it. One line per such turn,
+        emitted from the answer-gate denial (where a one-on-one backchannel
+        exits, Codex round 1 finding 5), from the empty-transcript exit
+        (`verdict=empty`) and from the late block itself.
+        """
+        logger.info("late solo interrupt declined (audible=%s, verdict=%s)", audible, verdict)
+
     def _clear_late_eligible(self, item_id: str | None) -> None:
         """Retire an utterance's late-interrupt eligibility once it is decided."""
         self._barge_late_eligible = False
@@ -2578,7 +2603,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 item_id=item_id, content_index=0, audio_end_ms=audio_end_ms
             )
         except Exception as exc:  # noqa: BLE001 - a stale/finished item is a benign race
-            logger.debug("conversation.item.truncate refused: %s", exc)
+            # INFO, not DEBUG (Codex round 1, finding 6): a refused truncate is
+            # the case where the unheard tail SURVIVES in the model's context,
+            # which is the one thing the operator's context requirement cannot
+            # promise. Swallowed at debug it left no evidence at all.
+            logger.info("conversation.item.truncate refused: %s", exc)
 
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
@@ -4162,6 +4191,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # D-032 T2c: this turn is over, so a watchdog repair
                             # stamped with it has nothing left to describe.
                             self._take_barge_watchdog_answer(event_item_id)
+                            # D-032 T4: this turn began over a talking robot and
+                            # will not interrupt it. Say so, with the reason.
+                            if self._late_interrupt_was_possible(event_item_id, pause_committed):
+                                self._log_declined_late_interrupt(self._robot_audible(), "empty")
                             logger.debug("Ignoring empty user transcript")
                             await self._answer_owed_holdoff("empty transcript")
                             continue
@@ -4186,6 +4219,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 # credits a later turn with an onset over a
                                 # talking robot that it never had.
                                 self._barge_resumed_response_id = None
+                                # D-032 T4, Codex round 1 finding 5: in
+                                # one-on-one a backchannel exits HERE, above the
+                                # late block, so the declined line has to be
+                                # emitted here too or the commonest declined
+                                # turn leaves no evidence at all.
+                                if self._late_interrupt_was_possible(event_item_id, pause_committed):
+                                    self._log_declined_late_interrupt(
+                                        self._robot_audible(), _solo_interrupt_verdict(transcript)[1]
+                                    )
                                 self._clear_late_eligible(event_item_id)
                                 # A denied turn has no answer to repair, so the
                                 # watchdog a confirmed barge armed for it must
@@ -4213,21 +4255,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # (fix round, finding 1) restricts that to utterances
                         # that began over a talking robot: from silence, the
                         # audible response IS this turn's answer.
-                        if (
-                            not self._party_mode
-                            and _solo_client_barge()
-                            and not pause_committed
-                            and self._take_late_eligible(event_item_id)
-                            and self._robot_audible()
-                        ):
+                        if self._late_interrupt_was_possible(event_item_id, pause_committed):
                             # The SAME verdict the pause would have taken
                             # (D-032). With the gate off that adds
                             # `substantive`: a plain sentence whose pause the
                             # 2 s rollback timer already resumed still stops
                             # the reply here, instead of being answered behind
                             # it (RCA Finding 3).
+                            audible = self._robot_audible()
                             accepted, reason = _solo_interrupt_verdict(transcript)
-                            if accepted and self._barge_watchdog_answered_this_turn(event_item_id):
+                            if not (audible and accepted):
+                                # D-032 T4: the missing evidence for the
+                                # 11:51:23 case — which of the two inputs said no.
+                                self._log_declined_late_interrupt(audible, reason)
+                            elif self._barge_watchdog_answered_this_turn(event_item_id):
                                 # D-032 T2b's one exception. A sustained-speech
                                 # commit leaves `pause_committed` False, so
                                 # without this the late path would cancel the
@@ -4236,7 +4277,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 logger.info(
                                     "late solo interrupt held: the barge watchdog already answered this turn"
                                 )
-                            elif accepted:
+                            else:
                                 logger.info("late solo interrupt (%s) on committed turn", reason)
                                 await self._late_solo_interrupt()
                         if not self._party_mode:

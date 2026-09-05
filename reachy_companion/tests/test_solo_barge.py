@@ -2955,3 +2955,85 @@ def test_external_interrupt_clears_every_late_eligibility_stamp() -> None:
 
     assert h._barge_late_eligibles == {}
     assert h._barge_late_eligible is False
+
+
+# --- T4: name the reason a late interrupt was declined ---------------------
+
+
+@pytest.mark.asyncio
+async def test_a_declined_late_interrupt_names_a_silent_robot(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RCA Finding 3's open case: the journal could not say which guard refused.
+
+    A committed turn that began over a talking robot and is NOT honoured now
+    logs one line naming both inputs — here the reply drained before the
+    transcript landed, so there was nothing left to interrupt.
+    """
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, audible=False, active_id=None)
+    assert fired == []
+    assert "late solo interrupt declined (audible=False, verdict=substantive)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_declined_late_interrupt_names_an_unaddressed_verdict(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Gate ON (`=1`): audible, eligible, but the verdict refused — say so."""
+    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "1")
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, transcript="我們晚餐要吃什麼呢這麼晚了")
+    assert fired == []
+    assert "late solo interrupt declined (audible=True, verdict=unaddressed)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_backchannel_declines_at_the_answer_gate_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Codex round 1, finding 5: in one-on-one a backchannel exits BEFORE the late block.
+
+    The line therefore has to be emitted from the answer-gate denial too, or
+    the most common declined turn would still leave no evidence.
+    """
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, transcript="嗯")
+    assert fired == []
+    assert "late solo interrupt declined (audible=True, verdict=backchannel)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_empty_transcript_declines_with_verdict_empty(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The empty-transcript exit is the third `continue`; it names itself."""
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, transcript="")
+    assert fired == []
+    assert "late solo interrupt declined (audible=True, verdict=empty)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_began_in_silence_logs_no_declined_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One line per turn that could have interrupted, and none for any other."""
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(monkeypatch, eligible=False)
+    assert fired == []
+    assert "late solo interrupt declined" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_refused_truncate_is_visible_in_the_journal(caplog: pytest.LogCaptureFixture) -> None:
+    """Codex round 1, finding 6: context preservation is best-effort, so say when it failed.
+
+    A swallowed refusal at DEBUG is exactly the case where the unheard tail
+    survives in the model's context and nothing in the journal explains it.
+    """
+    h = _truncating_handler()
+    h.connection.conversation.item.truncate.side_effect = RuntimeError("no such item")
+    with caplog.at_level("INFO"):
+        await h._truncate_heard_audio("item_abc", 1200)
+    assert "conversation.item.truncate refused: no such item" in caplog.text
