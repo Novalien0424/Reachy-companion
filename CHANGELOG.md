@@ -9,18 +9,64 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
-## [Unreleased]
+## [1.23.0] — 2026-09-05 · solo interruption
 
+Design record D-032, from `docs/rca-solo-interrupt-2026-09-04.md`: in the
+2026-09-04 session, 19 of 22 attempts to interrupt failed, and the old reply
+played out before the new answer.
+
+- **In 一對一聊天模式, anything you actually say stops the reply.** Until now
+  only the robot's name or 「停」 could interrupt it; 「等一下」 or 「你就播吧」
+  left it talking. In a one-person room there is nobody else you could be
+  talking to, so any real sentence now stops it — a 「嗯」 or a cough still does
+  not. `REALTIME_SOLO_NAME_GATE=1` restores the old, story-telling behaviour for
+  a noisy room; 多人聊天模式 and 紀錄模式 are unchanged.
+- **A long sentence stops it too.** Speech that runs past about 1.6 seconds now
+  stops the reply on the spot, instead of waiting for a transcript that cannot
+  arrive in time and letting the reply resume over you at four seconds.
+- **It remembers what you heard, not what it was going to say.** An
+  interruption cuts the robot's own memory of the reply at the point that
+  actually reached your ears, so asking 「你剛剛講到哪」 afterwards refers to the
+  part you heard — and the conversation carries on from your latest sentence,
+  never from where the old reply left off.
+- **Interrupting stops whatever is speaking.** A follow-up after a tool, an
+  earlier answer still playing, the wake-up greeting: all of them stop now,
+  instead of going quiet for a moment and then finishing themselves.
+- **It answers you once.** The repair that covers an interrupted turn no longer
+  races the turn's own answer, so the same sentence is not answered twice.
+- **Saying the name mid-reply is fast again.** The name showing up in a partial
+  transcript stops the reply immediately in every mode, not just in the
+  name-gated one.
 - **Reachy now boots into 一對一聊天模式.** Operator instruction 2026-09-04
   (D-029 decision 5, amended): the code default, the `set_conversation_mode`
   description and the dead-knob warning all follow; `REALTIME_DEFAULT_MODE=group`
   restores the room posture. The robot's instance `.env` already carries the
   new value, so the installed 1.22.0 wheel boots solo before this ships.
-- **RCA, no behaviour change:** `docs/rca-solo-interrupt-2026-09-04.md` —
-  why solo-mode interruption is hard (name gate + a pause cap that fires
-  before the transcript exists) and why the old reply plays out before the
-  new answer (rollback resumes fully-buffered audio; the new answer queues
-  behind it), plus first-audio latency growing 2 s → 10 s over a session.
+
+### For contributors
+
+- The RCA this release answers: `docs/rca-solo-interrupt-2026-09-04.md` — why
+  solo-mode interruption was hard (name gate + a pause cap that fires before
+  the transcript exists) and why the old reply played out before the new answer
+  (rollback resumes fully-buffered audio; the new answer queues behind it),
+  plus first-audio latency growing 2 s → 10 s over a session, which is NOT
+  addressed here.
+- New INFO journal lines: `late solo interrupt declined (audible=<bool>,
+  verdict=<reason>)` — the missing evidence for RCA Finding 3's open case —
+  `solo barge: cancelling a newer response (<id>) the user talked over`, `late
+  solo interrupt held: the barge watchdog already answered this turn`,
+  `accepted turn already answered by the barge watchdog`, and `ignoring tool
+  call from cancelled response <id>`. `conversation.item.truncate refused` moves
+  from DEBUG to INFO: that refusal is the one case where the unheard tail
+  survives in the model's context.
+- `late solo interrupt (…)` gains `substantive` as a reason; the pause and the
+  late path now share one `_solo_interrupt_verdict`.
+- Barge state that used to be session-wide is stamped per input item —
+  late eligibility, the pause's utterance, and which utterance the repair
+  watchdog answered — because `transcription.completed` can land after the next
+  utterance has already started.
+- Plan and review log: `docs/plans/2026-09-05-solo-interrupt-plan.md` (rev 3;
+  two Codex rounds, 15 findings, 15 accepted, 0 rejected).
 
 ## [1.22.0] — 2026-09-02 · calibration and tool-surface symmetry
 

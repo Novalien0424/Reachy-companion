@@ -1754,3 +1754,130 @@ need); (7) a Chinese voice regression set and eval loop (L — the thing that
 would settle the 700 ms and the effort questions with data instead of
 argument). `parallel_tool_calls` is available on 2.1-mini and unset; no
 current failure asks for it.
+
+## D-032 — Solo interruption: any real sentence stops the reply; context preserved by truncate (2026-09-05)
+
+The 2026-09-04 session (v1.22.0, one operator, 11:47–12:10 robot time) rolled
+back 19 of 22 speech onsets over a talking robot:
+`docs/rca-solo-interrupt-2026-09-04.md`. 「等一下」, 「你就播吧」 and
+「嗯嗯嗯。这句话很怪怪的」 all left Reachy talking, and a rolled-back pause put
+the fully buffered old reply back on the speaker in front of the new answer.
+Operator ruling on RCA candidate fix 1, verbatim from the plan header: *RCA
+candidate fix 1 approved — in 一對一聊天模式 any real sentence stops the reply —
+with one added requirement: an interruption must preserve the transcript so the
+model keeps the previous context, and the conversation must continue from the
+latest human speech, never from where the old reply left off.* Plan:
+`docs/plans/2026-09-05-solo-interrupt-plan.md` (rev 3). This wave is rung 3 of
+`.claude/skills/reachy-instructing-model/SKILL.md` by definition — which sound
+stops the speaker is an execution-boundary fact, not a behaviour the model can
+be instructed into — so no prompt, persona or tool-description text moved.
+
+**Decision 1 — `REALTIME_SOLO_NAME_GATE` defaults OFF; it stays a knob.**
+Supersedes D-028 decision 1's *default* only. A paused solo reply is decided by
+the substantive rule again (the D-023 path, shipped all along as the `0`
+branch): control phrase, or any substantive transcript, commits; a backchannel,
+an empty transcript and a failed transcription still roll back. `=1` restores
+D-028's story-telling posture — stop for 「瑞奇…」 or 「停」, talk through speech
+aimed at someone else — which remains the right posture for a room. The flip
+touches solo only *by construction*, with no new mode plumbing: `_party_mode` is
+True for GROUP and RECORD and every solo barge site early-returns under it. Two
+consequences follow the default rather than the code: `REALTIME_BARGE_CONFIRM_MS`
+(1600) becomes the live commit backstop — sustained speech commits, which is what
+stops a long interjection at 1.6 s instead of resuming the reply at the cap — and
+`REALTIME_BARGE_MAX_PAUSE_MS` (4000) becomes gate-on-only code, which retires RCA
+Finding 2 outright.
+
+**Decision 2 — one verdict decides the pause and the late path.**
+`_solo_interrupt_verdict(text)` is now the single rule, read by
+`_resolve_solo_barge` and by the `transcription.completed` late-interrupt guard.
+They are the same decision taken at two moments — a transcript that beat the 2 s
+rollback timer, or one that arrived after it — and they used to disagree: the
+late path fired only on a control phrase or (gate on) a name, so with the gate
+off a plain sentence whose pause had already rolled back was answered *behind*
+the reply the user talked over. That was RCA Finding 3, and the late path is
+what makes stopping a guarantee rather than a race.
+
+**Decision 3 — an interruption stops whatever is speaking, and takes its
+context with it (the operator's added requirement).** The mapping is
+cancel → flush → truncate: `_cancel_active_response` stops the server
+generating, `_clear_queue` empties the local player so nothing of the old reply
+is heard after that instant, and `conversation.item.truncate` cuts the *server's*
+copy at the position that provably reached the ear (`_heard_audio_ms`: enqueued −
+outstanding − device buffer − 300 ms slack, always rounded down). The model
+therefore keeps the words the user heard, loses the unheard tail — the thing that
+made an interrupted Reachy repeat itself before D-023 — and the interrupting
+utterance is already a server-side conversation item, so the next reply answers
+the latest speech with the heard part still in context. Rollback paths never
+truncate: truncation is irreversible, which is why the rule change had to land on
+the decision and not on the truncate. Both commit sites now cancel the live
+response *whatever its id* (Codex round 1, finding 2): the pre-D-032 rule kept a
+newer response on the theory it was this turn's answer, but its audio has already
+been flushed, so the user heard a gap and then the rest of a reply they had
+interrupted. Two items can lose audio in one barge, so two items are truncated —
+the paused one at its stashed position, the live one at a position measured
+before the flush zeroes the drain counters. Best-effort, stated plainly (round 1,
+finding 6): a truncate is skipped when nothing was heard, and a server refusal is
+caught; that refusal now logs at INFO so the rare surviving tail is visible.
+
+**Decision 4 — the bookkeeping that keeps one interruption to one answer.**
+Three per-item markers, all keyed by input item because `transcription.completed`
+can land after the NEXT utterance's `speech_started` (Codex round 2, findings 1
+and 6). (a) A sustained-speech commit precedes the turn's own transcript, so the
+repair watchdog can answer an utterance whose transcript is still to come;
+`_barge_watchdog_answered_item` records which, and the accepted path skips only
+the request — all hold-off bookkeeping still runs — when that marker names this
+item AND `response.created` has been seen since the arm, the only proof the
+enqueue-only `_safe_response_create` offers (round 2, findings 2 and 4). The same
+marker is the one exception to Decision 3: the late path never cancels the reply
+the watchdog asked for on behalf of the same utterance. (b) Late eligibility is
+stamped per item, with the session flag kept only as the fallback for an event
+with no id. (c) A tool call whose `response_id` is in the cancelled set is
+dropped before it starts anything (round 2, finding 5) — no in-flight entry, no
+tool-batch follow-up, no music tool phase; tools already running when the cancel
+lands finish and post their outputs, as they do for every other cancel. Also
+under this decision: a name in a *partial* transcript now commits under either
+gate — the old "gate-mode only" restriction was a latency-lever scoping, not a
+safety property. No substantive-on-partial, because a partial cannot prove
+substantiveness (「嗯嗯」 grows into 「嗯嗯好」).
+
+**Decision 5 — the declined branch says why.** RCA Finding 3's open case is that
+the 11:51:23 turn carried the robot's name, looked eligible, and the journal had
+no line explaining which guard refused it. `late solo interrupt declined
+(audible=<bool>, verdict=<reason>)` is now emitted once per turn that began over
+a talking robot and did not interrupt it — from the answer-gate denial (where a
+one-on-one backchannel exits, round 1 finding 5), from the empty-transcript exit
+(`verdict=empty`), and from the late block itself.
+
+**Knobs and the false-interruption risk.** The knobs that govern this wave, all
+env, all with shipped defaults: `REALTIME_SOLO_NAME_GATE` (now 0; `1` restores
+D-028), `REALTIME_BARGE_CONFIRM_MS` (1600 — raise it if false cuts appear),
+`REALTIME_BARGE_ROLLBACK_TIMEOUT_S` (2.0 — raise it to lengthen the silent wait
+for a slow transcript), `REALTIME_BARGE_MAX_PAUSE_MS` (4000, gate-on only),
+`REALTIME_BARGE_COOLDOWN_MS` (800), `REALTIME_SOLO_CLIENT_BARGE` (1),
+`REALTIME_VAD_THRESHOLD` (0.7 on the robot). The risk this trades for is false
+interruption from non-speech: under `semantic_vad` the server decides
+`speech_stopped` on its own schedule, so a cough that keeps `_barge_speech_open`
+True past 1600 ms commits by sustained speech. The cost of a false cut is a
+re-ask, never lost context — the truncate keeps the heard part — and the signal
+to watch in the journal is `confirmed by sustained speech` with no user
+transcript following. Second residual, recorded not fixed: stop latency is
+bounded by the transcript, not zero. Speech shorter than the confirm window is
+decided by its transcript, and if that arrives after the 2 s rollback timer the
+reply audibly resumes and is cut again by the late path — a short
+resume-then-cut. The pause at onset still silences the robot immediately.
+
+**Review outcome.** Codex (`--profile nova-auto`, gpt-5.5), two rounds under the
+`CLAUDE.md` 2-round cap: round 1 eight findings, round 2 seven — **15 findings,
+15 accepted, 0 rejected**. Rev 3 was the execution spec and the review log in the
+plan records each finding against the task that answers it.
+
+**Verification status.** Layer 1 is SDK-simulated and pinned: the suite went
+1873 → 1915 passed / 30 skipped across eight commits, with `ruff check` and
+`mypy --strict` clean at each. On-robot proof is v1.23.0's operator probe (plan
+T7) and the three `feature_list.json` rows it feeds — `VOICE-SOLO-BARGE`,
+`VOICE-LATE-INTERRUPT` and the new `VOICE-INTERRUPT-CONTEXT`, all
+`implemented-unverified` until a person is in the room. Out of scope and
+untouched, so review does not re-open them: RCA candidate 4 (re-time the cap —
+moot, the cap is gate-on-only), candidates 5–6 (`reasoning.effort` and
+`semantic_vad` eagerness A/Bs — instance `.env` probes, no code), and RCA
+Finding 4, the first-audio latency growth from 2 s to 10 s over a session.
