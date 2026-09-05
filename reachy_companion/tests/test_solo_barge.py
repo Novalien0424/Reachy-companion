@@ -2126,6 +2126,15 @@ def test_the_commit_truncate_runs_below_the_watchdog_arm() -> None:
 
     source = inspect.getsource(HuggingFaceRealtimeHandler._commit_solo_barge)
     assert source.index("self._arm_barge_watchdog()") < source.index("await self._truncate_heard_audio(")
+    # D-032 T5: the whole chain, in the order the operator hears it — the reply
+    # stops generating, the queued audio goes, the turn's answer is insured,
+    # and only then is the server's copy cut at what actually reached the ear.
+    assert (
+        source.index("await self._cancel_active_response()")
+        < source.index("self._clear_queue()")
+        < source.index("self._arm_barge_watchdog()")
+        < source.index("await self._truncate_heard_audio(")
+    )
 
 
 @pytest.mark.asyncio
@@ -3037,3 +3046,67 @@ async def test_a_refused_truncate_is_visible_in_the_journal(caplog: pytest.LogCa
     with caplog.at_level("INFO"):
         await h._truncate_heard_audio("item_abc", 1200)
     assert "conversation.item.truncate refused: no such item" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_committed_barge_still_emits_the_turn_and_asks_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """D-032 T5, the commit path end to end on the shipped default.
+
+    A plain sentence over a talking robot commits the pause, and the turn that
+    interrupted is then an ordinary accepted turn: its transcript is emitted
+    and recorded, and exactly ONE response is requested for it — the commit
+    arms a repair watchdog, and a second request here is Reachy answering the
+    same sentence twice.
+    """
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "0")
+    _quiet_session(monkeypatch)
+    created: list[dict[str, Any]] = []
+    said: list[str] = []
+    baseline: list[int] = []
+
+    async def _count(self: HuggingFaceRealtimeHandler, *, cycle: Any = None, **kwargs: Any) -> None:
+        created.append(kwargs)
+
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
+        self._response_done_event.clear()  # a reply is speaking
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        self._active_response_id = "resp_reply"
+        # The pause `_solo_speech_started` would have opened.
+        self._barge_pending = True
+        self._barge_paused = True
+        self._barge_paused_response_id = "resp_reply"
+        self._stamp_late_eligible(item_id, True)
+        baseline.append(len(created))
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_safe_response_create", _count)
+    monkeypatch.setattr(hf_mod, "record_transcript", lambda _deps, _role, text: said.append(text))
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1"),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="我們晚餐要吃什麼呢這麼晚了",
+                item_id="item_1",
+            ),
+        )
+    )
+
+    with caplog.at_level("INFO"):
+        await handler._run_realtime_session()
+
+    assert "solo barge-in confirmed by transcript (substantive," in caplog.text
+    assert said == ["我們晚餐要吃什麼呢這麼晚了"], "the interrupting turn is still part of the conversation"
+    assert len(created) - baseline[0] == 1, "exactly one response for the interrupting turn"
+    assert handler._barge_paused is False
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_no_watchdog_repair_asks_for_its_own_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The T2c control: no marker at all is the ordinary accepted turn."""
+    requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker=None, response_seen=True)
+    assert requested == 1
