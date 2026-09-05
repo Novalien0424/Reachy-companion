@@ -961,10 +961,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # The response that was speaking when the pause began, so a commit can
         # tell it apart from the answer to the turn being barged in with.
         self._barge_paused_response_id: str | None = None
-        # The item whose *partial* transcript already committed a pause, so the
-        # `completed` transcript for that same item cannot interrupt a second
-        # time — the answer it would kill is the one the commit asked for
-        # (Codex round 2, finding 2). Consumed by the completed handler.
+        # The input item that committed a pause BEFORE its own transcript
+        # existed — from a partial transcript (Codex round 2, finding 2) or from
+        # the sustained-speech confirm timer (D-032 review fix). Kept under its
+        # original name because many sites read it. Its `completed` transcript
+        # must not interrupt a second time: the reply now playing is the answer
+        # that commit asked for, and the late block would cancel it. Consumed by
+        # the completed handler, which turns it into `pause_committed = True`.
         self._barge_partial_committed_item: str | None = None
         # The reply a rollback put back on the speaker, so a late interrupt can
         # tell it apart from a *newer* response that is already the answer to
@@ -2210,7 +2213,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._resume_playback(rolled_back=True)
             return
         logger.info("solo barge-in confirmed by sustained speech; cancelling the active reply")
+        # Read BEFORE the commit: in production `_clear_queue` is
+        # `console.clear_audio_queue`, which runs `on_external_interrupt()` and
+        # clears every per-item barge marker on its way through.
+        committed_item = self._barge_utterance_item_id
         await self._commit_solo_barge()
+        # D-032 review fix: this commit happened without a transcript, so by the
+        # time the utterance's `transcription.completed` lands `_barge_pending`
+        # is already False and nothing else would tell the completed handler
+        # that the turn DID interrupt. Left unmarked it logged `late solo
+        # interrupt declined (...)` on the very turns that succeeded — poisoning
+        # the T4 evidence — and could cancel a second time whatever the sender
+        # queue had released since. Same semantics, and the same set-after-the-
+        # flush ordering, as `_maybe_commit_on_partial`.
+        self._barge_partial_committed_item = committed_item
 
     async def _rollback_timer(self, seq: int) -> None:
         """Resume the reply when a pause has run out of ways to be decided.

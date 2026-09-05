@@ -1698,11 +1698,19 @@ async def test_the_loop_does_not_late_interrupt_an_idle_start(monkeypatch: pytes
 
 @pytest.mark.asyncio
 async def test_the_loop_does_not_late_interrupt_a_partial_committed_turn(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A partial-committed turn already interrupted; the reply now playing is its answer."""
-    fired, handler = await _run_late_path(monkeypatch, partial_item="item_1")
+    """A turn that already committed — by partial transcript or by sustained speech.
+
+    The reply now playing is its answer, so the late block must not run at all:
+    no second interrupt, and no `declined` line either (D-032 review fix). A
+    declined line here would say the opposite of what happened on every
+    sustained-speech commit and poison T4's evidence.
+    """
+    with caplog.at_level("INFO"):
+        fired, handler = await _run_late_path(monkeypatch, partial_item="item_1")
     assert fired == []
+    assert "late solo interrupt declined" not in caplog.text
     assert handler._barge_partial_committed_item is None, "the marker is consumed, not left to rot"
 
 
@@ -2606,6 +2614,7 @@ async def _run_watchdog_answered_turn(
     marker: str | None,
     response_seen: bool,
     item_id: str = "item_1",
+    partial_item: str | None = None,
 ) -> tuple[int, HuggingFaceRealtimeHandler]:
     """Replay speech-start → accepted transcript; count the responses THIS turn asked for."""
     monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "0")
@@ -2623,6 +2632,9 @@ async def _run_watchdog_answered_turn(
         # Stand in for a watchdog that already fired for `marker`'s utterance.
         self._barge_watchdog_answered_item = marker
         self._barge_response_seen = response_seen
+        # `partial_item` stands in for a commit that ran before this turn's own
+        # transcript — the partial path, or the sustained-speech confirm timer.
+        self._barge_partial_committed_item = partial_item
         baseline.append(len(created))
 
     monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
@@ -2653,9 +2665,20 @@ async def test_a_watchdog_answered_turn_is_not_answered_twice(
     Reachy answer the same sentence twice.
     """
     with caplog.at_level("INFO"):
-        requested, handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_1", response_seen=True)
+        requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_1", response_seen=True)
     assert requested == 0
     assert "accepted turn already answered by the barge watchdog" in caplog.text
+
+    # The real shape of that race (D-032 review fix): the sustained-speech
+    # commit also marks its item, so the turn arrives with `pause_committed`
+    # True. It still asks for nothing, and the late block stays out of it.
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        requested, _handler = await _run_watchdog_answered_turn(
+            monkeypatch, marker="item_1", response_seen=True, partial_item="item_1"
+        )
+    assert requested == 0
+    assert "late solo interrupt" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -2669,6 +2692,13 @@ async def test_a_watchdog_request_the_server_never_created_is_asked_for_again(
     narrow overlap the sender loop's one-active-response handling covers.
     """
     requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_1", response_seen=False)
+    assert requested == 1
+
+    # And the same when the commit that preceded the transcript marked its item
+    # (D-032 review fix): exactly one response for the interrupting turn.
+    requested, _handler = await _run_watchdog_answered_turn(
+        monkeypatch, marker="item_1", response_seen=False, partial_item="item_1"
+    )
     assert requested == 1
 
 
@@ -3110,3 +3140,68 @@ async def test_a_turn_with_no_watchdog_repair_asks_for_its_own_answer(
     """The T2c control: no marker at all is the ordinary accepted turn."""
     requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker=None, response_seen=True)
     assert requested == 1
+
+
+# --- a sustained-speech commit marks its item too (D-032 review fix) -------
+
+
+@pytest.mark.asyncio
+async def test_a_sustained_speech_commit_marks_its_item_as_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The confirm timer commits without a transcript, so it must say which item did.
+
+    Gate off, the timer commits before `transcription.completed` exists. By the
+    time that transcript lands `_barge_pending` is already False, so without a
+    marker the completed handler would judge the turn as one that had NOT
+    interrupted: a misleading `late solo interrupt declined` line on every
+    successful sustained-speech barge, and a second cancel aimed at whatever
+    the sender queue released in the meantime.
+    """
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started("item_1")
+    assert h._barge_confirm_task is not None
+
+    await asyncio.wait_for(h._barge_confirm_task, timeout=1.0)
+
+    h.connection.response.cancel.assert_awaited_once()
+    assert h._barge_partial_committed_item == "item_1"
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_sustained_speech_mark_survives_the_flush_that_resets_barge_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In production `_clear_queue` IS `console.clear_audio_queue`, which resets everything.
+
+    The commit flushes through it, so the item has to be read before the commit
+    and recorded after it — exactly as `_maybe_commit_on_partial` does.
+    """
+    monkeypatch.setenv("REALTIME_BARGE_CONFIRM_MS", "10")
+    h = _solo_handler()
+    h._clear_queue = h.on_external_interrupt
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started("item_1")
+
+    await asyncio.wait_for(h._barge_confirm_task, timeout=1.0)
+
+    assert h._barge_partial_committed_item == "item_1"
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_committed_mark_only_covers_its_own_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mark names one utterance, so the NEXT one is judged normally.
+
+    Second half of the D-032 review fix: a marker that covered later turns
+    would suppress the late interrupt for every utterance after the one that
+    committed. Its own turn pops it — pinned by
+    `test_the_loop_does_not_late_interrupt_a_partial_committed_turn`.
+    """
+    fired, _handler = await _run_late_path(monkeypatch, partial_item="item_other")
+    assert fired == ["late"], "this turn never committed, so the late path is still live"
