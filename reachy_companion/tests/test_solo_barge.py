@@ -354,35 +354,38 @@ async def test_a_control_phrase_confirms_even_though_it_is_too_short() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_commit_never_cancels_the_answer_to_the_barged_turn(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The reply the barge asked for must survive the barge that asked for it.
+async def test_a_commit_cancels_a_newer_response_the_user_talked_over(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """D-032 T2b: an interruption stops whatever is speaking, not only the paused reply.
 
-    Review round, finding 4: when the paused reply ends and the server accepts
-    the barged turn's own auto-response before the transcript reaches us,
-    `_active_response_id` is the ANSWER, not the reply being interrupted.
-
-    Pinned to the pre-name-gate rule: what is under test is the commit path's
-    response-id bookkeeping, and 「幫我開燈」 only reaches it while a substantive
-    transcript is enough to commit.
+    Inverts the pre-D-032 pin. Review round finding 4 read a live response with
+    a different id as "the answer to this very turn, do not kill it" — but the
+    flush has already dropped its audio, so keeping it generating produces a
+    gap and then the REST of that reply. Under the operator's rule that
+    response is precisely what the user is talking over: an earlier turn's
+    reply, a tool-batch follow-up, a wake greeting. Cancel it, and arm the
+    watchdog, because there is now no live answer to rely on.
     """
-    monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
     h._solo_speech_started()
     assert h._barge_paused_response_id == "resp_123"
     h._solo_speech_stopped()
-    # The paused reply finished and the answer to this very turn started.
+    # The paused reply finished and something else started speaking in its place.
     h._active_response_id = "resp_answer"
 
-    handled = await h._resolve_solo_barge("幫我開燈")
+    with caplog.at_level("INFO"):
+        handled = await h._resolve_solo_barge("幫我開燈")
 
     assert handled is False
-    h.connection.response.cancel.assert_not_awaited(), "that id is the answer, not the old reply"
-    assert "resp_answer" not in h._cancelled_response_ids
-    h._clear_queue_callback.assert_called_once()  # the old reply's audio still goes
+    h.connection.response.cancel.assert_awaited_once()
+    assert "resp_answer" in h._cancelled_response_ids
+    assert "solo barge: cancelling a newer response (resp_answer) the user talked over" in caplog.text
+    h._clear_queue_callback.assert_called_once()
     assert not h._held_audio
-    assert h._barge_watchdog_task is None, "the answer exists; asking again would duplicate it"
+    assert h._barge_watchdog_task is not None, "nothing is left speaking; the turn needs its answer"
     h.on_external_interrupt()
 
 
@@ -1372,16 +1375,24 @@ async def test_late_interrupt_with_no_resumed_id_still_silences() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_interrupt_keeps_a_newer_response() -> None:
-    """A live response newer than the resumed one IS the answer — do not kill it."""
+async def test_late_interrupt_cancels_a_newer_response(caplog: pytest.LogCaptureFixture) -> None:
+    """D-032 T2b: the late path stops a newer response too — it is what is being talked over.
+
+    Inverts the pre-D-032 pin. The one exception is a response the barge
+    watchdog requested for THIS same utterance; that guard lives in the
+    completed handler, above this call.
+    """
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
     h._barge_resumed_response_id = "resp_old"
     h._active_response_id = "resp_new"
-    await h._late_solo_interrupt()
-    h.connection.response.cancel.assert_not_awaited()
-    h._clear_queue_callback.assert_not_called()
+    with caplog.at_level("INFO"):
+        await h._late_solo_interrupt()
+    h.connection.response.cancel.assert_awaited_once()
+    assert "resp_new" in h._cancelled_response_ids
+    assert "solo barge: cancelling a newer response (resp_new) the user talked over" in caplog.text
+    h._clear_queue_callback.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1577,6 +1588,8 @@ def _state_at_speech_start(
     party: bool = False,
     active_id: str | None = "resp_A",
     partial_item: str | None = None,
+    watchdog_answered: str | None = None,
+    response_seen: bool = False,
 ):
     """Stand in for `_solo_speech_started`, planting the state under test.
 
@@ -1595,6 +1608,8 @@ def _state_at_speech_start(
         self._conversation_mode = ConversationMode.GROUP if party else ConversationMode.ONE_ON_ONE
         self._active_response_id = active_id
         self._barge_partial_committed_item = partial_item
+        self._barge_watchdog_answered_item = watchdog_answered
+        self._barge_response_seen = response_seen
 
     return _apply
 
@@ -1986,8 +2001,12 @@ async def test_commit_truncates_the_paused_item_not_a_newer_one() -> None:
 
 
 @pytest.mark.asyncio
-async def test_commit_truncates_even_when_the_answer_is_already_live() -> None:
-    """The paused reply's tail was dropped either way — its unheard text must go."""
+async def test_commit_cancels_and_truncates_when_a_newer_response_is_live() -> None:
+    """D-032 T2b: the newer response is cancelled, and the paused item still loses its tail.
+
+    Inverts the pre-D-032 pin, which expected no cancel. The live audio item is
+    the paused one here, so there is exactly one truncate.
+    """
     h = _truncating_handler()
     truncate = h.connection.conversation.item.truncate
     generation = audio_drain.begin_response()
@@ -1998,9 +2017,40 @@ async def test_commit_truncates_even_when_the_answer_is_already_live() -> None:
     h._solo_speech_started()
     h._active_response_id = "resp_answer"  # a different, newer response is live
     await h._commit_solo_barge()
-    h.connection.response.cancel.assert_not_awaited()
+    h.connection.response.cancel.assert_awaited_once()
     truncate.assert_awaited_once()
     assert truncate.await_args.kwargs["item_id"] == "item_paused"
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_commit_truncates_both_the_paused_item_and_the_live_one() -> None:
+    """D-032 T2b: two items lost audio, so two items lose their unheard tail.
+
+    The paused item is cut at the position stashed when the pause began; the
+    item a newer response was speaking is cut at its own heard position,
+    measured BEFORE the flush zeroes the drain counters behind it.
+    """
+    h = _truncating_handler()
+    truncate = h.connection.conversation.item.truncate
+    generation = audio_drain.begin_response()
+    h._audio_item_id = "item_paused"
+    h._audio_item_enqueued_ms = 2000.0
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms outstanding
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    # A newer response took the floor while the decision was pending.
+    h._active_response_id = "resp_newer"
+    h._audio_item_id = "item_live"
+    h._audio_item_enqueued_ms = 2000.0
+
+    await h._commit_solo_barge()
+
+    h.connection.response.cancel.assert_awaited_once()
+    truncated = [call.kwargs["item_id"] for call in truncate.await_args_list]
+    assert truncated == ["item_paused", "item_live"]
+    assert all(0 < call.kwargs["audio_end_ms"] <= 1200 for call in truncate.await_args_list)
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
 
 
 @pytest.mark.asyncio
@@ -2047,18 +2097,25 @@ def test_the_commit_truncate_runs_below_the_watchdog_arm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_interrupt_that_keeps_a_newer_response_never_truncates() -> None:
-    """Nothing was cancelled, so nothing left the ear unheard."""
+async def test_late_interrupt_truncates_the_newer_response_it_cancels() -> None:
+    """D-032 T2b: the newer response is cancelled, so its unheard tail must go too.
+
+    Inverts the pre-D-032 pin, which expected no truncate because nothing was
+    cancelled.
+    """
     h = _truncating_handler()
     truncate = h.connection.conversation.item.truncate
-    _make_audible()
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms
     h._response_done_event.clear()
     h._barge_resumed_response_id = "resp_old"
     h._active_response_id = "resp_new"
     h._audio_item_id = "item_live"
-    h._audio_item_enqueued_ms = 4000.0
+    h._audio_item_enqueued_ms = 2000.0
     await h._late_solo_interrupt()
-    truncate.assert_not_awaited()
+    truncate.assert_awaited_once()
+    assert truncate.await_args.kwargs["item_id"] == "item_live"
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
 
 
 @pytest.mark.asyncio
@@ -2658,3 +2715,117 @@ def test_taking_the_watchdog_answer_is_scoped_to_one_item() -> None:
     assert h._take_barge_watchdog_answer("item_1") is True
     assert h._barge_watchdog_answered_item is None, "consumed, not left to rot"
     assert h._take_barge_watchdog_answer("item_1") is False
+
+
+# --- T2b: an interruption stops whatever speaks, except this turn's own repair
+
+
+@pytest.mark.asyncio
+async def test_the_loop_does_not_late_interrupt_this_turns_watchdog_answer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """D-032 T2b exception: the watchdog's reply for THIS utterance is its answer.
+
+    A sustained-speech commit leaves `pause_committed` False by the time the
+    transcript lands, so without this guard the late path would cancel the very
+    reply the barge watchdog asked for on behalf of the same turn.
+    """
+    with caplog.at_level("INFO"):
+        fired, _ = await _run_late_path(
+            monkeypatch,
+            transcript="我們晚餐要吃什麼呢這麼晚了",
+            watchdog_answered="item_1",
+            response_seen=True,
+        )
+    assert fired == []
+    assert "late solo interrupt held: the barge watchdog already answered this turn" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_loop_late_interrupts_another_turns_watchdog_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exception is per item: a repair for a DIFFERENT utterance is fair game."""
+    fired, _ = await _run_late_path(
+        monkeypatch,
+        transcript="我們晚餐要吃什麼呢這麼晚了",
+        watchdog_answered="item_other",
+        response_seen=True,
+    )
+    assert fired == ["late"]
+
+
+# --- T2b stale-tool rule (Codex round 2, finding 5) ------------------------
+
+
+def _tool_probe(handler: HuggingFaceRealtimeHandler) -> list[str]:
+    """Replace the tool manager with a recorder, so no real tool ever runs."""
+    started: list[str] = []
+
+    async def _start_tool(*, call_id: str, tool_call_routine: Any, is_idle_tool_call: bool) -> Any:
+        started.append(call_id)
+        return SimpleNamespace(tool_id=f"tool_{call_id}")
+
+    handler.tool_manager = SimpleNamespace(
+        start_up=lambda tool_callbacks=None: None,
+        shutdown=AsyncMock(),
+        start_tool=_start_tool,
+    )
+    return started
+
+
+async def _run_tool_call(
+    monkeypatch: pytest.MonkeyPatch, *, response_id: str, cancelled: str
+) -> tuple[list[str], HuggingFaceRealtimeHandler]:
+    """Replay a tool call whose response may or may not have been cancelled."""
+    _quiet_session(monkeypatch)
+    hooked: list[str] = []
+    monkeypatch.setattr(hf_mod, "on_tool_call_started", lambda call_id: hooked.append(call_id))
+
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
+        self._cancelled_response_ids.append(cancelled)
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1"),
+            _FakeEvent(
+                "response.function_call_arguments.done",
+                response_id=response_id,
+                name="look_around",
+                arguments="{}",
+                call_id="call_1",
+            ),
+        )
+    )
+    started = _tool_probe(handler)
+    await handler._run_realtime_session()
+    assert hooked == started, "the music hook and the tool manager must agree"
+    return started, handler
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_from_a_cancelled_response_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round 2, finding 5: cancelling a response must not leave its tools to run.
+
+    The follow-up that tool call belongs to was cancelled by the barge, so
+    running it would post an output nobody asked for, start a music tool phase
+    that never ends, and leave `_in_flight_tool_calls` holding a call id whose
+    turn is over.
+    """
+    with caplog.at_level("INFO"):
+        started, handler = await _run_tool_call(monkeypatch, response_id="resp_dead", cancelled="resp_dead")
+    assert started == []
+    assert handler._in_flight_tool_calls == set()
+    assert handler._tool_batch_needs_response is False
+    assert "ignoring tool call from cancelled response resp_dead" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_from_a_live_response_still_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The filter is scoped to the cancelled ids; every other tool call runs as before."""
+    started, handler = await _run_tool_call(monkeypatch, response_id="resp_live", cancelled="resp_dead")
+    assert started == ["call_1"]
+    assert "call_1" in handler._in_flight_tool_calls

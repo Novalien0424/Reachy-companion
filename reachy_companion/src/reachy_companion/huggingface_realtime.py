@@ -2207,6 +2207,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_watchdog_answered_item = self._barge_utterance_item_id
         await self._safe_response_create()
 
+    def _barge_watchdog_answered_this_turn(self, item_id: str | None) -> bool:
+        """Whether the repair watchdog's reply for *item_id* is live right now.
+
+        `_barge_response_seen` is the only proof the enqueue-only
+        `_safe_response_create` offers that the watchdog's request produced a
+        response (Codex round 2, finding 4). Peeks; the marker is popped by
+        `_take_barge_watchdog_answer` once the turn is decided.
+        """
+        return item_id is not None and item_id == self._barge_watchdog_answered_item and self._barge_response_seen
+
     def _take_barge_watchdog_answer(self, item_id: str | None) -> bool:
         """Pop the watchdog-answered marker when it names *item_id*.
 
@@ -2279,38 +2289,35 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # confirmed the barge), so the flag has to survive it: it is what stops
         # the response watchdog from injecting a reply over a talking user.
         speech_open = self._barge_speech_open
-        # Review round, finding 4, restated for client-driven answering
-        # (2026-08-31): a *different* response is live, so the reply we paused
-        # already ended and something else started speaking in its place. With
-        # `create_response` false in every mode that id can only be a
-        # CLIENT-created response, and it is never this turn's answer — this
-        # turn has not reached the answer gate yet, and `_safe_response_create`
-        # is the only thing that could have asked for one. It belongs to
-        # something else the sender queue released: an earlier turn's reply, a
-        # tool-batch follow-up, a wake-face greeting. Cancelling it would cut
-        # that off mid-word, and arming the watchdog for this turn would ask
-        # twice for an answer the completed-transcript branch is about to
-        # request itself. The held audio still goes: it belongs to the reply
-        # that is over. A live id of None is NOT this case — nothing is
-        # speaking, so a turn whose transcript never lands would end in silence
-        # and still needs the watchdog.
-        answer_already_live = (
-            self._active_response_id is not None and self._active_response_id != self._barge_paused_response_id
-        )
+        # D-032 T2b (Codex round 1, finding 2). A *different* response is live:
+        # the reply we paused already ended and something else took the floor —
+        # an earlier turn's reply, a tool-batch follow-up, a wake-face greeting.
+        # Review round finding 4 kept that response alive on the theory it was
+        # this turn's answer; under the operator's rule it is precisely what the
+        # user is talking over, and the flush below has already dropped its
+        # audio, so keeping it generating produces a gap and then the REST of
+        # it. Cancel it whatever its id, and arm the watchdog in this branch too
+        # (there is no live answer left to rely on).
+        live_response_id = self._active_response_id
+        if live_response_id is not None and live_response_id != self._barge_paused_response_id:
+            logger.info("solo barge: cancelling a newer response (%s) the user talked over", live_response_id)
+        # Its audio is a different item from the paused one, and it lost its
+        # tail to the same flush, so it needs its own truncate. Measured HERE,
+        # before `_clear_queue` zeroes the drain counters the figure comes from.
+        live_item: str | None = None
+        live_heard_ms = 0
+        if self._audio_item_id is not None and self._audio_item_id != truncate_item:
+            live_item, live_heard_ms = self._audio_item_id, self._heard_audio_ms()
         try:
-            if answer_already_live:
-                logger.info("solo barge: the paused reply already ended; keeping the new response")
-            else:
-                await self._cancel_active_response()
+            await self._cancel_active_response()
         finally:
             if self._clear_queue:
                 self._clear_queue()
             self._resume_playback(rolled_back=False)
             self._barge_speech_open = speech_open
         self._barge_cooldown_until = time.monotonic() + _barge_cooldown_s()
-        if not answer_already_live:
-            self._barge_response_seen = False
-            self._arm_barge_watchdog()
+        self._barge_response_seen = False
+        self._arm_barge_watchdog()
         # Dead last, below the watchdog arm (fix round 1, finding 3). This is
         # the only `await` between the flush and the arm, and when the commit
         # runs from the confirm timer the receive loop is free to process a
@@ -2320,34 +2327,38 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # speaking unprompted. The truncate is best-effort and order-independent
         # down here.
         #
-        # Unconditional across both branches (Codex round 2, finding 4): even
-        # when the answer to the barged turn is already live, the paused reply's
-        # tail was still dropped, and its unheard text must still leave the
-        # model's context.
+        # Unconditional (Codex round 2, finding 4): whatever else was speaking,
+        # the paused reply's tail was dropped, and its unheard text must leave
+        # the model's context.
         if truncate_item is not None:
             await self._truncate_heard_audio(truncate_item, truncate_ms)
+        # D-032 T2b: and so must the tail of the item a newer response was
+        # speaking, cut at the position measured before the flush.
+        if live_item is not None:
+            await self._truncate_heard_audio(live_item, live_heard_ms)
 
     async def _late_solo_interrupt(self) -> None:
         """Silence a reply the transcript proved the user was talking over.
 
         The pause machinery already resolved (rolled back, cooled down, or was
-        never armed), but the committed turn addresses the robot while it is
-        audible. The newer-answer guard applies only when we actually have a
-        resumed id to compare against (Codex round 1, finding 6): with no
-        resumed id, an active response is simply the reply being talked over —
-        refusing to cancel it would make the robot unsilenceable during the
-        post-barge cooldown. Eligibility (`_barge_late_eligible`, fix round
-        finding 1) is what keeps that permissive branch honest: it fires only
-        for an utterance that began while Reachy was already talking. The rare
-        mis-cancel of a racing answer self-heals through the watchdog below.
+        never armed), but the committed turn is an interruption and the robot is
+        still audible. Whatever is speaking is what the user is talking over, so
+        it is cancelled whatever its id (D-032 T2b, Codex round 1 finding 2):
+        the pre-D-032 rule kept a response newer than the resumed one on the
+        theory it was this turn's answer, which left the user with a gap and
+        then the rest of a reply they had already interrupted. Eligibility
+        (`_barge_late_eligible`, fix round finding 1) is what keeps that honest:
+        this fires only for an utterance that began while Reachy was already
+        talking.
+
+        The one exception — a response the barge WATCHDOG requested for this
+        same utterance — is enforced by the caller, in the completed handler,
+        because only it holds the event's item id.
         """
         resumed = self._barge_resumed_response_id
-        answer_already_live = (
-            resumed is not None and self._active_response_id is not None and self._active_response_id != resumed
-        )
-        if answer_already_live:
-            logger.info("late solo interrupt: a newer response is live; leaving it be")
-            return
+        live_response_id = self._active_response_id
+        if resumed is not None and live_response_id is not None and live_response_id != resumed:
+            logger.info("solo barge: cancelling a newer response (%s) the user talked over", live_response_id)
         # Fix round, finding 2 — the same hazard `_commit_solo_barge` guards:
         # in production `_clear_queue` IS `console.clear_audio_queue`, which
         # runs `on_external_interrupt()` and would wipe `_barge_speech_open`.
@@ -4167,7 +4178,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # the reply here, instead of being answered behind
                             # it (RCA Finding 3).
                             accepted, reason = _solo_interrupt_verdict(transcript)
-                            if accepted:
+                            if accepted and self._barge_watchdog_answered_this_turn(event_item_id):
+                                # D-032 T2b's one exception. A sustained-speech
+                                # commit leaves `pause_committed` False, so
+                                # without this the late path would cancel the
+                                # very reply the watchdog asked for on behalf
+                                # of this same utterance.
+                                logger.info(
+                                    "late solo interrupt held: the barge watchdog already answered this turn"
+                                )
+                            elif accepted:
                                 logger.info("late solo interrupt (%s) on committed turn", reason)
                                 await self._late_solo_interrupt()
                         if not self._party_mode:
@@ -4227,10 +4247,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # sender loop's one-active-response handling covers the
                         # narrow overlap. The marker is popped either way — the
                         # turn is decided.
-                        watchdog_answered = self._take_barge_watchdog_answer(event_item_id)
+                        watchdog_answered = self._barge_watchdog_answered_this_turn(event_item_id)
+                        self._take_barge_watchdog_answer(event_item_id)
                         await self._request_accepted_turn_response(
-                            event_item_id,
-                            already_answered=watchdog_answered and self._barge_response_seen,
+                            event_item_id, already_answered=watchdog_answered
                         )
 
                     if event.type == "conversation.item.input_audio_transcription.failed":
@@ -4348,6 +4368,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         )
                     # ---- tool-calling plumbing ----
                     if event.type == "response.function_call_arguments.done":
+                        tool_response_id = getattr(event, "response_id", None)
+                        if tool_response_id in self._cancelled_response_ids:
+                            # D-032 T2b (Codex round 2, finding 5): the response
+                            # this tool call belongs to was cancelled by a
+                            # barge. Running it would post an output nobody
+                            # asked for, book a follow-up response behind the
+                            # user's answer, start a music tool phase that
+                            # nothing closes, and leave `_in_flight_tool_calls`
+                            # holding a call id whose turn is over. Tools
+                            # already in flight before the cancel are untouched:
+                            # they finish and post their outputs, exactly as
+                            # they do for every other cancel.
+                            logger.info("ignoring tool call from cancelled response %s", tool_response_id)
+                            continue
                         self._mark_activity("tool_call_received")
                         tool_name = getattr(event, "name", None)
                         args_json_str = getattr(event, "arguments", None)
