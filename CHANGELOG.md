@@ -11,6 +11,9 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.23.0] — 2026-09-05 · solo interruption
 
+Deployed as the twenty-third install (wheel sha `70516de8…`, backup
+`20260905T042941Z-70561`), clean first boot 05:30 robot time.
+
 Design record D-032, from `docs/rca-solo-interrupt-2026-09-04.md`: in the
 2026-09-04 session, 19 of 22 attempts to interrupt failed, and the old reply
 played out before the new answer.

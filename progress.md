@@ -5,6 +5,37 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-THIRD INSTALL (v1.23.0, solo interruption — D-032) IS ON THE
+ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's
+probe (2026-09-05 05:30 robot time).** Operator approved RCA candidate fix 1
+with the added requirement "preserve the transcript for context, continue
+from the latest human speech". Plan `docs/plans/2026-09-05-solo-interrupt-plan.md`
+rev 3 (Codex 2 rounds, 15/15 accepted); Opus subagent implemented under
+session review (9 commits + 1 review fix `0f5264b`: a sustained-speech commit
+now marks its item as committed, so the new declined-line telemetry cannot
+misreport a successful interruption). Shipped: `REALTIME_SOLO_NAME_GATE`
+default 1 → 0 (any real sentence stops a solo reply; 「嗯」/cough still roll
+back; `=1` restores D-028), one `_solo_interrupt_verdict` for pause and late
+path, cancel-whatever-speaks with double truncate, per-item watchdog-answered
+and late-eligibility markers, stale-tool drop for cancelled responses, name
+in a partial commits in every mode, `late solo interrupt declined (audible=,
+verdict=)` telemetry, truncate refusals at INFO. Suite 1873 → 1918 / 30,
+ruff + mypy --strict clean. Deploy: wheel sha `70516de8…`, backup
+`20260905T042941Z-70561` (memory + face_snapshots absent as before), restore
+4 faces + 4 people, persona sha `4fe06ac4` unchanged, step 6b search True,
+instance `.env` carries `REALTIME_DEFAULT_MODE=one_on_one` and no barge knob.
+Boot: `Tools in session (one_on_one, boxes=none, startup, 22)` (first live
+evidence for MODE-BOOT-DEFAULT), `Realtime session updated successfully`,
+`boot gate released (greeting played)` +30 s, 0 tracebacks / errors / app
+warnings in 123 lines (one SDK-side `Failed to fetch TURN credentials`
+warning, not ours). **Operator probes pending (plan T7):** plain-sentence
+interrupt (no name) → `confirmed by transcript (substantive…)` or `confirmed
+by sustained speech` + `flushing player queue` + answer to the new sentence;
+「嗯」 → `rolled back (backchannel)`; a >2 s sentence → no `hit its cap`;
+「你剛剛講到哪」 after an interrupt → heard part only, no `truncate refused`.
+Headline risk: false cuts from non-speech (`confirmed by sustained speech`
+with no transcript following) — knob `REALTIME_BARGE_CONFIRM_MS`.
+
 **2026-09-04 — boot posture flipped to 一對一聊天模式 (operator instruction);
 solo-interrupt RCA written, no behaviour fix applied.** Code default
 `DEFAULT_MODE=ONE_ON_ONE`, `set_conversation_mode` description and dead-knob
