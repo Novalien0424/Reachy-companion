@@ -978,6 +978,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # by the time its transcript lands, so cancelling that response would
         # cut the answer to the very turn being decided.
         self._barge_late_eligible: bool = False
+        # --- one answer per interrupting turn (D-032 T2c) --------------------
+        # The input item of the utterance that owns the current pause, and the
+        # input item the repair watchdog has already asked a reply for. Both are
+        # per ITEM rather than session flags (Codex round 2, finding 1): with the
+        # name gate off a sustained-speech commit precedes the turn's own
+        # transcript, and that `transcription.completed` can land after the NEXT
+        # utterance has started, so a session-wide "already answered" bool would
+        # describe the wrong turn.
+        self._barge_utterance_item_id: str | None = None
+        self._barge_watchdog_answered_item: str | None = None
         # The reply's audio, withheld while the decision is pending.
         self._held_audio: deque[QueueItem] = deque()
         # --- heard-audio accounting for `conversation.item.truncate` (Task 5) -
@@ -1706,8 +1716,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         _cancel_barge_task(task, current)
         return True
 
-    async def _request_accepted_turn_response(self, item_id: str | None) -> None:
-        """Request an accepted turn's answer, with the plan rev 3 A1 hold-off seam."""
+    async def _request_accepted_turn_response(self, item_id: str | None, *, already_answered: bool = False) -> None:
+        """Request an accepted turn's answer, with the plan rev 3 A1 hold-off seam.
+
+        `already_answered` is the D-032 T2c case: the barge repair watchdog
+        fired for THIS utterance before its transcript arrived and the server
+        created that response, so the turn has its answer and a second request
+        would make Reachy answer the same sentence twice. Every piece of
+        bookkeeping this method owns still runs (Codex round 2, finding 2) —
+        the per-item speech stamps are popped, an older hold-off is cancelled,
+        `_holdoff_owed` is maintained — and only the hold-off arm and the
+        request itself are skipped.
+        """
         started_seq = self._take_speech_started_seq(item_id)
         item_stopped_at = self._take_speech_stopped_at(item_id)
         holdoff_ms = _commit_holdoff_ms()
@@ -1715,6 +1735,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             self._cancel_holdoff_task(_current_task())
             self._holdoff_armed_at = None
             self._holdoff_owed = False
+            if already_answered:
+                logger.info("accepted turn already answered by the barge watchdog")
+                return
             await self._safe_response_create()
             return
 
@@ -1735,6 +1758,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
         if cancelled_older:
             self._log_holdoff_skip("newer accepted turn")
+
+        if already_answered:
+            # Below every piece of bookkeeping, above the arm and the request:
+            # the watchdog's reply IS this turn's answer (D-032 T2c).
+            self._holdoff_armed_at = None
+            self._holdoff_owed = False
+            logger.info("accepted turn already answered by the barge watchdog")
+            return
 
         bound_connection = self.connection
         armed_seq = self._speech_started_seq
@@ -1945,6 +1976,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_partial_committed_item = None
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
+        # D-032 T2c/round 2 finding 3: this path carries no item id and is the
+        # session-reset path, so both per-item barge markers go whole.
+        self._barge_utterance_item_id = None
+        self._barge_watchdog_answered_item = None
         self._held_audio.clear()
         # Task 5: a stale item id surviving a `conversation.interrupt` or a
         # reconnect must never be truncated in a later session — the id would
@@ -1989,7 +2024,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _solo_speech_started(self) -> None:
+    def _solo_speech_started(self, item_id: str | None = None) -> None:
         """Solo `speech_started`: pause and decide, instead of flushing.
 
         The legacy branch (``REALTIME_SOLO_CLIENT_BARGE=0``) is the pre-Task-8
@@ -1999,6 +2034,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         round 2, finding 2): both duck robot-speaker music, but the latter also
         runs `audio_drain.note_cleared()`, which would tell the drain tracker
         the reply is gone — the exact accounting a rollback depends on.
+
+        `item_id` is the input item this utterance is committing into, the key
+        every per-turn barge marker is stamped with (D-032 T2c/T2d). Optional
+        because the server may send `speech_started` without one.
         """
         if not _solo_client_barge():
             if self._clear_queue:
@@ -2011,6 +2050,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
 
         self._barge_speech_open = True
+        # D-032 T2c: the utterance the pause (and any watchdog repair it leads
+        # to) belongs to. Recorded before every early return below, so a
+        # cooldown-suppressed onset still names its own turn.
+        self._barge_utterance_item_id = item_id
         # Task 4 fix round, finding 1: whether a LATE interrupt may fire for
         # this utterance is decided here, at its onset, and nowhere else. Set
         # before the cooldown return on purpose — the cooldown-swallowed pause
@@ -2063,6 +2106,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     def _arm_barge_watchdog(self) -> None:
         """Start the watchdog that repairs a barged turn the server did not answer."""
+        # A new pause is a new turn: the previous turn's repair, if any, is no
+        # longer anything this turn's transcript should recognise (D-032 T2c).
+        self._barge_watchdog_answered_item = None
         _cancel_barge_task(self._barge_watchdog_task, _current_task())
         self._barge_watchdog_task = asyncio.create_task(
             self._barge_response_watchdog(self._party_utterance_seq), name="solo-barge-watchdog"
@@ -2154,7 +2200,26 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # response, and answering over them would be worse than waiting.
             return
         logger.info("no reply arrived after a confirmed barge-in; requesting one")
+        # D-032 T2c: stamp the utterance this repair answers BEFORE the request,
+        # so the turn's own `transcription.completed` — which with the gate off
+        # routinely lands after this fires — can tell that its answer already
+        # exists instead of asking for a second one.
+        self._barge_watchdog_answered_item = self._barge_utterance_item_id
         await self._safe_response_create()
+
+    def _take_barge_watchdog_answer(self, item_id: str | None) -> bool:
+        """Pop the watchdog-answered marker when it names *item_id*.
+
+        Per item, never a session bool (Codex round 2, finding 1): a completed
+        transcript can land after the next utterance has already started, and a
+        session-wide flag would then silence a turn the watchdog never spoke
+        for. An event with no id can match nothing, which is the safe direction
+        — the turn asks for its own answer.
+        """
+        if item_id is not None and item_id == self._barge_watchdog_answered_item:
+            self._barge_watchdog_answered_item = None
+            return True
+        return False
 
     def _barge_note_response_created(self) -> None:
         """Record that a response did start, and stand the watchdog down."""
@@ -3820,8 +3885,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 self._start_party_barge_timer()
                         else:
                             # Solo (Task 8): pause the reply and decide, rather
-                            # than flushing it on the first syllable.
-                            self._solo_speech_started()
+                            # than flushing it on the first syllable. The item
+                            # id is what every per-turn barge marker is stamped
+                            # with (D-032 T2c/T2d).
+                            self._solo_speech_started(item_id)
                         self.deps.movement_manager.set_listening(True)
                         logger.debug("User speech started")
 
@@ -4032,6 +4099,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if not transcript:
                             self._take_speech_started_seq(event_item_id)
                             self._take_speech_stopped_at(event_item_id)
+                            # D-032 T2c: this turn is over, so a watchdog repair
+                            # stamped with it has nothing left to describe.
+                            self._take_barge_watchdog_answer(event_item_id)
                             logger.debug("Ignoring empty user transcript")
                             await self._answer_owed_holdoff("empty transcript")
                             continue
@@ -4148,7 +4218,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # connection. Plan rev 3 A1 keeps every cleanup and
                         # transcript side effect above at acceptance; only the
                         # request itself waits for a continuation window.
-                        await self._request_accepted_turn_response(event_item_id)
+                        #
+                        # D-032 T2c: unless the barge repair watchdog already
+                        # answered THIS utterance and the server created that
+                        # response. `_barge_response_seen` is the only proof the
+                        # enqueue-only `_safe_response_create` offers (round 2,
+                        # finding 4); without it the turn asks normally and the
+                        # sender loop's one-active-response handling covers the
+                        # narrow overlap. The marker is popped either way — the
+                        # turn is decided.
+                        watchdog_answered = self._take_barge_watchdog_answer(event_item_id)
+                        await self._request_accepted_turn_response(
+                            event_item_id,
+                            already_answered=watchdog_answered and self._barge_response_seen,
+                        )
 
                     if event.type == "conversation.item.input_audio_transcription.failed":
                         self._mark_activity("user_transcription_failed")
@@ -4158,6 +4241,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._take_turn_mode(event_item_id)
                         self._take_speech_started_seq(event_item_id)
                         self._take_speech_stopped_at(event_item_id)
+                        # D-032 T2c, round 2 finding 3: same for the repair
+                        # marker — no transcript is coming to consume it.
+                        self._take_barge_watchdog_answer(event_item_id)
                         if self._party_mode:
                             # No transcript will ever arrive for this turn, so no
                             # gate decision and no response: close it for the

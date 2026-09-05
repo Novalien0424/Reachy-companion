@@ -56,6 +56,10 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     handler._barge_partial_committed_item = None
     handler._barge_resumed_response_id = None
     handler._barge_late_eligible = False
+    # D-032 T2c: which utterance the pause belongs to, and which utterance the
+    # repair watchdog has already answered.
+    handler._barge_utterance_item_id = None
+    handler._barge_watchdog_answered_item = None
     handler._held_audio = deque()
     # Task 5 (truncate accounting): the item currently coming out of the
     # speaker, and the pair stashed when a pause began.
@@ -1582,7 +1586,7 @@ def _state_at_speech_start(
     `test_the_loop_routes_solo_speech_through_the_barge_hooks` uses.
     """
 
-    def _apply(self: HuggingFaceRealtimeHandler) -> None:
+    def _apply(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         if audible:
             self._response_done_event.clear()
         else:
@@ -1733,7 +1737,7 @@ async def test_the_loop_clears_the_resumed_id_when_that_reply_finishes(
     """The resumed reply ending naturally is the bounded cleanup for its id."""
     _quiet_session(monkeypatch)
 
-    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         self._barge_resumed_response_id = "resp_A"
 
     monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
@@ -1812,6 +1816,8 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_audio_item_enqueued_ms",
         "_barge_paused_item_id",
         "_barge_paused_heard_ms",
+        "_barge_utterance_item_id",
+        "_barge_watchdog_answered_item",
     ):
         assert field in source, field
 
@@ -2280,7 +2286,7 @@ async def test_the_loop_closes_the_barge_lifecycle_on_a_denied_turn(
     baseline: list[int] = []
     seen: list[tuple[Any, Any, Any]] = []
 
-    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         self._response_done_event.set()
         self._conversation_mode = ConversationMode.ONE_ON_ONE
         self._barge_late_eligible = True
@@ -2337,7 +2343,7 @@ async def test_the_loop_stands_the_watchdog_down_on_a_denied_turn(
     baseline: list[int] = []
     seen: list[Any] = []
 
-    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         self._response_done_event.set()
         self._conversation_mode = ConversationMode.ONE_ON_ONE
         # Stand in for the confirmed barge that armed the repair watchdog.
@@ -2393,7 +2399,7 @@ async def test_the_loop_stands_the_watchdog_down_on_an_accepted_turn(
     baseline: list[int] = []
     seen: list[tuple[Any, int]] = []
 
-    def _plant(self: HuggingFaceRealtimeHandler) -> None:
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         # A silent robot, so the late-interrupt path stays out of this test.
         self._response_done_event.set()
         self._conversation_mode = ConversationMode.ONE_ON_ONE
@@ -2447,3 +2453,208 @@ async def test_a_stood_down_watchdog_never_asks_for_a_reply(monkeypatch: pytest.
     # Not a lie about what happened: no response was seen, so the next commit
     # re-arms a watchdog that can still do its job.
     assert h._barge_response_seen is False
+
+
+# --- one answer per interrupting turn (D-032 T2c) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_watchdog_marks_the_utterance_it_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The repair request is stamped with the item it answered, not a session flag.
+
+    With the name gate off a sustained-speech commit precedes the turn's own
+    transcript, so the watchdog can answer an utterance whose
+    `transcription.completed` is still to come. The marker is what lets that
+    completed transcript recognise its own answer — and only its own.
+    """
+    monkeypatch.setattr(hf_mod, "_BARGE_RESPONSE_WATCHDOG_S", 0.01)
+    h = _solo_handler()
+    h._barge_utterance_item_id = "item_1"
+    h._barge_response_seen = False
+    h._arm_barge_watchdog()
+    assert h._barge_watchdog_task is not None
+
+    await asyncio.wait_for(h._barge_watchdog_task, timeout=1.0)
+
+    assert h._pending_responses.qsize() == 1
+    assert h._barge_watchdog_answered_item == "item_1"
+
+
+@pytest.mark.asyncio
+async def test_arming_the_watchdog_forgets_the_previous_utterances_answer() -> None:
+    """A new pause is a new turn: the previous turn's marker must not survive it."""
+    h = _solo_handler()
+    h._barge_watchdog_answered_item = "item_old"
+    h._arm_barge_watchdog()
+    assert h._barge_watchdog_answered_item is None
+    h.on_external_interrupt()
+
+
+def test_external_interrupt_clears_the_watchdog_answer_marker() -> None:
+    """A session reset owns no item id, so it drops the whole marker."""
+    h = _solo_handler()
+    h._barge_watchdog_answered_item = "item_1"
+    h._barge_utterance_item_id = "item_1"
+
+    h.on_external_interrupt()
+
+    assert h._barge_watchdog_answered_item is None
+    assert h._barge_utterance_item_id is None
+
+
+async def _run_watchdog_answered_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    marker: str | None,
+    response_seen: bool,
+    item_id: str = "item_1",
+) -> tuple[int, HuggingFaceRealtimeHandler]:
+    """Replay speech-start → accepted transcript; count the responses THIS turn asked for."""
+    monkeypatch.setenv("REALTIME_COMMIT_HOLDOFF_MS", "0")
+    _quiet_session(monkeypatch)
+    created: list[dict[str, Any]] = []
+    baseline: list[int] = []
+
+    async def _count(self: HuggingFaceRealtimeHandler, *, cycle: Any = None, **kwargs: Any) -> None:
+        created.append(kwargs)
+
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
+        # A silent robot: the late-interrupt path stays out of this test.
+        self._response_done_event.set()
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        # Stand in for a watchdog that already fired for `marker`'s utterance.
+        self._barge_watchdog_answered_item = marker
+        self._barge_response_seen = response_seen
+        baseline.append(len(created))
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_safe_response_create", _count)
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started", item_id=item_id),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="我們晚餐要吃什麼呢",
+                item_id=item_id,
+            ),
+        )
+    )
+    await handler._run_realtime_session()
+    return len(created) - baseline[0], handler
+
+
+@pytest.mark.asyncio
+async def test_a_watchdog_answered_turn_is_not_answered_twice(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round 1, finding 1: the watchdog answered this utterance, so the accept path must not.
+
+    Gate off, a sustained-speech commit precedes the transcript; the watchdog
+    fires 1.5 s later and asks for the reply. When the transcript then lands
+    and the answer gate accepts it, requesting a second response would make
+    Reachy answer the same sentence twice.
+    """
+    with caplog.at_level("INFO"):
+        requested, handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_1", response_seen=True)
+    assert requested == 0
+    assert "accepted turn already answered by the barge watchdog" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_watchdog_request_the_server_never_created_is_asked_for_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2, finding 4: `_safe_response_create` only enqueues, so `response.created` is the proof.
+
+    Without a `response.created` since the arm there is no evidence the
+    watchdog's request produced anything, and a silent turn is worse than the
+    narrow overlap the sender loop's one-active-response handling covers.
+    """
+    requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_1", response_seen=False)
+    assert requested == 1
+
+
+@pytest.mark.asyncio
+async def test_another_utterances_watchdog_answer_does_not_silence_this_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2, finding 1: the marker is per input item, not a session bool.
+
+    `transcription.completed` can land after the NEXT utterance has started, so
+    a session-wide "already answered" flag would swallow the answer to a turn
+    the watchdog never spoke for.
+    """
+    requested, _handler = await _run_watchdog_answered_turn(monkeypatch, marker="item_other", response_seen=True)
+    assert requested == 1
+
+
+async def _marker_at_turn_exit(
+    monkeypatch: pytest.MonkeyPatch, *, event: _FakeEvent
+) -> list[tuple[str, str | None]]:
+    """Replay speech-start → *event*, reporting the marker as the turn leaves the loop.
+
+    Observed from INSIDE the loop, at `_answer_owed_holdoff`, which both exits
+    call last: session teardown runs `on_external_interrupt()` and would clear
+    the marker anyway, so a post-session assertion would pass either way.
+    """
+    _quiet_session(monkeypatch)
+    seen: list[tuple[str, str | None]] = []
+
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
+        self._response_done_event.set()
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        self._barge_watchdog_answered_item = "item_1"
+
+    async def _spy(self: HuggingFaceRealtimeHandler, reason: str) -> bool:
+        seen.append((reason, self._barge_watchdog_answered_item))
+        return False
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_answer_owed_holdoff", _spy)
+    handler = _loop_handler((_FakeEvent("input_audio_buffer.speech_started", item_id="item_1"), event))
+    await handler._run_realtime_session()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_an_empty_transcript_releases_the_watchdog_answer_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 2, finding 3: the marker must not outlive the turn it describes."""
+    seen = await _marker_at_turn_exit(
+        monkeypatch,
+        event=_FakeEvent(
+            "conversation.item.input_audio_transcription.completed", transcript="", item_id="item_1"
+        ),
+    )
+    assert seen == [("empty transcript", None)]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_transcription_releases_the_watchdog_answer_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same, on the exit where no transcript will ever arrive."""
+    seen = await _marker_at_turn_exit(
+        monkeypatch,
+        event=_FakeEvent("conversation.item.input_audio_transcription.failed", item_id="item_1"),
+    )
+    assert seen == [("transcription failed", None)]
+
+
+def test_taking_the_watchdog_answer_is_scoped_to_one_item() -> None:
+    """The marker is consumed by its own turn and by nobody else's.
+
+    The loop assertions above can only count requests: session teardown runs
+    `on_external_interrupt()`, which clears the marker either way, so the
+    consume/leave-alone half of the contract is pinned here at the seam.
+    """
+    h = _solo_handler()
+    h._barge_watchdog_answered_item = "item_1"
+
+    assert h._take_barge_watchdog_answer("item_2") is False
+    assert h._barge_watchdog_answered_item == "item_1", "another turn's marker is untouched"
+    assert h._take_barge_watchdog_answer(None) is False, "an event with no id can match nothing"
+    assert h._take_barge_watchdog_answer("item_1") is True
+    assert h._barge_watchdog_answered_item is None, "consumed, not left to rot"
+    assert h._take_barge_watchdog_answer("item_1") is False

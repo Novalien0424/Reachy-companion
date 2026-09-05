@@ -590,7 +590,7 @@ async def test_the_loop_routes_solo_speech_through_the_barge_hooks(monkeypatch: 
     """
     calls: list[str] = []
 
-    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", lambda self: calls.append("started"))
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", lambda self, item_id=None: calls.append("started"))
     monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_stopped", lambda self: calls.append("stopped"))
     monkeypatch.setattr(hf_mod, "on_assistant_turn_ended", lambda _deps, _live=None: None)
     monkeypatch.setattr(hf_mod, "on_response_created", lambda: None)

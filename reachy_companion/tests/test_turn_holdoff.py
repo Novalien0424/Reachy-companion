@@ -386,7 +386,7 @@ async def test_cancelled_window_rollback_continuation_answers_held_turn(
     monkeypatch.setattr(hf_mod, "on_turn_without_response", lambda _deps: None)
     calls = 0
 
-    def _plant_rollback_on_continuation(self: HuggingFaceRealtimeHandler) -> None:
+    def _plant_rollback_on_continuation(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
         nonlocal calls
         calls += 1
         if calls != 2:
