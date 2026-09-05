@@ -2438,14 +2438,22 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         ever commits — a partial can prove address, never prove its absence.
         Control phrases commit regardless of the name-gate flag (Codex round 1,
         finding 12: a robot you cannot silence is worse than any false
-        positive); the name path is gate-mode only.
+        positive), and since D-032 T3 so does the name: a name in a partial
+        proves address in any mode, and the old "gate-mode only" restriction
+        was a latency-lever scoping, not a safety property.
+
+        Still no substantive-on-partial: a partial cannot prove
+        substantiveness (「嗯嗯」 grows into 「嗯嗯好」), so that half of the
+        gate-off rule waits for the completed transcript. Known risk (Codex
+        round 1, finding 8): this is a substring match on a provisional partial
+        the completed transcript may later correct; the cost of a false
+        positive is a cut reply with its heard part preserved by the truncate,
+        never lost context.
         """
         if self._party_mode or not self._barge_pending:
             return
         accepted, reason = _gate_text_accepts(partial)
         if not accepted:
-            return
-        if reason == "name" and not _solo_name_gate():
             return
         logger.info("solo barge-in confirmed by partial transcript (%s)", reason)
         await self._commit_solo_barge()

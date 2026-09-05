@@ -1180,16 +1180,45 @@ async def test_partial_control_phrase_commits_even_with_the_gate_off(
 
 
 @pytest.mark.asyncio
-async def test_partial_name_does_not_commit_with_the_gate_off(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_partial_name_commits_with_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Gate OFF: the name path is gate-mode only, so the pause waits for the transcript."""
+    """D-032 T3: a name in a partial proves address in any mode, gate or no gate.
+
+    Inverts the pre-D-032 pin. The old restriction — "the name path is
+    gate-mode only" — was a latency-lever scoping, never a safety property:
+    somebody saying 「欸瑞奇」 over a talking robot means to stop it whichever
+    rule decides the pause. Known risk (Codex round 1, finding 8):
+    `_gate_text_accepts` substring-matches a provisional partial the completed
+    transcript may correct, and the cost of that false positive is a cut reply
+    whose heard part is preserved by the truncate — never lost context.
+    """
     monkeypatch.setenv("REALTIME_SOLO_NAME_GATE", "0")
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()
     h._solo_speech_started()
-    await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    with caplog.at_level("INFO"):
+        await h._maybe_commit_on_partial("欸瑞奇", "item_1")
+    assert not h._barge_pending
+    assert h._barge_partial_committed_item == "item_1"
+    h.connection.response.cancel.assert_awaited_once()
+    assert "solo barge-in confirmed by partial transcript (name)" in caplog.text
+    h.on_external_interrupt()  # cleanup: the watchdog task is real
+
+
+@pytest.mark.asyncio
+async def test_a_partial_backchannel_never_commits() -> None:
+    """No substantive-on-partial: 「嗯嗯」 can still grow into 「嗯嗯好」.
+
+    A partial can prove address; it cannot prove substantiveness, so the
+    completed transcript keeps that half of the decision.
+    """
+    h = _solo_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._solo_speech_started()
+    await h._maybe_commit_on_partial("我們晚餐要吃什麼呢這麼晚了", "item_1")
     assert h._barge_pending
     assert h._barge_partial_committed_item is None
     h.connection.response.cancel.assert_not_awaited()
