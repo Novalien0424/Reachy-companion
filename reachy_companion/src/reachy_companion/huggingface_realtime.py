@@ -978,6 +978,12 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # by the time its transcript lands, so cancelling that response would
         # cut the answer to the very turn being decided.
         self._barge_late_eligible: bool = False
+        # Per input item, for the same reason `_turn_modes` is (D-032 T2d,
+        # Codex round 1 finding 4): `transcription.completed` can land after the
+        # NEXT utterance's `speech_started`, and one session flag would by then
+        # describe the wrong turn. `_barge_late_eligible` stays as the fallback
+        # for an event that carries no id.
+        self._barge_late_eligibles: dict[str, bool] = {}
         # --- one answer per interrupting turn (D-032 T2c) --------------------
         # The input item of the utterance that owns the current pause, and the
         # input item the repair watchdog has already asked a reply for. Both are
@@ -1088,6 +1094,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Same hazard class, same cure: late eligibility is written only by
         # `_solo_speech_started`, which the room branch never runs.
         self._barge_late_eligible = False
+        self._barge_late_eligibles.clear()
         self._party_utterance_seq += 1  # any sleeping barge timer is now stale
         if self._barge_paused or self._barge_pending:
             # The solo pause has just lost every timer that could resolve it, so
@@ -1597,6 +1604,35 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 self._turn_modes.pop(next(iter(self._turn_modes)), None)
             self._turn_modes[item_id] = mode
 
+    def _stamp_late_eligible(self, item_id: str | None, eligible: bool) -> None:
+        """Record whether THIS utterance began over a talking robot (D-032 T2d).
+
+        Keyed per item, with `_stamp_turn_mode`'s eviction and for its reason:
+        a completed transcript can arrive after the next utterance has already
+        started, and a single field would then credit a turn that began in
+        silence with an onset it never had — or deny one that did. The field is
+        kept in step as the fallback for an event with no id.
+        """
+        self._barge_late_eligible = eligible
+        if item_id:
+            if item_id not in self._barge_late_eligibles and len(self._barge_late_eligibles) >= _TURN_MODE_MAX_ITEMS:
+                self._barge_late_eligibles.pop(next(iter(self._barge_late_eligibles)), None)
+            self._barge_late_eligibles[item_id] = eligible
+
+    def _take_late_eligible(self, item_id: str | None) -> bool:
+        """Pop this item's late-interrupt eligibility, or the fallback stamp."""
+        if item_id:
+            stamped = self._barge_late_eligibles.pop(item_id, None)
+            if stamped is not None:
+                return stamped
+        return self._barge_late_eligible
+
+    def _clear_late_eligible(self, item_id: str | None) -> None:
+        """Retire an utterance's late-interrupt eligibility once it is decided."""
+        self._barge_late_eligible = False
+        if item_id:
+            self._barge_late_eligibles.pop(item_id, None)
+
     def _take_turn_mode(self, item_id: str | None) -> ConversationMode:
         """Pop the mode stamped for this input item, or the fallback stamp."""
         if item_id:
@@ -1976,8 +2012,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._barge_partial_committed_item = None
         self._barge_resumed_response_id = None
         self._barge_late_eligible = False
-        # D-032 T2c/round 2 finding 3: this path carries no item id and is the
-        # session-reset path, so both per-item barge markers go whole.
+        # D-032 T2c/T2d, round 2 findings 3 and 6: this path carries no item id
+        # and is the session-reset path, so every per-item barge stamp goes.
+        self._barge_late_eligibles.clear()
         self._barge_utterance_item_id = None
         self._barge_watchdog_answered_item = None
         self._held_audio.clear()
@@ -2060,7 +2097,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # is one of the cases the late path exists for — while a turn that
         # started in silence records False and can never cancel the answer the
         # server is producing for it.
-        self._barge_late_eligible = self._robot_audible()
+        self._stamp_late_eligible(item_id, self._robot_audible())
         on_user_speech_candidate(self.deps)
         if time.monotonic() < self._barge_cooldown_until:
             # The tail of the reply we just cancelled (or its echo) is the most
@@ -2416,7 +2453,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # answer this commit is about to produce (Codex round 2, finding 2).
         self._barge_partial_committed_item = item_id
 
-    async def _resolve_solo_barge(self, transcript: str) -> bool:
+    async def _resolve_solo_barge(self, transcript: str, item_id: str | None = None) -> bool:
         """Decide a pending pause from the transcript the turn committed.
 
         This runs BEFORE the loop's empty-transcript `continue` (Codex round 1,
@@ -2446,7 +2483,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # own clear (Codex round 3, finding 1). Left set, it would only suppress
         # the newer-answer guard on some future turn.
         self._barge_resumed_response_id = None
-        self._barge_late_eligible = False
+        # `item_id` is this turn's own input item (D-032 T2d): its eligibility
+        # stamp is spent here and must not outlive the utterance.
+        self._clear_late_eligible(item_id)
         if transcript:
             kind = "unaddressed" if _solo_name_gate() and is_substantive(transcript) else "backchannel"
             logger.info("solo barge rolled back (%s)", kind)
@@ -2473,7 +2512,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         completed transcript interrupt a second time.
         """
         self._barge_resumed_response_id = None
-        self._barge_late_eligible = False
+        # D-032 T2d, round 2 finding 6: the failing item's eligibility stamp is
+        # popped beside the other per-item maps this exit already clears.
+        self._clear_late_eligible(item_id)
         if item_id is not None and item_id == self._barge_partial_committed_item:
             self._barge_partial_committed_item = None
         if not self._barge_pending:
@@ -4092,7 +4133,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # reply now playing is the answer that commit asked for.
                         pause_committed = False
                         if self._barge_pending:
-                            if await self._resolve_solo_barge(transcript):
+                            if await self._resolve_solo_barge(transcript, event_item_id):
                                 self._take_speech_started_seq(event_item_id)
                                 self._take_speech_stopped_at(event_item_id)
                                 await self._answer_owed_holdoff("solo barge rollback")
@@ -4137,7 +4178,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 # credits a later turn with an onset over a
                                 # talking robot that it never had.
                                 self._barge_resumed_response_id = None
-                                self._barge_late_eligible = False
+                                self._clear_late_eligible(event_item_id)
                                 # A denied turn has no answer to repair, so the
                                 # watchdog a confirmed barge armed for it must
                                 # not fire one. Only reachable with
@@ -4168,7 +4209,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             not self._party_mode
                             and _solo_client_barge()
                             and not pause_committed
-                            and self._barge_late_eligible
+                            and self._take_late_eligible(event_item_id)
                             and self._robot_audible()
                         ):
                             # The SAME verdict the pause would have taken
@@ -4197,7 +4238,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # onset audibility belongs to the utterance that is
                             # now over.
                             self._barge_resumed_response_id = None
-                            self._barge_late_eligible = False
+                            self._clear_late_eligible(event_item_id)
                             # Final review, C1. This turn is about to ask for its
                             # own answer (`_safe_response_create` below), so the
                             # repair watchdog a confirmed barge armed for it has

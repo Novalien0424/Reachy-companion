@@ -60,6 +60,8 @@ def _install_barge_state(handler: OpenAIRealtimeHandler) -> None:
     # repair watchdog has already answered.
     handler._barge_utterance_item_id = None
     handler._barge_watchdog_answered_item = None
+    # D-032 T2d: late eligibility stamped per input item.
+    handler._barge_late_eligibles = {}
     handler._held_audio = deque()
     # Task 5 (truncate accounting): the item currently coming out of the
     # speaker, and the pair stashed when a pause began.
@@ -1833,6 +1835,7 @@ def test_barge_state_defaults_exist_on_the_base_handler() -> None:
         "_barge_paused_heard_ms",
         "_barge_utterance_item_id",
         "_barge_watchdog_answered_item",
+        "_barge_late_eligibles",
     ):
         assert field in source, field
 
@@ -2829,3 +2832,97 @@ async def test_a_tool_call_from_a_live_response_still_starts(monkeypatch: pytest
     started, handler = await _run_tool_call(monkeypatch, response_id="resp_live", cancelled="resp_dead")
     assert started == ["call_1"]
     assert "call_1" in handler._in_flight_tool_calls
+
+
+# --- T2d: late eligibility per input item (Codex round 1, finding 4) -------
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_completions_each_use_their_own_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`transcription.completed` can land after the NEXT utterance already started.
+
+    One session flag would then describe the wrong turn: here the second
+    utterance began in silence (not eligible) and its transcript lands FIRST,
+    so a session flag would be False by the time the first utterance's
+    transcript — the one that really did begin over a talking robot — arrives,
+    and the reply it interrupted would keep playing.
+
+    Observed in order at the `record_transcript` seam, which runs just after the
+    late block for each turn.
+    """
+    _quiet_session(monkeypatch)
+    seen: list[str] = []
+
+    def _plant(self: HuggingFaceRealtimeHandler, item_id: str | None = None) -> None:
+        self._response_done_event.clear()  # audible
+        self._conversation_mode = ConversationMode.ONE_ON_ONE
+        self._active_response_id = "resp_A"
+        # The real stamping: only `item_1` began over a talking robot.
+        self._stamp_late_eligible(item_id, item_id == "item_1")
+
+    async def _record(self: HuggingFaceRealtimeHandler) -> None:
+        seen.append("late")
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_solo_speech_started", _plant)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_late_solo_interrupt", _record)
+    monkeypatch.setattr(hf_mod, "record_transcript", lambda _deps, _role, text: seen.append(f"said:{text}"))
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1"),
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_2"),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="第二句話從安靜裡開始的",
+                item_id="item_2",
+            ),
+            _FakeEvent(
+                "conversation.item.input_audio_transcription.completed",
+                transcript="第一句話蓋在回答上面",
+                item_id="item_1",
+            ),
+        )
+    )
+
+    await handler._run_realtime_session()
+
+    assert seen == ["said:第二句話從安靜裡開始的", "late", "said:第一句話蓋在回答上面"]
+
+
+def test_late_eligibility_falls_back_to_the_session_flag_without_an_id() -> None:
+    """An event with no item id still gets an answer: the last onset's own verdict."""
+    h = _solo_handler()
+    h._stamp_late_eligible(None, True)
+    assert h._take_late_eligible(None) is True
+    h._stamp_late_eligible(None, False)
+    assert h._take_late_eligible("item_unknown") is False, "an unstamped id falls back too"
+
+
+def test_late_eligibility_is_popped_by_its_own_item() -> None:
+    """One entry per utterance, consumed by that utterance and nobody else."""
+    h = _solo_handler()
+    h._stamp_late_eligible("item_1", True)
+    h._stamp_late_eligible("item_2", False)
+    assert h._take_late_eligible("item_2") is False
+    assert h._take_late_eligible("item_1") is True
+    assert h._barge_late_eligibles == {}
+
+
+def test_late_eligibility_stamps_stay_bounded() -> None:
+    """Transcripts that never arrive must not grow the map without bound."""
+    h = _solo_handler()
+    for index in range(hf_mod._TURN_MODE_MAX_ITEMS + 5):
+        h._stamp_late_eligible(f"item_{index}", True)
+    assert len(h._barge_late_eligibles) == hf_mod._TURN_MODE_MAX_ITEMS
+
+
+def test_external_interrupt_clears_every_late_eligibility_stamp() -> None:
+    """Round 2, finding 6: the session-reset path owns no item id, so it drops them all."""
+    h = _solo_handler()
+    h._stamp_late_eligible("item_1", True)
+
+    h.on_external_interrupt()
+
+    assert h._barge_late_eligibles == {}
+    assert h._barge_late_eligible is False
