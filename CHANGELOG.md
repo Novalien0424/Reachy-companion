@@ -9,6 +9,36 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.25.0] — 2026-10-28 · data folder, Wi-Fi recovery, faster ears
+
+Plans: `docs/plans/2026-10-28-instance-path-plan.md`,
+`…-wifi-recovery-plan.md`, `…-latency-observability-plan.md`,
+`…-local-vad-listening-plan.md`. Decisions D-034, D-035.
+
+- **Reachy's memory now lives outside the app.** Settings, persona, enrolled
+  faces, people, Google and Drive grants and the NAS index move once, on the
+  first start, to `~/.config/reachy_companion` on the robot. Reinstalls and a
+  Bluetooth software reset no longer touch them, and deploys no longer need a
+  restore step.
+- **The antennas react the moment you start talking.** A small voice detector
+  runs on the robot's own microphone (Silero, ported from the official app),
+  so the listening pose starts on your first syllable instead of after a
+  round trip to OpenAI. It stays out of the way while Reachy itself talks.
+- **An outage no longer floods the robot's log.** When OpenAI is unreachable
+  the app retries at growing intervals (5 s up to 60 s) and warns once per
+  10 minutes, so the log keeps the evidence of what went wrong.
+- **Wi-Fi recovery (opt-in).** A watchdog checks the network every 2 minutes,
+  even while Reachy sleeps, and reconnects or restarts the Wi-Fi radio when
+  the router stops answering (at most 4 times an hour). It runs once the
+  operator adds its crontab line (D-034).
+- **Answers about long conversations and web results cost fewer tokens.**
+  Tool results reach the model as plain Chinese text instead of `\u` escapes.
+  Each reply now logs its token usage, and two opt-in switches
+  (`REALTIME_TRUNCATION_POST_INSTRUCTIONS`, `REALTIME_IMAGE_DETAIL`) are ready
+  for the latency A/B; nothing changes until they are set.
+- **Camera colours are right** — fixed by the SDK 1.13 upgrade (standard
+  YCbCr JPEGs, checked on the robot).
+
 ## [1.24.0] — 2026-10-28 · upstream refresh
 
 Deployed as the twenty-fourth install (wheel sha `1d1c98aa…`, backup

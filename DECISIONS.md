@@ -1933,3 +1933,44 @@ password from the repo-root `.env` fed to `sudo -S` over stdin; both
 succeeded and the installed copies match v1.13. Future images or upgrades
 that change these files need the same privileged step until the robot's
 sudoers allows it.
+
+## D-034 — Wi-Fi recovery watchdog outside the app (2026-10-28)
+
+Operator request: "fix the Wifi recovery". The robot stayed booted for weeks
+but fell off the LAN for at least the last 7 days before 2026-10-28 and never
+recovered until a power-button cycle; NetworkManager logged nothing in the
+retained window, and the journal (`SystemMaxUse=100M`) was 193,311 of 193,314
+lines `launcher.sh` — partly our `Backend failed to start` every 5 s. The v1.13
+daemon checks Wi-Fi only at startup (`ensure_wifi_on_startup`).
+
+Decision: (1) the app's backend retry backs off 5 → 60 s and rate-limits its
+repeat warnings (one per 10 min), so an outage no longer floods the journal;
+(2) `reachy_companion/wifi_watchdog.py` — stdlib only, run as a plain file by
+`/usr/bin/python3` from `~/.local/lib/reachy-wifi-watchdog/` every 2 minutes
+from `pollen`'s crontab — probes the default gateway and escalates: 2 failed
+probes → `sudo -n nmcli device connect wlan0`, 4 → radio off/on, then a radio
+cycle every 6 more, at most 4 actions per rolling hour; it stands by while the
+hotspot is up or NM is connecting, never acts when only DNS fails, never
+deletes profiles, starts the hotspot, restarts the daemon or reboots; it logs
+transitions as `reachy-wifi-watchdog`. It needs no root and no daemon change
+(NOPASSWD `nmcli` only), and runs while the robot sleeps, which the app
+cannot. This steps outside D-009's app-only scope on the operator's request.
+The crontab line itself is installed by the operator: the auto-mode
+classifier blocks an agent from adding persistence on the robot.
+Plan: `docs/plans/2026-10-28-wifi-recovery-plan.md`.
+
+## D-035 — Instance data moves to ~/.config/reachy_companion (2026-10-28)
+
+Port of upstream `5ab905d` (#552) `resolve_instance_path` /
+`_migrate_instance_data`, storage half only, into our own directory (not
+upstream's sibling in the daemon's `~/.config/reachy_mini`). Override:
+`REACHY_COMPANION_INSTANCE_PATH`. The first start copies 13 items (state files,
+OAuth grants, NAS index, tool-spaces manifest, user personalities) item by
+item through a staging name, never overwrites, writes `.migrated` only if
+something legacy existed, rewrites legacy absolute paths in the migrated
+`.env` only, and keeps modes (dir 700, credentials 600); an unusable target
+falls back to the legacy directory. `hanova_media/` (cache) starts empty.
+The Mac backend and `scripts/voice_audition.py` target the new directory.
+Effect: reinstalls and a Bluetooth `SOFTWARE_RESET` (`rm -rf /venvs`) no
+longer touch the operator's data; the deploy restore step retires.
+Plan: `docs/plans/2026-10-28-instance-path-plan.md`.

@@ -56,12 +56,20 @@ read `windows.md` in this skill's directory first.
    and report; a daemon upgrade needs a recorded authorization (Hard limits).
 3. **Transfer:** `scp reachy_companion/dist/reachy_companion-*.whl
    ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/`.
-4. **Back up instance state BEFORE installing (mandatory).** The instance path
-   IS the installed package directory
+4. **Back up instance state BEFORE installing (mandatory).** Where the state
+   lives depends on the installed release. From v1.25.0 it is
+   `~/.config/reachy_companion/` (mode 700; `config.resolve_instance_path`,
+   startup log `instance: ~/.config/reachy_companion (…)`), outside
+   site-packages, so a reinstall no longer touches it: back it up with the
+   script below with `INST=~/.config/reachy_companion` (for safety, not for
+   restore) and skip step 6. Up to v1.24.0 the instance path IS the
+   installed package directory
    (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
-   `app.py:169` + `main.py:448`), so it sits *inside* site-packages and every
-   reinstall wipes it. Six files and one directory there are user state, not
-   build output, and losing any of them is a visible regression:
+   `app.py:169` + `main.py:448`), every reinstall can wipe it, and step 6 is
+   mandatory; the first v1.25.0 start migrates it once (`(migrated N items)`,
+   then `(already migrated)`; plan `docs/plans/2026-10-28-instance-path-plan.md`).
+   These files and directories are user state, not build output, and losing
+   any of them is a visible regression:
    - `.env` — runtime secrets (API keys, home-control config).
    - `persona.md` — the operator's edited personality / system prompt
      (`persona.py`, `PERSONA_FILENAME`, D-016). Externalizing the persona is
@@ -278,13 +286,21 @@ read `windows.md` in this skill's directory first.
    (route per SDK `daemon/app/routers/apps.py:49-58`) lists `reachy_companion`.
 8. **Preload assets before demos:** scp `scripts/preload_assets.py` to the
    robot and run with `/venvs/apps_venv/bin/python` as the same user the app
-   runs as — emotion clips, the YuNet detector, and the ~37 MB SFace
-   recognition model (D-013); a cold HF cache is a visible stall, and for
+   runs as — emotion clips, the YuNet detector, the ~37 MB SFace
+   recognition model (D-013) and, from v1.25.0, the sha256-pinned Silero VAD
+   model (`cached: Silero VAD model`); a cold cache is a visible stall, and for
    SFace it also means the wake-time greeting misses its budget on the first
    session after a redeploy.
 9. **Start / stop:** `POST /api/apps/start-app/reachy_companion` /
    `POST /api/apps/stop-current-app` — or the dashboard. This is the ONLY
    sanctioned start/stop mechanism.
+10. **Refresh the Wi-Fi watchdog** (D-034) when `wifi_watchdog.py` changed:
+   `scp reachy_companion/src/reachy_companion/wifi_watchdog.py
+   ${REACHY_SSH_USER}@${REACHY_HOST}:.local/lib/reachy-wifi-watchdog/` and run
+   it once with `--dry-run`. It runs from the operator-installed crontab line
+   tagged `# reachy-wifi-watchdog` (installing or changing that line is the
+   operator's step); `journalctl -t reachy-wifi-watchdog` shows its
+   transitions, `--status` its state.
 
 ## Hard limits
 
