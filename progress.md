@@ -5,6 +5,30 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-FIFTH INSTALL (v1.25.0 — D-034, D-035) IS ON THE ROBOT (daemon
+v1.13.0) WITH A CLEAN BOOT, APP RUNNING (2026-10-28 14:29 robot time).** Wheel
+sha `091137c8…`, backup `20261028T142759Z-5241` (persistent copy in
+`~/reachy_companion_backups/`). First start: `instance:
+~/.config/reachy_companion (migrated 7 items)`, `Repointed 3 legacy path(s)`
+in the migrated `.env` (0 site-packages refs left), dir 700 / credentials 600,
+`.migrated` present, 4 faces + 4 people; `persona: instance persona.md` from
+the new dir; `Local VAD ready`; `Tools in session (one_on_one, boxes=none,
+startup, 22)`; `Realtime session updated successfully`; first `Response
+usage:` line in=9642 cached=9088 out=444 (text 121 / audio 323)
+`reasoning_tokens` 16 — the server does report reasoning tokens; `boot gate
+released`; 0 tracebacks / app errors / app warnings in 133 lines. Second start
+(official stop/start): `(already migrated)`, clean; step 6b search True.
+Silero model preloaded and sha256-verified on the robot. Suite 2070 / 31,
+backend 286. **Wi-Fi watchdog:** file installed at
+`~/.local/lib/reachy-wifi-watchdog/` and dry-run verified (real gateway: no
+action; TEST-NET gateway: down → would reconnect at 2 → would cycle radio at 4)
+— **inactive until the operator adds the crontab line** (the auto-mode
+classifier blocks an agent from adding persistence). Camera JPEG colour:
+fixed by the SDK 1.13 upgrade (YCbCr ids [1,2,3] on the robot). In-room
+five-demo check: `docs/five-demo-checklist.md`, not yet run.
+
+Earlier today (2026-10-28):
+
 **THE TWENTY-FOURTH INSTALL (v1.24.0, upstream refresh — D-033) IS ON THE ROBOT,
 NOW ON DAEMON v1.13.0, WITH A CLEAN BOOT (2026-10-28 13:07 robot time); robot
 left asleep.** The robot had been unreachable since ~2026-10-21: the

@@ -11,6 +11,10 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.25.0] — 2026-10-28 · data folder, Wi-Fi recovery, faster ears
 
+Deployed as the twenty-fifth install (wheel sha `091137c8…`, backup
+`20261028T142759Z-5241`), clean boot 14:29 robot time; first start migrated
+7 items to `~/.config/reachy_companion`.
+
 Plans: `docs/plans/2026-10-28-instance-path-plan.md`,
 `…-wifi-recovery-plan.md`, `…-latency-observability-plan.md`,
 `…-local-vad-listening-plan.md`. Decisions D-034, D-035.

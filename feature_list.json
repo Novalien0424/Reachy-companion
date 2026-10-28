@@ -492,6 +492,46 @@
       "state": "implemented-unverified",
       "evidence": "2026-10-28: official `POST /update/start-from-ref?git_ref=v1.13.0`, job a99b3736… done, daemon restarted; `/update/install-source` = 1.13.0 git v1.13.0 9d5d5e5d; `/api/daemon/status` running, backend ready; `/api/telemetry` enabled:false set 1 s after restart, 0 `Telemetry sent`; startup app reachy_companion kept; apps_venv reachy-mini 1.13.0 / starlette 1.10.0; instance state untouched. The v1.13 startup check failed `sudo cp` for /bluetooth/ and the gpio-shutdown unit (not in NOPASSWD sudoers); on operator authorization the same two Pollen functions ran once as root (13:13:52): installed copies now match v1.13, both services active, BLE `GATT app registered` — GHSA-993g-hgjh-whmf live. Live session on v1.13: a user turn → go_to_sleep → farewell → clean stop → asleep (13:10).",
       "next_action": "Five-demo smoke in the room on v1.13 (head tracking aims 15° lower since v1.11)."
+    },
+    {
+      "id": "INSTANCE-DIR-CONFIG",
+      "behavior": "Instance data lives in ~/.config/reachy_companion (D-035); first v1.25.0 start migrates it once; reinstalls and SOFTWARE_RESET no longer touch it.",
+      "verification": "Startup `instance: … (migrated N items)` then `(already migrated)`; dir 700, credentials 600; record counts equal the backup; `persona: instance persona.md` from the new dir.",
+      "state": "verified",
+      "evidence": "2026-10-28 deploy v1.25.0: migrated 7 items, repointed 3 .env paths, 0 site-packages refs left, 4 faces + 4 people, second start `(already migrated)`; suite 2070/31, backend 286.",
+      "next_action": "Next deploy: back up the new dir (no restore step); Mac backend checkout pulled before its next push."
+    },
+    {
+      "id": "WIFI-WATCHDOG",
+      "behavior": "Robot rejoins Wi-Fi on its own after a drop, even while asleep (D-034): reconnect after ~4 min, radio cycle after ~8 min, capped 4/hour; app backend retry no longer floods the journal.",
+      "verification": "`journalctl -t reachy-wifi-watchdog` shows `monitoring started` after install; on a real outage `Wi-Fi down detected` → actions → `Wi-Fi recovered after …`.",
+      "state": "blocked",
+      "evidence": "Module deployed to ~/.local/lib/reachy-wifi-watchdog/ (sha 98d37a81…), dry runs on the robot: real gateway no action; TEST-NET gateway walks down → reconnect → radio cycle without acting. Backoff shipped in v1.25.0. Crontab install blocked by the auto-mode classifier (agent persistence).",
+      "next_action": "Operator: add the tagged crontab line (command in the session handoff); then read `monitoring started: Wi-Fi link up` in the journal."
+    },
+    {
+      "id": "LATENCY-TELEMETRY",
+      "behavior": "Every response logs its token usage (incl. reasoning tokens) and the first-audio latency carries response_id / with_tool; tool outputs reach the model as plain UTF-8; opt-in truncation and image-detail knobs exist for the A/B.",
+      "verification": "`Response usage:` lines through a 20-minute session: plot in/cached/reasoning against first-audio latency on with_tool=False turns; then A/B REALTIME_REASONING_EFFORT and REALTIME_TRUNCATION_POST_INSTRUCTIONS on the same script.",
+      "state": "implemented-unverified",
+      "evidence": "Boot 2026-10-28: first usage line in=9642 cached=9088 out=444 reasoning_tokens=16.",
+      "next_action": "One long in-room session to collect the curve (RCA Finding 4 baseline), then the three-metric A/B."
+    },
+    {
+      "id": "LOCAL-VAD-LISTENING",
+      "behavior": "Antennas take the listening pose on the user's first syllable (local Silero VAD), never move from Reachy's own voice.",
+      "verification": "Journal `Local VAD: listening started N ms before the server's speech_started`; visually: pose on first syllable, no twitch while Reachy talks.",
+      "state": "implemented-unverified",
+      "evidence": "v1.25.0 boot: `Local VAD ready` twice; Silero model sha256-verified on the robot.",
+      "next_action": "In-room: read the lead-time line; watch the antennas during a long Reachy reply."
+    },
+    {
+      "id": "CAMERA-JPEG-COLOUR",
+      "behavior": "Camera JPEGs sent to the model are standard YCbCr, so colour answers are right.",
+      "verification": "SDK encoder check on the robot: component ids [1,2,3], no Adobe marker.",
+      "state": "verified",
+      "evidence": "2026-10-28 after the SDK 1.13 upgrade: ids [1,2,3], adobe False (reachy_mini 1.13.0 in apps_venv, upstream 233d7ba9).",
+      "next_action": "Demo 3 in the room confirms the spoken colour."
     }
   ]
 }
