@@ -766,14 +766,21 @@ def test_the_deploy_skill_holds_no_connection_identifiers():
     two after `192.168` and therefore could not match the commonest private
     address shape in the world. The deploy skill is one of the explicitly
     scrubbed paths, so the bar here is zero, not "no worse than HEAD".
+
+    The skill keeps its Windows lane (where the host key is used) in a sibling
+    reference file, so every tracked file in the skill directory is scanned.
     """
-    skill_path = PACKAGE_ROOT.parent / ".claude" / "skills" / "reachy-deploy" / "SKILL.md"
-    skill = skill_path.read_text(encoding="utf-8")
-    assert not _PRIVATE_IPV4.search(skill), "the deploy skill still contains a private LAN address"
+    skill_dir = PACKAGE_ROOT.parent / ".claude" / "skills" / "reachy-deploy"
+    files = sorted(skill_dir.glob("*.md"))
+    assert skill_dir / "SKILL.md" in files
+    fingerprint_like = re.compile(r"SHA256:[A-Za-z0-9+/=]{20,}")
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert not _PRIVATE_IPV4.search(text), f"{path.name} contains a private LAN address"
+        assert not fingerprint_like.search(text), f"{path.name} commits the host-key fingerprint"
+    skill = "\n".join(path.read_text(encoding="utf-8") for path in files)
     assert "REACHY_HOST" in skill and "REACHY_SSH_USER" in skill
     assert "REACHY_HOSTKEY" in skill, "the host-key fingerprint must be an .env key, not a literal"
-    fingerprint_like = re.compile(r"SHA256:[A-Za-z0-9+/=]{20,}")
-    assert not fingerprint_like.search(skill), "the host-key fingerprint is still committed"
 
 
 def test_the_env_keys_the_deploy_uses_are_all_gitignored():

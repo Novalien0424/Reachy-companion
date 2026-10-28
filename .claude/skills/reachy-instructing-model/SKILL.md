@@ -1,6 +1,6 @@
 ---
 name: reachy-instructing-model
-description: Use when changing ANYTHING the realtime model reads or is judged by — system prompt / persona, tool names, schemas, descriptions, return values, error strings, session config (reasoning, VAD, per-response instructions) — or when tempted to fix a model misbehavior with deterministic code around the model.
+description: Use when changing anything the realtime model reads or is judged by — system prompt / persona.md, tool names, schemas, descriptions, return values, error strings, session config (reasoning, VAD, per-response instructions) — or when tempted to fix a model misbehavior with deterministic code around the model.
 ---
 
 # Reachy Instructing Model

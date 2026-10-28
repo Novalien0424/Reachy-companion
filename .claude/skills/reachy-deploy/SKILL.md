@@ -1,6 +1,6 @@
 ---
 name: reachy-deploy
-description: Use when deploying, installing, updating, starting, or stopping the reachy_companion app on the physical Reachy Mini robot — "deploy to the robot", "install the app on reachy", "push to the robot", "run it on the real robot" — or when preparing on-robot demo verification (plan Task 15).
+description: Use when deploying, installing, updating, starting, or stopping the reachy_companion app on the physical Reachy Mini robot — "deploy to the robot", "install the app on reachy", "push to the robot", "run it on the real robot", syncing persona.md to the robot — or when preparing on-robot demo verification.
 ---
 
 # Reachy Deploy
@@ -8,56 +8,44 @@ description: Use when deploying, installing, updating, starting, or stopping the
 ## Overview
 
 Deploy `reachy_companion` to the physical Reachy Mini Wireless **as a managed
-app only**. Operator authorization (2026-08-17): deploy as APP on the robot;
-**never modify the robot's daemon** — no daemon package changes, no daemon
-config edits, no service restarts beyond the app start/stop API, no system
-packages. The robot's own daemon on its port 8000 is untouchable
-infrastructure.
+app only** (operator authorization 2026-08-17, D-009): no daemon package
+changes outside the official updater, no daemon config edits, no service
+restarts beyond the app start/stop API, no system packages. The daemon on
+port 8000 is the robot's infrastructure; it is upgraded only as authorized in
+Hard limits below (D-033).
 
 ## Access
 
 The robot's address and login are in the gitignored repo-root `.env` as
-`REACHY_HOST` / `REACHY_SSH_USER` / `REACHY_SSH_PASSWORD`; **never write their
-values into this file** — it is tracked, and a committed LAN address or username
-is a permanent disclosure. Read them at run time
-(`Get-Content .env | …`, or `$env:REACHY_HOST` once loaded) and refer to them by
-key name in notes, transcripts and reports.
+`REACHY_HOST` / `REACHY_SSH_USER` / `REACHY_SSH_PASSWORD`. Never write their
+values into a tracked file — a committed LAN address or username is a
+permanent disclosure. Read them at run time
+(`REACHY_HOST=$(grep '^REACHY_HOST=' .env | cut -d= -f2-)`) and refer to them
+by key name in notes, transcripts and reports. `.env.example` is the tracked,
+placeholder-only template.
 
-A fourth key, `REACHY_HOSTKEY`, holds the robot's SSH host-key fingerprint in
-the exact form `plink` prints it. Every `plink`/`pscp` call here runs with
-`-batch` and therefore cannot answer the host-key prompt, so they need
-`-hostkey $env:REACHY_HOSTKEY`. Obtain it once from an interactive `plink`
-session, put it in the repo-root `.env`, and never disable host-key checking or
-paste the fingerprint back into a tracked file.
+**The Mac's ed25519 key is authorized on the robot** (2026-08-24): use plain
+`ssh -o BatchMode=yes` / `scp`. Never wrap a bulk transfer (wheel, media) in
+`expect`: data through an scp running under expect's pty stalls indefinitely,
+which masqueraded as a flaky robot radio for two days (plain scp of the same
+wheel: 0.66 s). The password-driven expect lane is only for a robot whose
+`authorized_keys` was wiped (e.g. a system reflash) — re-add the key first,
+then deploy. Robot-pull over HTTP (`python3 -m http.server` on the dev box +
+`curl` on the robot, sha-verified) is the proven alternative when ssh is
+unavailable.
 
-`.env.example` at the repo root is the tracked, placeholder-only template for
-all four keys — copy it to `.env` and fill it in.
+Deploying from the Windows PC (PuTTY, host-key pinning, Git Bash pitfall):
+read `windows.md` in this skill's directory first.
 
-Windows OpenSSH prompts for the password interactively; for non-interactive
-automation prefer PuTTY's `plink`/`pscp -pw` if installed, or offer the
-operator one-time SSH key setup (append a public key to
-`~/.ssh/authorized_keys` for the `REACHY_SSH_USER` account — optional
-convenience, ask first).
-
-**Mac mini (2026-08-24): its ed25519 key is authorized on the robot** — use
-plain `ssh -o BatchMode=yes` / `scp` and nothing else. **Never wrap a bulk
-transfer (wheel, media) in `expect`**: data through an scp running under
-expect's pty stalls indefinitely, which masqueraded as a flaky robot radio for
-two days (plain scp of the same wheel: 0.66 s). The password-driven expect
-lane remains only for a robot whose `authorized_keys` was wiped (e.g. a system
-reflash); re-add the key first, then deploy. Robot-pull over HTTP
-(`python3 -m http.server` on the dev box + `curl` on the robot, sha-verified)
-is the proven alternative when ssh is unavailable.
-
-## Deployment procedure (matches plan Task 15 / D-009)
+## Deployment procedure (D-009)
 
 1. **Build on dev machine:** `uv build ./reachy_companion` → wheel in
    `reachy_companion/dist/`. Verify the entry point locally first:
    `entry_points(group='reachy_mini_apps')` must list `reachy_companion`
    (daemon discovers apps by this group — research-reachy-sdk §1).
 2. **Version gate (DECISIVE, not advisory):** the app requires the SDK line
-   pinned in `reachy_companion/pyproject.toml` (currently
-   `reachy-mini>=1.10.0rc2`; dev venv runs 1.10.0rc5). The robot's daemon
+   pinned in `reachy_companion/pyproject.toml` (the `reachy-mini>=` floor).
+   The robot's daemon
    version comes from `GET http://$REACHY_HOST:8000/update/install-source`
    (NO `/api` prefix — the update/cache/logs/wifi routers mount bare, unlike
    `apps`; there is no `/api/daemon/version` route). The gate is decisive
@@ -67,8 +55,7 @@ is the proven alternative when ssh is unavailable.
    makes the app undeployable by any app-level means. If below floor, STOP
    and report — upgrading the daemon is NOT authorized.
 3. **Transfer:** `scp reachy_companion/dist/reachy_companion-*.whl
-   ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/` (PuTTY `pscp -pw` works on the
-   dev box; PuTTY is installed).
+   ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/`.
 4. **Back up instance state BEFORE installing (mandatory).** The instance path
    IS the installed package directory
    (`/venvs/apps_venv/lib/python3.X/site-packages/reachy_companion/` —
@@ -84,7 +71,7 @@ is the proven alternative when ssh is unavailable.
      profile` where it should read `persona: instance persona.md`.
      A git-tracked **local working copy lives at repo-root `persona.md`**;
      after editing it, sync it to the robot with
-     `pscp … persona.md ${REACHY_SSH_USER}@${REACHY_HOST}:$INST/persona.md` and antenna-wake
+     `scp persona.md ${REACHY_SSH_USER}@${REACHY_HOST}:$INST/persona.md` and antenna-wake
      (or restart the app) to load it — no wheel rebuild. Keep the two copies in
      step: whichever side was edited last wins, and this repo copy is the one
      under version control.
@@ -123,12 +110,10 @@ is the proven alternative when ssh is unavailable.
    and copying it would carry hundreds of megabytes through every deploy. Record
    that it was intentionally skipped rather than treating it as a missed file.
 
-   Backup — a **unique, verified, empty** directory per deployment, plus a
-   redacted manifest that the restore reads. Review round 1, finding 19: the old
-   ritual reused one fixed `/tmp/reachy_companion_backup` directory, so a file
-   absent *today* could be restored from a **stale copy left by a previous
-   deployment**; and its recursive listing printed credential filenames, which
-   are account addresses, into the deploy transcript.
+   Backup — a unique, verified, empty directory per deployment, plus a
+   redacted manifest that the restore reads, so a stale copy from an earlier
+   deploy can never come back and no credential filename (they are account
+   addresses) reaches the transcript.
 
    ```sh
    INST=$(/venvs/apps_venv/bin/python -c \
@@ -299,11 +284,12 @@ is the proven alternative when ssh is unavailable.
 
 - Never `pip install`/upgrade anything into the daemon's environment; only
   `/venvs/apps_venv` (shared apps venv) is writable by us.
-  **Scoped exception (operator-authorized 2026-08-17):** a one-time daemon
-  update to the 1.10.0rc line is authorized, ONLY via the robot's own
-  official updater (`/update/start-from-ref` family) — never via pip/ssh
-  surgery. Verify the rollback path (ref back to 1.9.0) BEFORE updating.
-  This exception does not extend to any other daemon change.
+  Daemon updates happen only through the robot's own official updater
+  (`/update/…`), never pip/ssh surgery, and only under a recorded
+  authorization: the 2026-08-17 move to the 1.10.0rc line (used), and the
+  2026-10-28 upgrade to the latest Pollen release (D-033 — back up instance
+  state and record the rollback ref first). Any other daemon change needs its
+  own operator authorization; propose it, never do it.
 - Never edit files under the daemon's installation or its config
   (`daemon_config.json` startup-app entry may be set via the official
   `PUT /api/apps/startup-app` API only, and only if the operator asks).
@@ -320,31 +306,8 @@ so rollback is always app-only.
 
 ## Status
 
-Current as of 2026-08-19.
-
-Deployment works and this procedure is proven. Five successful installs to
-date, all app-only: the first deploy (Task 15 attempt 3), operator rounds 1 and
-2, the Task 17 face-memory deploy, and the Task 17 fix-round redeploy. The two
-earlier attempts that failed did so before touching the robot — attempt 1 on
-reachability, attempt 2 on the version gate. Full history in DECISIONS.md D-009.
-
-Robot state: daemon on the **1.10.0rc line** (git-source install, so the version
-gate passes and future daemon syncs follow the git ref); startup app is
-`reachy_companion`; the robot was last left **ASLEEP** running the build of
-commit `2aa0403` (seventh install, 2026-08-20: D-016 externalized persona +
-D-017 VoiceFX comb/soft-knee chain). Deploy-time evidence: startup log shows
-`persona: instance persona.md` (seeded from the built-in persona body during
-this deploy — the operator can now edit it over SSH), the full new VoiceFX
-chain line (pitch +5 st, comb 4 ms g 0.45 mix 0.35, AM off, +5 dB into soft
-knee at -1 dBFS), 17 tools, and a full 3-round wake check inside budget
-(275/255/256 ms). The restored `.env` had its four stale `VOICEFX_*` value
-lines stripped so the D-017 defaults apply (only `VOICEFX_ENABLED=true`
-remains); `memory.v1.json` / `faces.v1.json` still absent (no live
-enrollment yet).
-
-Two pitfalls this deploy confirmed: Git Bash mangles a remote command whose
-first token is a POSIX path (`/venvs/...` became `C:/Program Files/...` and the
-force-reinstall silently didn't run — the plain install then reports "already
-installed" because the wheel version never changes); run plink/pscp from
-PowerShell. And plink in batch mode needs `-hostkey $env:REACHY_HOSTKEY` (see
-**Access** above — the fingerprint lives in the repo-root `.env`, never here).
+This procedure is proven, app-only. The current install count, the build on
+the robot and its last-deploy evidence live in `progress.md` (newest first);
+the deployment history is DECISIONS.md D-009. The daemon is on the
+1.10.0rc line (git-source install, so the version gate passes and future
+daemon syncs follow the git ref); startup app is `reachy_companion`.
