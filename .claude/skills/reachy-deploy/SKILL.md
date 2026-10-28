@@ -49,11 +49,11 @@ read `windows.md` in this skill's directory first.
    version comes from `GET http://$REACHY_HOST:8000/update/install-source`
    (NO `/api` prefix — the update/cache/logs/wifi routers mount bare, unlike
    `apps`; there is no `/api/daemon/version` route). The gate is decisive
-   because `check_and_sync_apps_venv_sdk()` force-syncs the apps venv's
-   `reachy_mini` to the daemon's version on EVERY daemon boot
-   (`utils/wireless_version/startup_check.py:388`) — a daemon below the floor
+   because the daemon force-syncs the apps venv's `reachy_mini` to its own
+   version (rc5: on every boot; v1.13: whenever reachy_mini's install record
+   changes, `startup_check.py` `_dist_record_sig`) — a daemon below the floor
    makes the app undeployable by any app-level means. If below floor, STOP
-   and report — upgrading the daemon is NOT authorized.
+   and report; a daemon upgrade needs a recorded authorization (Hard limits).
 3. **Transfer:** `scp reachy_companion/dist/reachy_companion-*.whl
    ${REACHY_SSH_USER}@${REACHY_HOST}:/tmp/`.
 4. **Back up instance state BEFORE installing (mandatory).** The instance path
@@ -154,6 +154,12 @@ read `windows.md` in this skill's directory first.
    echo "$BACKUP"
    cat "$BACKUP/manifest.txt"
    ```
+
+   The robot's `/tmp` is tmpfs, so a reboot or daemon restart can erase this
+   backup. Before any step that can restart the robot (a daemon upgrade), also
+   `cp -a "$BACKUP" ~/reachy_companion_backups/` (mode 700, ext4) and compare
+   `sha256sum` of both copies. Keep it on the robot: copying credentials off
+   the device is not part of this procedure.
 
    The manifest is the record the Verification Gate wants: every `absent` line is
    an explicitly recorded absence rather than a missed file, and it names no
@@ -300,14 +306,23 @@ read `windows.md` in this skill's directory first.
 
 ## Rollback
 
-`ssh … "/venvs/apps_venv/bin/python -m pip uninstall -y reachy_companion"`
-then re-verify the installed-apps list. The daemon itself is never touched,
-so rollback is always app-only.
+App: `ssh … "/venvs/apps_venv/bin/python -m pip uninstall -y reachy_companion"`
+then re-verify the installed-apps list.
+
+Daemon (only after an authorized upgrade): the official updater cannot return
+to `v1.10.0rc5` — its `starlette<1.0.0` fails the updater's `uv pip check`,
+and the fallback `--upgrade` reinstalls PyPI's latest. The official fallback
+that sticks is `POST /update/start-from-ref?git_ref=v1.12.0`. A true rc5
+restore is a manual pinned install and needs its own authorization. Pre-upgrade
+freezes of both venvs and `daemon_config.json` sit with the instance backup in
+`~/reachy_companion_backups/<stamp>/` on the robot.
 
 ## Status
 
 This procedure is proven, app-only. The current install count, the build on
 the robot and its last-deploy evidence live in `progress.md` (newest first);
-the deployment history is DECISIONS.md D-009. The daemon is on the
-1.10.0rc line (git-source install, so the version gate passes and future
-daemon syncs follow the git ref); startup app is `reachy_companion`.
+the deployment history is DECISIONS.md D-009 and D-033. The daemon is on
+v1.13.0 (git-source install, ref `v1.13.0`; telemetry off via
+`PUT /api/telemetry`); startup app is `reachy_companion`. The image's
+`/bluetooth/` service and gpio-shutdown unit lag the daemon (see D-033
+outcome).

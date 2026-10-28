@@ -481,17 +481,17 @@
       "id": "UPSTREAM-REFRESH-2026-10",
       "behavior": "v1.24.0 carries the app-side ports from Conversation App v1.1.1 / SDK v1.13.0: certifi>=2026.10.19 with the OpenAI realtime websocket verified against certifi; a mic send stuck 5 s aborts the socket and reconnects; warmup mic audio discarded; mic read on its own thread; no listening debounce; MCP isError recorded as FAILED; corrupt tool-Spaces manifest drops only remote tools; /rpc reconnect; import warmup.",
       "verification": "On-robot after deploy: `/venvs/apps_venv/bin/python -c 'import certifi;print(certifi.__version__)'` >= 2026.10.19; boot shows `Realtime session updated successfully` and no `speech_started` before the greeting; antenna listening pose follows speech start/stop; a Wi-Fi drop logs `Realtime audio send stuck` then `closed unexpectedly (attempt 1/3)` and a recovered session.",
-      "state": "dev-verified",
-      "evidence": "Local gate 2026-10-28: 1941 passed / 31 skipped (1917 baseline + 24 new tests, each seen failing before its change), ruff + mypy --strict clean; live TLS 1.3 handshake to api.openai.com with the certifi 2026.10.23 context verified. Plan + self-review log: docs/plans/2026-10-28-upstream-refresh-plan.md.",
-      "next_action": "Deploy as the twenty-fourth install once the robot is back on the LAN (after the D-033 daemon upgrade), then run the on-robot checks above."
+      "state": "implemented-unverified",
+      "evidence": "Local gate 2026-10-28: 1941 passed / 31 skipped (1917 baseline + 24 new tests, each seen failing before its change), ruff + mypy --strict clean; live TLS 1.3 handshake to api.openai.com with the certifi 2026.10.23 context verified. Plan + self-review log: docs/plans/2026-10-28-upstream-refresh-plan.md. Deployed 2026-10-28 as the twenty-fourth install on daemon v1.13.0: apps_venv certifi 2026.10.23; boot `Realtime session updated successfully` over the certifi-pinned wss; 0 speech/barge events before the greeting; 0 tracebacks/app errors/warnings in 122 lines.",
+      "next_action": "In-room session: antenna listening pose follows speech start/stop; deliberately drop Wi-Fi briefly and read `Realtime audio send stuck` → `closed unexpectedly (attempt 1/3)` → recovered session; one MCP failure shows FAILED."
     },
     {
       "id": "DAEMON-UPGRADE-LATEST",
       "behavior": "Robot daemon upgraded from v1.10.0rc5 to the latest Pollen release (v1.13.0 on 2026-10-28) through the official updater, instance state preserved, reachy_companion re-installed and booting, reachy-mini floor raised to match afterwards (D-033).",
       "verification": "`GET /update/install-source` reports the new ref; `/api/daemon/status` healthy; apps_venv reachy-mini == daemon version; startup app still reachy_companion; restore manifest shows every recorded file back; app boot line `Tools in session (...)`, persona line `instance persona.md`.",
-      "state": "blocked",
-      "evidence": "2026-10-28: robot unreachable — no ping/ARP at REACHY_HOST, no daemon on :8000 anywhere on the /24 (23 hosts up), no _reachy-mini._tcp mDNS service, no setup hotspot SSID; a 6-minute watch after the operator reported power-on also saw nothing. Authorization recorded as D-033.",
-      "next_action": "Operator: confirm the robot is powered (head lit, startup motor twitch) and on Wi-Fi; if it shows its setup hotspot, rejoin it via Reachy Mini Control's Bluetooth console. Then run the upgrade procedure (research report pending in this session's plan)."
+      "state": "implemented-unverified",
+      "evidence": "2026-10-28: official `POST /update/start-from-ref?git_ref=v1.13.0`, job a99b3736… done, daemon restarted; `/update/install-source` = 1.13.0 git v1.13.0 9d5d5e5d; `/api/daemon/status` running, backend ready; `/api/telemetry` enabled:false set 1 s after restart, 0 `Telemetry sent`; startup app reachy_companion kept; apps_venv reachy-mini 1.13.0 / starlette 1.10.0; instance state untouched. Gap: the v1.13 startup check failed `sudo cp` for /bluetooth/bluetooth_service.py + commands and the gpio-shutdown unit (not in NOPASSWD sudoers) — installed copies differ from v1.13 sources, so GHSA-993g-hgjh-whmf (BLE PIN bypass) is not live. Earlier: robot unreachable ~10-21 → 10-28 (DNS failures, operator power cycle).",
+      "next_action": "Operator decision: apply the two service refreshes the startup check could not (root cp of the v1.13 sources + daemon-reload/restart), or accept the stale BLE/gpio services. Then the five-demo smoke (head tracking now aims 15° lower)."
     }
   ]
 }

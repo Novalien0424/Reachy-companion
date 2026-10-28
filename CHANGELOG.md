@@ -11,9 +11,10 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.24.0] — 2026-10-28 · upstream refresh
 
-Not yet deployed: the robot was offline when this was built. It ships as the
-twenty-fourth install, together with the daemon upgrade to the latest Pollen
-release authorized the same day (D-033).
+Deployed as the twenty-fourth install (wheel sha `1d1c98aa…`, backup
+`20261028T130625Z-2812`), clean first boot 13:07 robot time, on the robot's
+daemon upgraded the same day from v1.10.0rc5 to v1.13.0 with telemetry off
+(D-033). The app now requires `reachy-mini>=1.13.0`.
 
 Ported from the official Conversation App v1.1.1 and SDK v1.13.0 (plan
 `docs/plans/2026-10-28-upstream-refresh-plan.md`):

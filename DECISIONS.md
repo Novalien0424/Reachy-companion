@@ -1912,3 +1912,18 @@ self-review recorded in each plan's review log (CLAUDE.md § Plan Review), and
 Robot state at authorization: unreachable on the LAN (no ARP/ping reply, no
 daemon on the /24, no mDNS service, no setup hotspot) — most likely powered
 off since the 2026-09-05 probe. The upgrade runs when it is back online.
+
+**Outcome (2026-10-28, same session).** Upgrade executed through the official
+updater: `v1.10.0rc5` → `v1.13.0` (`9d5d5e5d`), telemetry set off through
+`PUT /api/telemetry` before its first 60 s flush, startup app and instance
+state kept. Floor raised to `reachy-mini>=1.13.0`; v1.24.0 deployed as the
+twenty-fourth install with a clean boot. Findings that change the procedure:
+(1) the updater cannot roll back to rc5 (rc5's `starlette<1.0.0` fails its
+`uv pip check`, and the fallback `--upgrade` installs PyPI's latest), so the
+official fallback is `git_ref=v1.12.0`; (2) the robot's `/tmp` is tmpfs, so a
+deploy backup that must survive a restart also goes to
+`~/reachy_companion_backups/` on the robot — never off the device;
+(3) on an image whose NOPASSWD sudoers predates v1.13, the startup check
+cannot refresh `/bluetooth/` (BLE service + commands) or the gpio-shutdown
+unit: both stay at the image's versions, and the BLE PIN-bypass fix is not
+live until they are refreshed by a privileged step the operator decides on.

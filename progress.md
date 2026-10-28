@@ -5,6 +5,36 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-FOURTH INSTALL (v1.24.0, upstream refresh — D-033) IS ON THE ROBOT,
+NOW ON DAEMON v1.13.0, WITH A CLEAN BOOT (2026-10-28 13:07 robot time); app
+left running.** The robot had been unreachable since ~2026-10-21: the
+previous boot (10-21 → 10-28) ended with the app retrying `Temporary failure in
+name resolution` (Wi-Fi/DNS lost; no NetworkManager lines retained) and an
+operator power-button shutdown at 12:54:01. Daemon upgrade v1.10.0rc5 →
+v1.13.0 (`9d5d5e5d`) via the official `POST /update/start-from-ref`, job
+21:00:35 → restart → up 21:03:15 (Mac time); telemetry PUT `enabled:false` 1 s
+after the new daemon answered, 0 `Telemetry sent` lines; startup app kept;
+instance state untouched by the updater. apps_venv now reachy-mini 1.13.0,
+starlette 1.10.0, fastapi 0.162.0, certifi 2026.10.23, pip 26.2.2. App deploy:
+wheel sha `1d1c98aa…`, floor `reachy-mini>=1.13.0`, backup
+`20261028T130625Z-2812` (persistent copy in `~/reachy_companion_backups/` on
+the robot, with pre-upgrade venv freezes and `daemon_config.json` in
+`…/20261028T125722Z-1216`), restore 4 faces + 4 people (memory and
+face_snapshots absent as before), step 6b search True, preload done. Boot:
+`persona: instance persona.md`, `Tools in session (one_on_one, boxes=none,
+startup, 22)`, `Realtime session updated successfully` (certifi-pinned wss),
+`boot gate released (greeting played)` +18 s, 0 tracebacks / app errors / app
+warnings in 122 lines, 0 speech/barge events before the greeting. Suite 1941 /
+31 on dev venv reachy-mini 1.13.0 and on the robot's exact stack.
+**Open from the upgrade:** the v1.13 startup check could not refresh
+`/bluetooth/bluetooth_service.py` + commands or the gpio-shutdown unit
+(`sudo cp` is not in the rc5 image's NOPASSWD list) — the running BLE service
+is still the rc5 copy, so the BLE PIN-bypass fix GHSA-993g-hgjh-whmf is NOT
+live; operator decision pending. Rollback: the updater cannot return to rc5;
+`git_ref=v1.12.0` is the official fallback.
+
+Previous state (2026-09-05):
+
 **THE TWENTY-THIRD INSTALL (v1.23.0, solo interruption — D-032) IS ON THE
 ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's
 probe (2026-09-05 05:30 robot time).** Operator approved RCA candidate fix 1
