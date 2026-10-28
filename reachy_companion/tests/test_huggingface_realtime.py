@@ -1,6 +1,7 @@
 import json
 import time
 import base64
+import typing
 import asyncio
 import logging
 from types import SimpleNamespace
@@ -11,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from pydantic import BaseModel
+from openai.types.realtime import RealtimeResponseUsage
 
 import reachy_companion.conversation_handler as conv_mod
 import reachy_companion.huggingface_realtime as hf_mod
@@ -1041,6 +1044,171 @@ async def test_a_completed_reply_logs_no_status_line(
     assert "response ended" not in caplog.text
 
 
+# --------------------------------------------------------------------------
+# Response usage telemetry (2026-10-28 latency plan, L1): one INFO line per
+# `response.done`, so prefill growth and reasoning are visible in the journal.
+# --------------------------------------------------------------------------
+
+
+def _usage_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return the usage lines the receiver loop logged."""
+    return [r for r in caplog.records if r.getMessage().startswith("Response usage:")]
+
+
+def _full_usage(**extra: Any) -> RealtimeResponseUsage:
+    """Build the SDK usage model the server sends, plus any untyped `extra` fields."""
+    return RealtimeResponseUsage.model_validate(
+        {
+            "total_tokens": 5442,
+            "input_tokens": 5230,
+            "output_tokens": 212,
+            "input_token_details": {
+                "text_tokens": 1180,
+                "audio_tokens": 3920,
+                "image_tokens": 130,
+                "cached_tokens": 4096,
+                "cached_tokens_details": {"text_tokens": 1000, "audio_tokens": 3000, "image_tokens": 96},
+            },
+            "output_token_details": {"text_tokens": 41, "audio_tokens": 171},
+            **extra,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_response_done_logs_one_usage_line_with_every_token_count(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Id, status, the input split and the output split, on one greppable line."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch,
+            SimpleNamespace(id="resp_u", status="completed", status_details=None, usage=_full_usage()),
+        )
+
+    (record,) = _usage_records(caplog)
+    assert record.levelno == logging.INFO
+    assert record.getMessage() == (
+        "Response usage: id=resp_u status=completed in=5230 in_cached=4096 in_text=1180 "
+        "in_audio=3920 in_image=130 out=212 out_text=41 out_audio=171"
+    )
+
+
+@pytest.mark.asyncio
+async def test_usage_line_carries_fields_the_typed_model_does_not_know(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reasoning tokens are not in the 2.28.0 stub; the server's extras still reach the journal."""
+    usage = _full_usage(server_note={"queue_ms": 12})
+    # The real event nests the extra where the server put it.
+    usage_dict = usage.model_dump()
+    usage_dict["output_token_details"]["reasoning_tokens"] = 64
+    usage = RealtimeResponseUsage.model_validate(usage_dict)
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch, SimpleNamespace(id="resp_x", status="completed", status_details=None, usage=usage)
+        )
+
+    (record,) = _usage_records(caplog)
+    message = record.getMessage()
+    assert message.endswith(
+        ' extra={"output_token_details.reasoning_tokens":64,"server_note.queue_ms":12}'
+    )
+    # Typed fields the line does not print are not "extra" either.
+    assert "total_tokens" not in message and "cached_tokens_details" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_response_without_usage_still_logs_its_line(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No usage (HF backend, cancelled reply) is a fact to log, never an exception."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(
+            monkeypatch, SimpleNamespace(id="resp_n", status="cancelled", status_details=None)
+        )
+
+    (record,) = _usage_records(caplog)
+    assert record.getMessage() == "Response usage: id=resp_n status=cancelled usage=none"
+
+
+@pytest.mark.asyncio
+async def test_a_response_done_without_a_response_object_still_completes(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The loop's own bookkeeping must survive a bare event."""
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await _run_with_response_done(monkeypatch, None)
+
+    (record,) = _usage_records(caplog)
+    assert record.getMessage() == "Response usage: id=None status=None usage=none"
+
+
+def test_partial_usage_prints_dashes_for_what_the_server_left_out() -> None:
+    """Missing detail blocks are `-`, not a crash and not a made-up zero."""
+    usage = RealtimeResponseUsage.model_validate({"input_tokens": 10, "output_token_details": {"audio_tokens": 3}})
+    line = hf_mod._response_usage_line(SimpleNamespace(id="r", status="completed", usage=usage))
+    assert line == (
+        "id=r status=completed in=10 in_cached=- in_text=- in_audio=- in_image=- out=- out_text=- out_audio=3"
+    )
+
+
+def test_usage_given_as_a_plain_dict_reads_the_same() -> None:
+    """A dict-shaped usage (an untyped event) takes the same path as the SDK model."""
+    usage = {"input_tokens": 7, "input_token_details": {"cached_tokens": 4}, "output_tokens": 2, "novel": 1}
+    line = hf_mod._response_usage_line(SimpleNamespace(id="r", status="completed", usage=usage))
+    assert line == (
+        "id=r status=completed in=7 in_cached=4 in_text=- in_audio=- in_image=- out=2 out_text=- "
+        'out_audio=- extra={"novel":1}'
+    )
+
+
+def test_unreadable_usage_never_raises() -> None:
+    """Telemetry must never cost a reply: a hostile usage object degrades to a tag."""
+
+    class _Exploding(RealtimeResponseUsage):
+        def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("boom")
+
+    exploding = hf_mod._response_usage_line(SimpleNamespace(id="r", status="completed", usage=_Exploding()))
+    assert exploding == "id=r status=completed usage=unreadable(RuntimeError)"
+
+    mocked = hf_mod._response_usage_line(SimpleNamespace(id="r", status="completed", usage=MagicMock()))
+    assert mocked == "id=r status=completed usage=unreadable(MagicMock)"
+
+    odd_shape = {"input_tokens": 1, "input_token_details": 5, "output_token_details": ["x"]}
+    line = hf_mod._response_usage_line(SimpleNamespace(id="r", status="completed", usage=odd_shape))
+    assert line.startswith("id=r status=completed in=1 in_cached=- ")
+    assert line.endswith(' extra={"input_token_details":5,"output_token_details":["x"]}')
+
+    class _NoAttributes:
+        def __getattr__(self, name: str) -> Any:
+            raise RuntimeError("no attributes today")
+
+    hostile = hf_mod._response_usage_line(_NoAttributes())
+    assert hostile == "id=? status=? usage=unreadable(RuntimeError)"
+
+
+def _sdk_usage_schema(model: Any) -> dict[str, Any]:
+    """Derive the typed field tree of an SDK usage model, nested models included."""
+    tree: dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        nested = [
+            arg for arg in typing.get_args(field.annotation) if isinstance(arg, type) and issubclass(arg, BaseModel)
+        ]
+        tree[name] = _sdk_usage_schema(nested[0]) if nested else None
+    return tree
+
+
+def test_the_typed_usage_mirror_matches_the_installed_sdk() -> None:
+    """`extra=` means "not in the typed model"; the mirror must not drift from the SDK.
+
+    If an SDK upgrade adds a typed field this fails, which is the point: decide
+    whether the new field earns a named slot on the line or stays under extra.
+    """
+    assert hf_mod._USAGE_TYPED_FIELDS == _sdk_usage_schema(RealtimeResponseUsage)
+
+
 @pytest.mark.asyncio
 async def test_extended_wake_check_disabled_by_env(monkeypatch: Any) -> None:
     """`FACE_WAKE_EXTENDED_MS=0` turns the extension off without touching the camera."""
@@ -1333,6 +1501,250 @@ async def test_a_tool_result_without_a_picture_creates_no_image_item(monkeypatch
 
     (output,) = handler.connection.created_items
     assert output["type"] == "function_call_output"
+
+
+@pytest.mark.asyncio
+async def test_the_base_handler_sends_no_image_detail(monkeypatch: Any) -> None:
+    """Latency plan L3: `detail` is an OpenAI-backend knob; the base item is unchanged."""
+    handler = _image_tool_handler(monkeypatch)
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_cam",
+            tool_name="camera",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"question": "這是什麼", "b64_im": "QUJD"},
+        )
+    )
+
+    _output, image = handler.connection.created_items
+    assert image["content"] == [{"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"}]
+
+
+# --------------------------------------------------------------------------
+# Plain-UTF-8 tool outputs (2026-10-28 latency plan, L2): the model reads
+# 「台北」, not six-character `\uXXXX` escapes per glyph.
+# --------------------------------------------------------------------------
+
+
+async def _deliver(handler: Any, result: dict[str, Any], call_id: str = "call_zh") -> None:
+    """Deliver one completed, model-visible tool result through the real path."""
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id=call_id,
+            tool_name="test__probe",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result=result,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_function_call_output_carries_chinese_as_plain_utf8(monkeypatch: Any) -> None:
+    """Same JSON value, readable glyphs: no escape for the model to decode."""
+    handler = _image_tool_handler(monkeypatch)
+    result = {"city": "台北", "summary": "晴時多雲，氣溫 28°C", "ok": True}
+
+    await _deliver(handler, result)
+
+    (output,) = handler.connection.created_items
+    assert output["output"] == '{"city": "台北", "summary": "晴時多雲，氣溫 28°C", "ok": true}'
+    assert "\\u" not in output["output"]
+    assert json.loads(output["output"]) == result
+    # Only the model-bound dump changed: the operator UI copy is today's string.
+    (ui_copy,) = _queued_messages(_drain_queue(handler))
+    assert ui_copy["content"] == json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_error_outputs_are_plain_utf8_too(monkeypatch: Any) -> None:
+    """Error strings are advice addressed to the model; they ride the same dump."""
+    handler = _image_tool_handler(monkeypatch)
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_err",
+            tool_name="test__probe",
+            is_idle_tool_call=False,
+            status=ToolState.FAILED,
+            error="找不到這個裝置",
+        )
+    )
+
+    (output,) = handler.connection.created_items
+    assert output["output"] == '{"error": "找不到這個裝置"}'
+
+
+@pytest.mark.asyncio
+async def test_a_lone_surrogate_falls_back_to_the_escaped_form(monkeypatch: Any) -> None:
+    """A snippet cut mid-emoji upstream is not valid UTF-8 raw; escaped, it is today's wire shape."""
+    handler = _image_tool_handler(monkeypatch)
+    result = {"snippet": "台北 \ud83d"}
+
+    await _deliver(handler, result)
+
+    (output,) = handler.connection.created_items
+    assert output["output"] == json.dumps(result)
+    output["output"].encode("utf-8")  # sendable
+
+
+# --------------------------------------------------------------------------
+# First-audio latency line tags (2026-10-28 latency plan, L1): which response
+# produced the first audio, and whether a function call came before it.
+# --------------------------------------------------------------------------
+
+
+def _latency_records(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the first-audio latency lines."""
+    return [r.getMessage() for r in caplog.records if "Turn latency: first audio delta" in r.getMessage()]
+
+
+def _start_turn(handler: HuggingFaceRealtimeHandler) -> Any:
+    """Return a hook that stamps "user transcript done" as the receiver reads the event."""
+
+    def _stamp() -> None:
+        handler._turn_user_done_at = time.perf_counter()
+        handler._turn_response_created_at = None
+        handler._turn_first_audio_at = None
+
+    return _stamp
+
+
+def _recording_tool_manager(handler: HuggingFaceRealtimeHandler) -> list[str]:
+    """Replace the tool manager with a recorder, so no real tool ever runs."""
+    started: list[str] = []
+
+    async def _start_tool(*, call_id: str, tool_call_routine: Any, is_idle_tool_call: bool) -> Any:
+        started.append(call_id)
+        return SimpleNamespace(tool_id=f"tool_{call_id}")
+
+    handler.tool_manager = SimpleNamespace(  # type: ignore[assignment]
+        start_up=lambda tool_callbacks=None: None,
+        shutdown=AsyncMock(),
+        start_tool=_start_tool,
+    )
+    return started
+
+
+@pytest.mark.asyncio
+async def test_first_audio_after_a_tool_call_is_tagged_with_tool(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The follow-up response's audio names its response and the tool round trip it waited on."""
+    events: list[_FakeEvent] = []
+    handler = _commentary_handler(monkeypatch, ())
+    events.append(
+        _FakeEvent(
+            "response.function_call_arguments.done",
+            response_id="resp_1",
+            name="camera",
+            arguments="{}",
+            call_id="call_1",
+            _before_return=_start_turn(handler),
+        )
+    )
+    events.append(_FakeEvent("response.output_audio.delta", item_id="item_2", response_id="resp_2", delta=_silent_delta()))
+    handler.client = _make_fake_realtime_client(events=tuple(events))
+    started = _recording_tool_manager(handler)
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert started == ["call_1"]
+    (line,) = _latency_records(caplog)
+    assert line.startswith("Turn latency: first audio delta ")
+    assert line.endswith(" ms after user transcript response_id=resp_2 with_tool=True")
+
+
+@pytest.mark.asyncio
+async def test_first_audio_of_a_plain_reply_is_tagged_without_tool(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No function call in the turn: `with_tool=False`."""
+    handler = _commentary_handler(monkeypatch, ())
+    handler.client = _make_fake_realtime_client(
+        events=(
+            _FakeEvent(
+                "response.output_audio.delta",
+                item_id="item_1",
+                response_id="resp_1",
+                delta=_silent_delta(),
+                _before_return=_start_turn(handler),
+            ),
+        )
+    )
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    (line,) = _latency_records(caplog)
+    assert line.endswith(" ms after user transcript response_id=resp_1 with_tool=False")
+
+
+@pytest.mark.asyncio
+async def test_a_new_utterance_clears_the_previous_turns_tool_tag(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The tag is turn-scoped: it resets with the turn timers at speech onset."""
+    handler = _commentary_handler(monkeypatch, ())
+    handler.client = _make_fake_realtime_client(
+        events=(
+            _FakeEvent(
+                "response.function_call_arguments.done",
+                response_id="resp_1",
+                name="camera",
+                arguments="{}",
+                call_id="call_1",
+            ),
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_u2"),
+            _FakeEvent(
+                "response.output_audio.delta",
+                item_id="item_3",
+                response_id="resp_3",
+                delta=_silent_delta(),
+                _before_return=_start_turn(handler),
+            ),
+        )
+    )
+    _recording_tool_manager(handler)
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    (line,) = _latency_records(caplog)
+    assert line.endswith(" response_id=resp_3 with_tool=False")
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_from_a_cancelled_response_does_not_tag_the_turn(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A dropped call never ran, so the latency it would explain does not exist."""
+    handler = _commentary_handler(monkeypatch, ())
+    handler._cancelled_response_ids.append("resp_dead")
+    handler.client = _make_fake_realtime_client(
+        events=(
+            _FakeEvent(
+                "response.function_call_arguments.done",
+                response_id="resp_dead",
+                name="camera",
+                arguments="{}",
+                call_id="call_1",
+                _before_return=_start_turn(handler),
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_2", response_id="resp_2", delta=_silent_delta()),
+        )
+    )
+    started = _recording_tool_manager(handler)
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        await handler._run_realtime_session()
+
+    assert started == []
+    (line,) = _latency_records(caplog)
+    assert line.endswith(" response_id=resp_2 with_tool=False")
 
 
 @pytest.mark.asyncio
@@ -1755,3 +2167,136 @@ def test_external_interrupt_forgets_commentary_ids() -> None:
     handler._commentary_item_ids.append("item_pre")
     handler.on_external_interrupt()
     assert not handler._commentary_item_ids
+
+
+# --------------------------------------------------------------------------
+# Local-VAD listening (2026-10-28 plan): the handler decides whether a speech
+# edge from the robot's own microphone may move the listening pose, and logs
+# the head start it got over the server's `speech_started`.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def idle_handler() -> typing.Iterator[HuggingFaceRealtimeHandler]:
+    """Build a handler with nothing playing: no response in flight, nothing queued or paused."""
+    hf_mod.audio_drain.reset()
+    yield HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    hf_mod.audio_drain.reset()
+
+
+def _listening_calls(handler: HuggingFaceRealtimeHandler) -> list[bool]:
+    movement_manager = typing.cast(MagicMock, handler.deps.movement_manager)
+    return [call.args[0] for call in movement_manager.set_listening.call_args_list]
+
+
+def test_local_speech_moves_the_listening_pose_while_reachy_is_idle(
+    idle_handler: HuggingFaceRealtimeHandler,
+) -> None:
+    """Idle, the local start sets the pose and the local end clears it."""
+    idle_handler.on_local_speech(True)
+    idle_handler.on_local_speech(False)
+
+    assert _listening_calls(idle_handler) == [True, False]
+
+
+@pytest.mark.parametrize("playing", ["response_in_flight", "audio_queued", "reply_paused"])
+def test_local_speech_never_moves_the_pose_while_a_reply_is_playing(
+    idle_handler: HuggingFaceRealtimeHandler, playing: str
+) -> None:
+    """Reachy's own voice (and the barge machine's pause) must not move the antennas."""
+    if playing == "response_in_flight":
+        idle_handler._response_done_event.clear()
+    elif playing == "audio_queued":
+        hf_mod.audio_drain.note_enqueued(hf_mod.audio_drain.begin_response(), 24000, 24000)
+    else:
+        hf_mod.audio_drain.note_paused(True)
+
+    idle_handler.on_local_speech(True)
+    idle_handler.on_local_speech(False)
+
+    assert _listening_calls(idle_handler) == []
+
+
+def test_a_local_end_still_clears_a_pose_it_set_before_the_reply_started(
+    idle_handler: HuggingFaceRealtimeHandler,
+) -> None:
+    """A vote cast while idle is always released, so the pose cannot stay frozen through the reply."""
+    idle_handler.on_local_speech(True)
+    idle_handler._response_done_event.clear()  # the reply starts while the user is still talking
+
+    idle_handler.on_local_speech(False)
+
+    assert _listening_calls(idle_handler) == [True, False]
+
+
+def test_a_local_end_leaves_the_pose_to_the_server_while_it_still_hears_the_user(
+    idle_handler: HuggingFaceRealtimeHandler,
+) -> None:
+    """A pause inside a sentence must not drop the pose the server's open speech is holding."""
+    idle_handler.on_local_speech(True)
+    idle_handler._last_speech_started_at = time.monotonic()  # server: speech_started, no speech_stopped yet
+
+    idle_handler.on_local_speech(False)
+    assert _listening_calls(idle_handler) == [True]
+
+    idle_handler._last_speech_stopped_at = time.monotonic()  # the server's own stop clears it (event branch)
+    idle_handler.on_local_speech(True)
+    idle_handler.on_local_speech(False)
+    assert _listening_calls(idle_handler) == [True, True, False]
+
+
+def test_the_lead_over_the_server_is_logged_at_info_once_then_at_debug(
+    idle_handler: HuggingFaceRealtimeHandler, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The evidence line: first pairing at INFO, later ones at DEBUG, either order, same utterance only."""
+    caplog.set_level(logging.DEBUG, logger=hf_mod.__name__)
+
+    idle_handler._pair_local_vad_lead(local_at=10.0)
+    idle_handler._pair_local_vad_lead(server_at=10.23)
+    idle_handler._pair_local_vad_lead(server_at=20.0)
+    idle_handler._pair_local_vad_lead(local_at=20.1)  # local trailed the server
+    idle_handler._pair_local_vad_lead(local_at=30.0)
+    idle_handler._pair_local_vad_lead(server_at=32.0)  # 2 s apart: different utterances
+    idle_handler._pair_local_vad_lead(local_at=32.5)  # pairs with the newer server edge
+
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.getMessage().startswith("Local VAD:")]
+    assert lines == [
+        (logging.INFO, "Local VAD: listening started 230 ms before the server's speech_started (first this session)"),
+        (logging.DEBUG, "Local VAD: listening started 100 ms after the server's speech_started"),
+        (logging.DEBUG, "Local VAD: listening started 500 ms after the server's speech_started"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_session_logs_the_lead_of_its_first_local_start(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Through the real receive loop: a local start, then the server's `speech_started`, in two sessions."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
+    hf_mod.audio_drain.reset()
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+    caplog.set_level(logging.INFO, logger=hf_mod.__name__)
+
+    def session_events() -> tuple[_FakeEvent, ...]:
+        return (
+            _FakeEvent("rate_limits.updated", _before_return=lambda: handler.on_local_speech(True)),
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1", _delay=0.05),
+            _FakeEvent("input_audio_buffer.speech_stopped", item_id="item_1"),
+            _FakeEvent("rate_limits.updated", _before_return=lambda: handler.on_local_speech(False)),
+        )
+
+    for _session in range(2):
+        handler.client = _make_fake_realtime_client(events=session_events())
+        await handler._run_realtime_session()
+
+    leads = [r for r in caplog.records if r.getMessage().startswith("Local VAD:")]
+    assert [r.levelno for r in leads] == [logging.INFO, logging.INFO]
+    for record in leads:
+        lead_ms = float(record.getMessage().split(" ms ")[0].rsplit(" ", 1)[1])
+        assert "before the server's speech_started (first this session)" in record.getMessage()
+        assert lead_ms >= 40.0
+    hf_mod.audio_drain.reset()

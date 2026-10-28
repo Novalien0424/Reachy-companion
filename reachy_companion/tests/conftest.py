@@ -20,6 +20,10 @@ os.environ["REACHY_MINI_SKIP_DOTENV"] = "1"
 os.environ.pop("REACHY_MINI_CUSTOM_PROFILE", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY", None)
+# The local voice detector fetches its model from GitHub on a cold cache, and a
+# test must never reach the network: it is off unless a test turns it on, and
+# a test that does supplies a fake detector (2026-10-28 local-VAD plan).
+os.environ["LOCAL_VAD_LISTENING"] = "0"
 
 
 # --- Locked-profile expected failures -------------------------------------

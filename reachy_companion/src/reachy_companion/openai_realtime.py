@@ -14,6 +14,7 @@ peak error at the chunk seams (about -40 dB SNR) plus length drift. See
 
 import os
 import copy
+import math
 import uuid
 import base64
 import asyncio
@@ -26,7 +27,11 @@ import numpy as np
 from openai import AsyncOpenAI
 from numpy.typing import NDArray
 from typing_extensions import Literal
-from openai.types.realtime import RealtimeAudioConfigParam, RealtimeSessionCreateRequestParam
+from openai.types.realtime import (
+    RealtimeAudioConfigParam,
+    RealtimeSessionCreateRequestParam,
+    RealtimeTruncationRetentionRatioParam,
+)
 from openai.types.realtime.noise_reduction_type import NoiseReductionType
 from openai.types.realtime.realtime_audio_formats_param import AudioPCM
 from openai.types.realtime.realtime_audio_config_input_param import NoiseReduction
@@ -126,6 +131,102 @@ def _max_output_tokens() -> int | None:
     if raw in ("inf", "off", "0"):
         return None
     return env_int("REALTIME_MAX_OUTPUT_TOKENS", _MAX_OUTPUT_TOKENS_DEFAULT, lo=1, hi=4096)
+
+
+# --- latency A/B knobs (2026-10-28 latency plan, L3) -------------------------
+# Context-growth levers for the first-audio latency RCA (2026-09-04, Finding 4).
+# Both change what the model sees, so per the `reachy-instructing-model` house
+# rule they ship OFF: unset, the session config and the camera item are exactly
+# what they were, and only an operator's on-robot A/B turns them on.
+#
+# The session config is rebuilt on every connect, reconnect and mode switch and
+# the image knob is read for every picture, so a bad value warns once per
+# process rather than once per rebuild.
+_warned_knobs: set[tuple[str, str]] = set()
+
+
+def _warn_once(name: str, raw: str, consequence: str) -> None:
+    """Warn about an invalid knob value the first time this process sees it."""
+    if (name, raw) in _warned_knobs:
+        return
+    _warned_knobs.add((name, raw))
+    logger.warning("Ignoring invalid %s=%r; %s.", name, raw, consequence)
+
+
+_TRUNCATION_RATIO_DEFAULT: Final[float] = 0.8
+
+
+def _truncation() -> RealtimeTruncationRetentionRatioParam | None:
+    """Session `truncation`, set only when `REALTIME_TRUNCATION_POST_INSTRUCTIONS` is.
+
+    Today nothing is ever dropped from the conversation, so the prefix the model
+    re-reads before every reply only grows. A post-instructions token limit with
+    a retention ratio lets the server drop the oldest turns in chunks (the ratio
+    amortizes truncation so the cache survives between cuts). Unset or invalid,
+    the field is omitted and the server default stands; N is the A/B's job, so
+    there is no default limit.
+    """
+    raw = (os.getenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS") or "").strip()
+    ratio_raw = (os.getenv("REALTIME_TRUNCATION_RETENTION_RATIO") or "").strip()
+    if not raw:
+        if ratio_raw:
+            _warn_once(
+                "REALTIME_TRUNCATION_RETENTION_RATIO",
+                ratio_raw,
+                "it only applies with REALTIME_TRUNCATION_POST_INSTRUCTIONS set, so truncation stays at the server default",
+            )
+        return None
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 0
+    if limit < 1:
+        _warn_once(
+            "REALTIME_TRUNCATION_POST_INSTRUCTIONS",
+            raw,
+            "expected a positive token count, so truncation stays at the server default",
+        )
+        return None
+    ratio = _TRUNCATION_RATIO_DEFAULT
+    if ratio_raw:
+        try:
+            parsed = float(ratio_raw)
+        except ValueError:
+            parsed = math.nan
+        # The documented range, 0.0 - 1.0 (RealtimeTruncationRetentionRatioParam).
+        if math.isfinite(parsed) and 0.0 <= parsed <= 1.0:
+            ratio = parsed
+        else:
+            _warn_once(
+                "REALTIME_TRUNCATION_RETENTION_RATIO",
+                ratio_raw,
+                f"expected a fraction from 0 to 1, so using {_TRUNCATION_RATIO_DEFAULT}",
+            )
+    return RealtimeTruncationRetentionRatioParam(
+        type="retention_ratio",
+        retention_ratio=ratio,
+        token_limits={"post_instructions": limit},
+    )
+
+
+_IMAGE_DETAILS: Final = ("low", "high", "auto")
+
+
+def _image_detail() -> Literal["auto", "low", "high"] | None:
+    """`detail` for camera `input_image` items, from `REALTIME_IMAGE_DETAIL`; None when unset.
+
+    Pictures enter at full frame with the server's default detail (`auto`,
+    documented to mean `high`) and stay in the conversation for the rest of the
+    session. `low` is the A/B candidate; invalid values are ignored, so the item
+    keeps today's shape.
+    """
+    raw = (os.getenv("REALTIME_IMAGE_DETAIL") or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in _IMAGE_DETAILS:
+        _warn_once("REALTIME_IMAGE_DETAIL", raw, "expected low, high or auto, so camera images keep the server default")
+        return None
+    return cast(Literal["auto", "low", "high"], raw)
 
 
 def _noise_reduction() -> NoiseReduction | None:
@@ -443,7 +544,15 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         tokens = _max_output_tokens()
         if tokens is not None:
             cfg["max_output_tokens"] = tokens
+        # Latency plan L3: absent unless the operator's A/B sets it.
+        truncation = _truncation()
+        if truncation is not None:
+            cfg["truncation"] = truncation
         return cfg
+
+    def _input_image_detail(self) -> Literal["auto", "low", "high"] | None:
+        """Return the `REALTIME_IMAGE_DETAIL` A/B knob for camera items (latency plan L3)."""
+        return _image_detail()
 
     def _session_config_fallback(
         self, cfg: RealtimeSessionCreateRequestParam
@@ -462,6 +571,11 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         finding 1). Losing the effort pin on a degraded session costs latency,
         not speech. `max_output_tokens` needs no such treatment — it IS in the
         installed stub.
+
+        `truncation` (latency plan L3) is dropped too, although the stub does
+        know it: it is an A/B field the server has not yet been seen to accept
+        on this model, and a retry that still carries it could fail for the same
+        reason. Losing it on a degraded session costs context growth, not speech.
         """
         current_model = cfg["audio"]["input"]["transcription"].get("model")
         if current_model in _LEGACY_TRANSCRIBE_MODELS:
@@ -473,6 +587,7 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         )
         # The TypedDict has no `reasoning` key for mypy (Codex round 2, finding 8).
         cast(dict[str, Any], fallback).pop("reasoning", None)
+        fallback.pop("truncation", None)
         return fallback
 
     def _record_partial_transcript_delta(

@@ -1387,3 +1387,253 @@ def test_noise_reduction_rejects_garbage(
     monkeypatch.setenv("REALTIME_NOISE_REDUCTION", "sideways_field")
     cfg = handler._get_session_config(tool_specs=[])
     assert cfg["audio"]["input"]["noise_reduction"] == {"type": "far_field"}
+
+
+# --------------------------------------------------------------------------
+# Latency A/B knobs (2026-10-28 latency plan, L3) — default OFF. Unset, the
+# session config and the camera image item are exactly today's. Every test
+# here starts from all three knobs unset and an empty warn-once memory (the
+# autouse fixture below), so an exported shell value cannot decide a default.
+# --------------------------------------------------------------------------
+
+_L3_KNOBS = (
+    "REALTIME_TRUNCATION_POST_INSTRUCTIONS",
+    "REALTIME_TRUNCATION_RETENTION_RATIO",
+    "REALTIME_IMAGE_DETAIL",
+)
+
+# Today's top-level session keys (pre-L3), with the reasoning pin and the
+# output-token rail at their defaults.
+_TODAYS_SESSION_KEYS = {
+    "type",
+    "instructions",
+    "audio",
+    "tools",
+    "tool_choice",
+    "model",
+    "reasoning",
+    "max_output_tokens",
+}
+
+
+@pytest.fixture(autouse=True)
+def _latency_knobs_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with the L3 knobs unset and nothing warned yet."""
+    import reachy_companion.openai_realtime as oai_mod
+
+    for name in _L3_KNOBS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(oai_mod, "_warned_knobs", set())
+
+
+def _session_bytes(handler: OpenAIRealtimeHandler) -> str:
+    """Serialize the session config exactly as a byte-for-byte comparison needs."""
+    import json
+
+    return json.dumps(handler._get_session_config(tool_specs=[]), sort_keys=True, ensure_ascii=False)
+
+
+def _knob_warnings(caplog: pytest.LogCaptureFixture, name: str) -> list[logging.LogRecord]:
+    """Return the warnings naming `name`."""
+    return [r for r in caplog.records if r.levelno == logging.WARNING and name in r.getMessage()]
+
+
+def test_unset_truncation_leaves_the_session_config_exactly_as_today(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """Default off: no `truncation` key, and nothing else moves either."""
+    monkeypatch.delenv("REALTIME_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("REALTIME_MAX_OUTPUT_TOKENS", raising=False)
+
+    cfg = handler._get_session_config(tool_specs=[])
+    assert set(cfg) == _TODAYS_SESSION_KEYS
+    baseline = _session_bytes(handler)
+
+    # Blank means "not configured" (a commented-out knob left as `KEY=`).
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", "  ")
+    assert _session_bytes(handler) == baseline
+
+
+def test_post_instructions_limit_adds_retention_ratio_truncation(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """Set, the session carries the documented retention-ratio shape — and only that changes."""
+    import json
+
+    baseline = _session_bytes(handler)
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", "8000")
+
+    cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["truncation"] == {
+        "type": "retention_ratio",
+        "retention_ratio": 0.8,
+        "token_limits": {"post_instructions": 8000},
+    }
+    del cfg["truncation"]
+    assert json.dumps(cfg, sort_keys=True, ensure_ascii=False) == baseline
+
+
+def test_retention_ratio_env_override(monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler) -> None:
+    """The ratio is the second A/B axis; any documented fraction passes through."""
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", " 12000 ")
+    monkeypatch.setenv("REALTIME_TRUNCATION_RETENTION_RATIO", "0.5")
+
+    cfg = handler._get_session_config(tool_specs=[])
+
+    assert cfg["truncation"] == {
+        "type": "retention_ratio",
+        "retention_ratio": 0.5,
+        "token_limits": {"post_instructions": 12000},
+    }
+
+
+@pytest.mark.parametrize("raw", ["lots", "0", "-5", "8000.5", "nan"])
+def test_invalid_post_instructions_warns_once_and_is_ignored(
+    raw: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handler: OpenAIRealtimeHandler,
+) -> None:
+    """A bad value never reaches the API and never crashes — and the journal says so once."""
+    baseline = _session_bytes(handler)
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", raw)
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        first = _session_bytes(handler)
+        # Every reconnect and mode switch rebuilds the config; one warning is enough.
+        second = _session_bytes(handler)
+
+    assert first == second == baseline
+    assert len(_knob_warnings(caplog, "REALTIME_TRUNCATION_POST_INSTRUCTIONS")) == 1
+
+
+@pytest.mark.parametrize("raw", ["most", "1.5", "-0.1", "nan", "inf"])
+def test_invalid_retention_ratio_warns_once_and_uses_the_default(
+    raw: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    handler: OpenAIRealtimeHandler,
+) -> None:
+    """The limit is valid, so truncation still ships — with the documented 0.8."""
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", "8000")
+    monkeypatch.setenv("REALTIME_TRUNCATION_RETENTION_RATIO", raw)
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        cfg = handler._get_session_config(tool_specs=[])
+        handler._get_session_config(tool_specs=[])
+
+    assert cfg["truncation"]["retention_ratio"] == 0.8  # type: ignore[index]
+    assert len(_knob_warnings(caplog, "REALTIME_TRUNCATION_RETENTION_RATIO")) == 1
+
+
+def test_a_ratio_without_a_limit_changes_nothing_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, handler: OpenAIRealtimeHandler
+) -> None:
+    """The ratio alone is a half-configured A/B: today's config, plus one warning."""
+    baseline = _session_bytes(handler)
+    monkeypatch.setenv("REALTIME_TRUNCATION_RETENTION_RATIO", "0.5")
+
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        assert _session_bytes(handler) == baseline
+        assert _session_bytes(handler) == baseline
+
+    assert len(_knob_warnings(caplog, "REALTIME_TRUNCATION_RETENTION_RATIO")) == 1
+
+
+def test_the_transcription_fallback_config_strips_truncation(
+    monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
+) -> None:
+    """Like `reasoning`: a rejected update is not retried with the A/B field still attached."""
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
+    monkeypatch.setenv("REALTIME_TRUNCATION_POST_INSTRUCTIONS", "8000")
+
+    cfg = handler._get_session_config(tool_specs=[])
+    assert "truncation" in cfg  # precondition: there is something to strip
+
+    fallback = handler._session_config_fallback(cfg)
+
+    assert fallback is not None
+    assert "truncation" not in fallback
+    assert "truncation" in cfg  # the retry is a copy; the original is untouched
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("low", "low"), (" HIGH ", "high"), ("auto", "auto")])
+def test_image_detail_env_values(raw: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The three documented detail levels, case- and space-insensitive."""
+    from reachy_companion.openai_realtime import _image_detail
+
+    monkeypatch.setenv("REALTIME_IMAGE_DETAIL", raw)
+    assert _image_detail() == expected
+
+
+def test_image_detail_unset_or_blank_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default off: the item carries no `detail` and the server default stands."""
+    from reachy_companion.openai_realtime import _image_detail
+
+    assert _image_detail() is None
+    monkeypatch.setenv("REALTIME_IMAGE_DETAIL", "")
+    assert _image_detail() is None
+
+
+def test_invalid_image_detail_warns_once_and_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Read on every camera picture, so the warning must not repeat per picture."""
+    from reachy_companion.openai_realtime import _image_detail
+
+    monkeypatch.setenv("REALTIME_IMAGE_DETAIL", "medium")
+    with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
+        assert _image_detail() is None
+        assert _image_detail() is None
+
+    assert len(_knob_warnings(caplog, "REALTIME_IMAGE_DETAIL")) == 1
+
+
+async def _deliver_camera_picture(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Deliver one camera result through the OpenAI handler and return the created items."""
+    from test_huggingface_realtime import _CapturingConnection
+
+    from reachy_companion.tools.background_tool_manager import ToolState, ToolNotification
+
+    handler = _full_handler(monkeypatch)
+    connection = _CapturingConnection()
+    handler.connection = connection  # type: ignore[assignment]
+    handler.output_queue = asyncio.Queue()
+    monkeypatch.setattr(handler, "_wait_for_response_done_before_tool_result", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_cam",
+            tool_name="camera",
+            is_idle_tool_call=False,
+            status=ToolState.COMPLETED,
+            result={"question": "這是什麼", "b64_im": "QUJD", "image_width": 640, "image_height": 480},
+        )
+    )
+    return connection.created_items
+
+
+@pytest.mark.asyncio
+async def test_camera_image_item_is_unchanged_when_detail_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default off: exactly today's `input_image` content, no `detail` key."""
+    _output, image = await _deliver_camera_picture(monkeypatch)
+
+    assert image["content"] == [{"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"}]
+
+
+@pytest.mark.asyncio
+async def test_camera_image_item_carries_the_configured_detail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Set, the picture rides with that detail — and the journal line says which."""
+    monkeypatch.setenv("REALTIME_IMAGE_DETAIL", "low")
+
+    with caplog.at_level(logging.INFO, logger="reachy_companion.huggingface_realtime"):
+        _output, image = await _deliver_camera_picture(monkeypatch)
+
+    assert image["content"] == [
+        {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD", "detail": "low"}
+    ]
+    assert "Added camera image to conversation frame=640x480 jpeg_bytes=3 detail=low" in caplog.text

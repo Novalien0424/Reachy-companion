@@ -9,7 +9,7 @@ import time
 import asyncio
 import logging
 import threading
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 from pathlib import Path
 from collections.abc import Callable
 
@@ -41,6 +41,7 @@ from reachy_companion.config import (
 from reachy_companion.hanova import audio_drain
 from reachy_companion.prompts import get_session_voice, get_session_instructions
 from reachy_companion.streaming import AdditionalOutputs, audio_to_float32
+from reachy_companion.audio.envparse import env_bool
 from reachy_companion.startup_settings import read_startup_settings, write_startup_settings
 from reachy_companion.tools.core_tools import initialize_tools
 from reachy_companion.tool_space_routes import register_tool_space_methods
@@ -51,6 +52,10 @@ from reachy_companion.personality_routes import (
 from reachy_companion.profile_tool_routes import register_profile_tool_methods
 from reachy_companion.audio.startup_config import apply_audio_startup_config
 from reachy_companion.conversation_handler import AudioFrame, ConversationHandler
+
+
+if TYPE_CHECKING:
+    from reachy_companion.audio.local_vad import LocalSpeechFeed
 
 
 try:
@@ -97,9 +102,80 @@ LEGACY_STARTUP_ENV_NAMES = (
     "REACHY_MINI_CUSTOM_PROFILE",
     "REACHY_MINI_VOICE_OVERRIDE",
 )
+# Backend start retry (wifi-recovery plan W1): the wait doubles from the base
+# delay up to the cap while starts keep failing, and drops back to the base
+# after a start that worked. An identical error is warned about at most once
+# per interval; the repeats in between go to DEBUG, so a week offline costs the
+# journal ~1000 lines instead of one every 5 s.
 BACKEND_RETRY_DELAY_SECONDS = 5.0
+BACKEND_RETRY_MAX_DELAY_SECONDS = 60.0
+BACKEND_FAILURE_REPEAT_LOG_INTERVAL_SECONDS = 600.0
 # How long the mic reader waits after a read that returned no frame.
 _MIC_IDLE_BACKOFF_S = 0.005
+# Local voice detection for the listening reaction (2026-10-28 local-VAD plan).
+# On by default; 0/false leaves the antennas to the server's speech events alone.
+LOCAL_VAD_ENV = "LOCAL_VAD_LISTENING"
+
+
+def _load_local_speech_feed(sample_rate: int) -> "LocalSpeechFeed":
+    """Import and load the local voice detector; blocking (a cold cache downloads the model).
+
+    Imported here rather than at module level: onnxruntime is reachy-mini's
+    dependency, not ours, and any failure to import or load it must only turn
+    the feature off.
+    """
+    from reachy_companion.audio.local_vad import SileroVAD, LocalSpeechFeed
+
+    if sample_rate != SileroVAD.SAMPLE_RATE:
+        raise ValueError(f"it needs {SileroVAD.SAMPLE_RATE} Hz microphone audio, the robot reports {sample_rate} Hz")
+    return LocalSpeechFeed(SileroVAD())
+
+
+def _backoff_delay(base: float, consecutive_failures: int, cap: float) -> float:
+    """Return the wait after ``consecutive_failures`` failed backend starts in a row."""
+    doublings = min(max(consecutive_failures - 1, 0), 32)  # 2**32 * base is far past any cap
+    return float(min(cap, base * 2**doublings))
+
+
+class _BackendFailureLog:
+    """Decide the log level for a failed backend start, so retries do not flood the journal."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        interval: float = BACKEND_FAILURE_REPEAT_LOG_INTERVAL_SECONDS,
+    ) -> None:
+        """Track the last error text warned about and how often it has repeated since."""
+        self._clock = clock
+        self._interval = interval
+        self._last_error: str | None = None
+        self._last_warning_at = 0.0
+        self._repeats = 0
+
+    def record(self, error_text: str) -> tuple[int, int]:
+        """Return ``(level, repeats)`` for this failure; ``repeats`` > 0 only on a periodic warning."""
+        now = self._clock()
+        if error_text != self._last_error:
+            self._last_error = error_text
+            self._last_warning_at = now
+            self._repeats = 0
+            return logging.WARNING, 0
+        self._repeats += 1
+        if now - self._last_warning_at >= self._interval:
+            repeats, self._repeats = self._repeats, 0
+            self._last_warning_at = now
+            return logging.WARNING, repeats
+        return logging.DEBUG, 0
+
+    def reset(self) -> None:
+        """Forget the last error, so the next failure is warned about again."""
+        self._last_error = None
+        self._repeats = 0
+
+
+def _repeat_note(repeats: int) -> str:
+    """Return the suffix a periodic warning carries about the repeats it stands for."""
+    return f" (repeated {repeats} times since the last warning)" if repeats else ""
 
 
 class LocalStream:
@@ -133,9 +209,15 @@ class LocalStream:
         self._asyncio_loop = None
         self._mic_muted = False  # mic starts live; the UI toggles it via the settings API
         self._audio_warming_up = False
+        # Set once the local voice detector has loaded; read (and dropped on a
+        # failure) by the microphone reader thread.
+        self._local_speech: LocalSpeechFeed | None = None
         self._backend_connection_state = "not_started"
         self._backend_error: str | None = None
         self._backend_retry_delay = BACKEND_RETRY_DELAY_SECONDS
+        self._backend_retry_max_delay = BACKEND_RETRY_MAX_DELAY_SECONDS
+        self._backend_start_failures = 0
+        self._backend_failure_log = _BackendFailureLog()
         # JSON-RPC control surface (mounted at /rpc in _init_settings_ui_if_needed).
         # Notifications (conversation.turn/phase/transcript/activity) are pushed
         # here from activity + transcripts. Survives handler rebuilds (mounted once).
@@ -698,10 +780,23 @@ class LocalStream:
 
         self._settings_initialized = True
 
+    def _reset_backend_retry(self) -> None:
+        """Start the backoff and the failure log over: after a start that worked, or a settings change."""
+        self._backend_start_failures = 0
+        self._backend_failure_log.reset()
+
+    def _note_backend_start_failure(self, kind: str, error: BaseException) -> tuple[float, int, str]:
+        """Count one more failed start; return ``(delay, log level, repeat note)`` for its retry."""
+        self._backend_start_failures += 1
+        delay = _backoff_delay(self._backend_retry_delay, self._backend_start_failures, self._backend_retry_max_delay)
+        level, repeats = self._backend_failure_log.record(f"{kind}: {self._format_backend_error(error)}")
+        return delay, level, _repeat_note(repeats)
+
     async def _run_handler_startup_loop(self) -> None:
         """Start the realtime handler and keep settings UI alive after backend failures."""
         while not self._stop_event.is_set():
             if self._restart_requested.is_set():
+                self._reset_backend_retry()
                 await self._shutdown_active_handler()
                 if not self._can_rebuild_handler():
                     self._restart_requested.clear()
@@ -713,13 +808,16 @@ class LocalStream:
                     self._build_handler_for_current_backend()
                 except Exception as e:
                     self._set_backend_connection_state("disconnected", e)
-                    logger.warning(
-                        "Backend handler failed to initialize: %s. Retrying in %.1f seconds.",
+                    delay, level, repeat_note = self._note_backend_start_failure("initialize", e)
+                    logger.log(
+                        level,
+                        "Backend handler failed to initialize: %s%s. Retrying in %.1f seconds.",
                         e,
-                        self._backend_retry_delay,
+                        repeat_note,
+                        delay,
                         exc_info=logger.isEnabledFor(logging.DEBUG),
                     )
-                    await self._sleep_or_restart_requested(self._backend_retry_delay)
+                    await self._sleep_or_restart_requested(delay)
                     continue
 
             if not has_hf_realtime_target():
@@ -736,13 +834,18 @@ class LocalStream:
                 raise
             except Exception as e:
                 self._set_backend_connection_state("disconnected", e)
-                logger.warning(
-                    "Backend failed to start: %s. Settings UI remains available; retrying in %.1f seconds.",
+                delay, level, repeat_note = self._note_backend_start_failure("start", e)
+                logger.log(
+                    level,
+                    "Backend failed to start: %s%s. Settings UI remains available; retrying in %.1f seconds.",
                     e,
-                    self._backend_retry_delay,
+                    repeat_note,
+                    delay,
                     exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
             else:
+                self._reset_backend_retry()
+                delay = self._backend_retry_delay
                 if self._stop_event.is_set():
                     return
                 self._set_backend_connection_state("disconnected")
@@ -751,10 +854,10 @@ class LocalStream:
                     continue
                 logger.info(
                     "Backend session ended. Settings UI remains available; retrying in %.1f seconds.",
-                    self._backend_retry_delay,
+                    delay,
                 )
 
-            await self._sleep_or_restart_requested(self._backend_retry_delay)
+            await self._sleep_or_restart_requested(delay)
 
     def launch(self) -> None:
         """Start the recorder/player and run the async processing loops.
@@ -920,6 +1023,12 @@ class LocalStream:
         thread and hands frames over through an asyncio queue (upstream
         8b37f31). A read that raises ends this loop with that error, as it did
         when the read ran here, rather than leaving the microphone silently dead.
+
+        The same thread runs the local voice detector on every frame it reads
+        (2026-10-28 local-VAD plan), so inference never runs on the loop; only
+        speech edges are handed over, to `_on_local_speech`. Muted, warming-up
+        and missing audio feed it nothing, and a detector that fails is dropped
+        with one warning while the microphone keeps flowing to the handler.
         """
         input_sample_rate = self._robot.media.get_input_audio_samplerate()
         logger.debug(f"Audio recording started at {input_sample_rate} Hz")
@@ -927,6 +1036,7 @@ class LocalStream:
         loop = asyncio.get_running_loop()
         frames: asyncio.Queue[AudioFrame | Exception] = asyncio.Queue()
         stop_reading = threading.Event()
+        vad_loader = self._start_local_vad_loader(input_sample_rate)
 
         def hand_over(item: AudioFrame | Exception) -> bool:
             try:
@@ -934,6 +1044,27 @@ class LocalStream:
             except RuntimeError:  # the loop closed under a reader that outlived it
                 return False
             return True
+
+        def detect_speech(audio_frame: Any, audible: bool) -> None:
+            feed = self._local_speech
+            if feed is None:
+                return
+            try:
+                if audio_frame is None:
+                    edge = feed.idle()
+                elif audible:
+                    edge = feed.feed(audio_frame, input_sample_rate)
+                else:
+                    edge = feed.silence()
+            except Exception as e:
+                self._local_speech = None
+                logger.warning("Local VAD failed; antennas follow the server's speech events only: %s", e)
+                edge = False if feed.speaking else None  # never leave a stale vote behind
+            if edge is not None:
+                try:
+                    loop.call_soon_threadsafe(self._on_local_speech, edge)
+                except RuntimeError:  # the loop closed under a reader that outlived it
+                    pass
 
         def read_microphone() -> None:
             # One reader thread costs less than a thread hop per frame.
@@ -945,11 +1076,16 @@ class LocalStream:
                     hand_over(e)
                     return
                 if audio_frame is None:
+                    detect_speech(None, audible=False)
                     # Normally after the SDK's own 20 ms wait; but a read that returns
                     # None at once (no pipeline) must not spin this thread on the GIL.
                     stop_reading.wait(_MIC_IDLE_BACKOFF_S)
-                elif not warming_up and not hand_over((input_sample_rate, audio_frame)):
+                elif warming_up:
+                    detect_speech(audio_frame, audible=False)
+                elif not hand_over((input_sample_rate, audio_frame)):
                     return
+                else:
+                    detect_speech(audio_frame, audible=not self._mic_muted)
 
         reader = threading.Thread(target=read_microphone, name="microphone-reader", daemon=True)
         reader.start()
@@ -966,8 +1102,37 @@ class LocalStream:
                     self._emit_level("user", item[1])
         finally:
             stop_reading.set()
+            if vad_loader is not None:
+                vad_loader.cancel()
             # Bounded: a wedged SDK read must not hang shutdown (the thread is a daemon).
             await asyncio.to_thread(reader.join, 1.0)
+
+    def _start_local_vad_loader(self, sample_rate: int) -> "asyncio.Task[None] | None":
+        """Load the local voice detector in the background, unless `LOCAL_VAD_LISTENING` is off.
+
+        Off the loop and off the reader thread: a cold cache downloads the model,
+        and neither the conversation nor the microphone waits for it.
+        """
+        if not env_bool(LOCAL_VAD_ENV, True):
+            logger.info("Local VAD off (%s): antennas follow the server's speech events only", LOCAL_VAD_ENV)
+            return None
+        return asyncio.create_task(self._load_local_vad(sample_rate), name="local-vad-load")
+
+    async def _load_local_vad(self, sample_rate: int) -> None:
+        """Build the detector; any failure leaves the feature off with one warning."""
+        try:
+            feed = await asyncio.to_thread(_load_local_speech_feed, sample_rate)
+        except Exception as e:
+            logger.warning("Local VAD unavailable; antennas follow the server's speech events only: %s", e)
+            return
+        self._local_speech = feed
+        logger.info("Local VAD ready: the listening pose follows the robot's own microphone")
+
+    def _on_local_speech(self, speaking: bool) -> None:
+        """Hand a local speech edge to the handler, which decides whether it may move the antennas."""
+        on_local_speech = getattr(self.handler, "on_local_speech", None)
+        if callable(on_local_speech):
+            on_local_speech(speaking)
 
     async def play_loop(self) -> None:
         """Fetch outputs from the handler: log text and play audio frames."""

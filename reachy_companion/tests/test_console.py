@@ -2,6 +2,7 @@
 
 import time
 import asyncio
+import logging
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -1104,3 +1105,335 @@ async def test_a_failing_microphone_read_fails_the_record_loop() -> None:
         await asyncio.wait_for(stream.record_loop(), timeout=2)
 
     assert _reader_threads() == []
+
+
+# --- Local voice detection on the reader thread (2026-10-28 local-VAD plan) -------
+
+
+class _ThreadRecordingDetector:
+    """Stand-in for `SileroVAD`: always answers `speaking` and records the thread it ran on."""
+
+    def __init__(self, speaking: bool = True, fail_after: int | None = None) -> None:
+        self.speaking = speaking
+        self.fail_after = fail_after
+        self.threads: list[str] = []
+
+    def process(self, audio: np.ndarray, sample_rate: int, *, detect_barge_in: bool = False) -> bool:
+        self.threads.append(threading.current_thread().name)
+        if self.fail_after is not None and len(self.threads) > self.fail_after:
+            raise RuntimeError("onnx session died")
+        return self.speaking
+
+    def reset(self) -> None:
+        pass
+
+
+def _vad_stream(
+    monkeypatch: pytest.MonkeyPatch, detector: Any = None, *, sample_rate: int = 16000
+) -> tuple[LocalStream, MagicMock, list[tuple[bool, str]]]:
+    """Build a stream with local VAD on, a fake detector, an SDK-like mic and a recording handler."""
+    from reachy_companion.audio.local_vad import LocalSpeechFeed
+
+    monkeypatch.setenv("LOCAL_VAD_LISTENING", "1")
+    if detector is not None:
+        monkeypatch.setattr(console_mod, "_load_local_speech_feed", lambda _rate: LocalSpeechFeed(detector))
+
+    def read_microphone() -> np.ndarray:
+        time.sleep(0.002)  # the SDK's bounded wait for a buffer
+        return np.full((320, 2), 0.25, dtype=np.float32)
+
+    robot = _audio_robot(get_input_audio_samplerate=lambda: sample_rate, get_audio_sample=read_microphone)
+    handler = MagicMock()
+    handler.receive = AsyncMock()
+    edges: list[tuple[bool, str]] = []
+    handler.on_local_speech = MagicMock(
+        side_effect=lambda speaking: edges.append((speaking, threading.current_thread().name))
+    )
+    return LocalStream(handler, robot), handler, edges
+
+
+async def _stop_recording(stream: LocalStream, recording: "asyncio.Task[None]") -> None:
+    stream._stop_event.set()
+    await asyncio.wait_for(recording, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_local_vad_runs_on_the_reader_thread_and_hands_edges_to_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inference happens on the microphone thread; the handler hears the edge on the loop's thread."""
+    detector = _ThreadRecordingDetector(speaking=True)
+    stream, handler, edges = _vad_stream(monkeypatch, detector)
+    loop_thread = threading.current_thread().name
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: bool(edges))
+    await _stop_recording(stream, recording)
+
+    assert set(detector.threads) == {"microphone-reader"}
+    assert edges == [(True, loop_thread)]  # one edge for a steady state, delivered on the loop
+    assert handler.receive.await_count >= 1  # the conversation still gets every frame
+
+
+@pytest.mark.asyncio
+async def test_local_vad_hears_nothing_while_warming_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Warmup audio is discarded for the detector exactly as it is for the handler."""
+    detector = _ThreadRecordingDetector(speaking=True)
+    stream, handler, edges = _vad_stream(monkeypatch, detector)
+    stream._audio_warming_up = True
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: stream._local_speech is not None)
+    await asyncio.sleep(0.05)  # many reads after the detector is ready
+    await _stop_recording(stream, recording)
+
+    assert detector.threads == []
+    assert edges == []
+    handler.receive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_muting_the_mic_starves_the_detector_and_drops_its_vote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mute (the UI's, or sleep quiesce's) feeds the detector nothing and ends a local speech vote at once."""
+    detector = _ThreadRecordingDetector(speaking=True)
+    stream, _handler, edges = _vad_stream(monkeypatch, detector)
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: bool(edges))
+    stream._mic_muted = True
+    await _wait_until(lambda: len(edges) == 2)
+    fed_while_muted = len(detector.threads)
+    await asyncio.sleep(0.05)
+    await _stop_recording(stream, recording)
+
+    assert [speaking for speaking, _thread in edges] == [True, False]
+    assert len(detector.threads) <= fed_while_muted + 1  # at most the read already in flight
+
+
+@pytest.mark.asyncio
+async def test_local_vad_stays_off_when_disabled(monkeypatch: pytest.MonkeyPatch, caplog: Any) -> None:
+    """`LOCAL_VAD_LISTENING=0` never loads the detector."""
+    stream, handler, edges = _vad_stream(monkeypatch)
+    monkeypatch.setenv("LOCAL_VAD_LISTENING", "0")
+    loader = MagicMock()
+    monkeypatch.setattr(console_mod, "_load_local_speech_feed", loader)
+    caplog.set_level(logging.INFO, logger=console_mod.__name__)
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: handler.receive.await_count >= 3)
+    await _stop_recording(stream, recording)
+
+    loader.assert_not_called()
+    assert edges == []
+    assert "Local VAD off (LOCAL_VAD_LISTENING)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_missing_onnxruntime_turns_local_vad_off_and_the_mic_keeps_flowing(
+    monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    """The guarded import: no onnxruntime is one warning, and the conversation is unaffected."""
+    import sys
+
+    stream, handler, edges = _vad_stream(monkeypatch)  # the real loader
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+    monkeypatch.delitem(sys.modules, "reachy_companion.audio.local_vad", raising=False)
+    caplog.set_level(logging.WARNING, logger=console_mod.__name__)
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: "Local VAD unavailable" in caplog.text)
+    received = handler.receive.await_count
+    await _wait_until(lambda: handler.receive.await_count > received)
+    await _stop_recording(stream, recording)
+
+    assert stream._local_speech is None
+    assert edges == []
+    assert "onnxruntime" in caplog.text
+    assert caplog.text.count("Local VAD unavailable") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_microphone_that_is_not_16_khz_turns_local_vad_off(monkeypatch: pytest.MonkeyPatch, caplog: Any) -> None:
+    """Silero needs 16 kHz; anything else is refused before any model is fetched."""
+    stream, _handler, edges = _vad_stream(monkeypatch, sample_rate=48000)  # the real loader
+    caplog.set_level(logging.WARNING, logger=console_mod.__name__)
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: "Local VAD unavailable" in caplog.text)
+    await _stop_recording(stream, recording)
+
+    assert stream._local_speech is None
+    assert edges == []
+    assert "48000 Hz" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failing_detector_is_dropped_once_without_a_stale_vote(
+    monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    """An inference error warns once, releases the vote it held, and the mic keeps flowing to the handler."""
+    detector = _ThreadRecordingDetector(speaking=True, fail_after=3)
+    stream, handler, edges = _vad_stream(monkeypatch, detector)
+    caplog.set_level(logging.WARNING, logger=console_mod.__name__)
+
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: len(edges) == 2)
+    received = handler.receive.await_count
+    await _wait_until(lambda: handler.receive.await_count > received + 3)
+    await _stop_recording(stream, recording)
+
+    assert [speaking for speaking, _thread in edges] == [True, False]
+    assert stream._local_speech is None
+    assert len(detector.threads) == 4  # never fed again after the failure
+    assert caplog.text.count("Local VAD failed") == 1
+
+
+def test_a_local_speech_edge_reaches_the_current_handler() -> None:
+    """After a handler rebuild the edge goes to the handler now installed."""
+    stream = LocalStream(MagicMock(), _audio_robot())
+    rebuilt = MagicMock()
+    stream._install_handler(rebuilt)
+
+    stream._on_local_speech(True)
+
+    rebuilt.on_local_speech.assert_called_once_with(True)
+
+
+# --- Backend start retry: backoff and log rate (wifi-recovery plan W1) ---------
+
+
+def _offline_robot() -> SimpleNamespace:
+    """Return a robot stub with no media backend, enough for the startup loop."""
+    return SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+
+
+def _failing_handler(*effects: Any) -> MagicMock:
+    """Return a handler whose successive start_up() calls raise or return per ``effects``."""
+    handler = MagicMock()
+    handler.connection = None
+    handler.shutdown = AsyncMock()
+    handler.start_up = AsyncMock(side_effect=list(effects))
+    return handler
+
+
+async def _record_startup_waits(stream: LocalStream, waits: int) -> list[float]:
+    """Run the startup loop and return the first ``waits`` retry delays it asked for."""
+    delays: list[float] = []
+
+    async def record_wait(delay: float) -> None:
+        delays.append(delay)
+        if len(delays) >= waits:
+            stream._stop_event.set()
+
+    stream._sleep_or_restart_requested = record_wait  # type: ignore[method-assign]
+    await asyncio.wait_for(stream._run_handler_startup_loop(), timeout=2)
+    return delays
+
+
+def test_backend_retry_delay_doubles_from_the_base_to_a_60_second_cap() -> None:
+    """Consecutive start failures wait 5, 10, 20, 40 s, then 60 s for as long as they last."""
+    delays = [console_mod._backoff_delay(5.0, failures, 60.0) for failures in range(1, 8)]
+
+    assert delays == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0]
+    assert console_mod._backoff_delay(5.0, 100_000, 60.0) == 60.0  # a week offline must not overflow
+    assert console_mod._backoff_delay(0.0, 7, 60.0) == 0.0  # tests that zero the delay keep it zero
+
+
+def test_backend_failure_log_rate_limits_repeats_of_the_same_error() -> None:
+    """First failure and any new error text warn; repeats warn once per 10 min with a count."""
+    now = [0.0]
+    log = console_mod._BackendFailureLog(clock=lambda: now[0])
+
+    assert log.record("RuntimeError: offline") == (logging.WARNING, 0)
+    for _ in range(3):
+        now[0] += 60.0
+        assert log.record("RuntimeError: offline") == (logging.DEBUG, 0)
+    now[0] = 600.0
+    assert log.record("RuntimeError: offline") == (logging.WARNING, 4)
+    now[0] += 5.0
+    assert log.record("RuntimeError: offline") == (logging.DEBUG, 0)
+    assert log.record("OSError: name resolution") == (logging.WARNING, 0)
+
+    log.reset()
+    assert log.record("OSError: name resolution") == (logging.WARNING, 0)
+
+
+@pytest.mark.asyncio
+async def test_startup_loop_backs_off_exponentially_and_resets_after_a_successful_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed starts wait 5 -> 60 s; a start that ran resets the next failure to 5 s."""
+    monkeypatch.setattr(console_mod, "has_hf_realtime_target", lambda: True)
+    offline = RuntimeError("Temporary failure in name resolution")
+    handler = _failing_handler(*([offline] * 6), None, offline, offline)
+    stream = LocalStream(handler, _offline_robot())
+
+    delays = await _record_startup_waits(stream, waits=9)
+
+    assert delays == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 5.0, 5.0, 10.0]
+    assert handler.start_up.await_count == 9
+
+
+@pytest.mark.asyncio
+async def test_startup_loop_logs_repeated_failures_at_debug_and_warns_every_10_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The journal gets one warning per error text per 10 min, not one every retry."""
+    monkeypatch.setattr(console_mod, "has_hf_realtime_target", lambda: True)
+    offline = RuntimeError("Temporary failure in name resolution")
+    handler = _failing_handler(offline, offline, offline, RuntimeError("server rejected the key"))
+    stream = LocalStream(handler, _offline_robot())
+    ticks = iter([0.0, 300.0, 600.0, 900.0])
+    stream._backend_failure_log = console_mod._BackendFailureLog(clock=lambda: next(ticks))
+    caplog.set_level(logging.DEBUG, logger="reachy_companion.console")
+
+    await _record_startup_waits(stream, waits=4)
+
+    failures = [record for record in caplog.records if "Backend failed to start" in record.getMessage()]
+    assert [record.levelno for record in failures] == [logging.WARNING, logging.DEBUG, logging.WARNING, logging.WARNING]
+    assert "2 times" in failures[2].getMessage()
+    assert "times" not in failures[0].getMessage()
+    assert "server rejected the key" in failures[3].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_restart_request_cuts_the_backoff_wait_short_and_restarts_the_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settings change still wakes the loop at once, and its first failure waits the base delay again."""
+    monkeypatch.setattr(console_mod, "has_hf_realtime_target", lambda: True)
+    handlers: list[MagicMock] = []
+
+    def handler_factory(_voice: str | None) -> MagicMock:
+        handler = _failing_handler(RuntimeError("offline"), RuntimeError("offline"))
+        handlers.append(handler)
+        return handler
+
+    stream = LocalStream(handler_factory(None), _offline_robot(), handler_factory=handler_factory)
+    stream._backend_retry_delay = 30.0
+    delays: list[float] = []
+    real_wait = stream._sleep_or_restart_requested
+
+    async def recording_wait(delay: float) -> None:
+        delays.append(delay)
+        await real_wait(delay)
+
+    stream._sleep_or_restart_requested = recording_wait  # type: ignore[method-assign]
+    startup_task = asyncio.create_task(stream._run_handler_startup_loop())
+    try:
+        await _wait_until(lambda: len(delays) == 1)
+        await stream.request_backend_restart("backend_config_changed")
+        # Without the wake-up this would take the full 30 s wait; _wait_until gives up after 1 s.
+        await _wait_until(lambda: len(delays) == 2)
+
+        assert delays == [30.0, 30.0]  # not 60 s: the restart began a fresh backoff
+        assert len(handlers) == 2
+        handlers[1].start_up.assert_awaited_once()
+    finally:
+        stream._stop_event.set()
+        startup_task.cancel()
+        try:
+            await startup_task
+        except asyncio.CancelledError:
+            pass

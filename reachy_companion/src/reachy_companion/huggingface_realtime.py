@@ -8,7 +8,8 @@ import base64
 import random
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Final, Tuple, TypeVar, Optional
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Final, Tuple, TypeVar, Optional, TypeAlias
 from collections import deque
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -32,6 +33,7 @@ from openai.types.realtime import (
 )
 from websockets.exceptions import ConnectionClosedError
 from openai.types.realtime.realtime_audio_input_turn_detection_param import ServerVad
+from openai.types.realtime.realtime_conversation_item_user_message_param import Content as UserMessageContent
 
 from reachy_companion.tools import core_tools
 from reachy_companion.config import (
@@ -520,6 +522,151 @@ def _item_id(item: Any) -> str | None:
     return item_id if isinstance(item_id, str) else None
 
 
+# --- response usage telemetry (2026-10-28 latency plan, L1) ------------------
+# First audio grew 2.3 -> 10.6 s over a 22-minute session while
+# `response.created` stayed flat (RCA 2026-09-04, Finding 4). Without usage in
+# the journal, prefill growth and reasoning cannot be told apart, so every
+# `response.done` logs one line of it. Logging only: nothing here changes what
+# the model sees or when.
+_UsageSchema: TypeAlias = dict[str, "_UsageSchema | None"]
+
+# A mirror of `openai.types.realtime.RealtimeResponseUsage` (2.28.0), leaves as
+# None. It decides what counts as `extra=` — anything the server sent that the
+# typed model does not declare (reasoning tokens, for one). A static mirror
+# rather than introspection so a field a future SDK types is never silently
+# dropped from the line; a test pins it against the installed SDK.
+_USAGE_TYPED_FIELDS: Final[_UsageSchema] = {
+    "input_token_details": {
+        "audio_tokens": None,
+        "cached_tokens": None,
+        "cached_tokens_details": {"audio_tokens": None, "image_tokens": None, "text_tokens": None},
+        "image_tokens": None,
+        "text_tokens": None,
+    },
+    "input_tokens": None,
+    "output_token_details": {"audio_tokens": None, "text_tokens": None},
+    "output_tokens": None,
+    "total_tokens": None,
+}
+
+
+def _plain_usage(value: Any) -> Any:
+    """Return `value` as plain dicts and lists, whichever shape the event carried.
+
+    The SDK hands us `extra="allow"` pydantic models (whose `model_dump()`
+    includes the extras); a fake or a replayed trace hands us dicts or
+    namespaces. Anything else is returned as-is for the caller to reject —
+    notably a `MagicMock`, whose every attribute is callable, so `model_dump` is
+    only called on a real pydantic model.
+    """
+    if isinstance(value, BaseModel):
+        return _plain_usage(value.model_dump())
+    if isinstance(value, dict):
+        return {str(key): _plain_usage(item) for key, item in value.items()}
+    if isinstance(value, SimpleNamespace):
+        return _plain_usage(vars(value))
+    if isinstance(value, (list, tuple)):
+        return [_plain_usage(item) for item in value]
+    return value
+
+
+def _flatten_usage(value: Any, path: str) -> dict[str, Any]:
+    """Flatten a nested dict into dotted keys rooted at `path`."""
+    if isinstance(value, dict) and value:
+        flat: dict[str, Any] = {}
+        for key, item in value.items():
+            flat.update(_flatten_usage(item, f"{path}.{key}"))
+        return flat
+    return {path: value}
+
+
+def _usage_extras(plain: dict[str, Any], schema: _UsageSchema, prefix: str = "") -> dict[str, Any]:
+    """Return every field of `plain` the typed usage model does not declare, as dotted keys.
+
+    A declared block that arrives in an unexpected shape (not a dict) is
+    reported too: the line would otherwise print `-` and hide what was sent.
+    """
+    extras: dict[str, Any] = {}
+    for key, value in plain.items():
+        path = f"{prefix}{key}"
+        if key not in schema:
+            extras.update(_flatten_usage(value, path))
+            continue
+        nested = schema[key]
+        if nested is None:
+            continue
+        if isinstance(value, dict):
+            extras.update(_usage_extras(value, nested, f"{path}."))
+        elif value is not None:
+            extras[path] = value
+    return extras
+
+
+def _usage_fields(usage: Any) -> str:
+    """Render one response's usage as `key=value` pairs; `-` for what the server left out."""
+    if usage is None:
+        return "usage=none"
+    plain = _plain_usage(usage)
+    if not isinstance(plain, dict):
+        return f"usage=unreadable({type(usage).__name__})"
+    input_details = plain.get("input_token_details")
+    output_details = plain.get("output_token_details")
+    inp = input_details if isinstance(input_details, dict) else {}
+    out = output_details if isinstance(output_details, dict) else {}
+    counts = (
+        ("in", plain.get("input_tokens")),
+        ("in_cached", inp.get("cached_tokens")),
+        ("in_text", inp.get("text_tokens")),
+        ("in_audio", inp.get("audio_tokens")),
+        ("in_image", inp.get("image_tokens")),
+        ("out", plain.get("output_tokens")),
+        ("out_text", out.get("text_tokens")),
+        ("out_audio", out.get("audio_tokens")),
+    )
+    parts = [f"{name}={'-' if count is None else count}" for name, count in counts]
+    extras = _usage_extras(plain, _USAGE_TYPED_FIELDS)
+    if extras:
+        parts.append("extra=" + json.dumps(extras, sort_keys=True, separators=(",", ":"), default=str))
+    return " ".join(parts)
+
+
+def _response_usage_line(response: Any) -> str:
+    """Summarize one `response.done` for the journal. Never raises.
+
+    The usage block is optional on the wire (the HF backend, a cancelled reply)
+    and partial when present, and this runs inside the receive loop on every
+    reply: a formatting surprise must cost one log field, never the session.
+    """
+    try:
+        head = f"id={getattr(response, 'id', None)} status={getattr(response, 'status', None)}"
+    except Exception:
+        head = "id=? status=?"
+    try:
+        body = _usage_fields(getattr(response, "usage", None))
+    except Exception as exc:
+        logger.debug("Response usage could not be read", exc_info=True)
+        body = f"usage=unreadable({type(exc).__name__})"
+    return f"{head} {body}"
+
+
+def _model_bound_json(value: Any) -> str:
+    r"""Serialize a tool result for the model as plain UTF-8 JSON (latency plan L2).
+
+    `ensure_ascii=False` is the same JSON value, but the model reads 「台北」
+    instead of `\u53f0\u5317` — fewer tokens, nothing to decode. The one
+    string that cannot travel raw is a lone surrogate (a snippet an upstream
+    server cut mid-emoji): it is not encodable as UTF-8, so that result keeps
+    the escaped form, which is exactly the pre-L2 wire shape.
+    """
+    text = json.dumps(value, ensure_ascii=False)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        logger.debug("Tool result holds a lone surrogate; sending it ASCII-escaped")
+        return json.dumps(value)
+    return text
+
+
 @dataclass
 class ResponseCycle:
     """The completion of one specific queued response, correlated by its id.
@@ -729,6 +876,11 @@ _BOOT_GATE_DRAIN_CAP_S: Final[float] = 3.0
 _BOOT_GATE_TIMEOUT_S_DEFAULT: Final[float] = 8.0
 _BOOT_GATE_DRAIN_TASK: Final[str] = "boot-gate-drain"
 
+# Local-VAD listening (2026-10-28 plan): a local speech start and the server's
+# `speech_started` this close together are the same utterance, and the gap
+# between them is the head start the listening pose got.
+_LOCAL_VAD_PAIR_WINDOW_S: Final[float] = 1.5
+
 
 class InputTranscriptChunksByItem(BaseModel):
     """Current item_id and its accumulated deltas. Only one item at a time."""
@@ -816,6 +968,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
     SAMPLE_RATE = 16000
 
+    # Local-VAD listening state (2026-10-28 plan). Class defaults rather than
+    # constructor fields because several tests build handlers without the
+    # constructor and still run the event branch that reads them.
+    _local_vad_holds_listening: bool = False
+    _local_vad_unpaired_local_at: float | None = None
+    _local_vad_unpaired_server_at: float | None = None
+    _local_vad_lead_logged: bool = False
+
     def __init__(
         self,
         deps: ToolDependencies,
@@ -865,6 +1025,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._turn_user_done_at: float | None = None
         self._turn_response_created_at: float | None = None
         self._turn_first_audio_at: float | None = None
+        # Latency plan L1: a function call was received in this turn before its
+        # first audio, i.e. the first-audio latency spans a tool round trip.
+        # Turn-scoped like the timers above and reset with them.
+        self._turn_saw_function_call: bool = False
         self._startup_greeting_sent = False
         # --- boot gate (Task 6) ---------------------------------------------
         # Active for this handler's FIRST session only: no turn can be committed
@@ -1558,6 +1722,73 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         `response.done` (Codex round 1, finding 6).
         """
         return (not self._response_done_event.is_set()) or audio_drain.is_audible()
+
+    def on_local_speech(self, speaking: bool) -> None:
+        """Move the listening pose on a speech edge from the robot's own microphone.
+
+        Called on the loop by `console.LocalStream` (2026-10-28 local-VAD plan).
+        The detector hears the room ~a round trip before the server does, so
+        while Reachy is idle its start sets the pose and its end clears it.
+        While a reply is in flight, queued, playing or paused (`_robot_audible`)
+        a local start is ignored: the robot's own voice and the barge machine
+        must not move the antennas, and the server events keep sole control.
+        A local end only clears a pose a local start set, and leaves it to the
+        server while the server still hears the user, so a pause inside a
+        sentence does not drop the pose the server is holding.
+        """
+        if speaking:
+            if self._robot_audible():
+                return
+            self._local_vad_holds_listening = True
+            self.deps.movement_manager.set_listening(True)
+            self._pair_local_vad_lead(local_at=time.monotonic())
+            return
+        if not self._local_vad_holds_listening:
+            return
+        self._local_vad_holds_listening = False
+        if not self._server_speech_open():
+            self.deps.movement_manager.set_listening(False)
+
+    def _server_speech_open(self) -> bool:
+        """Whether the server's last `speech_started` has had no `speech_stopped` yet."""
+        started = self._last_speech_started_at
+        stopped = self._last_speech_stopped_at
+        return started is not None and (stopped is None or stopped < started)
+
+    def _pair_local_vad_lead(self, *, local_at: float | None = None, server_at: float | None = None) -> None:
+        """Log how far a local speech start led the server's `speech_started`.
+
+        The evidence for the local-VAD gain: the first pairing of a session at
+        INFO, every later one at DEBUG. Edges further apart than
+        `_LOCAL_VAD_PAIR_WINDOW_S` belong to different utterances, so only the
+        newer one is kept for the next pairing.
+        """
+        if local_at is not None:
+            self._local_vad_unpaired_local_at = local_at
+        if server_at is not None:
+            self._local_vad_unpaired_server_at = server_at
+        local = self._local_vad_unpaired_local_at
+        server = self._local_vad_unpaired_server_at
+        if local is None or server is None:
+            return
+        if abs(server - local) > _LOCAL_VAD_PAIR_WINDOW_S:
+            if local < server:
+                self._local_vad_unpaired_local_at = None
+            else:
+                self._local_vad_unpaired_server_at = None
+            return
+        self._local_vad_unpaired_local_at = None
+        self._local_vad_unpaired_server_at = None
+        lead_ms = (server - local) * 1000.0
+        first = not self._local_vad_lead_logged
+        self._local_vad_lead_logged = True
+        logger.log(
+            logging.INFO if first else logging.DEBUG,
+            "Local VAD: listening started %.0f ms %s the server's speech_started%s",
+            abs(lead_ms),
+            "before" if lead_ms >= 0 else "after",
+            " (first this session)" if first else "",
+        )
 
     def _party_gate_accepts(self, transcript: str) -> bool:
         """Decide whether a committed turn was addressed to the robot.
@@ -2662,6 +2893,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             # promise. Swallowed at debug it left no evidence at all.
             logger.info("conversation.item.truncate refused: %s", exc)
 
+    def _input_image_detail(self) -> Literal["auto", "low", "high"] | None:
+        """Return the `detail` for camera `input_image` items; None leaves it off.
+
+        The HF-compatible backend sends none (server default). The OpenAI
+        backend overrides this with the `REALTIME_IMAGE_DETAIL` A/B knob
+        (latency plan L3), which is likewise off unless set.
+        """
+        return None
+
     @staticmethod
     def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
         """Remove bulky transport-only fields before echoing tool output back to the model.
@@ -3708,7 +3948,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         item={
                             "type": "function_call_output",
                             "call_id": completed_tool.id,
-                            "output": json.dumps(tool_result_for_model),
+                            "output": _model_bound_json(tool_result_for_model),
                         },
                     )
                     model_result_submitted = True
@@ -3734,29 +3974,35 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 image_height = tool_result.get("image_height")
                 jpeg_bytes_value = tool_result.get("jpeg_bytes")
                 jpeg_bytes = jpeg_bytes_value if isinstance(jpeg_bytes_value, int) else (len(b64_im) * 3) // 4
+                image_content: UserMessageContent = {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{b64_im}",
+                }
+                # Latency plan L3: unset, the item stays exactly as before.
+                detail = self._input_image_detail()
+                if detail is not None:
+                    image_content["detail"] = detail
                 await self.connection.conversation.item.create(
                     item={
                         "type": "message",
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "input_image",
-                                "image_url": f"data:image/jpeg;base64,{b64_im}",
-                            },
-                        ],
+                        "content": [image_content],
                     },
                 )
+                detail_note = "" if detail is None else f" detail={detail}"
                 if isinstance(image_width, int) and isinstance(image_height, int):
                     logger.info(
-                        "Added camera image to conversation frame=%sx%s jpeg_bytes=%s",
+                        "Added camera image to conversation frame=%sx%s jpeg_bytes=%s%s",
                         image_width,
                         image_height,
                         jpeg_bytes,
+                        detail_note,
                     )
                 else:
                     logger.info(
-                        "Added camera image to conversation jpeg_bytes=%s",
+                        "Added camera image to conversation jpeg_bytes=%s%s",
                         jpeg_bytes,
+                        detail_note,
                     )
 
             if isinstance(completed_tool.id, str):
@@ -3872,6 +4118,11 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # and leave a live mode flip waiting out its whole timeout.
         self._session_update_ack_debt = 0
         self._receive_loop_active = False
+        # Local-VAD lead log (2026-10-28 plan): once per session at INFO, and an
+        # edge from the session this replaces never pairs with one from this.
+        self._local_vad_unpaired_local_at = None
+        self._local_vad_unpaired_server_at = None
+        self._local_vad_lead_logged = False
         # The loop this handler's session runs on, so a caller from another
         # thread's loop can marshal onto it (round 2, 2a-5).
         self._handler_loop = asyncio.get_running_loop()
@@ -4000,6 +4251,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                     if event.type == "input_audio_buffer.speech_started":
                         item_id = getattr(event, "item_id", None)
                         speech_started_at = self._stamp_speech_started_at(item_id)
+                        self._pair_local_vad_lead(server_at=speech_started_at)
                         self._log_late_holdoff_continuation(speech_started_at)
                         self._stamp_turn_mode(item_id)
                         if self._cancel_holdoff_task(_current_task()):
@@ -4018,6 +4270,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_user_done_at = None
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
+                        self._turn_saw_function_call = False
                         if self._party_mode:
                             # Party: a voice in the room is a candidate, not an
                             # interruption. Duck the music only; the reply keeps
@@ -4135,6 +4388,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         # is exactly when 「停」 over a resumed reply arrives.
                         response_obj = getattr(event, "response", None)
                         done_id = getattr(response_obj, "id", None)
+                        # Latency plan L1: one line per reply, usage optional.
+                        logger.info("Response usage: %s", _response_usage_line(response_obj))
                         if done_id is not None and done_id == self._barge_resumed_response_id:
                             self._barge_resumed_response_id = None
                         # Task 7: a reply the `max_output_tokens` rail cut is
@@ -4360,6 +4615,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._turn_user_done_at = time.perf_counter()
                         self._turn_response_created_at = None
                         self._turn_first_audio_at = None
+                        self._turn_saw_function_call = False
                         self._in_flight_tool_calls.clear()
                         self._tool_batch_needs_response = False
 
@@ -4505,7 +4761,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if self._turn_user_done_at is not None and self._turn_first_audio_at is None:
                             self._turn_first_audio_at = time.perf_counter()
                             delta_ms = (self._turn_first_audio_at - self._turn_user_done_at) * 1000
-                            logger.info("Turn latency: first audio delta %.0f ms after user transcript", delta_ms)
+                            # Latency plan L1: the response id joins this line to
+                            # that response's `Response usage:` line; `with_tool`
+                            # separates turns whose first audio waited on a tool
+                            # round trip from plain replies. A preamble spoken
+                            # before the call reads False — that audio did not wait.
+                            logger.info(
+                                "Turn latency: first audio delta %.0f ms after user transcript "
+                                "response_id=%s with_tool=%s",
+                                delta_ms,
+                                getattr(event, "response_id", None) or self._active_response_id,
+                                self._turn_saw_function_call,
+                            )
                         await self.output_queue.put(
                             (
                                 self.SAMPLE_RATE,
@@ -4529,6 +4796,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             logger.info("ignoring tool call from cancelled response %s", tool_response_id)
                             continue
                         self._mark_activity("tool_call_received")
+                        self._turn_saw_function_call = True
                         tool_name = getattr(event, "name", None)
                         args_json_str = getattr(event, "arguments", None)
                         call_id: str = str(getattr(event, "call_id", uuid.uuid4()))
