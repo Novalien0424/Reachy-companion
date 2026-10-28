@@ -18,10 +18,11 @@ from dataclasses import dataclass
 PACKAGE_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 REPO_ROOT: Final[Path] = PACKAGE_ROOT.parent
 
-# Where the app's instance files live on the robot: the deploy skill installs
-# `reachy_companion` into the daemon's shared venv, and `faces.v1.json` /
-# `people.v1.json` sit beside the installed package.
-INSTANCE_DIR: Final[str] = "/venvs/apps_venv/lib/python3.12/site-packages/reachy_companion"
+# Where the app's instance files live on the robot: its own config directory in
+# the robot user's home (`config.resolve_instance_path`), outside the venv a
+# reinstall replaces. `~/` is the remote user's home; `robot.py` renders it for
+# scp and for the remote shell, which expand it differently.
+INSTANCE_DIR: Final[str] = "~/.config/reachy_companion"
 
 HOST_ENV: Final[str] = "REACHY_HOST"
 SSH_USER_ENV: Final[str] = "REACHY_SSH_USER"

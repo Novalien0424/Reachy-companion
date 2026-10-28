@@ -65,5 +65,17 @@ def test_the_default_env_path_is_the_repository_root(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(os, "environ", {})
     settings = config.load_settings()
-    assert settings.instance_dir.endswith("/site-packages/reachy_companion")
+    assert settings.instance_dir == "~/.config/reachy_companion"
     assert isinstance(settings.reachy_host, str)
+
+
+def test_the_instance_dir_is_the_apps_own_default_on_the_robot() -> None:
+    """The backend reaches the directory the app resolves on Linux, in the robot user's home.
+
+    `config.resolve_instance_path` uses `platformdirs.user_config_dir`, which is
+    `~/.config/<name>` on the robot; the backend cannot ask platformdirs on the
+    Mac, so it states the same path and this pins the two together.
+    """
+    from reachy_companion import config as app_config
+
+    assert config.INSTANCE_DIR == f"~/.config/{app_config.INSTANCE_DIRNAME}"

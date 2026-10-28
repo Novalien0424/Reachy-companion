@@ -127,6 +127,10 @@ SNAPSHOT_DIRNAME: Final[str] = face_snapshot.SNAPSHOT_DIRNAME
 # list and, through it, the remote shell scp runs to open the file.
 _SNAPSHOT_RECORD_ID: Final[re.Pattern[str]] = re.compile(r"^f_\d+_[a-z0-9]{6}")
 
+# The instance directory reaches scp's argument list and a remote shell script,
+# so it is an allowlist: absolute or `~/`-relative, plain path characters only.
+_REMOTE_DIR_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:/|~/)[A-Za-z0-9._/-]+")
+
 # Every remote call is bounded. 20 s is generous for two ~40 KB files over the
 # robot's wifi and short enough that a wedged link fails a request instead of
 # hanging a backend worker.
@@ -264,11 +268,27 @@ def _target(settings: Settings) -> str:
 
 
 def _remote_dir(settings: Settings) -> str:
-    """Return the robot-side instance directory, safe to embed in a shell script."""
+    """Return the robot-side instance directory as an scp path.
+
+    Absolute, or `~/`-relative to the robot user's home: scp resolves a leading
+    `~/` itself in both its SFTP and legacy protocols. Only plain path
+    characters pass, since the shell form below embeds it in a script.
+    """
     directory = settings.instance_dir.rstrip("/")
-    if not directory or "'" in directory or any(character.isspace() for character in directory):
+    if not _REMOTE_DIR_PATTERN.fullmatch(directory):
         raise RobotError(f"Refusing to build a remote command for the instance path {settings.instance_dir!r}.")
     return directory
+
+
+def _remote_shell_dir(settings: Settings) -> str:
+    """Return the instance directory for a remote shell script, inside double quotes.
+
+    A shell expands `~` only unquoted, and every path in these scripts is
+    quoted -- `"~/x"` names a directory literally called `~`. `$HOME` expands
+    inside double quotes, so a `~/` path is rewritten to it.
+    """
+    directory = _remote_dir(settings)
+    return f"$HOME{directory[1:]}" if directory.startswith("~/") else directory
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -352,7 +372,7 @@ def _discard_staged(settings: Settings) -> None:
     this is hygiene rather than correctness, and it must never mask the error
     that brought us here.
     """
-    directory = _remote_dir(settings)
+    directory = _remote_shell_dir(settings)
     try:
         completed = _ssh(settings, f'rm -f "{directory}/{FACES_TMP_NAME}" "{directory}/{PEOPLE_TMP_NAME}"')
     except RobotError as exc:
@@ -661,11 +681,11 @@ def _promote_script(settings: Settings, faces_sha: str | None, people_sha: str |
     is the only place that can compare against its own *current* state at the
     instant of the move.
     """
-    directory = _remote_dir(settings)
+    directory = _remote_shell_dir(settings)
     return "\n".join(
         [
             "set -eu",
-            f"dir='{directory}'",
+            f'dir="{directory}"',
             f"expected_faces='{_expectation(faces_sha)}'",
             f"expected_people='{_expectation(people_sha)}'",
             f'current() {{ if [ -f "$1" ]; then sha256sum "$1" | cut -d" " -f1; else echo {ABSENT}; fi; }}',

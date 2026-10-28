@@ -33,7 +33,9 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INST = "/venvs/apps_venv/lib/python3.12/site-packages/reachy_companion"
+# The app's instance directory on the robot (`config.resolve_instance_path`).
+# `~` is the robot user's home: APPLY_REMOTE expands it there, not here.
+INST = "~/.config/reachy_companion"
 ENV_MARK_BEGIN = "# >>> VOICE_AUDITION >>>"
 ENV_MARK_END = "# <<< VOICE_AUDITION <<<"
 APP_NAME = "reachy_companion"
@@ -159,7 +161,7 @@ def daemon(env: dict[str, str], method: str, route: str, timeout: float = 30.0) 
 APPLY_REMOTE = r'''
 import sys, json, pathlib
 spec = json.loads(sys.stdin.read())
-inst = pathlib.Path("{inst}")
+inst = pathlib.Path("{inst}").expanduser()
 
 env_path = inst / ".env"
 lines = env_path.read_text(encoding="utf-8").splitlines()

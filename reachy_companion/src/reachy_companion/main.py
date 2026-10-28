@@ -599,7 +599,11 @@ class ReachyCompanion(ReachyMiniApp):  # type: ignore[misc]
 
         args, _ = parse_args()
 
-        instance_path = self._get_instance_path().parent
+        # Configure logging before resolving, so the `instance:` line is not dropped.
+        setup_logger(args.debug)
+        from reachy_companion.config import resolve_instance_path
+
+        instance_path = str(resolve_instance_path(self._get_instance_path().parent))
         run(
             args,
             robot=reachy_mini,

@@ -1,6 +1,8 @@
 import os
 import re
 import sys
+import stat
+import shutil
 import logging
 from pathlib import Path
 from dataclasses import dataclass
@@ -8,6 +10,7 @@ from urllib.parse import urlsplit, parse_qsl, urlunsplit
 from importlib.resources import files
 
 from dotenv import find_dotenv, load_dotenv
+from platformdirs import user_config_dir
 
 
 # Locked profile: set to a profile name (e.g., "astronomer") to lock the app
@@ -67,6 +70,8 @@ HF_BACKEND = "huggingface"
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
+INSTANCE_PATH_ENV = "REACHY_COMPANION_INSTANCE_PATH"
+INSTANCE_DIRNAME = "reachy_companion"
 HF_LOCAL_CONNECTION_MODE = "local"
 HF_DEPLOYED_CONNECTION_MODE = "deployed"
 HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
@@ -434,6 +439,126 @@ def refresh_runtime_config_from_env() -> None:
     )
     config.HF_TOKEN = os.getenv("HF_TOKEN")
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
+
+
+# Files the app writes into its instance directory, migrated once when the
+# default moves out of the installed package (see `resolve_instance_path`).
+# Upstream's names first, then ours. The last three are not written by app code
+# under these names: the robot's `.env` points GOOGLE_CREDS_DIR,
+# HERMES_DRIVE_SECRETS and HANOVA_NAS_INDEX_PATH at them inside the instance
+# directory (deploy skill step 4). `hanova_media/` is left out on purpose: a
+# regenerable cache with keep-N caps, it starts empty in the new place.
+_INSTANCE_DATA_NAMES = (
+    "memory.v1.json",
+    ".env",
+    "startup_settings.json",
+    "profile_toolsets.json",
+    USER_PERSONALITIES_DIRNAME,
+    "persona.md",
+    "faces.v1.json",
+    "people.v1.json",
+    "face_snapshots",
+    "installed_tool_spaces.json",
+    "google-workspace-mcp",
+    "google-oauth.json",
+    "nas-video-index.json",
+)
+
+
+def _repoint_legacy_paths(env_file: Path, legacy: Path, target: Path) -> None:
+    """Point `.env` path values that name the legacy directory at the new one.
+
+    The robot's `.env` locates the OAuth grants and the NAS index by absolute
+    path inside the legacy directory. Copied verbatim, the new `.env` would keep
+    reading those copies -- and the OAuth helper keep refreshing into them --
+    until a reinstall deletes them. Only the migrated copy is rewritten.
+    """
+    try:
+        text = env_file.read_text(encoding="utf-8")
+    except ValueError as exc:
+        logger.warning("Could not read the migrated .env to repoint its paths (%s); left as copied", exc)
+        return
+    # A whole path, not a substring of a longer one: the legacy directory must
+    # start a value and end at a separator, a quote, whitespace or the line end.
+    pattern = re.compile(r"(?<![^=\s\"':])" + re.escape(str(legacy)) + r"(?=[/\"'\s]|$)", re.MULTILINE)
+    updated, count = pattern.subn(lambda _match: str(target), text)
+    if count:
+        env_file.write_text(updated, encoding="utf-8")
+        logger.info("Repointed %d legacy path(s) in the migrated .env at %s", count, target)
+
+
+def _migrate_instance_data(legacy: Path, target: Path) -> int | None:
+    """Copy legacy data item by item, so a failed run resumes on the next start.
+
+    The marker, written once a run completes, keeps deleted data from coming back.
+    Returns how many items this run copied, or None when the marker was already there.
+    """
+    marker = target / ".migrated"
+    if marker.exists():
+        return None
+    found = False
+    copied = 0
+    for name in _INSTANCE_DATA_NAMES:
+        source = legacy / name
+        destination = target / name
+        if not source.exists():
+            continue
+        found = True
+        if destination.exists():
+            continue
+        # Copy under a name the guard above ignores, then rename: an
+        # interrupted copy is retried on the next start instead of skipped.
+        staging = target / f".{name}.migrating"
+        if staging.is_dir():
+            shutil.rmtree(staging)
+        if source.is_dir():
+            shutil.copytree(source, staging)
+        else:
+            shutil.copy2(source, staging)
+            if name == ".env":
+                _repoint_legacy_paths(staging, legacy, target)
+        staging.rename(destination)
+        copied += 1
+        logger.info("Migrated %s to %s", source, destination)
+    # Only once there was legacy data to carry: a start that ran before the
+    # deploy restored the old files must not shut them out for good.
+    if found:
+        marker.touch()
+    return copied
+
+
+def _display_path(path: Path) -> str:
+    """Render a path under the home directory as `~/...` for the startup log."""
+    try:
+        return f"~/{path.relative_to(Path.home()).as_posix()}"
+    except (ValueError, RuntimeError):
+        return str(path)
+
+
+def resolve_instance_path(legacy: Path) -> Path:
+    """Return the writable directory holding the operator's data and settings.
+
+    ``legacy`` is the installed package directory the app used to write into,
+    where the data dies with the venv. The default is now our own
+    ``~/.config/reachy_companion`` (mode 700), with ``REACHY_COMPANION_INSTANCE_PATH``
+    as an override. An unusable value warns and falls back: a bad path must not
+    stop the robot from talking.
+    """
+    override = os.getenv(INSTANCE_PATH_ENV)
+    target = Path(override).expanduser() if override else Path(user_config_dir(INSTANCE_DIRNAME))
+    try:
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # It holds the API keys and OAuth grants: nobody else may list or enter it.
+        if stat.S_IMODE(target.stat().st_mode) & 0o077:
+            target.chmod(0o700)
+        migrated = _migrate_instance_data(legacy, target)
+    except OSError as exc:
+        logger.warning("Instance path %s is unusable (%s); falling back to %s", target, exc, legacy)
+        logger.info("instance: %s (legacy fallback)", legacy)
+        return legacy
+    outcome = "already migrated" if migrated is None else f"migrated {migrated} items"
+    logger.info("instance: %s (%s)", _display_path(target), outcome)
+    return target
 
 
 def get_available_voices() -> list[str]:

@@ -5,9 +5,12 @@ side of the companion's person memory: names, uploaded photos, the SFace
 embeddings computed from them, and per-person facts.
 
 The robot's `faces.v1.json` and `people.v1.json` are a *projection* of this
-store. Those files live inside the app's install directory on the robot and are
-wiped by every reinstall; this store is not. That inversion is the whole point
-of the backend — enroll once on the Mac, push as often as you like.
+store. On the robot they live in the app's instance directory,
+`~/.config/reachy_companion/` since v1.25.0 (before that, inside the app's
+install directory, wiped by reinstalls); this store stays the source of truth
+either way — enroll once on the Mac, push as often as you like. Pull this
+checkout before the first push after the robot runs v1.25.0, so pushes go to
+the new directory.
 
 ## Running
 
