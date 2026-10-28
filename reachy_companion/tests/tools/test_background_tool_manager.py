@@ -584,3 +584,28 @@ class TestNotificationQueue:
         n = manager._notification_queue.get_nowait()
         assert n.status == ToolState.FAILED
         assert "RuntimeError: oops" in (n.error or "")
+
+    @pytest.mark.asyncio
+    async def test_remote_mcp_error_result_is_recorded_as_failed(self, manager: BackgroundToolManager) -> None:
+        """A remote MCP call returning isError ends FAILED, carrying the server's message (dd08179)."""
+        mcp_types = pytest.importorskip("mcp.types")
+        from reachy_companion.mcp_client import RemoteToolCallResponse
+
+        payload = RemoteToolCallResponse.from_call_tool_result(
+            server_alias="notion",
+            remote_tool_name="search",
+            result=mcp_types.CallToolResult(
+                content=[mcp_types.TextContent(type="text", text="Search backend unavailable")],
+                structuredContent=None,
+                isError=True,
+            ),
+        ).to_tool_result()
+        routine = _make_routine("notion__search", result=payload)
+        bg = await manager.start_tool("c1", routine, is_idle_tool_call=False)
+        await asyncio.sleep(0.05)
+
+        assert bg.status == ToolState.FAILED
+        assert bg.error == "Search backend unavailable"
+        n = manager._notification_queue.get_nowait()
+        assert n.status == ToolState.FAILED
+        assert n.error == "Search backend unavailable"

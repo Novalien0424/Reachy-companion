@@ -75,5 +75,33 @@ def test_remote_tool_error_result_maps_to_app_payload() -> None:
     ).to_tool_result()
 
     assert payload["status"] == "error"
+    assert payload["error"] == "Search backend unavailable"
     assert payload["namespaced_tool_name"] == "gradio_docs__search_docs"
     assert payload["text"] == "Search backend unavailable"
+
+
+def test_remote_tool_error_without_text_still_carries_an_error() -> None:
+    """An isError result with no text content must still read as a failure (dd08179)."""
+    result = CallToolResult(content=[], structuredContent=None, isError=True)
+
+    payload = RemoteToolCallResponse.from_call_tool_result(
+        server_alias="gradio_docs",
+        remote_tool_name="search-docs",
+        result=result,
+    ).to_tool_result()
+
+    assert payload["error"] == "Remote MCP tool 'gradio_docs__search_docs' failed."
+
+
+def test_remote_tool_success_carries_no_error_key() -> None:
+    """A successful result must not be mistaken for a failure by the background manager."""
+    result = CallToolResult(content=[TextContent(type="text", text="ok")], structuredContent=None, isError=False)
+
+    payload = RemoteToolCallResponse.from_call_tool_result(
+        server_alias="gradio_docs",
+        remote_tool_name="search-docs",
+        result=result,
+    ).to_tool_result()
+
+    assert payload["status"] == "ok"
+    assert "error" not in payload

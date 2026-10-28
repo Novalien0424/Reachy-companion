@@ -193,7 +193,7 @@ class BackgroundToolManager(BaseModel):
             else:
                 background_tool.status = ToolState.FAILED
                 logger.debug(
-                    f"Background tool failed: {background_tool.tool_name} (id={background_tool.id}): {background_tool.error}"
+                    f"Background tool failed: {background_tool.tool_name} (id={background_tool.id}): {error}"
                 )
             background_tool.error = result["error"]
 
