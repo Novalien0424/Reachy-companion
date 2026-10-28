@@ -6,8 +6,8 @@ history of this file.
 ## Current state
 
 **THE TWENTY-FOURTH INSTALL (v1.24.0, upstream refresh — D-033) IS ON THE ROBOT,
-NOW ON DAEMON v1.13.0, WITH A CLEAN BOOT (2026-10-28 13:07 robot time); app
-left running.** The robot had been unreachable since ~2026-10-21: the
+NOW ON DAEMON v1.13.0, WITH A CLEAN BOOT (2026-10-28 13:07 robot time); robot
+left asleep.** The robot had been unreachable since ~2026-10-21: the
 previous boot (10-21 → 10-28) ended with the app retrying `Temporary failure in
 name resolution` (Wi-Fi/DNS lost; no NetworkManager lines retained) and an
 operator power-button shutdown at 12:54:01. Daemon upgrade v1.10.0rc5 →
@@ -26,11 +26,17 @@ startup, 22)`, `Realtime session updated successfully` (certifi-pinned wss),
 `boot gate released (greeting played)` +18 s, 0 tracebacks / app errors / app
 warnings in 122 lines, 0 speech/barge events before the greeting. Suite 1941 /
 31 on dev venv reachy-mini 1.13.0 and on the robot's exact stack.
-**Open from the upgrade:** the v1.13 startup check could not refresh
-`/bluetooth/bluetooth_service.py` + commands or the gpio-shutdown unit
-(`sudo cp` is not in the rc5 image's NOPASSWD list) — the running BLE service
-is still the rc5 copy, so the BLE PIN-bypass fix GHSA-993g-hgjh-whmf is NOT
-live; operator decision pending. Rollback: the updater cannot return to rc5;
+The v1.13 startup check could not refresh `/bluetooth/` or the gpio-shutdown
+unit (`sudo cp` is not in the image's NOPASSWD list); on operator
+authorization the same two Pollen functions
+(`check_and_update_bluetooth_service`, `check_and_update_gpio_shutdown_service`)
+were run once as root at 13:13:52 — both report success, installed copies now
+match v1.13 (BLE PIN-bypass fix GHSA-993g-hgjh-whmf live; gpio unit gains
+`RestartSec=3s`), both services active, BLE `GATT app registered`. At 13:10
+the app went to sleep on its own `go_to_sleep` call after a user turn
+(`user_asked_to_end_the_interaction`; reply 1066 ms / first audio 2512 ms
+after the transcript) and stopped cleanly — **robot left ASLEEP**, antenna
+touch wakes it. Rollback: the updater cannot return to rc5;
 `git_ref=v1.12.0` is the official fallback.
 
 Previous state (2026-09-05):

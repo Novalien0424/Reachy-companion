@@ -1,7 +1,7 @@
 # Session handoff — 2026-10-28 (v1.24.0 on daemon v1.13.0)
 
-State: **v1.24.0 is installed and RUNNING on the robot, daemon v1.13.0,
-telemetry off** (clean boot 13:07 robot time). `main` is pushed. No work in
+State: **v1.24.0 is installed on the robot, daemon v1.13.0, telemetry off,
+BLE/gpio services refreshed; robot ASLEEP** (clean boot 13:07, user-asked sleep 13:10). `main` is pushed. No work in
 flight. Details: `progress.md` top entry, D-033 (+ outcome).
 
 ## Shipped this session
@@ -18,10 +18,9 @@ flight. Details: `progress.md` top entry, D-033 (+ outcome).
 
 ## Next session
 
-1. **Operator decision pending:** refresh `/bluetooth/` (BLE service +
-   commands) and the gpio-shutdown unit from the v1.13 sources — the startup
-   check's `sudo cp` is not in NOPASSWD sudoers, so the BLE PIN-bypass fix
-   (GHSA-993g-hgjh-whmf) is not live.
+1. Done this session: BLE service + gpio unit refreshed as root on operator
+   authorization (GHSA-993g-hgjh-whmf live). The `pollen` password may still
+   be Pollen's documented default — operator to consider `passwd` + `.env`.
 2. **Discuss improvements** (operator asked for this after the deploy).
    Candidates on file: robot lost Wi-Fi/DNS for days without recovering
    (2026-10-21 → 10-28) — no NetworkManager lines retained; deferred ports

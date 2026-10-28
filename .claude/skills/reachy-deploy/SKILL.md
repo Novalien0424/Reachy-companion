@@ -323,6 +323,7 @@ This procedure is proven, app-only. The current install count, the build on
 the robot and its last-deploy evidence live in `progress.md` (newest first);
 the deployment history is DECISIONS.md D-009 and D-033. The daemon is on
 v1.13.0 (git-source install, ref `v1.13.0`; telemetry off via
-`PUT /api/telemetry`); startup app is `reachy_companion`. The image's
-`/bluetooth/` service and gpio-shutdown unit lag the daemon (see D-033
-outcome).
+`PUT /api/telemetry`); startup app is `reachy_companion`. A daemon upgrade
+that changes `/bluetooth/` or the gpio-shutdown unit needs one privileged
+step afterwards, because the image's NOPASSWD sudoers cannot run its
+`sudo cp` (D-033 outcome).

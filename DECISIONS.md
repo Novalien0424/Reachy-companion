@@ -1926,4 +1926,10 @@ deploy backup that must survive a restart also goes to
 (3) on an image whose NOPASSWD sudoers predates v1.13, the startup check
 cannot refresh `/bluetooth/` (BLE service + commands) or the gpio-shutdown
 unit: both stay at the image's versions, and the BLE PIN-bypass fix is not
-live until they are refreshed by a privileged step the operator decides on.
+live until they are refreshed by a privileged step the operator decides on. Operator then authorized (same day) running those two Pollen functions
+(`check_and_update_bluetooth_service`, `check_and_update_gpio_shutdown_service`
+from the installed v1.13 `startup_check`) once as root with the account
+password from the repo-root `.env` fed to `sudo -S` over stdin; both
+succeeded and the installed copies match v1.13. Future images or upgrades
+that change these files need the same privileged step until the robot's
+sudoers allows it.
