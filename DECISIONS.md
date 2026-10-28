@@ -1881,3 +1881,34 @@ untouched, so review does not re-open them: RCA candidate 4 (re-time the cap —
 moot, the cap is gate-on-only), candidates 5–6 (`reasoning.effort` and
 `semantic_vad` eagerness A/Bs — instance `.env` probes, no code), and RCA
 Finding 4, the first-audio latency growth from 2 s to 10 s over a session.
+
+## D-033 — Upstream refresh; daemon upgrade to the latest release authorized (2026-10-28)
+
+**Operator authorization (2026-10-28): "upgrade the robot's daemon and
+everything related to latest."** Scope as recorded: the robot's daemon moves
+from `v1.10.0rc5` to the latest Pollen release (`v1.13.0` on this date) through
+the robot's own official updater — no pip/ssh surgery on the daemon — with the
+rollback ref recorded before starting and the app's instance state backed up
+first (deploy step 4). "Everything related" covers what follows from it: the
+SDK that the daemon syncs into `/venvs/apps_venv`, our `reachy-mini` floor
+(raised only after the robot runs the new release, because the version gate
+is decisive), the dev venv, and the upstream ports that needed `reachy-mini
+>= 1.11`. It amends D-009's "daemon untouchable" for this upgrade only; any
+other daemon change still needs its own authorization.
+
+Context: upstream SDK `a258a00` → `a9a2a42a` (v1.13.0) and Conversation App
+`4dfc6e0` → `b731ea1` (v1.1.1) were surveyed this day (research notes §
+Upstream changes since baseline). The daemon carries fixes our rc5 robot
+lacks: GHSA-q5c4-34xp-mvw9 (`/ws/sdk` audio-upload path traversal),
+GHSA-gc5w-x8p5-cx27 (OAuth callback XSS), GHSA-993g-hgjh-whmf (BLE PIN
+bypass), a DNS-rebinding guard, starlette ≥ 1.3.1, the tracking aim trim.
+App-side ports (wave 1) and the upgrade procedure:
+`docs/plans/2026-10-28-upstream-refresh-plan.md`.
+
+Also this day: the Codex plan-review step was retired in favour of a
+self-review recorded in each plan's review log (CLAUDE.md § Plan Review), and
+`reachy-research` was merged into `reachy-reuse-first`.
+
+Robot state at authorization: unreachable on the LAN (no ARP/ping reply, no
+daemon on the /24, no mDNS service, no setup hotspot) — most likely powered
+off since the 2026-09-05 probe. The upgrade runs when it is back online.

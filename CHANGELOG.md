@@ -9,6 +9,37 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.24.0] — 2026-10-28 · upstream refresh
+
+Not yet deployed: the robot was offline when this was built. It ships as the
+twenty-fourth install, together with the daemon upgrade to the latest Pollen
+release authorized the same day (D-033).
+
+Ported from the official Conversation App v1.1.1 and SDK v1.13.0 (plan
+`docs/plans/2026-10-28-upstream-refresh-plan.md`):
+
+- **Trusts certificates from the app's own, current CA bundle.** After the
+  emSign CA compromise, the app requires `certifi>=2026.10.19`, and the OpenAI
+  realtime link verifies against that bundle instead of the robot's system
+  store.
+- **A dropped Wi-Fi link no longer leaves the robot deaf.** A microphone send
+  stuck for 5 seconds now drops the connection, and the robot reconnects at
+  once instead of waiting minutes for TCP to give up.
+- **No false start at boot.** Microphone audio captured while the audio
+  pipeline warms up is discarded, so startup noise cannot open a turn.
+- **Steadier listening.** The microphone is read on its own thread, so a slow
+  read no longer delays playback, the realtime events or the barge-in timers;
+  and the antennas can no longer stick in the listening pose after a quick
+  on-off-on.
+- **Failures are reported as failures.** A remote MCP tool call that errors
+  (e.g. Notion, web search) is now recorded as failed, with the server's
+  message, instead of as completed.
+- **A damaged tool manifest costs only the remote tools.** A corrupt or
+  half-written tool-Spaces manifest is logged and skipped instead of leaving
+  the robot with no tools at all.
+- **Faster first answer after boot** (heavy imports warm up during robot init)
+  and a web console that reconnects when it loads before the app is ready.
+
 ## [1.23.0] — 2026-09-05 · solo interruption
 
 Deployed as the twenty-third install (wheel sha `70516de8…`, backup

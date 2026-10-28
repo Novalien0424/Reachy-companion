@@ -1,5 +1,8 @@
 # Research Map — Official Reachy Mini Conversation App (v1.0.0, commit `4dfc6e0`)
 
+Delta-refreshed 2026-10-28 to `b731ea1` (v1.1.1): see § Upstream changes since
+baseline. `file:line` refs above that section are at `4dfc6e0`.
+
 Surveyed 2026-08-16 by Opus subagent; spot-checked and accepted by orchestrator.
 
 Roots (all paths below are relative to these):
@@ -152,3 +155,26 @@ Recovered 2026-08-16 into `reference/recovered/` (gitignored): `openai_realtime_
 - **Voice:** `:61` `voice=self.get_current_voice()` — override → `_get_session_voice` → backend default, resolved case-insensitively against the backend list (`REC/base_realtime_5b8d974.py:183-207,280-284`). OpenAI default `"cedar"` (`PREV/config.py:64,129-130`), 10-voice list `PREV/config.py:52-63`. `get_available_voices` (`REC/openai_realtime_5b8d974.py:68-123`) tried to scrape voices off `models.retrieve()` and fell back to that list — discovery is speculative; skip it.
 - **Transcription / VAD:** `:53-57` `AudioTranscriptionParam(model="gpt-4o-transcribe", language=config.REALTIME_TRANSCRIPTION_LANGUAGE)` + `ServerVad(type="server_vad", interrupt_response=True)` — byte-identical to HF today, so the OpenAI path brings no extra turn tuning; §3's gap stands.
 - **Client:** `REC/openai_realtime_5b8d974.py:125-134` — plain `AsyncOpenAI(api_key=config.OPENAI_API_KEY)`, no `base_url`, `_realtime_connect_query = {}` (HF's `extra_query` is HF-specific), and `REFRESH_CLIENT_ON_RECONNECT = False` (`:30`) — reconnects reuse the client.
+
+## Upstream changes since baseline (`4dfc6e0` → `b731ea1`, 2026-10-28)
+
+Upstream v1.1.x requires `reachy-mini>=1.11.0`; our robot's daemon is rc5,
+so we port selectively. Port plan and status:
+`docs/plans/2026-10-28-upstream-refresh-plan.md`.
+
+- **Ported in wave 1:** `b731ea1` certifi floor (emSign CA); `9863362`
+  stuck audio send → abort + reconnect; `46027a5` discard warmup mic audio;
+  `8b37f31` mic reader thread and listening-debounce removal only;
+  `dd08179` MCP `isError` → failure; `b099b42` corrupt tool-Spaces manifest
+  guard; `5e16366` `/rpc` reconnect; `215880b` import warmup.
+- **Already in ours before the refresh:** `a020e52` move_head body_yaw,
+  `b9f58a3` transcript-delta accumulation (D-028), idempotent stop
+  (`3d3fb31`/`92fcfac`/`82ad07f` ≈ `app_lifecycle.py:27-50`).
+- **Deferred:** `5ab905d` `resolve_instance_path` (instance state out of
+  site-packages; needs on-robot migration proof); MCP v2 client
+  (`7632260`/`cd07771`, needs `mcp>=2` + new deps).
+- **Skipped (ours supersedes or out of scope):** `8b37f31` Silero VAD,
+  ducking, paced playback, response-id discard (D-023/D-028/D-032 own
+  barge-in); #580 HF turn latencies; #588 language picker (zh by design);
+  #552 settings UI / panels; #553 knowledge Space; #555 `volume_control` and
+  `robot_status` (D-021 fixed volume, tool diet); #530 legacy profiles.

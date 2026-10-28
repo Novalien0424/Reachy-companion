@@ -1,5 +1,8 @@
 # Research Map — Reachy Mini SDK (v1.10.0.dev0, commit `a258a00`)
 
+Delta-refreshed 2026-10-28 to `a9a2a42a` (v1.13.0 + dev, 1.14.0.dev0): see
+§ Upstream changes since baseline. `file:line` refs in §0–§8 are at `a258a00`.
+
 Surveyed 2026-08-16 by Opus subagent; spot-checked and accepted by orchestrator.
 `SDK/` = `reference/reachy_mini/` (paths relative to `src/reachy_mini/` unless noted).
 
@@ -109,3 +112,39 @@ Python **≥3.11**; install with `uv`. Key deps: numpy≥2.2.5, scipy, onnxrunti
 6. `release_media()`/`acquire_media()` escape hatch for direct sounddevice/OpenCV use (loses hardware AEC routing + wobbling).
 7. SDK↔daemon version skew warns (`reachy_mini.py:410-431`); pin versions.
 8. Face model + emotion datasets download from HF on first use — **preload before demos** or cold cache = visible stall.
+
+## Upstream changes since baseline (`a258a00` → `a9a2a42a`, 2026-10-28)
+
+Robot daemon is `v1.10.0rc5` (`221b3c3c`); its runtime code equals the
+baseline's. `v1.10.0` = rc6 source; `v1.13.0` = HEAD except 4 lines of
+`daemon/app/models.py`.
+
+- **No breaking change to anything we call.** Byte-identical rc5→HEAD:
+  `media/media_manager.py`, `media/audio_gstreamer.py`, `audio_base.py`,
+  `camera_gstreamer.py`, `webrtc_client_gstreamer.py`, `apps/jsonrpc_server.py`,
+  `io/jsonrpc.py`, `motion/move.py`, `vision/face_tracking.py`.
+  `reachy_mini.py` only swaps scipy `Rotation` for `utils/rotation.py`
+  (`4cdd995a`); `RecordedMoves(name, token=None)` gains an optional arg
+  (`33341ccb`); `set_target` is still dropped during daemon-side moves
+  (`daemon/backend/abstract.py:1664`).
+- **Do not bump `reachy-mini`.** rc5's `check_and_sync_apps_venv_sdk()`
+  (`v1.10.0rc5:daemon/app/main.py:867`) re-installs ref `v1.10.0rc5` into
+  `/venvs/apps_venv` on every boot, so a newer client never sticks (and drags
+  starlette 1.x into the shared venv before being reverted). A newer client
+  is protocol-compatible with rc5 by code reading (no hard version gate,
+  `reachy_mini.py:410-431`; only optional fields added) — not tested live.
+- **Client-side items worth taking app-side:** `certifi>=2026.10.19`
+  (`9fb2bfcb`, emSign CA compromise); camera JPEG colour — `233d7ba9` forces
+  I420 before `jpegenc` (`camera_base.py:206-225`) because the old path emits
+  RGB-component JPEGs (reproduced on the macOS dev venv; Pi output
+  unverified).
+- **Daemon-only (needs a daemon-upgrade authorization):** tracking aim pitched
+  15° down (`234a978e`, `abstract.py:129,806`); WebRTC/relay fixes;
+  starlette ≥1.3.1 (`a4ee4267`); security fixes GHSA-q5c4-34xp-mvw9 (path
+  traversal via `/ws/sdk` audio upload), GHSA-gc5w-x8p5-cx27 (OAuth callback
+  XSS), GHSA-993g-hgjh-whmf (BLE PIN bypass), DNS-rebinding guard
+  (`2e32b5d8`). Newer daemons ship PostHog telemetry on by default
+  (`1330aac5`).
+- **Nothing upstream addresses** first-audio latency growth, `clear_player()`
+  behaviour, or the GPIO23 spurious shutdown (#1109; `gpio_shutdown/`
+  unchanged).
