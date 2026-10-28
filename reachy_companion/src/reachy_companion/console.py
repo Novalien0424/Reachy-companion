@@ -8,6 +8,7 @@ import os
 import time
 import asyncio
 import logging
+import threading
 from typing import Any, List, Optional
 from pathlib import Path
 from collections.abc import Callable
@@ -49,7 +50,7 @@ from reachy_companion.personality_routes import (
 )
 from reachy_companion.profile_tool_routes import register_profile_tool_methods
 from reachy_companion.audio.startup_config import apply_audio_startup_config
-from reachy_companion.conversation_handler import ConversationHandler
+from reachy_companion.conversation_handler import AudioFrame, ConversationHandler
 
 
 try:
@@ -97,6 +98,8 @@ LEGACY_STARTUP_ENV_NAMES = (
     "REACHY_MINI_VOICE_OVERRIDE",
 )
 BACKEND_RETRY_DELAY_SECONDS = 5.0
+# How long the mic reader waits after a read that returned no frame.
+_MIC_IDLE_BACKOFF_S = 0.005
 
 
 class LocalStream:
@@ -129,6 +132,7 @@ class LocalStream:
         self._settings_initialized = False
         self._asyncio_loop = None
         self._mic_muted = False  # mic starts live; the UI toggles it via the settings API
+        self._audio_warming_up = False
         self._backend_connection_state = "not_started"
         self._backend_error: str | None = None
         self._backend_retry_delay = BACKEND_RETRY_DELAY_SECONDS
@@ -799,6 +803,7 @@ class LocalStream:
             self._set_backend_connection_state("not_started")
 
         # Start media after key is set/available
+        self._audio_warming_up = True
         self._robot.media.start_recording()
         self._robot.media.start_playing()
 
@@ -808,16 +813,21 @@ class LocalStream:
             self._asyncio_loop = loop  # type: ignore[assignment]
             # Connect the backend first so it overlaps the warmup and audio config below.
             handler_task = asyncio.create_task(self._run_handler_startup_loop(), name="realtime-handler")
-            self._tasks = [handler_task]
-            await asyncio.gather(
-                asyncio.sleep(1),  # give the pipelines time to start
-                asyncio.to_thread(apply_audio_startup_config, self._robot, logger=logger),
-            )
-            self._tasks += [
+            # The mic is read (and its warmup audio discarded) from the start, so no
+            # backlog captured during the audio config below reaches the handler.
+            self._tasks = [
+                handler_task,
                 asyncio.create_task(self.record_loop(), name="stream-record-loop"),
-                asyncio.create_task(self.play_loop(), name="stream-play-loop"),
             ]
             try:
+                await asyncio.gather(
+                    asyncio.sleep(1),  # give the pipelines time to start
+                    asyncio.to_thread(apply_audio_startup_config, self._robot, logger=logger),
+                )
+                if self._stop_event.is_set():
+                    return
+                self._audio_warming_up = False
+                self._tasks.append(asyncio.create_task(self.play_loop(), name="stream-play-loop"))
                 await asyncio.gather(*self._tasks)
             except asyncio.CancelledError:
                 logger.info("Tasks cancelled during shutdown")
@@ -903,16 +913,61 @@ class LocalStream:
                 break
 
     async def record_loop(self) -> None:
-        """Read mic frames from the recorder and forward them to the handler."""
+        """Read mic frames from the recorder and forward them to the handler.
+
+        The SDK read blocks up to 20 ms, and this loop also runs realtime
+        receive, playback and the barge timers, so the read lives on its own
+        thread and hands frames over through an asyncio queue (upstream
+        8b37f31). A read that raises ends this loop with that error, as it did
+        when the read ran here, rather than leaving the microphone silently dead.
+        """
         input_sample_rate = self._robot.media.get_input_audio_samplerate()
         logger.debug(f"Audio recording started at {input_sample_rate} Hz")
 
-        while not self._stop_event.is_set():
-            audio_frame = self._robot.media.get_audio_sample()
-            if audio_frame is not None and not self._mic_muted:
-                await self.handler.receive((input_sample_rate, audio_frame))
-                self._emit_level("user", audio_frame)
-            await asyncio.sleep(0)  # avoid busy loop
+        loop = asyncio.get_running_loop()
+        frames: asyncio.Queue[AudioFrame | Exception] = asyncio.Queue()
+        stop_reading = threading.Event()
+
+        def hand_over(item: AudioFrame | Exception) -> bool:
+            try:
+                loop.call_soon_threadsafe(frames.put_nowait, item)
+            except RuntimeError:  # the loop closed under a reader that outlived it
+                return False
+            return True
+
+        def read_microphone() -> None:
+            # One reader thread costs less than a thread hop per frame.
+            while not stop_reading.is_set() and not self._stop_event.is_set():
+                warming_up = self._audio_warming_up  # a read spanning the end of warmup still holds warmup audio
+                try:
+                    audio_frame = self._robot.media.get_audio_sample()
+                except Exception as e:
+                    hand_over(e)
+                    return
+                if audio_frame is None:
+                    # Normally after the SDK's own 20 ms wait; but a read that returns
+                    # None at once (no pipeline) must not spin this thread on the GIL.
+                    stop_reading.wait(_MIC_IDLE_BACKOFF_S)
+                elif not warming_up and not hand_over((input_sample_rate, audio_frame)):
+                    return
+
+        reader = threading.Thread(target=read_microphone, name="microphone-reader", daemon=True)
+        reader.start()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    item = await asyncio.wait_for(frames.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                if isinstance(item, Exception):
+                    raise item
+                if not self._mic_muted:
+                    await self.handler.receive(item)
+                    self._emit_level("user", item[1])
+        finally:
+            stop_reading.set()
+            # Bounded: a wedged SDK read must not hang shutdown (the thread is a daemon).
+            await asyncio.to_thread(reader.join, 1.0)
 
     async def play_loop(self) -> None:
         """Fetch outputs from the handler: log text and play audio frames."""

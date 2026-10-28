@@ -314,3 +314,74 @@ def test_begin_sleep_mutes_the_mic_and_disarms_the_live_handler(monkeypatch) -> 
     assert stream_manager._mic_muted is True
     stream_manager.handler.on_external_interrupt.assert_called_once_with()
     stream_manager.clear_audio_queue.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Import warmup (upstream 215880b, #513)
+# --------------------------------------------------------------------------
+
+
+def test_import_warmup_preloads_the_realtime_stack_once(monkeypatch) -> None:
+    """One background thread imports the realtime tree; later calls reuse it."""
+    import sys
+
+    monkeypatch.setattr(main_mod, "_import_warmup_thread", None)
+
+    thread = main_mod.start_import_warmup()
+    assert main_mod.start_import_warmup() is thread
+    thread.join(timeout=30)
+
+    assert thread.name == "import-warmup" and thread.daemon and not thread.is_alive()
+    for module in (
+        "openai.resources.realtime",
+        "websockets.asyncio.client",
+        "reachy_companion.openai_realtime",
+        "scipy.signal",
+    ):
+        assert module in sys.modules, module
+
+
+def test_import_warmup_defers_a_failed_import_to_its_real_site(monkeypatch, caplog) -> None:
+    """A failing preload is logged at debug and swallowed; the real import site reports it."""
+    import logging
+    import builtins
+
+    real_import = builtins.__import__
+    escaped: list[object] = []
+
+    def failing_import(name, *args, **kwargs):
+        if name == "websockets.asyncio.client" and threading.current_thread().name == "import-warmup":
+            raise ImportError("no websockets here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(main_mod, "_import_warmup_thread", None)
+    monkeypatch.setattr(threading, "excepthook", escaped.append)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+
+    with caplog.at_level(logging.DEBUG, logger="reachy_companion.main"):
+        thread = main_mod.start_import_warmup()
+        thread.join(timeout=30)
+
+    assert not thread.is_alive() and escaped == []
+    assert "Import warmup failed" in caplog.text
+
+
+def test_run_starts_the_import_warmup(monkeypatch) -> None:
+    """The CLI path warms imports before it connects the robot."""
+    warmup = MagicMock()
+    monkeypatch.setattr(main_mod, "start_import_warmup", warmup)
+
+    _run_app(monkeypatch)
+
+    warmup.assert_called_once_with()
+
+
+def test_app_starts_the_import_warmup_before_robot_init(monkeypatch) -> None:
+    """The Apps entry point starts the warmup before the SDK app init, so it overlaps robot setup."""
+    calls: list[str] = []
+    monkeypatch.setattr(main_mod, "start_import_warmup", lambda: calls.append("warmup"))
+    monkeypatch.setattr(main_mod.ReachyMiniApp, "__init__", lambda self, *a, **k: calls.append("app_init"))
+
+    main_mod.ReachyCompanion()
+
+    assert calls == ["warmup", "app_init"]

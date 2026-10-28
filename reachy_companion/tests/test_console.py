@@ -1,11 +1,13 @@
 """Tests for the headless console stream."""
 
+import time
 import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -469,6 +471,74 @@ def test_media_warmup_overlaps_audio_startup_config(monkeypatch: pytest.MonkeyPa
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
+def _audio_robot(**media_attrs: Any) -> SimpleNamespace:
+    """Return a robot whose media exposes only the attributes a test drives."""
+    return SimpleNamespace(media=SimpleNamespace(audio=None, backend=None, **media_attrs))
+
+
+def test_launch_reads_microphone_while_audio_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The microphone is drained during audio configuration, so no backlog builds up before live input."""
+    monkeypatch.setattr(console_mod, "has_hf_realtime_target", lambda: True)
+    configuring = threading.Event()
+    read_while_configuring = threading.Event()
+
+    def read_microphone() -> None:
+        if configuring.is_set():
+            read_while_configuring.set()
+
+    def configure_audio(*_args: object, **_kwargs: object) -> None:
+        configuring.set()
+        read_while_configuring.wait(1)
+        stream.close()
+
+    media = SimpleNamespace(
+        audio=None,
+        backend=None,
+        start_recording=MagicMock(),
+        start_playing=MagicMock(),
+        stop_recording=MagicMock(),
+        stop_playing=MagicMock(),
+        get_input_audio_samplerate=MagicMock(return_value=16000),
+        get_audio_sample=read_microphone,
+    )
+    stream = LocalStream(MagicMock(shutdown=AsyncMock()), SimpleNamespace(media=media))
+    monkeypatch.setattr(stream, "_run_handler_startup_loop", AsyncMock())
+    monkeypatch.setattr(console_mod, "apply_audio_startup_config", configure_audio)
+    try:
+        stream.launch()
+    finally:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    assert read_while_configuring.is_set()
+
+
+@pytest.mark.asyncio
+async def test_record_loop_discards_warmup_audio() -> None:
+    """Frames read while the audio board warms up never reach the handler."""
+    warmup_frame = np.full(4, 1, dtype=np.int16)
+    live_frame = np.full(4, 2, dtype=np.int16)
+    reads: list[bool] = []
+    handler = MagicMock()
+    robot = _audio_robot(get_input_audio_samplerate=MagicMock(return_value=16000), get_audio_sample=MagicMock())
+    stream = LocalStream(handler, robot)
+    stream._audio_warming_up = True
+
+    def read_microphone() -> np.ndarray:
+        reads.append(stream._audio_warming_up)
+        return warmup_frame if stream._audio_warming_up else live_frame
+
+    robot.media.get_audio_sample.side_effect = read_microphone
+    handler.receive = AsyncMock(side_effect=lambda _frame: stream._stop_event.set())
+    recording = asyncio.create_task(stream.record_loop())
+    while len(reads) < 2 and not recording.done():
+        await asyncio.sleep(0)
+    stream._audio_warming_up = False
+    await asyncio.wait_for(recording, timeout=2)
+
+    handler.receive.assert_awaited_once()
+    np.testing.assert_array_equal(handler.receive.await_args.args[0][1], live_frame)
+
+
 @pytest.mark.asyncio
 async def test_startup_loop_rebuilds_handler_on_restart_request(monkeypatch: pytest.MonkeyPatch) -> None:
     """LocalStream should shut down and rebuild the handler when a restart is requested."""
@@ -885,3 +955,152 @@ async def test_a_none_emission_marks_the_playback_queue_empty(monkeypatch: pytes
         await stream.play_loop()
 
     assert await audio_drain.wait_drained(generation, timeout_s=0.5) is True
+
+
+# --------------------------------------------------------------------------
+# Microphone reader thread (console part of upstream 8b37f31)
+# --------------------------------------------------------------------------
+
+
+def _stop_after(stream: LocalStream, value: Any) -> Callable[[], Any]:
+    """Return a side effect that stops the stream after one read, yielding `value`."""
+
+    def _side_effect() -> Any:
+        stream._stop_event.set()
+        return value
+
+    return _side_effect
+
+
+def _reader_threads() -> list[threading.Thread]:
+    """Return the live microphone reader threads."""
+    return [t for t in threading.enumerate() if t.name == "microphone-reader" and t.is_alive()]
+
+
+@pytest.mark.asyncio
+async def test_record_loop_forwards_unmuted_frames() -> None:
+    """A recorded frame is forwarded to the handler with the input sample rate."""
+    frame = np.zeros(4, dtype=np.int16)
+    recorded = [frame]
+    robot = _audio_robot(
+        get_input_audio_samplerate=MagicMock(return_value=16000),
+        get_audio_sample=lambda: recorded.pop() if recorded else None,
+    )
+    handler = MagicMock()
+    stream = LocalStream(handler, robot)
+    handler.receive = AsyncMock(side_effect=lambda _frame: stream._stop_event.set())
+
+    await asyncio.wait_for(stream.record_loop(), timeout=2)
+
+    handler.receive.assert_awaited_once_with((16000, frame))
+
+
+@pytest.mark.asyncio
+async def test_record_loop_skips_frames_while_muted() -> None:
+    """No frames are forwarded while the mic is muted."""
+    robot = _audio_robot(get_input_audio_samplerate=MagicMock(return_value=16000), get_audio_sample=MagicMock())
+    handler = MagicMock()
+    handler.receive = AsyncMock()
+    stream = LocalStream(handler, robot)
+    stream._mic_muted = True
+    robot.media.get_audio_sample.side_effect = _stop_after(stream, np.zeros(4, dtype=np.int16))
+
+    await asyncio.wait_for(stream.record_loop(), timeout=2)
+
+    handler.receive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_record_loop_skips_missing_frames() -> None:
+    """A None frame from the recorder is not forwarded."""
+    robot = _audio_robot(get_input_audio_samplerate=MagicMock(return_value=16000), get_audio_sample=MagicMock())
+    handler = MagicMock()
+    handler.receive = AsyncMock()
+    stream = LocalStream(handler, robot)
+    robot.media.get_audio_sample.side_effect = _stop_after(stream, None)
+
+    await asyncio.wait_for(stream.record_loop(), timeout=2)
+
+    handler.receive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_blocking_microphone_read_does_not_block_the_event_loop() -> None:
+    """The SDK read blocks (up to 20 ms on the robot); it must block a thread, not the loop.
+
+    The loop also runs realtime receive, playback and the barge timers, so a
+    read held open here must leave other coroutines free to run meanwhile.
+    """
+    frame = np.zeros(4, dtype=np.int16)
+    read_started = threading.Event()
+    release_read = threading.Event()
+    calls: list[int] = []
+
+    def read_microphone() -> np.ndarray | None:
+        calls.append(1)
+        if len(calls) > 1:
+            return None
+        read_started.set()
+        release_read.wait(timeout=2)
+        return frame
+
+    robot = _audio_robot(get_input_audio_samplerate=lambda: 16000, get_audio_sample=read_microphone)
+    handler = MagicMock()
+    stream = LocalStream(handler, robot)
+    handler.receive = AsyncMock(side_effect=lambda _frame: stream._stop_event.set())
+    loop = asyncio.get_running_loop()
+
+    recording = asyncio.create_task(stream.record_loop())
+    try:
+        await _wait_until(read_started.is_set)
+        ticks_started = loop.time()
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+        assert loop.time() - ticks_started < 0.5
+        assert not recording.done()
+        handler.receive.assert_not_awaited()
+    finally:
+        release_read.set()
+    await asyncio.wait_for(recording, timeout=2)
+
+    handler.receive.assert_awaited_once_with((16000, frame))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["stop_event", "cancel"])
+async def test_record_loop_stops_its_reader_thread(ending: str) -> None:
+    """Both shutdown paths, the stop event and close()'s task cancel, join the reader thread."""
+
+    def read_microphone() -> None:
+        time.sleep(0.02)  # the SDK's bounded wait for a buffer
+
+    robot = _audio_robot(get_input_audio_samplerate=lambda: 16000, get_audio_sample=read_microphone)
+    stream = LocalStream(MagicMock(), robot)
+    recording = asyncio.create_task(stream.record_loop())
+    await _wait_until(lambda: bool(_reader_threads()))
+
+    if ending == "stop_event":
+        stream._stop_event.set()
+        await asyncio.wait_for(recording, timeout=2)
+    else:
+        recording.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(recording, timeout=2)
+
+    assert _reader_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_microphone_read_fails_the_record_loop() -> None:
+    """A read that raises surfaces from record_loop instead of leaving a silently dead mic."""
+
+    def read_microphone() -> None:
+        raise RuntimeError("audio pipeline gone")
+
+    robot = _audio_robot(get_input_audio_samplerate=lambda: 16000, get_audio_sample=read_microphone)
+    stream = LocalStream(MagicMock(), robot)
+
+    with pytest.raises(RuntimeError, match="audio pipeline gone"):
+        await asyncio.wait_for(stream.record_loop(), timeout=2)
+
+    assert _reader_threads() == []

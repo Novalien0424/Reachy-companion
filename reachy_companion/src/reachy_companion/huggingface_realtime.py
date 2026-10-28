@@ -1,5 +1,6 @@
 import os
 import re
+import ssl
 import json
 import time
 import uuid
@@ -14,6 +15,7 @@ from collections.abc import Callable
 
 import httpx
 import numpy as np
+import certifi
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel
 from numpy.typing import NDArray
@@ -96,6 +98,8 @@ logger = logging.getLogger(__name__)
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
+# A microphone frame that cannot be sent for this long means a dead link.
+AUDIO_SEND_TIMEOUT_S: Final[float] = 5.0
 
 # How long the sleep path waits for the goodbye's response to finish being
 # generated. Longer than a normal reply needs, short enough that a wedged
@@ -758,6 +762,39 @@ class HFNativeRateAudioPCM(TypedDict):
 def _native_rate_audio_pcm() -> HFNativeRateAudioPCM:
     """Return the Hugging Face native-rate PCM config."""
     return {"type": "audio/pcm", "rate": None}
+
+
+def _abort_realtime_connection(connection: Any) -> None:
+    """Drop the realtime websocket's socket at once.
+
+    A graceful close() would queue behind the stuck write. The session loop then
+    sees the connection closed and takes its usual reconnect path.
+    """
+    try:
+        # The OpenAI SDK keeps the websockets connection private.
+        connection._connection.transport.abort()
+    except Exception as e:
+        logger.warning("Could not abort the realtime connection: %s", e)
+
+
+def _realtime_websocket_options(client: Any) -> dict[str, Any]:
+    """Return the websocket options for `client`'s realtime link: certifi's CAs on TLS.
+
+    Verifying against the certifi bundle we ship, rather than the robot's system
+    CA store, keeps the TLS trust anchors under the app's own dependency pins.
+    websockets rejects an `ssl` argument on a ws:// URI, so a plain-text link
+    (Hugging Face local mode) gets no options. The scheme is resolved the way
+    openai 2.28.0 resolves it (`AsyncRealtimeConnectionManager._prepare_url`).
+    """
+    websocket_base_url = getattr(client, "websocket_base_url", None)
+    if websocket_base_url is not None:
+        secure = httpx.URL(str(websocket_base_url)).scheme == "wss"
+    else:
+        base_url = getattr(client, "base_url", None)
+        secure = base_url is None or httpx.URL(str(base_url)).scheme != "http"
+    if not secure:
+        return {}
+    return {"ssl": ssl.create_default_context(cafile=certifi.where())}
 
 
 def _build_openai_compatible_client_from_realtime_url(
@@ -3862,6 +3899,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         connect_kwargs: dict[str, Any] = {}
         if self._realtime_connect_query:
             connect_kwargs["extra_query"] = self._realtime_connect_query
+        websocket_options = _realtime_websocket_options(self.client)
+        if websocket_options:
+            connect_kwargs["websocket_connection_options"] = websocket_options
         async with self.client.realtime.connect(**connect_kwargs) as conn:
             try:
                 session_config = self._get_session_config(tool_specs)
@@ -4698,13 +4738,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # Cast if needed
         audio_frame = audio_to_int16(audio_frame)
 
-        # Send to the realtime input buffer (guard against races during reconnect).
-        try:
-            audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
-            await self.connection.input_audio_buffer.append(audio=audio_message)
-        except Exception as e:
-            logger.debug("Dropping audio frame: connection not ready (%s)", e)
-            return
+        connection = self.connection
+        if connection:
+            # Send to the realtime input buffer (guard against races during reconnect).
+            try:
+                audio_message = base64.b64encode(audio_frame.tobytes()).decode("utf-8")
+                await asyncio.wait_for(connection.input_audio_buffer.append(audio=audio_message), AUDIO_SEND_TIMEOUT_S)
+            except TimeoutError:
+                # On a dead link the socket buffer fills, and every send, the websocket
+                # keepalive ping included, then waits for it to drain: without this the
+                # drop only surfaces once TCP gives up.
+                logger.warning("Realtime audio send stuck for %.0f s; dropping the connection", AUDIO_SEND_TIMEOUT_S)
+                _abort_realtime_connection(connection)
+            except Exception as e:
+                logger.debug("Dropping audio frame: connection not ready (%s)", e)
 
     async def shutdown(self) -> None:
         """Shutdown the handler."""

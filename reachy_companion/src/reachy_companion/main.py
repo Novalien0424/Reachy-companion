@@ -39,6 +39,41 @@ DEFAULT_DAEMON_PORT = 8000
 MCP_DISCOVERY_BUDGET_S = 20.0
 
 
+_import_warmup_thread: threading.Thread | None = None
+
+
+def start_import_warmup() -> threading.Thread:
+    """Preload heavy modules in the background while the robot connects (upstream #513).
+
+    The openai realtime tree (~1.5s on the robot) is needed by the realtime
+    handler, but not before the robot / media pipelines are up. Importing it
+    on a side thread overlaps that cost with robot initialization instead of
+    paying it serially. Idempotent; errors are deferred to the real import
+    site, which reports them with full context.
+    """
+    global _import_warmup_thread
+    if _import_warmup_thread is None:
+
+        def _preload() -> None:
+            try:
+                # AsyncOpenAI.realtime is a cached_property whose module tree
+                # (~1.6s on the CM4) otherwise loads lazily INSIDE the ws
+                # connect phase; same for the websockets client the SDK pulls
+                # in __aenter__. Importing plain openai does NOT cover these.
+                import openai.resources.realtime  # noqa: F401
+                import websockets.asyncio.client  # noqa: F401
+
+                # The live handler module: it pulls in huggingface_realtime, and
+                # scipy.signal + soxr through the voice filter and resamplers.
+                import reachy_companion.openai_realtime  # noqa: F401
+            except Exception:
+                logging.getLogger(__name__).debug("Import warmup failed", exc_info=True)
+
+        _import_warmup_thread = threading.Thread(target=_preload, name="import-warmup", daemon=True)
+        _import_warmup_thread.start()
+    return _import_warmup_thread
+
+
 def _start_inactivity_timeout_thread(
     timeout_minutes: float,
     stream_manager: LocalStream,
@@ -158,6 +193,7 @@ def run(
     instance_path: Optional[str] = None,
 ) -> None:
     """Run the Reachy Mini conversation app."""
+    start_import_warmup()
     # Putting these dependencies here makes the dashboard faster to load when the conversation app is installed
     from reachy_companion.moves import MovementManager
     from reachy_companion.config import config as runtime_config
@@ -551,6 +587,11 @@ class ReachyCompanion(ReachyMiniApp):  # type: ignore[misc]
 
     custom_app_url = "http://0.0.0.0:7860/"
     dont_start_webserver = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Start preloading heavy imports before the robot/media init in wrapped_run."""
+        start_import_warmup()
+        super().__init__(*args, **kwargs)
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Run the Reachy Mini conversation app."""

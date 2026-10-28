@@ -388,6 +388,55 @@ async def test_run_realtime_session_passes_allocated_session_query(monkeypatch: 
     assert captured_connect["extra_query"] == {"session_token": "abc123"}
 
 
+def _certifi_ca_certs() -> list[Any]:
+    """Return the CA certificates a context loaded from certifi's bundle holds."""
+    import ssl
+
+    import certifi
+
+    return ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+
+
+def test_tls_realtime_link_is_pinned_to_certifi() -> None:
+    """A wss:// realtime link verifies against certifi's CA bundle, not the system store."""
+    import ssl
+
+    client, _query = hf_mod._build_openai_compatible_client_from_realtime_url("wss://lb.example.test/v1/realtime", None)
+
+    options = hf_mod._realtime_websocket_options(client)
+
+    context = options["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert context.get_ca_certs() == _certifi_ca_certs()
+
+
+def test_plain_realtime_link_gets_no_tls_options() -> None:
+    """A ws:// link gets no ssl argument: websockets rejects one on a plain-text URI."""
+    client, _query = hf_mod._build_openai_compatible_client_from_realtime_url("ws://127.0.0.1:8765/v1/realtime", None)
+
+    assert hf_mod._realtime_websocket_options(client) == {}
+
+
+@pytest.mark.asyncio
+async def test_stuck_audio_send_drops_the_dead_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A send that cannot drain aborts the socket instead of hanging the mic loop (upstream #593)."""
+    monkeypatch.setattr(hf_mod, "AUDIO_SEND_TIMEOUT_S", 0.01)
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+
+    async def never_drains(**_kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    connection = MagicMock()
+    connection.input_audio_buffer.append = never_drains
+    handler.connection = connection
+
+    # Bounded here too, so a regression fails instead of hanging the suite.
+    await asyncio.wait_for(handler.receive((16000, np.zeros(512, dtype=np.int16))), timeout=2.0)
+
+    connection._connection.transport.abort.assert_called_once()
+
+
 @pytest.mark.parametrize(("hf_token", "expected_api_key"), [(None, "DUMMY"), ("hf-secret", "hf-secret")])
 @pytest.mark.asyncio
 async def test_build_realtime_client_local_uses_explicit_hf_token_only(

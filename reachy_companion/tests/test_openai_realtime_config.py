@@ -6,7 +6,7 @@ import asyncio
 import logging
 from time import monotonic
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -716,6 +716,112 @@ async def test_receive_does_not_send_while_the_resampler_primes(
     await handler.receive((ROBOT_RATE, _to_int16(_sine(ROBOT_RATE, 320))))
 
     assert all(a != "" for a in buffer.appended)
+
+
+def _stub_session_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the prompt and tool lookups a real `_run_realtime_session` makes."""
+    import reachy_companion.huggingface_realtime as hf_mod
+
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default="cedar": default)
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
+
+
+def _full_handler(monkeypatch: pytest.MonkeyPatch) -> OpenAIRealtimeHandler:
+    """Build a fully initialised OpenAI handler whose tool manager is inert."""
+    _stub_session_inputs(monkeypatch)
+    handler = OpenAIRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    handler.get_current_voice = MagicMock(return_value="cedar")  # type: ignore[method-assign]
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_stuck_audio_send_aborts_the_socket_and_takes_the_reconnect_path(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A mic send that never drains drops the real websocket, and start_up reconnects.
+
+    Upstream's test (#593) stops at "abort() was called" on a MagicMock. This
+    one runs the live handler over a real websocket to a local server, so it
+    proves the private `_connection.transport` path exists in the installed
+    openai/websockets, and that an aborted socket ends the session with the
+    `ConnectionClosedError` that `start_up` answers by building a new client.
+    """
+    from websockets.asyncio.server import ServerConnection, serve
+
+    import reachy_companion.openai_realtime as openai_mod
+    import reachy_companion.huggingface_realtime as hf_mod
+
+    monkeypatch.setattr(openai_mod, "AUDIO_SEND_TIMEOUT_S", 0.05)
+    handler = _full_handler(monkeypatch)
+
+    async def swallow(ws: ServerConnection) -> None:
+        async for _message in ws:
+            pass
+
+    async with serve(swallow, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        builds: list[Any] = []
+        rebuilt = asyncio.Event()
+
+        async def build_local_client() -> Any:
+            client, query = hf_mod._build_openai_compatible_client_from_realtime_url(
+                f"ws://127.0.0.1:{port}/v1/realtime", None
+            )
+            handler._realtime_connect_query = query
+            builds.append(client)
+            if len(builds) == 2:
+                rebuilt.set()
+            return client
+
+        handler._build_realtime_client = build_local_client  # type: ignore[method-assign]
+        session = asyncio.create_task(handler.start_up())
+        try:
+            await asyncio.wait_for(handler._connected_event.wait(), timeout=3.0)
+            connection = handler.connection
+            assert connection is not None
+
+            async def never_drains(**_kwargs: Any) -> None:
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(connection.input_audio_buffer, "append", never_drains)
+            with caplog.at_level(logging.WARNING, logger="reachy_companion"):
+                # At the model rate, so the resampler cannot swallow the frame while priming.
+                await asyncio.wait_for(handler.receive((MODEL_RATE, np.zeros(480, dtype=np.int16))), timeout=2.0)
+                assert connection._connection.transport.is_closing()
+                await asyncio.wait_for(rebuilt.wait(), timeout=3.0)
+        finally:
+            session.cancel()
+            try:
+                await session
+            except asyncio.CancelledError:
+                pass
+
+    assert "Realtime audio send stuck" in caplog.text
+    assert "Realtime websocket closed unexpectedly (attempt 1/3)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_openai_connect_carries_a_certifi_ssl_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live handler's websocket connect verifies TLS against certifi's CA bundle."""
+    import ssl
+
+    from test_huggingface_realtime import _certifi_ca_certs
+
+    handler = _full_handler(monkeypatch)
+    captured_connect: dict[str, Any] = {}
+    client = await handler._build_realtime_client()  # the real AsyncOpenAI: wss://api.openai.com
+    client.realtime = _make_fake_realtime_client(captured_connect=captured_connect).realtime
+    handler.client = client
+
+    await handler._run_realtime_session()
+
+    assert captured_connect["extra_query"] == {"model": realtime_model()}
+    context = captured_connect["websocket_connection_options"]["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.get_ca_certs() == _certifi_ca_certs()
 
 
 # --------------------------------------------------------------------------

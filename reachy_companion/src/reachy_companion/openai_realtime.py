@@ -43,12 +43,14 @@ from reachy_companion.audio.envparse import env_int, env_float
 from reachy_companion.tools.core_tools import ToolSpec, get_tool_specs
 from reachy_companion.conversation_handler import HandlerOutput
 from reachy_companion.huggingface_realtime import (
+    AUDIO_SEND_TIMEOUT_S,
     HuggingFaceRealtimeHandler,
     InputTranscriptChunksByItem,
     _party_names,
     _solo_client_barge,
     _vad_silence_duration_ms,
     to_realtime_tools_config,
+    _abort_realtime_connection,
     warn_if_barge_confirm_races_vad,
 )
 
@@ -700,7 +702,8 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         return await self._apply_session_update(_build, what=f"conversation mode {mode.value}")
 
     # Microphone receive — adapted from huggingface_realtime.py:947-982,
-    # added: upsample the robot's 16 kHz mic to the model's 24 kHz.
+    # added: upsample the robot's 16 kHz mic to the model's 24 kHz. The bounded
+    # send is upstream #593, kept in step with the base `receive`.
     async def receive(self, frame: Tuple[int, NDArray[np.int16]]) -> None:
         """Receive a microphone frame, resample it to 24 kHz, and send it upstream.
 
@@ -734,13 +737,20 @@ class OpenAIRealtimeHandler(HuggingFaceRealtimeHandler):
         if outgoing.size == 0:
             return
 
-        # Send to the realtime input buffer (guard against races during reconnect).
-        try:
-            audio_message = base64.b64encode(outgoing.tobytes()).decode("utf-8")
-            await self.connection.input_audio_buffer.append(audio=audio_message)
-        except Exception as e:
-            logger.debug("Dropping audio frame: connection not ready (%s)", e)
-            return
+        connection = self.connection
+        if connection:
+            # Send to the realtime input buffer (guard against races during reconnect).
+            try:
+                audio_message = base64.b64encode(outgoing.tobytes()).decode("utf-8")
+                await asyncio.wait_for(connection.input_audio_buffer.append(audio=audio_message), AUDIO_SEND_TIMEOUT_S)
+            except TimeoutError:
+                # A dead link fills the socket buffer and every send then waits for
+                # it to drain; abort, so the session loop's ConnectionClosedError
+                # reaches `start_up`'s reconnect instead of waiting for TCP to give up.
+                logger.warning("Realtime audio send stuck for %.0f s; dropping the connection", AUDIO_SEND_TIMEOUT_S)
+                _abort_realtime_connection(connection)
+            except Exception as e:
+                logger.debug("Dropping audio frame: connection not ready (%s)", e)
 
     def _onset_ramp_samples(self) -> int:
         """Return how many samples the onset ramp covers, at `REALTIME_ONSET_RAMP_MS`.
