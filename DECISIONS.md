@@ -2020,8 +2020,28 @@ search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
 - **tv vs nas (rung 1, v1.27.2):** after finding the Okinawa clips the model
   sent the clip name to `tv play_video`, cast a stranger's YouTube video and
   called it the family's. The `tv` and `nas` descriptions now mirror each
-  other with the reason (the clips exist only on the NAS). Not yet verified
-  live — see the daemon wedge below.
+  other with the reason (the clips exist only on the NAS). Retest after the
+  daemon restart: not enough — the model found the 16 clips and passed a
+  clip's NAS path to `tv play_video` twice (YouTube found nothing; TV stayed
+  off). The first ask in a fresh session also got 「請給我檔名」 instead of
+  `open_toolbox`.
+- **tv refuses a NAS clip (rung 1, argument check + corrective error,
+  v1.27.3):** `nas.clips_named_by` recognises a clip named outright (path,
+  file name, stem, `name`, spoken title; or a file name with its extension,
+  with or without its clip number, inside a phrase); `play_video` then
+  returns `error` "…play it with nas action=play and the clip's path" (plus
+  `path` when exactly one clip matches) and never searches. A bare place
+  name stays a YouTube search. The scan runs off the loop (~0.1 s on the
+  robot over 2,743 clips). `open_toolbox`'s `media` line now says the home
+  videos are found from a loose description (trip, place, year, subject), so
+  open the box and search rather than asking for a file name. Real-index
+  probe: all 4 queries the model had sent are named, 0 of 15 ordinary
+  searches. Live, fresh session: `open_toolbox media` on the first ask →
+  `nas query 沖繩` (0, `all_trips`) → `Okinawa` (16) → `tv play_video` with
+  the path → refused → `nas play` with that path 2.5 s later → NAS stream
+  206 (266 MB file) → HA `playing` on the Default Media Receiver with the
+  clip's title. Residual: the model still tries `tv` first (one wasted
+  call).
 - **/rpc on the wrong loop (v1.27.1):** the SDK runs the settings app (and
   `/rpc`) on its own thread and loop; `conversation.say` wrote to the
   realtime websocket from there, raced the audio sends and corrupted frames
@@ -2040,6 +2060,21 @@ search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
   `RuntimeError` in its post-exit pose/motor step (HTTP 400), skipping
   `current_app = None`; the app manager stays `stopping`, refusing every
   start (API, dashboard, antenna). Daemon backend healthy. Recovery needs a
-  daemon restart, which is the operator's call (D-009).
+  daemon restart, which is the operator's call (D-009). **Recovered
+  2026-10-29 08:29 UTC** under the operator's explicit instruction ("go
+  restart the daemon and rerun the cast test"): one `sudo systemctl restart
+  reachy-mini-daemon` (password over stdin); app state `null`, backend ready
+  in ~3 s, still v1.13.0; a daemon wake auto-started the app. That
+  authorization covered this one restart, not future ones. The wedged stop
+  had followed the 「瑞奇。」 `go_to_sleep`, motors disabled; the next stop
+  (motors enabled) cleared in ~2 s — consistent with, not proof of, the
+  pose step failing on a sleeping robot. Check `motor_control_mode` before
+  a stop.
 - **Observed misfire:** a room utterance transcribed as 「瑞奇。」 (TV audio
   playing) was answered with `go_to_sleep`. Not changed; watch for repeats.
+  Second case 2026-10-29 08:46: with the home clip playing, 「一次。」 was
+  transcribed and confirmed as a barge-in, cancelling Reachy's reply. Both
+  times the TV was the likely source; still unchanged.
+- **Gap noted:** no tool can stop or pause what is on the TV (`tv` and `nas`
+  only start playback; `home_control` only switches configured devices).
+  Reachy said so truthfully when asked.

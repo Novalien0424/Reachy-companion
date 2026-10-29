@@ -54,3 +54,13 @@ the model reaches the Japan trips (directly in English or through
    at HA's pre-2026-10-25 address and `HANOVA_CAST_ENTITY` at `…_3`, gone
    since HA's 10-25 rebuild (D-022 runbook case). Both instance `.env` lines
    repointed with dated backups beside the file. Recorded in D-037.
+6. *1.27.2 retest (after the daemon restart): the description mirror did not
+   hold* — the model passed a found clip's path to `tv play_video`. Still
+   rung 1, one step down: the tool validates its argument and refuses a
+   query that names a NAS clip with a corrective error naming `nas play`
+   (the skill's "errors are advice addressed to the model"), not a silent
+   redirect. Kept narrow on purpose: exact names, or a file name with its
+   extension inside a phrase; a bare place stays a YouTube search. Checked
+   against the real index on the robot (4/4 observed, 0/15 ordinary).
+   Accepted (v1.27.3).
+7. *R10 for the `open_toolbox` line*: it names no archive place. Accepted.

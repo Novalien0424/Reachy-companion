@@ -5,6 +5,27 @@ history of this file.
 
 ## Current state
 
+**v1.27.3 (twenty-seventh install, third fix redeploy — D-037) IS ON THE
+ROBOT (daemon v1.13.0), APP RUNNING (2026-10-29 08:45 UTC robot time); A
+HOME VIDEO PLAYED FROM THE NAS ON THE TV.** The wedged app manager was
+cleared by one daemon restart at 08:29 UTC on the operator's explicit
+instruction (state `null`, backend ready in ~3 s); a daemon wake then
+auto-started the app (boot path re-confirmed). The 1.27.2 retest failed (the
+model passed a found clip's NAS path to `tv play_video`; TV stayed off), so
+1.27.3 makes `tv play_video` refuse a query naming a NAS clip with an error
+pointing at `nas play`, and the `open_toolbox` `media` line says loose
+descriptions find home videos. Live, fresh session: 「把我們在沖繩拍的家庭影片
+播一段到電視上」 → `open_toolbox media` → `nas query` 沖繩 (0) → Okinawa (16)
+→ `tv` refused → `nas play` → NAS stream 206 → HA `playing` with the clip's
+title. TV turned off afterwards (was off). Wheel `394994fa…`; backup
+`20261029T084828Z-22875` (persistent copy, sha match); `pip check` only the
+mediapipe line. Suite 2093 / 31, ruff, mypy clean. Open: the model still
+tries `tv` first (one refused call); TV audio was taken as a user turn
+(「一次。」, new row `TV-AUDIO-PHANTOM-TURNS`); no tool can stop the TV; one
+`tv show` image generation failed with a 400 (cause not looked at).
+
+Earlier (2026-10-29):
+
 **v1.27.2 (twenty-seventh install + two fix redeploys — D-037) IS INSTALLED ON
 THE ROBOT, BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` (2026-10-29
 06:01:56 UTC robot time): NO APP RUNS UNTIL THE OPERATOR RESTARTS THE

@@ -94,7 +94,7 @@
       "verification": "On-robot at home with the index and NAS credentials present: query, play, skip; then force one cast failure and confirm the trip position did not move",
       "state": "verified",
       "evidence": "2026-08-22 on-robot (rounds 6,7): first live pass found the port gating the ORIGINAL path's extension, refusing every DVD-era trip (992/2743 entries) -- fixed in dd591f2 (containment-only source bound; 3 new tests). After redeploy: single clip staged over SMB and cast in ~17 s cold; nas_skip staged and cast the next clip in ~44 s; whole-trip nas_play_folder started a 30-clip ordered session in 0.7 s warm; nas_video_query listed real trips instantly. Minor friction logged: the model once passed the dir field as top_folder (no_match, self-recovered via direct clip play). LATENCY WORK 2026-08-22: /hanova-media/nas-stream Range-capable SMB proxy (HANOVA_NAS_STREAM=1 default); whole-trip start 0.32 s and skips 0.27-0.30 s (was 17-44 s); endpoint verified from a LAN peer with Chromecast request shapes (HEAD 200, 206 with Content-Range, 61 ms TTFB, 80 ms mid-file seek, 4.9 MB/s sustained). TV was off (cast entity unavailable) during these rounds, so no Chromecast fetch was observed yet.",
-      "next_action": "After the daemon restart: one in-room 「把我們在沖繩拍的家庭影片播一段到電視上」 that ends in nas play (not tv), NAS stream 206 lines from the Chromecast and HA `playing` (D-037)."
+      "next_action": "Done 2026-10-29: the Chromecast fetched the NAS stream (206, whole 266 MB file) and HA reported `playing` (NAS-PLAY-VIA-NAS). Open: an in-room look at picture and sound."
     },
     {
       "id": "HANOVA-GOOGLE",
@@ -567,11 +567,11 @@
     },
     {
       "id": "NAS-PLAY-VIA-NAS",
-      "behavior": "A request to put a family video on the TV plays it with nas (path from query), never with tv/YouTube; tv and nas descriptions mirror each other with the reason (D-037, v1.27.2).",
+      "behavior": "A request to put a family video on the TV plays it with nas (path from query), never with tv/YouTube: tv and nas descriptions mirror each other (v1.27.2), and tv play_video refuses a query naming a NAS clip with a corrective error pointing at nas play (v1.27.3, D-037).",
       "verification": "Live: 「把我們在沖繩拍的家庭影片播一段到電視上」 → nas play with a path → NAS stream 206 lines → HA `playing`.",
-      "state": "blocked",
-      "evidence": "2026-10-29 v1.27.1: the model found the clips, then called tv play_video with the clip name and cast a YouTube video while calling it the family's. v1.27.2 installed; not retested because the daemon app manager is wedged in `stopping` after an official stop (D-037).",
-      "next_action": "Operator restarts the daemon; then rerun the sentence above."
+      "state": "verified",
+      "evidence": "2026-10-29 v1.27.1: the model found the clips, then called tv play_video with the clip name and cast a YouTube video while calling it the family's. v1.27.2 installed; not retested because the daemon app manager is wedged in `stopping` after an official stop (D-037). 2026-10-29 after the operator-instructed daemon restart, v1.27.2 retest: the model passed the clip's NAS path to tv play_video twice (YouTube no result, TV stayed off) and the first ask in a fresh session got a request for a file name. v1.27.3 (wheel 394994fa…): fresh session 08:45 UTC, 「把我們在沖繩拍的家庭影片播一段到電視上」 → open_toolbox media → nas query 沖繩 (0, all_trips) → Okinawa (16) → tv play_video with the path → refused (\"…play it with nas action=play…\") → nas play same path → `NAS stream: serving 266124445 of 266124445 bytes (status 206)` → HA media_player `playing`, app Default Media Receiver, media_title = the clip. Real-index probe on the robot: 4/4 observed tv queries named, 0/15 ordinary searches, ~0.1-0.14 s per scan (run off the loop). TV turned off afterwards (was off).",
+      "next_action": "Residual: the model still tries tv first (one refused call, ~2.5 s). In-room: confirm picture and sound on the TV."
     },
     {
       "id": "RPC-SAY-CONVERSATION-LOOP",
@@ -580,6 +580,14 @@
       "state": "verified",
       "evidence": "2026-10-29: before, one say produced 150 invalid_json errors in 6 s; after 1.27.1, say turns showed 0; new tests fail on the old code and pass on the fix.",
       "next_action": "Consider reporting the same pattern upstream (conversation app console.py _rpc_say)."
+    },
+    {
+      "id": "TV-AUDIO-PHANTOM-TURNS",
+      "behavior": "Sound from the TV is not taken as the user speaking to Reachy.",
+      "verification": "In-room: play a TV video with Reachy awake for a few minutes; no user turns appear in the transcript that nobody said, and no tool call follows one.",
+      "state": "known-defect-preexisting",
+      "evidence": "2026-10-29: 「瑞奇。」 during a YouTube cast was answered with go_to_sleep; 08:46 「一次。」 during the NAS home clip was confirmed as a barge-in and cancelled Reachy's reply (D-037). Both times the TV was the likely source; nobody was confirmed in the room.",
+      "next_action": "Diagnose before changing anything: check whether the VAD/echo path sees TV audio, and whether wait_for_user is offered in these turns (reachy-instructing-model rung order)."
     }
   ]
 }

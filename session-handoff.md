@@ -1,10 +1,10 @@
-# Session handoff — 2026-10-29 (v1.27.2 installed; daemon app manager wedged)
+# Session handoff — 2026-10-29 (v1.27.3 installed; home video cast verified)
 
-State: **v1.27.2 installed, but no app is running**: the v1.13.0 daemon's app
-manager is stuck in `stopping` after an official stop (D-037), and every
-start is refused until the daemon restarts — the operator's call (D-009).
-Daemon backend itself healthy. `main` is pushed. Details: `progress.md` top
-entry; D-036, D-037.
+State: **v1.27.3 installed and running** on daemon v1.13.0. The wedged app
+manager was cleared by one operator-instructed daemon restart; a home video
+then played from the NAS on the TV through `nas` (D-037,
+`NAS-PLAY-VIA-NAS`). `main` is pushed. Details: `progress.md` top entry;
+D-036, D-037.
 
 ## Shipped today
 
@@ -18,14 +18,19 @@ entry; D-036, D-037.
 - v1.27.0–.2 (2026-10-29): NAS search for loose Chinese requests (verified
   live), `/rpc` say on the conversation loop, tv/nas descriptions mirrored;
   robot `.env` HA address + TV entity repointed after HA's 10-25 move.
+- v1.27.3 (2026-10-29): `tv play_video` refuses a NAS clip and points at
+  `nas play`; `open_toolbox` says loose descriptions find home videos. Home
+  video cast verified live (NAS stream 206, HA `playing`).
 
 ## Next session
 
-0. **Operator:** restart the daemon (dashboard, power cycle, or
-   `ssh <user>@<host> sudo systemctl restart reachy-mini-daemon`), wake the
-   robot, then rerun 「把我們在沖繩拍的家庭影片播一段到電視上」: expect `nas`
-   `play` with a path, `NAS stream: serving … (status 206)` and HA `playing`
-   (`NAS-PLAY-VIA-NAS`). Turn the TV off afterwards if it was off.
+0. Open from today, none blocking: the model still calls `tv` before `nas`
+   (one refused call); TV sound taken as a user turn
+   (`TV-AUDIO-PHANTOM-TURNS`: diagnose first); no tool stops or pauses the
+   TV; one `tv show` image generation returned 400 (unexamined). If the
+   app manager wedges in `stopping` again, report it: the 2026-10-29 restart
+   authorization covered that one restart only. Check `motor_control_mode`
+   before an app stop.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.
