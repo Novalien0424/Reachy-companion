@@ -22,16 +22,18 @@ class Youtube(Tool):
     DELEGATE: ClassVar[Tool] = PlayVideo()
     description = (
         "YouTube, played on the living-room TV: search YouTube and put the best match on the screen. "
-        "Use when: the user names YouTube or the internet, or wants something public — an MV, a trailer, a show, "
-        "a channel, a how-to — 「幫我從 YouTube 找」「上網找一部做蛋糕的影片放到電視上」「電視上放周杰倫的 MV」"
+        "Use when: the user names YouTube or the internet, or asks for something only the internet has — an MV, a "
+        "trailer, a show, a channel, a how-to — 「幫我從 YouTube 找」「上網找一部做蛋糕的影片」「放周杰倫的 MV」"
         "「search YouTube for a cat video」. "
+        "Ask first when: the request gives only a place, a trip, a year or an event — 「放花蓮的影片」 could be the "
+        "family's own trip or a travel video online — so ask whether they mean the 影片庫 or YouTube, and call "
+        "neither tool until they answer. "
         "Do NOT use when: the user names the NAS or the video library (影片庫), or means the family's own "
         "recordings (「我們拍的」「家裡的影片」, or a clip nas found) — those are not on YouTube, and nas plays them "
         "on this same TV. "
         "Do NOT use when: the user wants sound only — that is music. "
-        "Both this and nas play on the TV, so 電視 alone does not decide: the source does. When the user names "
-        "YouTube, search YouTube, whatever the words. When the request names no source and nothing shows whether "
-        "it is the family's own or something public, ask which one they mean."
+        "Both this and nas play on the TV, so 電視 decides nothing: the source does. When the user names YouTube, "
+        "search YouTube, whatever the words."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

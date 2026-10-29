@@ -11,7 +11,8 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
 
-Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`). Plan:
+Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`); 1.28.1 is built,
+not yet deployed. Plan:
 `docs/plans/2026-10-29-media-source-routing-plan.md`. Decision D-038.
 
 - **「從 NAS 找」 and 「從 YouTube 找」 are different requests.** The TV tool
@@ -27,6 +28,11 @@ Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`). Plan:
 - **A YouTube request goes to YouTube.** The 1.27.3 check refused YouTube
   searches whose words matched a home clip's title. It now refuses only a NAS
   file path or file name, so whatever you ask YouTube for is searched.
+- **1.28.1 — 「電視上放花蓮的影片」 gets a question, not a guess.** Live, a
+  request naming only a place went straight to YouTube. The YouTube tool's
+  example 「電視上放周杰倫的 MV」 had the same shape as the request. Both video
+  tools now open with the same "ask first" rule for a bare place, trip, year
+  or event, and no example leans on the TV.
 
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 

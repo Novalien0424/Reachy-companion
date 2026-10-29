@@ -2156,8 +2156,15 @@ either, because of `tv_not_responding`.
   5. 「從NAS找周杰倫的MV」 → `nas query` "Jay Chou" → it said the 影片庫 does
      not have it and offered YouTube, with no `youtube` call. **Pass**, with
      a wobble: it also offered a retry with the keyword it had already used.
-  6. 「電視上放沖繩的影片」 (no source) — **not run.** The daemon wedged on
-     the stop before it.
+  6. 「電視上放沖繩的影片」 (no source) — run 12:04 UTC, after the restart
+     below. **Fail:** `open_toolbox media` → `youtube` 「沖繩 旅行 影片」 →
+     casting, with no question asked. Likely cause, rung 1: the `youtube`
+     example 「電視上放周杰倫的 MV」 had the request's exact shape, and the
+     ask rule came last, after the do-NOT-use lines. **1.28.1:** an identical
+     "Ask first when: the request gives only a place, a trip, a year or an
+     event — 「放花蓮的影片」 could be either…" clause, placed right after
+     use-when in both `youtube` and `nas`; the TV-framed example is dropped.
+     A test pins both. Built, not yet deployed.
 - No refused calls and no `draw_picture` call in 1–5. The TV was turned off
   after each cast.
 
@@ -2182,3 +2189,52 @@ the exact exception is unconfirmed. Next time keep the stop response body.
 Recovery needs a daemon restart, which is the operator's call. This morning's
 authorization is used up. Upstream fix shape: clear `current_app` in a
 `finally`.
+
+**Daemon restart and investigation (operator, 2026-10-29: "restart the daemon
+and run case 6, investigate why daemon would be stuck").** One
+`sudo systemctl restart reachy-mini-daemon` at 12:02:29 UTC. The daemon came
+back on v1.13.0 with app `null` and motors `disabled`; `wake_up` auto-started
+the app (persona instance, gpt-realtime-2.1-mini, 22 tools). The
+authorization covered this one restart. `POST /api/daemon/restart` would not
+have cleared the wedge: it restarts only the backend (`daemon.restart()`),
+while the `AppManager` holding the stuck slot is created once at service
+start (`daemon/app/main.py:330`).
+
+**Root cause of the wedge** (code-confirmed chain plus one inference):
+1. The Rust motor-control loop (`reachy_mini_motor_controller` 1.5.6,
+   `control_loop.rs:604-623`) reads positions at 50 Hz with 5 retries. On a
+   failed read it stores the *error* as the last position until the next
+   good read, about 20 ms later.
+2. `get_last_position()` (`bindings.rs:366-370`) then raises
+   `RuntimeError(<that error>)` immediately, with no bus I/O, despite its
+   "last successfully read" docstring.
+3. `stop_current_app` (`apps/manager.py`, identical to v1.13.0) calls
+   `backend.enable_motors()` after the app exits, and `get_last_position()`
+   is that method's first call. Nothing catches the error: the router maps
+   `RuntimeError` to HTTP 400, and `current_app = None` is skipped. The
+   daemon's own 50 Hz loop does catch exactly these errors (`backend.py:290`,
+   `nb_error`); this path does not.
+4. Whether it wedges depends on a race. If the daemon's monitor noticed the
+   exit first, the state is already `DONE` and the next start works
+   (11:36:52). If the stop noticed first, it cancelled the monitor, nothing
+   sets `DONE`/`ERROR`, and the state stays `STOPPING`, where start says
+   "already running" and stop says "not running" (06:01:51 and 11:42:42).
+5. **Evidence:** all three failures raised within 1.0–1.4 ms of "App stopped
+   successfully", before the return-to-zero or asleep log. That is too fast
+   for any bus round trip, which is why step 2 is the call: an inference,
+   since the 400's text is never logged.
+6. At idle the robot's reads basically never fail: `nb_error` was 0 in 60 of
+   60 one-second windows. Yet 3 of today's 12 API stops hit the window (2 wedged), so failures
+   cluster at the moment an app exits. Why is not known.
+   `_on_robot_slot_free` only schedules a delayed idle reset, so it is not
+   the concurrent cause.
+
+**Fix shape (upstream, pollen-robotics/reachy_mini):** in `stop_current_app`,
+catch and log failures after the process exits and set `current_app = None`
+in a `finally`. In `enable_motors()`, tolerate a transient failed read by
+retrying `get_last_position()` for a few control periods. Related open
+issues: #1401 (stuck move lock after a stop), #1400 (idle reset after a
+stop). Ours: every stop keeps its response body, so the next 400 names the
+error. No change to our app can prevent this, because it happens in the
+daemon after our process has exited.
+

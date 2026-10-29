@@ -1,11 +1,12 @@
-# Session handoff — 2026-10-29 (v1.28.0 installed; daemon app manager wedged)
+# Session handoff — 2026-10-29 (v1.28.0 running; 1.28.1 built, not deployed)
 
-State: **v1.28.0 installed** on daemon v1.13.0, **no app running**. The
-daemon's app manager is stuck in `stopping` after an official stop at 11:42
-UTC (`DAEMON-STOP-WEDGE`), so every start is refused. Clearing it takes a
-daemon restart, which only the operator can authorize; this morning's
-authorization covered one restart and has been used. `main` is pushed.
-Details: `progress.md` top entry; D-038.
+State: **v1.28.0 running** on daemon v1.13.0. The daemon was restarted once
+at 12:02 UTC on the operator's instruction, which cleared the app-manager
+wedge. Live case 6 (no source named) went to YouTube instead of asking.
+**1.28.1** fixes that in the tool descriptions; it is built and committed
+but not deployed. Deploying needs an app stop, and the daemon's stop path
+can wedge (D-038, `DAEMON-STOP-WEDGE`: 3 of 12 stops failed today, 2
+wedged). `main` is pushed. Details: `progress.md` top entry; D-038.
 
 ## Shipped today
 
@@ -28,24 +29,21 @@ Details: `progress.md` top entry; D-038.
 
 ## Next session
 
-0. **Blocked on the operator's daemon restart:**
-   - (a) Case 6 of `MEDIA-SOURCE-ROUTING`: 「電視上放沖繩的影片」 with no source
-     named should get one short question and no nas/youtube call. Cases 1–5
-     passed.
-   - (b) Voice model: no change needed. The robot already runs
-     `gpt-realtime-2.1-mini` (code default, no `REALTIME_MODEL` override),
-     and today's tool-call cases ran on it. The account's `/v1/models` lists
-     no dated 2.1-mini snapshot, so this undated id is the newest one.
-     `gpt-realtime-mini` is the older 2025 generation, and switching to it
-     would be a downgrade.
-
-   Use one fresh session per case: app stop/start through the API, mute the
-   mic with `/rpc` `conversation.mic` `{"muted": true}`, then send
-   `conversation.say`. Keep each stop's response body, since a 400
-   names the exception that wedges the daemon.
-
-   Still open: TV sound taken as a user turn (`TV-AUDIO-PHANTOM-TURNS`), no
-   tool that stops or pauses the TV, and the `show_on_tv` image 400.
+0. **Deploy 1.28.1 when the operator agrees to the wedge risk.**
+   - Rerun case 6 (「電視上放沖繩的影片」 → one short question, no
+     nas/youtube call) in a fresh session, plus cases 1 and 3 as regression
+     checks; then mark `MEDIA-SOURCE-ROUTING` verified.
+   - Keep each stop's response body: a 400 now names the motor error. If it
+     wedges, report it; only a service restart clears it, and each restart
+     needs fresh authorization.
+   - Fresh session per case: app stop/start through the API, mute the mic
+     with `/rpc` `conversation.mic` `{"muted": true}`, send `conversation.say`,
+     and unmute when done (the mute survives until the app restarts).
+   - Voice model: no change needed (D-038 progress note; the robot already
+     runs `gpt-realtime-2.1-mini`, the newest id on the account).
+   - Still open: TV sound taken as a user turn (`TV-AUDIO-PHANTOM-TURNS`),
+     no tool to stop or pause the TV, and the `show_on_tv` image 400. Offer
+     an upstream issue for the stop wedge (analysis in D-038).
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

@@ -290,3 +290,18 @@ async def test_a_single_tool_forwards_its_arguments_and_drops_only_none(monkeypa
     monkeypatch.setattr(PlayVideo, "__call__", _play)
     assert await Youtube()(_deps(), query="a cat video", extra=None) == {"ok": True, "status": "casting"}
     assert seen == [{"query": "a cat video"}]
+
+
+def _ask_first_clause(description: str) -> str:
+    start = description.index("Ask first when:")
+    return description[start : description.index("Do NOT use when:", start)]
+
+
+def test_youtube_and_nas_ask_first_with_the_same_words() -> None:
+    """D-038 live case 6: 「電視上放…的影片」 went to youtube; a place alone fits both sources.
+
+    The rule is mirrored word for word so neither tool reads as the default, and
+    no youtube example is framed by the TV, which every media request shares.
+    """
+    assert _ask_first_clause(Youtube.description) == _ask_first_clause(Nas.description)
+    assert "電視上放" not in Youtube.description

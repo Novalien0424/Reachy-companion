@@ -5,6 +5,35 @@ history of this file.
 
 ## Current state
 
+**v1.28.0 RUNNING ON THE ROBOT AGAIN (daemon v1.13.0); 1.28.1 BUILT, NOT
+DEPLOYED.**
+
+The operator authorized one daemon restart. It ran at 12:02 UTC:
+- State came back `null`; `wake_up` auto-started the app with the instance
+  persona, gpt-realtime-2.1-mini and 22 tools.
+- The mic was unmuted after the test.
+
+Case 6 (「電視上放沖繩的影片」, no source named) **failed**: it went to
+`youtube` without asking. 1.28.1 mirrors an "Ask first when: only a place,
+trip, year or event" clause into `youtube` and `nas`, and drops the
+`youtube` example framed by 電視. Tests pin both. Suite green.
+
+Wedge root cause (D-038, `DAEMON-STOP-WEDGE`):
+- The Rust control loop stores a failed 50 Hz read as the last position.
+  `get_last_position()` then raises immediately.
+- `enable_motors()`, called by the daemon's `stop_current_app` after the app
+  exits, calls it first and nothing catches the error. The resulting 400
+  skips `current_app = None`.
+- If the stop also cancelled the monitor, the state sticks. Only a service
+  restart clears it; `POST /api/daemon/restart` does not.
+- Today: 3 of 12 API stops failed this way, and 2 wedged. Idle read errors
+  were 0 in 60 s.
+
+Deploying 1.28.1 needs an app stop, which carries that risk, so the operator
+decides when.
+
+Earlier (2026-10-29):
+
 **v1.28.0 (twenty-eighth install — D-038) IS INSTALLED ON THE ROBOT (daemon
 v1.13.0), BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` AGAIN (11:42
 UTC), SO NO APP IS RUNNING.** Operator ruling: Reachy must tell 「從NAS／影片庫找」
