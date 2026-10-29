@@ -647,3 +647,69 @@ async def test_play_video_still_succeeds_when_the_tv_confirms(monkeypatch, tmp_p
     monkeypatch.setattr(f"{_PLAY_VIDEO}.confirm_cast_started", confirms)
     out = await PlayVideo()(_deps(tmp_path), query="anything")
     assert out == {"ok": True, "status": "casting", "title": "A Video", "video_id": "vid123"}
+
+
+# --- a NAS clip handed to the YouTube search (2026-10-29, live) ---------------
+
+_HOME_CLIP = {
+    "path": "SENTINEL_SRC_DIR_q5/SENTINEL_TRIP_q5/7 harbour at dusk.mpg",
+    "cast_ready": True,
+    "year": 2020,
+    "place": "SENTINEL_PLACE_q5",
+    "country": "SENTINEL_COUNTRY_q5",
+    "label": "harbour at dusk",
+    "top_folder": "SENTINEL_TRIP_q5",
+    "name": "7 harbour at dusk",
+    "seq": 7,
+}
+
+
+@pytest.fixture
+def home_archive(monkeypatch, tmp_path):
+    """Serve a one-clip NAS index, and record any use of the YouTube search or the HA script."""
+    import json
+
+    path = tmp_path / "index.json"
+    path.write_text(json.dumps({"folders": {}, "videos": [_HOME_CLIP]}), encoding="utf-8")
+    monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(path))
+    used: list[str] = []
+
+    def search(query, max_duration_s=None):
+        used.append(f"search:{query}")
+        return {"ok": True, "id": "vid123", "title": "A Film", "error": None}
+
+    async def run_script(script_name, data, timeout_s=60.0):
+        used.append(f"script:{script_name}")
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.ytdlp.search", search)
+    monkeypatch.setattr(f"{_PLAY_VIDEO}.ha_run_script", run_script)
+    return used
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        _HOME_CLIP["path"],
+        "2020 SENTINEL_PLACE_q5 harbour at dusk",
+        "2020 SENTINEL_PLACE_q5 第7段 7 harbour at dusk.mpg",
+        "2020 SENTINEL_PLACE_q5 第7 clips harbour at dusk.mpg",
+    ],
+    ids=["path", "spoken title", "file name in a phrase", "file name without its clip number"],
+)
+async def test_play_video_hands_a_family_clip_back_to_nas(tmp_path, home_archive, query):
+    """Live 2026-10-29: the model passed a found clip's path, and earlier its title, to YouTube."""
+    out = await PlayVideo()(deps=_deps(tmp_path), query=query)
+    assert out["ok"] is False
+    assert out["path"] == _HOME_CLIP["path"]
+    assert "nas action=play" in out["error"]
+    assert home_archive == []
+
+
+@pytest.mark.asyncio
+async def test_play_video_still_searches_a_place_that_is_also_a_trip(tmp_path, home_archive):
+    """A bare place names no clip: 「看看那個地方的介紹影片」 is a fair YouTube search."""
+    out = await PlayVideo()(deps=_deps(tmp_path), query="SENTINEL_PLACE_q5")
+    assert out["ok"] is True and out["status"] == "casting"
+    assert home_archive == ["search:SENTINEL_PLACE_q5", "script:tv_show_youtube"]

@@ -211,6 +211,7 @@ def _hay(value: Any) -> str:
 _SEPARATORS = re.compile(r"[\s_\-+&.,;:/()'\u2019\u3001\uff0c]+")
 _PLACE_FIELDS = ("place", "label", "top_folder", "country")
 _KEYWORD_FIELDS = ("place", "label", "top_folder", "name", "country", "category", "year")
+_LEADING_NUMBER = re.compile(r"^[\d\s_\-.]+")
 
 
 def _squash(value: Any) -> str:
@@ -315,6 +316,46 @@ def video_title(video: Dict[str, Any]) -> str:
     """Return a short spoken title for one clip."""
     parts = [video.get("year"), video.get("place"), video.get("label")]
     return " ".join(str(part) for part in parts if part).strip()
+
+
+def clips_named_by(index: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
+    """Return the clips `text` names outright: path, file name, name or spoken title (ours, 2026-10-29).
+
+    For tools outside the archive that must not take one of its clips for a
+    search phrase -- live, `tv play_video` was handed a found clip's path and,
+    before that, its title. Failing an exact name, a file name with its
+    extension also counts inside a longer phrase, with or without its leading
+    clip number (live: "11 x.mpg" came back as "第11 clips x.mpg"). A bare place
+    or subject names no clip and stays a fair search.
+    """
+    needle = _squash(text)
+    if not needle:
+        return []
+    exact, within = [], []
+    for video in index.get("videos", []):
+        path = str(video.get("path") or "")
+        filename = path.rsplit("/", 1)[-1]
+        stem, dot, extension = filename.rpartition(".")
+        names = {
+            _squash(path),
+            _squash(filename),
+            _squash(stem),
+            _squash(video.get("name")),
+            _squash(video_title(video)),
+        }
+        names.discard("")
+        file_names = set()
+        if dot and stem:
+            file_names.add(_squash(filename))
+            unnumbered = _LEADING_NUMBER.sub("", stem)
+            if _squash(unnumbered):
+                file_names.add(_squash(f"{unnumbered}.{extension}"))
+        if needle in names:
+            exact.append(video)
+        elif any(name in needle for name in file_names):
+            within.append(video)
+    # A full path contains its bare file name, which other trips may reuse.
+    return exact or within
 
 
 def _validate_inside(raw_path: str, subpath: str, key_name: str, *, require_playable: bool = True) -> str:

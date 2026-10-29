@@ -12,7 +12,7 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 
 Deployed as the twenty-seventh install (wheel sha `4a874796…`), then fix
-redeploys 1.27.1 (`20d9ad6f…`) and 1.27.2 (`cecd7f1a…`). Plan:
+redeploys 1.27.1 (`20d9ad6f…`), 1.27.2 (`cecd7f1a…`) and 1.27.3 (`394994fa…`). Plan:
 `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`. Decision D-037.
 
 - **「日本的影片」 finds the Japan trips.** The video archive is catalogued in
@@ -33,6 +33,13 @@ redeploys 1.27.1 (`20d9ad6f…`) and 1.27.2 (`cecd7f1a…`). Plan:
   YouTube.** Reachy had once sent a home clip's name to the YouTube search
   and played a stranger's video; the two TV tools now explain to the model
   which one plays which.
+- **1.27.3 — a home clip handed to the YouTube search is sent back to the
+  NAS.** The 1.27.2 explanation was not enough: on the retest Reachy found
+  the Okinawa clips and again passed one to the YouTube search. Now the TV
+  search refuses a clip it recognises from the archive (by its path, file
+  name or title) and tells Reachy to play it from the NAS. A plain place
+  name still searches YouTube. Reachy also no longer asks for a file name
+  before searching the home videos.
 
 Robot configuration (no release): the Home Assistant address and the TV's
 Home Assistant entity in the robot's settings were updated after Home
