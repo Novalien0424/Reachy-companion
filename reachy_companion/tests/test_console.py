@@ -863,6 +863,21 @@ def test_rpc_status_and_mic_over_websocket() -> None:
     assert stream._mic_muted is True
 
 
+class _ConversationLoop:
+    """A conversation event loop on its own thread, as in production (the /rpc loop is another)."""
+
+    def __enter__(self) -> asyncio.AbstractEventLoop:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        return self.loop
+
+    def __exit__(self, *exc: object) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=2)
+        self.loop.close()
+
+
 def test_rpc_interrupt_broadcasts_turn_listening() -> None:
     """conversation.interrupt clears playback and pushes a turn:listening event."""
     handler = MagicMock()
@@ -871,7 +886,8 @@ def test_rpc_interrupt_broadcasts_turn_listening() -> None:
     app = FastAPI()
     stream = LocalStream(handler, _rpc_robot(), settings_app=app)
     stream._init_settings_ui_if_needed()
-    with TestClient(app).websocket_connect("/rpc") as ws:
+    with _ConversationLoop() as loop, TestClient(app).websocket_connect("/rpc") as ws:
+        stream._asyncio_loop = loop
         ws.send_json({"jsonrpc": "2.0", "id": "1", "method": "conversation.interrupt"})
         msgs = [ws.receive_json(), ws.receive_json()]
     results = [m for m in msgs if "result" in m]
@@ -891,6 +907,43 @@ def test_rpc_say_requires_active_session() -> None:
         ws.send_json({"jsonrpc": "2.0", "id": "1", "method": "conversation.say", "params": {"text": "hi"}})
         resp = ws.receive_json()
     assert resp["error"]["data"]["reason"] == "not_running"
+
+
+def test_rpc_say_writes_to_the_session_from_the_conversation_loop() -> None:
+    """2026-10-29: say from the /rpc loop raced the audio sends and corrupted frames on the wire."""
+    seen: dict[str, Any] = {}
+
+    async def say(text: str) -> None:
+        seen["loop"] = asyncio.get_running_loop()
+        seen["text"] = text
+
+    handler = MagicMock()
+    handler.output_queue = asyncio.Queue()
+    handler._is_connected.return_value = True
+    handler.say = say
+    app = FastAPI()
+    stream = LocalStream(handler, _rpc_robot(), settings_app=app)
+    stream._init_settings_ui_if_needed()
+    with _ConversationLoop() as loop, TestClient(app).websocket_connect("/rpc") as ws:
+        stream._asyncio_loop = loop
+        ws.send_json({"jsonrpc": "2.0", "id": "1", "method": "conversation.say", "params": {"text": "hi"}})
+        resp = ws.receive_json()
+    assert resp["result"] == {"ok": True}
+    assert seen == {"loop": loop, "text": "hi"}
+
+
+def test_rpc_say_without_a_conversation_loop_reports_not_running() -> None:
+    """A session that reports connected but has no loop yet refuses instead of writing cross-thread."""
+    handler = MagicMock()
+    handler._is_connected.return_value = True
+    app = FastAPI()
+    stream = LocalStream(handler, _rpc_robot(), settings_app=app)
+    stream._init_settings_ui_if_needed()
+    with TestClient(app).websocket_connect("/rpc") as ws:
+        ws.send_json({"jsonrpc": "2.0", "id": "1", "method": "conversation.say", "params": {"text": "hi"}})
+        resp = ws.receive_json()
+    assert resp["error"]["data"]["reason"] == "not_running"
+    handler.say.assert_not_called()
 
 
 def test_rpc_transcript_notification_broadcast() -> None:

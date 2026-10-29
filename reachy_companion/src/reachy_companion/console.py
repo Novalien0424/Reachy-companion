@@ -9,7 +9,7 @@ import time
 import asyncio
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional, Coroutine
 from pathlib import Path
 from collections.abc import Callable
 
@@ -679,6 +679,25 @@ class LocalStream:
         def _rpc_status(_params: dict[str, object]) -> dict[str, object]:
             return _status_payload()
 
+        async def _on_conversation_loop(coroutine: Coroutine[Any, Any, None]) -> None:
+            # Ours (2026-10-29): /rpc runs on the settings app's own thread and loop
+            # (SDK `apps/app.py`), while the realtime websocket, the handler's queues
+            # and the player flush belong to the conversation loop. A say sent from
+            # here raced the audio sends on the same socket and corrupted frames on
+            # the wire (150 `invalid_json` errors in 6 s), so hop loops first, the
+            # way personality and tool settings already do.
+            loop = self._asyncio_loop
+            if loop is None:
+                coroutine.close()
+                raise JsonRpcError("no active session", reason="not_running")
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+            await asyncio.wait_for(asyncio.wrap_future(future), timeout=10.0)
+
+        async def _flush(text: str | None = None) -> None:
+            self.clear_audio_queue()  # barge in if mid-utterance
+            if text is not None:
+                await self.handler.say(text)
+
         @rpc.method("conversation.say")  # type: ignore[untyped-decorator]
         async def _rpc_say(params: dict[str, object]) -> dict[str, object]:
             text = str(params.get("text", "")).strip()
@@ -686,15 +705,14 @@ class LocalStream:
                 raise JsonRpcError("say requires 'text'", reason="invalid_params", code=-32602)
             if not self.handler._is_connected():
                 raise JsonRpcError("no active session", reason="not_running")
-            self.clear_audio_queue()  # barge in if mid-utterance
-            await self.handler.say(text)
+            await _on_conversation_loop(_flush(text))
             return {"ok": True}
 
         @rpc.method("conversation.interrupt")  # type: ignore[untyped-decorator]
-        def _rpc_interrupt(_params: dict[str, object]) -> dict[str, object]:
+        async def _rpc_interrupt(_params: dict[str, object]) -> dict[str, object]:
             if not self.handler._is_connected():
                 raise JsonRpcError("no active session", reason="not_running")
-            self.clear_audio_queue()
+            await _on_conversation_loop(_flush())
             self._last_turn_state = "listening"
             rpc.broadcast_threadsafe("conversation.turn", {"state": "listening", "reason": "interrupted"})
             return {"ok": True}
