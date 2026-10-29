@@ -38,8 +38,13 @@ class Nas(Tool):
         "拍的影片」「放家裡那部影片」「播那個資料夾」「下一部」「play our old videos」「skip」. "
         "Do NOT use when: the user wants something from the internet — that is tv (YouTube) or the search tool. "
         "Do NOT use when: the user wants music rather than video — that is music. "
-        "Pick `action`: `query` searches the index and returns matches; `play` plays one path or the best match; "
-        "`play_folder` plays a whole folder; `skip` moves to the next video in a running folder."
+        "Pick `action`: `query` searches the index and returns matches; `play` puts one clip on the TV — pass "
+        "its `path` from `query`; `play_folder` puts a whole trip on the TV; `skip` moves to the next video in "
+        "a running folder. These clips exist only on the NAS, so play them here, never through tv. "
+        "The archive is catalogued in English, so search with English words: translate a place or subject "
+        "first (巴黎 → Paris, 生日 → birthday). `query` lists every matching trip in `trips`. When nothing "
+        "matches, the result carries `all_trips`, the whole catalogue: pick the trip the user means from it "
+        "and search or play that one, because a miss is usually a wording miss rather than a missing video."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

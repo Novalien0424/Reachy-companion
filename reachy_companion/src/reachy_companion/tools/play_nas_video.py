@@ -65,7 +65,7 @@ class PlayNasVideo(Tool):
                 keyword=str(kwargs.get("keyword")) if kwargs.get("keyword") else None,
             )
         if not matches:
-            return {"ok": False, "error": "no_match"}
+            return {"ok": False, "error": "no_match", "all_trips": nas.summarize_folders(index)}
 
         ready = [video for video in matches if video.get("cast_ready")]
         if not ready:

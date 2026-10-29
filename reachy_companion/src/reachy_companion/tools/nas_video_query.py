@@ -29,8 +29,14 @@ class NasVideoQuery(Tool):
             "year": {"type": "integer", "description": "Exact year to match."},
             "year_from": {"type": "integer", "description": "Earliest year to include."},
             "year_to": {"type": "integer", "description": "Latest year to include."},
-            "place": {"type": "string", "description": "Place or trip name."},
-            "keyword": {"type": "string", "description": "Any text to search the records for."},
+            "place": {
+                "type": "string",
+                "description": "Place or trip, in English as the archive is catalogued; translate first (巴黎 → Paris).",
+            },
+            "keyword": {
+                "type": "string",
+                "description": "Any English word to match in the records, e.g. a subject or event (生日 → birthday).",
+            },
             "limit": {"type": "integer", "description": "Maximum clips to return. Default 40."},
         },
         "required": [],
@@ -69,18 +75,25 @@ class NasVideoQuery(Tool):
         except (TypeError, ValueError):
             limit = _DEFAULT_LIMIT
 
-        videos = nas.filter_index(
+        matches = nas.filter_index(
             index,
             year=filters["year"],
             year_from=filters["year_from"],
             year_to=filters["year_to"],
             place=str(filters["place"]) if filters["place"] else None,
             keyword=str(filters["keyword"]) if filters["keyword"] else None,
-            limit=max(1, min(200, limit)),
         )
+        if not matches:
+            # 2026-10-29: the catalogue is in English and the user speaks Chinese, so
+            # a miss is usually a translation miss, not an absent video. Hand the
+            # model the whole catalogue to choose from instead of a bare zero.
+            return {"ok": True, "count": 0, "videos": [], "all_trips": nas.summarize_folders(index)}
+        videos = matches[: max(1, min(200, limit))]
         return {
             "ok": True,
-            "count": len(videos),
+            "count": len(matches),
+            # Every matching trip, even when `videos` is capped (2026-10-29).
+            "trips": nas.trip_summary(matches),
             "videos": [
                 {
                     "path": video.get("path"),

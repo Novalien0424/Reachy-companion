@@ -57,14 +57,14 @@ class NasPlayFolder(Tool):
             )
             folders = sorted({str(video.get("top_folder") or "") for video in matches if video.get("top_folder")})
             if not folders:
-                return {"ok": False, "error": "no_match"}
+                return {"ok": False, "error": "no_match", "all_trips": nas.summarize_folders(index)}
             if len(folders) > 1:
                 return {"ok": False, "error": "ambiguous", "candidates": folders}
             top_folder = folders[0]
 
         playlist = nas.folder_playlist(index, top_folder)
         if not playlist:
-            return {"ok": False, "error": "no_match"}
+            return {"ok": False, "error": "no_match", "all_trips": nas.summarize_folders(index)}
 
         logger.info("Tool call: nas_play_folder %s (%d clips)", redact.ident(top_folder), len(playlist))
         result = await nas.stage_and_cast(playlist[0], deps.instance_path)

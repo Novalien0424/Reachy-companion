@@ -19,6 +19,7 @@ capability with no background task to own or leak.
 
 from __future__ import annotations
 import os
+import re
 import json
 import time
 import uuid
@@ -205,6 +206,29 @@ def _hay(value: Any) -> str:
     return str(value).lower()
 
 
+# Separators the catalogue spells inconsistently: "2024 Chiang Mai", "2025SriLanka",
+# "2015_Boracay", "Tokyo & Okinawa". CJK text has none of them and passes through.
+_SEPARATORS = re.compile(r"[\s_\-+&.,;:/()'\u2019\u3001\uff0c]+")
+_PLACE_FIELDS = ("place", "label", "top_folder", "country")
+_KEYWORD_FIELDS = ("place", "label", "top_folder", "name", "country", "category", "year")
+
+
+def _squash(value: Any) -> str:
+    return _SEPARATORS.sub("", _hay(value))
+
+
+def _words_match(needle: str, video: Dict[str, Any], fields: tuple[str, ...]) -> bool:
+    """Whether every word of `needle` occurs in the record, in any order (ours, 2026-10-29).
+
+    Case, spacing and punctuation are ignored on both sides, so a single word
+    matches wherever the old plain substring did, and "tokyo okinawa" or
+    "chiang mai" no longer depend on how the folder happened to be typed.
+    """
+    record = "".join(_squash(video.get(field)) for field in fields)
+    words = [_squash(word) for word in _SEPARATORS.split(_hay(needle))]
+    return all(word in record for word in words if word)
+
+
 def filter_index(
     index: Dict[str, Any],
     year: int | None = None,
@@ -223,16 +247,10 @@ def filter_index(
             continue
         if year_to is not None and (video.get("year") or 9999) > year_to:
             continue
-        if place is not None:
-            needle = _hay(place)
-            haystacks = (video.get("place"), video.get("label"), video.get("top_folder"), video.get("country"))
-            if not any(needle in _hay(field) for field in haystacks):
-                continue
-        if keyword is not None:
-            needle = _hay(keyword)
-            blob = " ".join(_hay(video.get(field)) for field in ("place", "label", "top_folder", "name", "country"))
-            if needle not in blob:
-                continue
+        if place is not None and not _words_match(place, video, _PLACE_FIELDS):
+            continue
+        if keyword is not None and not _words_match(keyword, video, _KEYWORD_FIELDS):
+            continue
         out.append(video)
     out.sort(
         key=lambda video: (
@@ -258,6 +276,25 @@ def summarize_folders(index: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
     rows.sort(key=lambda row: (row["year"] or 0, str(row["place"] or "")))
     return rows
+
+
+def trip_summary(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per trip among `videos`, so a capped clip list cannot hide a whole trip."""
+    trips: Dict[str, Dict[str, Any]] = {}
+    for video in videos:
+        name = str(video.get("top_folder") or "")
+        row = trips.setdefault(
+            name,
+            {
+                "top_folder": name,
+                "year": video.get("year"),
+                "place": video.get("place"),
+                "country": video.get("country"),
+                "clips": 0,
+            },
+        )
+        row["clips"] += 1
+    return sorted(trips.values(), key=lambda row: (row["year"] or 0, str(row["top_folder"])))
 
 
 def folder_playlist(index: Dict[str, Any], top_folder: str) -> List[Dict[str, Any]]:

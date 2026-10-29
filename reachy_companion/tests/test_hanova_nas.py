@@ -1454,3 +1454,91 @@ def test_all_four_tools_reach_the_model_session():
         assert {"nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"} <= reachable
     finally:
         core_tools._TOOLS_SIGNATURE = None
+
+
+# --- loose, Chinese-spoken requests against an English catalogue (2026-10-29) ---
+
+def _clip(folder: str, seq: int, year: int | None, place: str, country: str, category: str = "travel") -> dict:
+    return {
+        "path": f"SENTINEL_SRC_DIR_q4/{folder}/clip{seq:02d}.mp4",
+        "cast_path": f"SENTINEL_CAST_DIR_q4/{folder}/clip{seq:02d}.mp4",
+        "cast_ready": True,
+        "year": year,
+        "place": place,
+        "country": country,
+        "category": category,
+        "label": f"part {seq}",
+        "top_folder": folder,
+        "name": f"clip{seq:02d}",
+        "seq": seq,
+    }
+
+
+CATALOGUE = {
+    "folders": {
+        "2021 Cape Town": {"year": 2021, "place": "Cape Town", "country": "South Africa", "count": 3},
+        "2021_Rio+Lisbon": {"year": 2021, "place": "Rio & Lisbon", "country": "Brazil; Portugal", "count": 2},
+        "2022NewZealand": {"year": 2022, "place": "New Zealand", "country": "New Zealand", "count": 1},
+        "kid's MV": {"year": None, "place": "our son's first steps", "country": "Home", "count": 1},
+    },
+    "videos": [
+        *[_clip("2021 Cape Town", n, 2021, "Cape Town", "South Africa") for n in (1, 2, 3)],
+        *[_clip("2021_Rio+Lisbon", n, 2021, "Rio & Lisbon", "Brazil; Portugal") for n in (1, 2)],
+        _clip("2022NewZealand", 1, 2022, "New Zealand", "New Zealand"),
+        _clip("kid's MV", 1, None, "our son's first steps", "Home", category="family"),
+    ],
+}
+
+
+@pytest.fixture
+def catalogue(monkeypatch, tmp_path):
+    """Point the tools at the English, inconsistently spelled catalogue."""
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps(CATALOGUE), encoding="utf-8")
+    monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(path))
+    return CATALOGUE
+
+
+def test_words_match_in_any_order_whatever_the_spacing_and_punctuation():
+    """"new zealand" finds `2022NewZealand`; "lisbon rio" finds "Rio & Lisbon"."""
+    assert len(nas.filter_index(CATALOGUE, place="new zealand")) == 1
+    assert len(nas.filter_index(CATALOGUE, place="newzealand")) == 1
+    assert len(nas.filter_index(CATALOGUE, place="lisbon rio")) == 2
+    assert len(nas.filter_index(CATALOGUE, keyword="cape-town")) == 3
+    assert nas.filter_index(CATALOGUE, place="lisbon tokyo") == []
+
+
+def test_keyword_reaches_the_category_and_the_year():
+    """A subject word ("family") and a year typed as text both count as record words."""
+    assert [video["top_folder"] for video in nas.filter_index(CATALOGUE, keyword="family")] == ["kid's MV"]
+    assert len(nas.filter_index(CATALOGUE, keyword="2021 cape town")) == 3
+
+
+@pytest.mark.asyncio
+async def test_query_lists_every_matching_trip_even_when_the_clips_are_capped(tmp_path, catalogue):
+    """The 2025 miss: a 40-clip cap must not hide whole trips from the model."""
+    out = await NasVideoQuery()(deps=_deps(tmp_path), year=2021, limit=2)
+    assert out["count"] == 5
+    assert len(out["videos"]) == 2
+    assert [(trip["top_folder"], trip["clips"]) for trip in out["trips"]] == [
+        ("2021 Cape Town", 3),
+        ("2021_Rio+Lisbon", 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_query_that_matches_nothing_hands_back_the_whole_catalogue(tmp_path, catalogue):
+    """「日本」 against an English index: the model gets every trip to choose from, not a bare zero."""
+    out = await NasVideoQuery()(deps=_deps(tmp_path), keyword="開普敦")
+    assert out["ok"] is True and out["count"] == 0 and out["videos"] == []
+    assert {row["top_folder"] for row in out["all_trips"]} == set(CATALOGUE["folders"])
+
+
+@pytest.mark.asyncio
+async def test_play_and_play_folder_misses_also_carry_the_catalogue(monkeypatch, tmp_path, catalogue):
+    """Same recovery path when the model goes straight to play."""
+    _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), place="開普敦")
+    assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
+    out = await NasPlayFolder()(deps=_deps(tmp_path), place="開普敦")
+    assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
