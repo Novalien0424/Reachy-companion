@@ -122,8 +122,8 @@ async def test_initialize_tools_loads_enabled_installed_remote_tools_and_dispatc
         ),
     )
 
-    assert result["namespaced_tool_name"] == SEARCH_TOOL_ID
-    assert result["tool_space_slug"] == SEARCH_SPACE_SLUG
+    # The model gets the result once, without the envelope's restated tool identity (M2).
+    assert result == {"status": "ok", "text": "hello"}
     client.call_tool.assert_awaited_once_with(SEARCH_CLIENT_TOOL_ID, {"query": "hello"})
 
 

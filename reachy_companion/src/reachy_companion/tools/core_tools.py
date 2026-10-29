@@ -201,6 +201,45 @@ def register_extra_tool(tool: Tool) -> None:
         _TOOLS_SIGNATURE = None
 
 
+# The client's envelope restates the tool the model just called; the model needs none of it.
+_REMOTE_RESULT_IDENTITY_KEYS = frozenset({"server_alias", "remote_tool_name", "namespaced_tool_name"})
+
+
+def _is_json_of(text: str, value: Any) -> bool:
+    try:
+        return bool(json.loads(text) == value)
+    except ValueError:
+        return False
+
+
+def model_facing_remote_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a remote MCP result with each piece of content once (ours, plan 2026-10-29 M2).
+
+    The client's envelope carries every text block twice (`content_blocks` and the joined
+    `text`), and a server that returns structured content usually repeats it as a JSON
+    text block (MCP back-compat). Text blocks are dropped from `content_blocks` because
+    `text` holds them; non-text blocks stay. `text` is dropped when it is exactly the JSON
+    of `structured_content`, or when it repeats `error`. Other keys pass through.
+    """
+    payload = {key: value for key, value in result.items() if key not in _REMOTE_RESULT_IDENTITY_KEYS}
+    text = payload.get("text")
+    if isinstance(text, str):
+        if "structured_content" in payload and _is_json_of(text, payload["structured_content"]):
+            del payload["text"]
+        elif text == payload.get("error"):
+            del payload["text"]
+    blocks = payload.pop("content_blocks", None)
+    if isinstance(blocks, list):
+        kept = [
+            block
+            for block in blocks
+            if not (isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+        ]
+        if kept:
+            payload["content_blocks"] = kept
+    return payload
+
+
 class RemoteMcpTool(Tool):
     """Adapter exposing one remote MCP tool through the local Tool interface."""
 
@@ -236,11 +275,7 @@ class RemoteMcpTool(Tool):
             logger.warning("Remote MCP tool failed once; retrying %s from %s: %s", self.name, self._space_slug, exc)
             await asyncio.sleep(_REMOTE_TOOL_RETRY_DELAY_S)
             result = await self._client.call_tool(self._client_tool_name, kwargs)
-        payload = dict(result)
-        if payload.get("namespaced_tool_name") == self._client_tool_name:
-            payload["namespaced_tool_name"] = self.name
-        payload.setdefault("tool_space_slug", self._space_slug)
-        return payload
+        return model_facing_remote_result(result)
 
 
 _LOADED_REMOTE_TOOL_CACHE: Dict[tuple[str, str], RemoteMcpTool] = {}

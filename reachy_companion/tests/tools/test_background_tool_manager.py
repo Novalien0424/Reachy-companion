@@ -587,8 +587,8 @@ class TestNotificationQueue:
 
     @pytest.mark.asyncio
     async def test_remote_mcp_error_result_is_recorded_as_failed(self, manager: BackgroundToolManager) -> None:
-        """A remote MCP call returning isError ends FAILED, carrying the server's message (dd08179)."""
-        mcp_types = pytest.importorskip("mcp.types")
+        """A remote MCP call returning is_error ends FAILED, carrying the server's message (dd08179)."""
+        mcp_types = pytest.importorskip("mcp_types")
         from reachy_companion.mcp_client import RemoteToolCallResponse
 
         payload = RemoteToolCallResponse.from_call_tool_result(
@@ -596,8 +596,8 @@ class TestNotificationQueue:
             remote_tool_name="search",
             result=mcp_types.CallToolResult(
                 content=[mcp_types.TextContent(type="text", text="Search backend unavailable")],
-                structuredContent=None,
-                isError=True,
+                structured_content=None,
+                is_error=True,
             ),
         ).to_tool_result()
         routine = _make_routine("notion__search", result=payload)
