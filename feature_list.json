@@ -532,6 +532,22 @@
       "state": "verified",
       "evidence": "2026-10-28 after the SDK 1.13 upgrade: ids [1,2,3], adobe False (reachy_mini 1.13.0 in apps_venv, upstream 233d7ba9).",
       "next_action": "Demo 3 in the room confirms the spoken colour."
+    },
+    {
+      "id": "MCP-V2-CLIENT",
+      "behavior": "Remote MCP tools run on the v2 SDK (Client mode auto, snake_case reads, httpx2 transport verified against certifi); pins mcp>=2.0,<3, mcp-types>=2.0,<3, httpx2>=2.5.0 (D-036).",
+      "verification": "Upstream v2 tests incl. the integration suite on mcp.server.MCPServer (no skips); on robot: pip check clean but the pre-existing mediapipe line, discovery returns the search schema, a live search returns results; the app boots with the search tool registered.",
+      "state": "verified",
+      "evidence": "2026-10-29 v1.26.0 deploy: robot venv mcp 2.3.0 / mcp-types 2.3.0 / httpx2 2.10.0; from the robot, discovery schema {query, max_results} and a live 台北天氣 search ok; boot 04:46 UTC: search tool registered, 22 tools in session, boot gate released, 0 tracebacks; suite 2079/31, ruff, mypy clean.",
+      "next_action": "None; the installed conversation app 1.0.0 needs a dashboard update before its own MCP tools work under mcp 2."
+    },
+    {
+      "id": "MCP-RESULT-TRIM",
+      "behavior": "Remote MCP results reach the model once: no restated tool identity, text blocks only in `text`, `text` dropped when it is the JSON of structured_content or repeats error; non-text blocks and unknown keys pass through (D-036).",
+      "verification": "Unit tests per rule; on robot a live search trims to {status, text}; in-room demo 4 still answers with today's facts, and a search turn's `Response usage:` input tokens are smaller than before.",
+      "state": "implemented-unverified",
+      "evidence": "2026-10-29: live search from the robot 1,700 → 729 chars, keys [status, text]; 6 unit tests + updated runtime test.",
+      "next_action": "In-room demo 4 (docs/five-demo-checklist.md) with the usage line of the search turn."
     }
   ]
 }

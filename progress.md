@@ -5,6 +5,25 @@ history of this file.
 
 ## Current state
 
+**THE TWENTY-SIXTH INSTALL (v1.26.0 — D-036: MCP v2 client, trimmed MCP
+results) IS ON THE ROBOT (daemon v1.13.0) WITH A CLEAN BOOT, APP RUNNING
+(2026-10-29 04:46 UTC robot time).** Wheel sha `69b0b60b…`, backup
+`20261029T044542Z-12819` of `~/.config/reachy_companion` (persistent copy in
+`~/reachy_companion_backups/`, sha match; no restore step since v1.25.0).
+Robot venv: mcp 1.29.0 → 2.3.0, mcp-types 2.0.0 → 2.3.0, httpx2 2.10.0 kept;
+`pip check` only the pre-existing mediapipe/protobuf line. From the robot,
+v2 discovery returns the search schema `{query, max_results}` and a live
+台北天氣 search trims 1,700 → 729 chars to `{status, text}`; step 6b search
+True. Boot: `(already migrated)`, `persona: instance persona.md`, search
+tool registered, `Tools in session (one_on_one, boxes=none, startup, 22)`,
+`Local VAD ready`, `boot gate released (greeting played)`, 0 tracebacks, no
+app warnings. Suite 2079 / 31, ruff, mypy clean; 95 MCP tests incl. the
+integration suite (it had been silently skipping under v2 upstream). Not yet
+seen in a conversation: demo 4 with the trimmed result (in-room). Wi-Fi
+watchdog still inactive until the operator adds the crontab line.
+
+Earlier (2026-10-28):
+
 **THE TWENTY-FIFTH INSTALL (v1.25.0 — D-034, D-035) IS ON THE ROBOT (daemon
 v1.13.0) WITH A CLEAN BOOT, APP RUNNING (2026-10-28 14:29 robot time).** Wheel
 sha `091137c8…`, backup `20261028T142759Z-5241` (persistent copy in

@@ -9,6 +9,24 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.26.0] — 2026-10-29 · MCP v2, leaner web results
+
+Deployed as the twenty-sixth install (wheel sha `69b0b60b…`, backup
+`20261029T044542Z-12819`), clean boot 04:46 UTC robot time. Plan:
+`docs/plans/2026-10-29-mcp-v2-search-trim-plan.md`. Decision D-036.
+
+- **Web search results cost the model about 60% fewer tokens.** Each result
+  used to arrive twice, plus four fields naming the tool that was just
+  called; now the model reads it once (a live Taipei-weather search: 1,700 →
+  729 characters). Nothing the model could use is removed: failures still
+  say what went wrong, and images or other non-text content still come
+  through.
+- **The MCP client moves to the v2 SDK**, as in the official app: it speaks
+  the 2026-07-28 MCP spec and every older revision, and stays compatible with
+  the official conversation app's current release in the shared app
+  environment. Remote MCP connections verify against the app's own, current
+  CA bundle, like the OpenAI link.
+
 ## [1.25.0] — 2026-10-28 · data folder, Wi-Fi recovery, faster ears
 
 Deployed as the twenty-fifth install (wheel sha `091137c8…`, backup

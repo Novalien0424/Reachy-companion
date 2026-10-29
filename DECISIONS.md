@@ -67,8 +67,9 @@ Develop against `reachy-mini-daemon --mockup-sim`, verify finally on the robot,
 SDK and daemon versions pinned to match. Amendment (2026-08-17): the app
 requires `reachy-mini>=1.10.0rc2`; dev venv at **1.10.0rc5**. `mcp` is bounded
 `<2` (mcp 2.0 renamed attributes and silently broke the 1.x-style reads in
-`mcp_client.py`). Superseded in practice by the Mac mini as deploy host — see
-the Python 3.12 requirement in `progress.md`.
+`mcp_client.py`); lifted 2026-10-29 by D-036 (v2 client). Superseded in
+practice by the Mac mini as deploy host — see the Python 3.12 requirement in
+`progress.md`.
 
 ## D-009 — Robot deployment: app-only, daemon untouchable (2026-08-17)
 
@@ -1974,3 +1975,25 @@ The Mac backend and `scripts/voice_audition.py` target the new directory.
 Effect: reinstalls and a Bluetooth `SOFTWARE_RESET` (`rm -rf /venvs`) no
 longer touch the operator's data; the deploy restore step retires.
 Plan: `docs/plans/2026-10-28-instance-path-plan.md`.
+
+## D-036 — MCP v2 client; remote MCP results reach the model once (2026-10-29)
+
+Operator request 2026-10-29. (1) Port of upstream `7632260` + `cd07771`
+(tests `f7f863f`): `mcp_client.py` on the v2 SDK — `Client` in mode `auto`
+(probes `server/discover`, falls back to `initialize`), snake_case field
+reads, `httpx2` transport, the SDK's `MCPError(-32001)` counted as a timeout;
+pins `mcp>=2.0,<3`, `mcp-types>=2.0,<3`, `httpx2>=2.5.0`. This lifts D-008's
+`mcp<2` bound, which would also have conflicted with the official
+conversation app 1.1.x (`mcp>=2,<3`) in the shared apps venv. One deviation
+from upstream: the httpx2 client verifies against certifi, because
+httpcore2's Linux default is the robot's system store, which still carries
+four emSign roots (certifi 2026.10.23 keeps one) — same rule as the OpenAI
+websocket since v1.24.0. (2) `RemoteMcpTool` returns
+`model_facing_remote_result()`: no restated tool identity (`server_alias`,
+`remote_tool_name`, `namespaced_tool_name`, `tool_space_slug`), text blocks
+only in `text`, `text` dropped when it is the JSON of `structured_content` or
+repeats `error`; non-text blocks and unknown keys pass through. The client's
+own envelope is unchanged. A live search result shrinks 1,700 → 729 chars.
+The installed conversation app 1.0.0 (`mcp>=1.27.1`, v1 reads) degrades its
+own remote tools under mcp 2; it is not the running app — updating it from
+the dashboard fixes it. Plan: `docs/plans/2026-10-29-mcp-v2-search-trim-plan.md`.

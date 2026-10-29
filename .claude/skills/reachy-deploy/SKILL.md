@@ -180,9 +180,10 @@ read `windows.md` in this skill's directory first.
    build). Two-step instead:
    `/venvs/apps_venv/bin/python -m pip install --force-reinstall --no-deps /tmp/reachy_companion-*.whl`
    then `/venvs/apps_venv/bin/python -m pip install /tmp/reachy_companion-*.whl`
-   (pulls only genuinely missing deps; all 43 resolve as aarch64 wheels —
-   verified 2026-08-17 via `uv pip compile --python-platform
-   aarch64-manylinux_2_28 --only-binary :all:`).
+   (pulls only genuinely missing deps; all resolve as aarch64 wheels —
+   verified 2026-08-17, and for the mcp 2.x set on 2026-10-29, via `uv pip
+   compile --python-platform aarch64-manylinux_2_28 --only-binary :all:`).
+   Re-run that check whenever a dependency is added or bumped.
 6. **Restore instance state immediately after installing, before starting.**
    Same `$INST` (recompute it — the python minor version in the path can move):
 
@@ -265,9 +266,11 @@ read `windows.md` in this skill's directory first.
 
    ```sh
    /venvs/apps_venv/bin/python - <<'PY'
-   import pathlib, reachy_companion
+   import pathlib
    from reachy_companion import tool_spaces
-   inst = pathlib.Path(reachy_companion.__file__).parent
+   # v1.25.0+: the instance folder (step 4); up to v1.24.0 the package directory.
+   inst = pathlib.Path.home() / ".config/reachy_companion"
+   print("manifest file present:", (inst / tool_spaces.INSTALLED_TOOL_SPACES_FILENAME).is_file())
    manifest = tool_spaces.read_installed_tool_spaces(inst)
    for space in manifest.spaces:
        if space.slug in tool_spaces.PREINSTALLED_TOOL_SPACE_SPECS:

@@ -170,10 +170,12 @@ so we port selectively. Port plan and status:
 - **Already in ours before the refresh:** `a020e52` move_head body_yaw,
   `b9f58a3` transcript-delta accumulation (D-028), idempotent stop
   (`3d3fb31`/`92fcfac`/`82ad07f` ≈ `app_lifecycle.py:27-50`).
-- **Deferred:** `5ab905d` `resolve_instance_path` (instance state out of
-  site-packages; needs on-robot migration proof); MCP v2 client
-  (`7632260`/`cd07771`, needs `mcp>=2` + new deps).
-- **Skipped (ours supersedes or out of scope):** `8b37f31` Silero VAD,
+- **Ported later:** `5ab905d` `resolve_instance_path`, storage half, into
+  `~/.config/reachy_companion` (v1.25.0, D-035); `8b37f31` Silero VAD for the
+  listening pose only (v1.25.0); MCP v2 client `7632260`/`cd07771` + tests
+  `f7f863f` (v1.26.0, D-036; ours adds a certifi `verify=` on the httpx2
+  client).
+- **Skipped (ours supersedes or out of scope):** `8b37f31` VAD barge-in,
   ducking, paced playback, response-id discard (D-023/D-028/D-032 own
   barge-in); #580 HF turn latencies; #588 language picker (zh by design);
   #552 settings UI / panels; #553 knowledge Space; #555 `volume_control` and
