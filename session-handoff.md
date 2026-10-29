@@ -32,9 +32,12 @@ Details: `progress.md` top entry; D-038.
    - (a) Case 6 of `MEDIA-SOURCE-ROUTING`: 「電視上放沖繩的影片」 with no source
      named should get one short question and no nas/youtube call. Cases 1–5
      passed.
-   - (b) The operator's request: switch the voice model to
-     gpt-realtime-2.1-mini or its latest alias, then re-run the tool-call
-     cases.
+   - (b) Voice model: no change needed. The robot already runs
+     `gpt-realtime-2.1-mini` (code default, no `REALTIME_MODEL` override),
+     and today's tool-call cases ran on it. The account's `/v1/models` lists
+     no dated 2.1-mini snapshot, so this undated id is the newest one.
+     `gpt-realtime-mini` is the older 2025 generation, and switching to it
+     would be a downgrade.
 
    Use one fresh session per case: app stop/start through the API, mute the
    mic with `/rpc` `conversation.mic` `{"muted": true}`, then send

@@ -38,10 +38,16 @@ Daemon wedge (`DAEMON-STOP-WEDGE`):
   exits skips `current_app = None`.
 - Clearing it needs the operator's daemon restart.
 
-Next, also blocked on the restart:
-- the operator's request to move the voice model to gpt-realtime-2.1-mini or
-  its latest alias, then re-check tool calls;
-- case 6.
+Voice model: the operator asked for gpt-realtime-2.1-mini or its latest
+alias. No change was needed:
+- The robot already runs `gpt-realtime-2.1-mini`. All 6 sessions from 11:34
+  to 11:43 logged it, and cases 1–5 made their tool calls on it.
+- The account's `/v1/models` (read on the robot) lists no dated 2.1-mini
+  snapshot, so the undated id is the newest.
+- `gpt-realtime-mini` is the 2025 generation (snapshot
+  `gpt-realtime-mini-2025-12-15`), so it would be a downgrade.
+
+Next, blocked on the restart: case 6.
 
 Earlier (2026-10-29):
 
