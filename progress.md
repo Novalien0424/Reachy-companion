@@ -5,6 +5,40 @@ history of this file.
 
 ## Current state
 
+**v1.28.3 (twenty-eighth install + three fix redeploys — D-038) IS RUNNING ON
+THE ROBOT (daemon v1.13.0), mic unmuted, TV off.**
+
+The source rule works live. A request naming no source got a question first
+in 3 of 3 fresh sessions, and the answer led to the right NAS trip.
+
+- **1.28.1:** a mirrored ask-first clause in the media descriptions. Not
+  enough on its own.
+- **1.28.2:** the real cause was the toolbox rule 「不要再問使用者一次」 /
+  "without asking the user again". It now forbids only a second go-ahead, and
+  the prompt asks 影片庫 or YouTube first.
+- **1.28.3:** `nas play` with no path or filter refuses instead of casting
+  the archive's first clip. That old bug was found live: a Taiwan clip was
+  presented as Okinawa.
+
+Regression checks passed on 1.28.3:
+- case 1 (NAS → play with a path → 206 → `playing`);
+- case 3 (explicit YouTube);
+- a calendar question (open → list in one turn, no stall).
+
+Daemon:
+- 7 of 7 stops since the authorized 12:02 restart returned 200, with each
+  response body kept. Today's totals: 19 stops, 3 failures, 2 wedges.
+- The forum check found no report anywhere (Pollen forum, HF forum, the
+  official app's HF Space discussions, GitHub Discussions), so the wedge
+  looks unreported.
+
+Suite 2099 / 31; ruff and mypy clean.
+
+Residual: after the source answer, one run listed the trip without playing
+it.
+
+Earlier (2026-10-29):
+
 **v1.28.0 RUNNING ON THE ROBOT AGAIN (daemon v1.13.0); 1.28.1 BUILT, NOT
 DEPLOYED.**
 

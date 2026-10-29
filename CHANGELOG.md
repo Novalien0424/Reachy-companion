@@ -11,8 +11,8 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 
 ## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
 
-Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`); 1.28.1 is built,
-not yet deployed. Plan:
+Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redeploys
+1.28.1 (`52dc3577…`), 1.28.2 (`950010c2…`) and 1.28.3 (`20ee340a…`). Plan:
 `docs/plans/2026-10-29-media-source-routing-plan.md`. Decision D-038.
 
 - **「從 NAS 找」 and 「從 YouTube 找」 are different requests.** The TV tool
@@ -33,6 +33,16 @@ not yet deployed. Plan:
   example 「電視上放周杰倫的 MV」 had the same shape as the request. Both video
   tools now open with the same "ask first" rule for a bare place, trip, year
   or event, and no example leans on the TV.
+- **1.28.2 — opening the video tools no longer forbids the question.** 1.28.1
+  still went straight to YouTube. The toolbox rule (「載入後同一輪直接呼叫，不要再
+  問使用者一次」) told Reachy never to ask after opening a box, which overrode
+  "ask first". It now forbids only asking for the go-ahead again, and the
+  prompt asks "影片庫 or YouTube?" before Reachy opens the box.
+- **1.28.3 — `nas play` no longer picks a clip on its own.** Live, `play` was
+  called with only a trip folder (an argument of `play_folder`). That matched
+  the whole archive, so the archive's first clip, from Taiwan, went to the TV,
+  and Reachy called it the Okinawa trip. Now it plays nothing and says to pass
+  a clip's path from `query`, or to use `play_folder` for a whole trip.
 
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 

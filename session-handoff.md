@@ -1,12 +1,13 @@
-# Session handoff — 2026-10-29 (v1.28.0 running; 1.28.1 built, not deployed)
+# Session handoff — 2026-10-29 (v1.28.3 running; source routing verified live)
 
-State: **v1.28.0 running** on daemon v1.13.0. The daemon was restarted once
-at 12:02 UTC on the operator's instruction, which cleared the app-manager
-wedge. Live case 6 (no source named) went to YouTube instead of asking.
-**1.28.1** fixes that in the tool descriptions; it is built and committed
-but not deployed. Deploying needs an app stop, and the daemon's stop path
-can wedge (D-038, `DAEMON-STOP-WEDGE`: 3 of 12 stops failed today, 2
-wedged). `main` is pushed. Details: `progress.md` top entry; D-038.
+State: **v1.28.3 running** on daemon v1.13.0, with the mic unmuted and the TV
+off. Media requests follow the source the user names: `youtube`, or `nas`
+(影片庫). A request that names no source gets a question first; the toolbox
+"don't ask again" rule now forbids only a second go-ahead.
+- `nas play` refuses to pick a clip without a path or a filter.
+- The daemon stop wedge is root-caused and looks unreported upstream (D-038,
+  `DAEMON-STOP-WEDGE`). The operator chose not to draft an issue yet.
+- `main` is pushed. Details: `progress.md` top entry; D-038.
 
 ## Shipped today
 
@@ -29,21 +30,17 @@ wedged). `main` is pushed. Details: `progress.md` top entry; D-038.
 
 ## Next session
 
-0. **Deploy 1.28.1 when the operator agrees to the wedge risk.**
-   - Rerun case 6 (「電視上放沖繩的影片」 → one short question, no
-     nas/youtube call) in a fresh session, plus cases 1 and 3 as regression
-     checks; then mark `MEDIA-SOURCE-ROUTING` verified.
-   - Keep each stop's response body: a 400 now names the motor error. If it
-     wedges, report it; only a service restart clears it, and each restart
-     needs fresh authorization.
-   - Fresh session per case: app stop/start through the API, mute the mic
-     with `/rpc` `conversation.mic` `{"muted": true}`, send `conversation.say`,
-     and unmute when done (the mute survives until the app restarts).
-   - Voice model: no change needed (D-038 progress note; the robot already
-     runs `gpt-realtime-2.1-mini`, the newest id on the account).
-   - Still open: TV sound taken as a user turn (`TV-AUDIO-PHANTOM-TURNS`),
-     no tool to stop or pause the TV, and the `show_on_tv` image 400. Offer
-     an upstream issue for the stop wedge (analysis in D-038).
+0. Open, none blocking:
+   - After the user answers the source question, Reachy once listed the trip
+     without playing it (1 of 2 runs). Watch it in-room.
+   - `NAS-PLAY-REQUIRES-SELECTOR`: the refusal has not fired live yet.
+   - Every app stop carries the daemon-wedge risk. Keep the response body,
+     and report a wedge: only a service restart clears it, and each restart
+     needs the operator's authorization.
+   - For live tests: one fresh session per case, mic muted over `/rpc`
+     `conversation.mic`, and unmute when done.
+   - Still open: `TV-AUDIO-PHANTOM-TURNS`, no tool to stop or pause the TV,
+     and the `show_on_tv` image 400.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

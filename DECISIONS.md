@@ -2238,3 +2238,59 @@ stop). Ours: every stop keeps its response body, so the next 400 names the
 error. No change to our app can prevent this, because it happens in the
 daemon after our process has exited.
 
+**Fix redeploys 1.28.1–1.28.3 (operator, 2026-10-29: "deploy 1.28.1, restart
+daemon if it wedges, dont draft the issue but check the forum first").**
+The standing restart authorization covered this work and was not needed:
+7 of 7 stops since 12:02 returned 200. Today's totals are 19 API stops, 3
+failures and 2 wedges.
+- **1.28.1** (`52dc3577…`, deployed 12:21 UTC): case 6 failed again →
+  `youtube` "Okinawa travel video". The mirrored ask-first clause was not
+  enough.
+- **Root cause: an instruction conflict.** Four surfaces told the model to
+  go straight to the real tool once a box opens, without asking again:
+  `open_toolbox` ("without asking the user again"), `prompts.py` Tool
+  Availability (「同一輪直接呼叫…」「不要再問使用者一次」), `persona.md`
+  (「不要再問使用者一次」) and `profile.md`. They outrank the boxed
+  descriptions, and the model decides right after the box opens. D-029
+  decision 8 meant "don't stall for permission", not "never clarify".
+- **1.28.2** (`950010c2…`):
+  - `open_toolbox` now says to continue "with what the request needs — the
+    call that does it, or the one question a loaded tool says to ask first.
+    Opening a box never needs a second go-ahead."
+  - The prompt and persona now say 「不用為了開工具箱再跟使用者確認一次」.
+  - The Tool Availability media line gains the source rule: only a place,
+    trip, year or event → ask 影片庫 or YouTube first, then search.
+  - Test-pinned. Case 6 → a clear question, no tool call. **Pass.**
+  - The answer 「家裡的影片庫」 then ran `nas query` → `nas play` with only
+    `top_folder` and no path, which cast the archive's *first* clip
+    (Taiwan misc). Reachy called it the Okinawa trip.
+- **1.28.3** (`20ee340a…`): `play_nas_video` refuses a call with no `path`
+  and no `year`/`place`/`keyword`, with an error naming `action=query` and,
+  when `top_folder` is present, `action=play_folder`. This rule (validate at
+  the tool boundary, no silent fallback) predates this work; the fallback
+  bug itself was old. Test-pinned. Live on 1.28.3, a fresh session per row:
+
+  | Request | Tools called | Result |
+  |---|---|---|
+  | Case 6 「電視上放沖繩的影片」 run 1 | none | Named the missing source as a statement, not a clear question. **Pass** (weak wording). |
+  | The answer 「家裡的影片庫」 | `nas query` | Listed the trip's highlights and stopped without playing or asking. **Miss** on follow-through, not on routing. |
+  | Case 1 (NAS) | `nas query` → `nas play` with a path | Stream 206 → `playing` the right clip, described correctly. **Pass.** |
+  | Case 3 (explicit YouTube) | `youtube` only | `playing`. **Pass.** |
+  | Calendar regression 「我今天有什麼行程？」 | `open_toolbox productivity` → `calendar list`, same turn | No stall. **Pass.** |
+  | Case 6 run 3 | `open_toolbox media` only | Asked 「家裡自己拍的影片庫（NAS）還是 YouTube？」. **Pass.** |
+  | Its answer | `nas query` → `nas play` with a path | The right trip played. **Pass.** |
+
+  The TV was turned off after each cast and the mic unmuted at the end.
+- **Forum check (no issue drafted, per the operator):**
+  - Pollen Community forum (Discourse search: "stopping app", "already
+    running", "stop-current-app", "app stuck", "wedged"): mostly Reachy 2
+    threads, none about this.
+  - discuss.huggingface.co: nothing.
+  - The official conversation app's HF Space discussions (20): nothing
+    matching.
+  - GitHub Discussions on pollen-robotics/reachy_mini: no results.
+  - GitHub issues: related but different, #1401 and #1400.
+  - The Seeed Studio wiki's troubleshooting table only says to restart
+    `reachy-mini-daemon`.
+  - So the stop wedge looks unreported.
+

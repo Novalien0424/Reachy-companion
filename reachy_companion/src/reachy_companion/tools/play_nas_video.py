@@ -55,6 +55,14 @@ class PlayNasVideo(Tool):
             return settings.unavailable("NAS_INDEX_FILE")
 
         path = str(kwargs.get("path") or "").strip()
+        if not path and all(kwargs.get(key) in (None, "") for key in ("year", "place", "keyword")):
+            # Ours (2026-10-29, live): `play` with only `top_folder` -- an argument of
+            # `play_folder` -- matched the whole archive and cast its first clip,
+            # which Reachy then described as the trip asked for.
+            error = "say which clip: pass its path from action=query"
+            if kwargs.get("top_folder"):
+                error += "; to play a whole trip, use action=play_folder with that top_folder"
+            return {"ok": False, "error": error}
         if path:
             matches = [video for video in index.get("videos", []) if video.get("path") == path]
         else:

@@ -95,7 +95,7 @@ voice = "coral"
 
 ### 需要先開工具箱的能力
 下面這些工具**不是一直都在你的工具清單裡**，要先呼叫 `open_toolbox` 才會載進來，
-載進來之後同一輪直接接著呼叫，不要再問使用者一次：
+載進來之後同一輪直接接著呼叫，不用為了開工具箱再跟使用者確認一次：
 
 - `open_toolbox`（category=productivity）→ `calendar`、`tasks`、`drive`、`notion_add`、`email_send`
 - `open_toolbox`（category=media）→ `youtube`（從 YouTube 找影片放到電視上）、`nas`（家裡的影片庫，我們自己拍的影片，也放到電視上）、`draw_picture`（畫一張新的圖放到電視上）

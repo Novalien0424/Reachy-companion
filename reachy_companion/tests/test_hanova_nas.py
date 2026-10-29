@@ -753,6 +753,23 @@ async def test_play_nas_video_reports_no_match(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{}, {"top_folder": "SENTINEL_TRIP_q4"}], ids=["nothing", "a folder only"])
+async def test_play_nas_video_refuses_to_pick_a_clip_for_the_model(monkeypatch, tmp_path, kwargs):
+    """Live 2026-10-29: `play` with only `top_folder` matched the whole archive and cast its first clip.
+
+    Reachy then described that clip as the trip the user asked for. Without a
+    path or a filter there is nothing to choose by, so nothing is cast, and the
+    error names the calls that would work.
+    """
+    recorded = _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), **kwargs)
+    assert out["ok"] is False
+    assert "action=query" in out["error"]
+    assert ("action=play_folder" in out["error"]) is bool(kwargs)
+    assert recorded == {"fetched": [], "cast": []}
+
+
+@pytest.mark.asyncio
 async def test_play_nas_video_reports_an_smb_failure(monkeypatch, tmp_path):
     """A NAS that is off must produce a spoken answer, not a stack trace."""
 

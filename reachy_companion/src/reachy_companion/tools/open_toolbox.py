@@ -38,8 +38,9 @@ class OpenToolbox(Tool):
         "first. 音樂 is ALWAYS loaded: 「放首歌」「音樂關掉」 go straight to the music tool. "
         "Do NOT use when: the request is about looking, moving, emotions, remembering a person, the lights, "
         "music, searching the web, conversation modes, or going to sleep — those tools are always loaded. "
-        "After this returns, the category's tools are available immediately: continue and call the one you "
-        "actually need, in the same turn, without asking the user again."
+        "After this returns, the category's tools are available immediately: continue in the same turn with "
+        "what the request needs — the call that does it, or the one question a loaded tool says to ask first. "
+        "Opening a box never needs a second go-ahead from the user."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

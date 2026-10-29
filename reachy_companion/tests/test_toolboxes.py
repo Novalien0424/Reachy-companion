@@ -480,7 +480,20 @@ def test_the_open_toolbox_description_owns_the_continuation_rule() -> None:
     """The return states facts; the description is where the policy lives."""
     description = OpenToolbox().description
     assert "in the same turn" in description
-    assert "without asking the user again" in description
+    assert "never needs a second go-ahead" in description
+
+
+def test_the_continuation_rule_leaves_room_for_an_ask_first_question() -> None:
+    """D-038 case 6: 'without asking the user again' overrode the media tools' ask-first rule.
+
+    The rule exists so the model does not stall for permission after opening a
+    box, not to forbid the clarifying question a request genuinely needs.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    assert "asking the user again" not in OpenToolbox().description
+    assert "不要再問使用者一次" not in hardening_block()
+    assert "先問一句要找家裡的" in hardening_block()
 
 
 def test_the_prompt_carries_the_same_routing_rules() -> None:
