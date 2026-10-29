@@ -12,7 +12,7 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 ## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
 
 Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redeploys
-1.28.1 (`52dc3577…`), 1.28.2 (`950010c2…`) and 1.28.3 (`20ee340a…`). Plan:
+1.28.1 (`52dc3577…`), 1.28.2 (`950010c2…`), 1.28.3 (`20ee340a…`) and 1.28.4 (`d5295120…`, installed, not yet live-checked). Plan:
 `docs/plans/2026-10-29-media-source-routing-plan.md`. Decision D-038.
 
 - **「從 NAS 找」 and 「從 YouTube 找」 are different requests.** The TV tool
@@ -43,6 +43,13 @@ Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redepl
   the whole archive, so the archive's first clip, from Taiwan, went to the TV,
   and Reachy called it the Okinawa trip. Now it plays nothing and says to pass
   a clip's path from `query`, or to use `play_folder` for a whole trip.
+- **1.28.4 — after you say 「家裡的影片庫」, Reachy plays it.** Once it had
+  asked where to look, Reachy sometimes found the trip and only described it.
+  The video tool taught a two-step search-then-play for every request, and
+  the request to play was a turn behind. Now it plays a trip in one call,
+  searching only when you want to see what's there, and it remembers what you
+  asked for when it asks where to look. A clip that starts playing also
+  reports which trip it belongs to.
 
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 

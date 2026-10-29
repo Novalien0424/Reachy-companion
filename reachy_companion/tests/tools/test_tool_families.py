@@ -305,3 +305,17 @@ def test_youtube_and_nas_ask_first_with_the_same_words() -> None:
     """
     assert _ask_first_clause(Youtube.description) == _ask_first_clause(Nas.description)
     assert "電視上放" not in Youtube.description
+
+
+def test_nas_teaches_one_call_play_and_query_for_browsing() -> None:
+    """D-038 follow-through: "path/top_folder from query. Preferred." made every play a two-step chain.
+
+    After the source question the mini model stopped after `query` and talked
+    about the trip. One call (`play_folder` with `place`) is what it can do
+    reliably; `query` stays for browsing or choosing.
+    """
+    schema_text = str(Nas.parameters_schema)
+    assert "Preferred" not in schema_text and "from a call with action=query" not in schema_text
+    assert "play in one call: `play_folder` with `place`" in Nas.description
+    assert "not a step before playing" in Nas.description
+    assert "then do what they first asked" in _ask_first_clause(Nas.description)

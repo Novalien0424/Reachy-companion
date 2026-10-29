@@ -27,7 +27,7 @@ class PlayNasVideo(Tool):
         "properties": {
             # 2026-08-31 tool diet: this description reaches the model through the
             # `nas` family schema, so it must name a call the model can still make.
-            "path": {"type": "string", "description": "Exact clip path from a call with action=query. Preferred."},
+            "path": {"type": "string", "description": "Exact clip path, as action=query returns it."},
             "year": {"type": "integer", "description": "Year, when no path is known."},
             "place": {"type": "string", "description": "Place or trip name, when no path is known."},
             "keyword": {"type": "string", "description": "Any text to narrow the match."},
@@ -101,6 +101,9 @@ class PlayNasVideo(Tool):
             "ok": True,
             "status": "casting",
             "title": result["title"],
+            # The trip it belongs to, so the one Reachy names comes from here (live
+            # 2026-10-29: a Taiwan clip was announced as the trip asked for).
+            "top_folder": video.get("top_folder"),
             "ambiguous": len(ready) > 1,
             "remaining": nas.remaining(),
         }

@@ -2294,3 +2294,28 @@ failures and 2 wedges.
     `reachy-mini-daemon`.
   - So the stop wedge looks unreported.
 
+**1.28.4 — NAS play follow-through** (operator: "fix the last issue … first
+design which is best for our realtime model"). Design:
+`docs/plans/2026-10-29-nas-play-follow-through-plan.md`.
+- **Cause.** After the source question, the play request is a turn behind,
+  and the `nas` schema taught a two-step chain for every play: `path` and
+  `top_folder` said "from a call with action=query. Preferred." The mini
+  tier is weakest at chaining, and in 1 of 2 runs it stopped after `query`.
+- **Fix, rung 1:**
+  - The `nas` description is now a recipe by intent: play in one call with
+    `play_folder` + `place` for a trip (it returns `candidates` instead of
+    guessing), or `play` + `keyword`/`place` for one clip; `query` is for
+    browsing or choosing, "not a step before playing".
+  - The parameter text no longer says query-first or "Preferred".
+  - A `play` success now returns `top_folder`.
+- **Fix, rung 2:** the mirrored ask-first clause and the prompt's media rule
+  say to do what the user first asked once they answer (要放就直接放).
+- **Index check on the robot:** Okinawa → 1 trip, Tokyo → 3, Japan → 9.
+- Suite 2100 / 31; ruff and mypy clean.
+- **Installed 13:01 UTC** (wheel `d5295120…`, two-step,
+  backup `20261029T130038Z-33372`), with no app stop needed: at 12:50 a
+  person said 「OK，Richie，進入睡眠模式。」, so the app was already down and
+  the robot asleep.
+- **Live checks** (V1 ×3, V2 browse-only, V3 case 1) have not run. Running
+  them needs a wake and TV casts, and someone had just put Reachy to sleep.
+

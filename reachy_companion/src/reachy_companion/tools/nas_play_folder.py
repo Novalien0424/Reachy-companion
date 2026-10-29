@@ -22,7 +22,10 @@ class NasPlayFolder(Tool):
         "properties": {
             # 2026-08-31 tool diet: this description reaches the model through the
             # `nas` family schema, so it must name a call the model can still make.
-            "top_folder": {"type": "string", "description": "Folder name from a call with action=query. Preferred."},
+            "top_folder": {
+                "type": "string",
+                "description": "Exact trip folder name, as query, candidates or all_trips give it.",
+            },
             "year": {"type": "integer", "description": "Year, when no folder name is known."},
             "place": {"type": "string", "description": "Place or trip name, when no folder name is known."},
         },

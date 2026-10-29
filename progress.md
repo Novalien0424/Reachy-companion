@@ -5,6 +5,23 @@ history of this file.
 
 ## Current state
 
+**v1.28.4 INSTALLED; THE ROBOT IS ASLEEP (a person said 「OK，Richie，進入睡眠
+模式。」 at 12:50 UTC), so the next wake loads 1.28.4.**
+
+1.28.4 fixes the follow-through after the source question:
+- the `nas` description teaches a one-call play (`play_folder` + `place`,
+  which returns `candidates` instead of guessing);
+- `query` is only for browsing;
+- the parameter text no longer says query-first;
+- `play` returns `top_folder`;
+- the ask-first rule now says to do what the user first asked.
+
+Suite 2100 / 31. The live checks (V1 ×3, V2, V3, D-038) have not run,
+because someone had just put Reachy to sleep and the checks need a wake and
+TV casts.
+
+Earlier (2026-10-29):
+
 **v1.28.3 (twenty-eighth install + three fix redeploys — D-038) IS RUNNING ON
 THE ROBOT (daemon v1.13.0), mic unmuted, TV off.**
 

@@ -729,6 +729,7 @@ async def test_play_nas_video_stages_and_casts_a_lan_url(monkeypatch, tmp_path):
     recorded = _stub_transfer(monkeypatch)
     out = await PlayNasVideo()(deps=_deps(tmp_path), place="sentinel_place_q4", keyword="morning")
     assert out["ok"] is True and out["status"] == "casting"
+    assert out["top_folder"] == "SENTINEL_TRIP_q4"  # the trip Reachy names comes from the result
     assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4"]
     script, data = recorded["cast"][0]
     assert script == "tv_show_video_url"

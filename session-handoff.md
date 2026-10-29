@@ -1,13 +1,10 @@
-# Session handoff — 2026-10-29 (v1.28.3 running; source routing verified live)
+# Session handoff — 2026-10-29 (v1.28.4 installed; robot asleep; live checks pending)
 
-State: **v1.28.3 running** on daemon v1.13.0, with the mic unmuted and the TV
-off. Media requests follow the source the user names: `youtube`, or `nas`
-(影片庫). A request that names no source gets a question first; the toolbox
-"don't ask again" rule now forbids only a second go-ahead.
-- `nas play` refuses to pick a clip without a path or a filter.
-- The daemon stop wedge is root-caused and looks unreported upstream (D-038,
-  `DAEMON-STOP-WEDGE`). The operator chose not to draft an issue yet.
-- `main` is pushed. Details: `progress.md` top entry; D-038.
+State: **v1.28.4 installed**, robot asleep (put to sleep by a person at 12:50
+UTC). The startup app is `reachy_companion`, so the next wake loads 1.28.4.
+1.28.4 makes NAS play a single call and carries the play request across the
+source question (D-038; plan `docs/plans/2026-10-29-nas-play-follow-through-plan.md`).
+`main` is pushed.
 
 ## Shipped today
 
@@ -30,9 +27,8 @@ off. Media requests follow the source the user names: `youtube`, or `nas`
 
 ## Next session
 
-0. Open, none blocking:
-   - After the user answers the source question, Reachy once listed the trip
-     without playing it (1 of 2 runs). Watch it in-room.
+0. **Live checks on 1.28.4, once the household agrees to a wake and TV casts:**
+   V1 ×3, V2 and V3 as in `MEDIA-SOURCE-ROUTING` next_action. Other open items:
    - `NAS-PLAY-REQUIRES-SELECTOR`: the refusal has not fired live yet.
    - Every app stop carries the daemon-wedge risk. Keep the response body,
      and report a wedge: only a service restart clears it, and each restart
