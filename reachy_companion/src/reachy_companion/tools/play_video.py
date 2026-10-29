@@ -21,9 +21,9 @@ from reachy_companion.tools.core_tools import Tool, ToolDependencies
 logger = logging.getLogger(__name__)
 
 
-def _nas_clips_named_by(query: str) -> List[Dict[str, Any]]:
+def _nas_clips_in(query: str) -> List[Dict[str, Any]]:
     index = nas.load_index()
-    return nas.clips_named_by(index, query) if index is not None else []
+    return nas.clips_by_file(index, query) if index is not None else []
 
 
 class PlayVideo(Tool):
@@ -66,20 +66,21 @@ class PlayVideo(Tool):
 
         logger.info("Tool call: play_video query=%s", redact.text(query))
         # Ours (2026-10-29, live): with a family clip just found by `nas query`, the
-        # model passed its path here, and earlier its title -- the search then found
-        # nothing, or cast a stranger's video as ours. Those clips are not online:
-        # say so and name the call that plays them, rather than searching. Off the
-        # loop: reading and scanning the full index takes ~0.1 s on the robot.
-        named = await asyncio.to_thread(_nas_clips_named_by, query)
-        if named:
-            logger.info("play_video: the query names %d NAS clip(s); not searching", len(named))
+        # model passed its path here, and the search found nothing. A NAS file is
+        # not a search phrase, so it is refused with the call that plays it. Words
+        # are not checked -- which source they are for is the model's call, and the
+        # `youtube` / `nas` split by source is what makes it (D-038). Off the loop:
+        # reading and scanning the full index takes ~0.1 s on the robot.
+        clips = await asyncio.to_thread(_nas_clips_in, query)
+        if clips:
+            logger.info("play_video: the query is %d NAS clip file(s); not searching", len(clips))
             refusal: Dict[str, Any] = {
                 "ok": False,
-                "error": "that names one of the family's own clips on the NAS, which a YouTube search cannot "
-                "reach; play it with nas action=play and the clip's path",
+                "error": "that is a file on the family's NAS, which a YouTube search cannot reach; play it with "
+                "nas action=play and the clip's path",
             }
-            if len(named) == 1:
-                refusal["path"] = named[0].get("path")
+            if len(clips) == 1:
+                refusal["path"] = clips[0].get("path")
             return refusal
 
         found = await asyncio.to_thread(ytdlp.search, query, None)

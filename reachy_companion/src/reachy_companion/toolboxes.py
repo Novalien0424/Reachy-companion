@@ -12,7 +12,7 @@ Three mechanisms, cheapest first: consolidate (18 CRUD tools → 6 families,
 through `open_toolbox` — the cookbook's Dynamic Conversation Flow pattern.
 
 Result at the start of a turn: 22 tools, 27 while the productivity box is open,
-24 while the media box is, 29 with both (they accumulate within a mode — design
+25 while the media box is, 30 with both (they accumulate within a mode — design
 decision 8), and 6 local tools in 紀錄模式. Every count is "plus any
 `EXTRA_TOOLS`": MCP tool spaces belong to no box and are never hidden in any
 mode, so they sit on top of all of these.
@@ -73,7 +73,7 @@ CORE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 # and never a way to make the robot stop doing something.
 TOOLBOXES: Final[dict[str, tuple[str, ...]]] = {
     "productivity": ("calendar", "tasks", "drive", "email_send", "notion_add"),
-    "media": ("tv", "nas"),
+    "media": ("youtube", "nas", "draw_picture"),
 }
 
 TOOLBOX_CATEGORIES: Final[tuple[str, ...]] = tuple(sorted(TOOLBOXES))

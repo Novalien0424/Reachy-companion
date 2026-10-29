@@ -29,7 +29,7 @@ class Drive(Tool):
         "Use when: the user talks about files in the cloud — 「雲端有什麼檔案」「幫我上傳」「把那個檔案丟掉」"
         "「what's in my drive」「upload that」「delete that file」. "
         "Do NOT use when: the user means a photo you should LOOK at right now — that is camera or look_around. "
-        "Do NOT use when: the user means a video to play on the TV — that is tv or nas. "
+        "Do NOT use when: the user means a video to play on the TV — that is youtube or nas. "
         "Pick `action`: `list` optionally takes limit; `trash` takes file_id; `upload` takes name. Both `trash` "
         "and `upload` ask the user out loud to confirm first."
     )

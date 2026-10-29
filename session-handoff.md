@@ -1,10 +1,11 @@
-# Session handoff — 2026-10-29 (v1.27.3 installed; home video cast verified)
+# Session handoff — 2026-10-29 (v1.28.0 installed; daemon app manager wedged)
 
-State: **v1.27.3 installed and running** on daemon v1.13.0. The wedged app
-manager was cleared by one operator-instructed daemon restart; a home video
-then played from the NAS on the TV through `nas` (D-037,
-`NAS-PLAY-VIA-NAS`). `main` is pushed. Details: `progress.md` top entry;
-D-036, D-037.
+State: **v1.28.0 installed** on daemon v1.13.0, **no app running**. The
+daemon's app manager is stuck in `stopping` after an official stop at 11:42
+UTC (`DAEMON-STOP-WEDGE`), so every start is refused. Clearing it takes a
+daemon restart, which only the operator can authorize; this morning's
+authorization covered one restart and has been used. `main` is pushed.
+Details: `progress.md` top entry; D-038.
 
 ## Shipped today
 
@@ -21,16 +22,27 @@ D-036, D-037.
 - v1.27.3 (2026-10-29): `tv play_video` refuses a NAS clip and points at
   `nas play`; `open_toolbox` says loose descriptions find home videos. Home
   video cast verified live (NAS stream 206, HA `playing`).
+- v1.28.0 (2026-10-29): media tools named by source — `youtube`, `nas`
+  (影片庫) and `draw_picture`; `tv` retired; ask when no source is named.
+  Live 5/6 passed (D-038).
 
 ## Next session
 
-0. Open from today, none blocking: the model still calls `tv` before `nas`
-   (one refused call); TV sound taken as a user turn
-   (`TV-AUDIO-PHANTOM-TURNS`: diagnose first); no tool stops or pauses the
-   TV; one `tv show` image generation returned 400 (unexamined). If the
-   app manager wedges in `stopping` again, report it: the 2026-10-29 restart
-   authorization covered that one restart only. Check `motor_control_mode`
-   before an app stop.
+0. **Blocked on the operator's daemon restart:**
+   - (a) Case 6 of `MEDIA-SOURCE-ROUTING`: 「電視上放沖繩的影片」 with no source
+     named should get one short question and no nas/youtube call. Cases 1–5
+     passed.
+   - (b) The operator's request: switch the voice model to
+     gpt-realtime-2.1-mini or its latest alias, then re-run the tool-call
+     cases.
+
+   Use one fresh session per case: app stop/start through the API, mute the
+   mic with `/rpc` `conversation.mic` `{"muted": true}`, then send
+   `conversation.say`. Keep each stop's response body, since a 400
+   names the exception that wedges the daemon.
+
+   Still open: TV sound taken as a user turn (`TV-AUDIO-PHANTOM-TURNS`), no
+   tool that stops or pauses the TV, and the `show_on_tv` image 400.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

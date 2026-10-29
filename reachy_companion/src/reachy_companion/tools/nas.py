@@ -32,19 +32,26 @@ class Nas(Tool):
         "skip": NasSkip(),
     }
     description = (
-        "The household video archive on the NAS: search it, play one video or a whole folder on the TV, or skip "
-        "to the next one. "
-        "Use when: the user asks about their own recorded videos, by year, place or keyword — 「二零一九年在花蓮"
-        "拍的影片」「放家裡那部影片」「播那個資料夾」「下一部」「play our old videos」「skip」. "
-        "Do NOT use when: the user wants something from the internet — that is tv (YouTube) or the search tool. "
+        "The family's own video library (家裡的影片庫) on the NAS: search it, play one clip or a whole trip on the "
+        "living-room TV, or skip to the next clip. "
+        "Use when: the user names the NAS or the video library, or means videos the family recorded, by year, "
+        "place, trip or subject — 「幫我從 NAS 找」「從影片庫找二零一九年在花蓮拍的」「放我們拍的那部」「播那個資料夾」"
+        "「下一部」「play our old videos」「skip」. "
+        "Do NOT use when: the user names YouTube or the internet, or wants something public such as an MV or a "
+        "trailer — that is youtube; an answer from the web is the search tool. "
         "Do NOT use when: the user wants music rather than video — that is music. "
+        "Both this and youtube play on the TV, so 電視 alone does not decide: the source does. When the request "
+        "names no source and nothing shows whether it is the family's own or something public, ask which one they "
+        "mean. "
         "Pick `action`: `query` searches the index and returns matches; `play` puts one clip on the TV — pass "
         "its `path` from `query`; `play_folder` puts a whole trip on the TV; `skip` moves to the next video in "
-        "a running folder. These clips exist only on the NAS, so play them here, never through tv. "
+        "a running folder. A clip found here exists only here, so play it with `play`, never through youtube. "
         "The archive is catalogued in English, so search with English words: translate a place or subject "
         "first (巴黎 → Paris, 生日 → birthday). `query` lists every matching trip in `trips`. When nothing "
         "matches, the result carries `all_trips`, the whole catalogue: pick the trip the user means from it "
-        "and search or play that one, because a miss is usually a wording miss rather than a missing video."
+        "and search or play that one, because a miss is usually a wording miss rather than a missing video. "
+        "When no trip there fits either, say the 影片庫 does not have it and offer YouTube; search YouTube only "
+        "once they agree."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

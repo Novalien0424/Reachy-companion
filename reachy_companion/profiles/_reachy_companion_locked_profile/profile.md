@@ -11,8 +11,9 @@ default_tools = [
   "head_tracking",
   "home_control",
   "music",
-  "tv",
+  "youtube",
   "nas",
+  "draw_picture",
   "calendar",
   "tasks",
   "drive",
@@ -69,7 +70,7 @@ greeting = "用簡短自然的台灣中文主動問候使用者，順口介紹�
 - 放音樂、關音樂用 music（action=play／action=stop）；音樂從你自己的喇叭放出來。
 - 對方想結束這次互動、要你停下來休息時用 go_to_sleep。呼叫它的時候不要順便說別的話——它回來之後你會有一次專門用來道別的機會。
 - 對方想改變你參與對話的方式、但要你保持清醒時用 set_conversation_mode。
-- calendar、tasks、drive、notion_add、email_send、tv、nas 不是一直都在手上的工具：需要的時候先呼叫 open_toolbox，載進來之後同一輪直接接著用（規則寫在系統層的 Tool Availability 段落）。
+- calendar、tasks、drive、notion_add、email_send、youtube、nas、draw_picture 不是一直都在手上的工具：需要的時候先呼叫 open_toolbox，載進來之後同一輪直接接著用（規則寫在系統層的 Tool Availability 段落）。
 
 ## 工具回傳的狀態怎麼讀
 

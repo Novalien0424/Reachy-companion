@@ -10,7 +10,6 @@ import pytest
 from reachy_companion.config import LOCKED_PROFILE, DEFAULT_PROFILES_DIRECTORY
 from reachy_companion.memory import add_memory_fact
 from reachy_companion.prompts import get_session_instructions
-from reachy_companion.tools.tv import Tv
 from reachy_companion.tools.nas import Nas
 from reachy_companion.tools.drive import Drive
 from reachy_companion.tools.music import Music
@@ -40,8 +39,11 @@ EXPECTED_TOOLS = (
     # families. Their modules, names and prerequisite rows are untouched -- they
     # are simply reached through a façade now, so only this list got shorter.
     "music",
-    "tv",
+    # D-038: the `tv` family is retired. Media tools are named for their source,
+    # because the user names the source and every request says "on the TV".
+    "youtube",
     "nas",
+    "draw_picture",
     "calendar",
     "tasks",
     "drive",
@@ -204,14 +206,16 @@ _RETIRED_TOOL_NAMES = (
     "sweep_look", "self_destruct", "mad_laugh",
 )
 
-FAMILY_NAMES = ("music", "tv", "nas", "calendar", "tasks", "drive")
+FAMILY_NAMES = ("music", "nas", "calendar", "tasks", "drive")
+# D-038: one-purpose tools the body must teach as well, being boxed.
+SINGLE_TOOL_NAMES = ("youtube", "draw_picture")
 
 # Every family's live action enum, read off the shipped classes rather than
 # restated here: a family that renames an action must not be able to leave a
 # stale value behind in the prompt.
 _FAMILY_ACTIONS = {
     family.name: frozenset(family.parameters_schema["properties"]["action"]["enum"])
-    for family in (Calendar, Tasks, Drive, Nas, Music, Tv)
+    for family in (Calendar, Tasks, Drive, Nas, Music)
 }
 
 _ACTION_VALUE = re.compile(r"action=([a-z_]+(?:/[a-z_]+)*)")
@@ -245,9 +249,10 @@ def _resolved_action_values(text: str) -> list[tuple[str | None, str, str]]:
 def _tool_name_surface(text: str) -> str:
     """Blank out every `action=…` value that is REAL, and only those.
 
-    `tv（action=play_video）` names the live `tv` tool and passes it an argument;
-    that argument happens to spell a name this list retired, and an argument is
-    not an instruction to call a function that no longer exists. But blanking
+    `nas（action=play）` names the live `nas` tool and passes it an argument; an
+    argument that happened to spell a retired name (the old `tv` family's
+    `play_video` did) is not an instruction to call a function that no longer
+    exists. But blanking
     every `action=…` unconditionally would turn the escape hatch into a hiding
     place — `music（action=play_music）` is a stale call dressed as an argument.
     So a value is blanked only when its family really has that action; anything
@@ -271,12 +276,11 @@ def _spec_surface(spec: dict) -> str:
     the surrounding prose names sibling families ("that is music"), so proximity
     would resolve the wrong owner.
 
-    Inside the `tv` spec every bare `play_video` — the enum value, the "Pick
+    Inside a family spec every bare action name — the enum value, the "Pick
     `action`" sentence, the action property's own description — is that family's
-    action, so the whole token is blanked there and nowhere else. That is the one
-    place this scan cannot tell an action from the tool it was named after, and
-    it is unavoidable: the reviewed design named the action `play_video`. Every
-    other spec, and the other seventeen retired names, are scanned in full.
+    own, so the token is blanked there and nowhere else. Since D-038 retired the
+    `tv` family no action spells a retired name, so every spec is in effect
+    scanned in full.
     """
     blob = json.dumps(spec, ensure_ascii=False)
     own_actions = _FAMILY_ACTIONS.get(spec["name"], frozenset())
@@ -357,8 +361,31 @@ def test_every_action_value_in_a_bundled_profile_is_real() -> None:
 def test_the_locked_profile_body_names_every_family_it_ships() -> None:
     """The other half of P2-6: the body must teach the names that DO exist."""
     body = read_profile(LOCKED_PROFILE).instructions
-    for family in FAMILY_NAMES:
+    for family in FAMILY_NAMES + SINGLE_TOOL_NAMES:
         assert family in body, family
+
+
+# `tv` is too short for the substring scan above: `tv_not_responding` is a live
+# result status and the persona teaches it. A whole token is a tool name.
+_RETIRED_TV = re.compile(r"(?<![0-9A-Za-z_])tv(?![0-9A-Za-z_])")
+
+
+def test_the_retired_tv_tool_is_named_nowhere_the_model_reads() -> None:
+    """D-038: a prompt naming a tool that is gone invites the model to act it out."""
+    from reachy_companion.prompts import hardening_block
+
+    surfaces = {path.name: path.read_text(encoding="utf-8") for path in _bundled_profile_files()}
+    surfaces["hardening_block"] = hardening_block()
+    surfaces["persona.md"] = (Path(__file__).resolve().parents[2] / "persona.md").read_text(encoding="utf-8")
+    core_tools = importlib.import_module("reachy_companion.tools.core_tools")
+    core_tools.initialize_tools(force=True)
+    try:
+        for spec in core_tools.get_tool_specs():
+            surfaces[f"spec:{spec['name']}"] = json.dumps(spec, ensure_ascii=False)
+    finally:
+        core_tools._TOOLS_SIGNATURE = None
+    for where, text in surfaces.items():
+        assert not _RETIRED_TV.search(text), where
 
 
 def test_the_confirm_retry_tells_the_model_to_resend_its_action() -> None:

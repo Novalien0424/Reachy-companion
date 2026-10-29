@@ -121,7 +121,7 @@ def test_the_static_core_is_the_start_of_turn_surface(registry: ModuleType) -> N
     # test environment that set is empty and `kept` is exactly the core.
     assert kept == (CORE_TOOL_NAMES | set(EXTRA_TOOLS)) & set(registry.get_tools())
     assert "music" in kept  # the stop lane, always reachable
-    for boxed in ("calendar", "tasks", "drive", "email_send", "notion_add", "tv", "nas"):
+    for boxed in ("calendar", "tasks", "drive", "email_send", "notion_add", "youtube", "nas", "draw_picture"):
         assert boxed not in kept
 
 
@@ -148,7 +148,7 @@ def test_opening_a_box_adds_exactly_that_family(registry: ModuleType) -> None:
 
 
 def test_the_documented_surface_sizes_hold(registry: ModuleType) -> None:
-    """22 at rest, 27 / 24 with one box, 29 with both (design decision 8).
+    """22 at rest, 27 / 25 with one box, 30 with both (design decision 8; media is three tools since D-038).
 
     Boxes accumulate within a mode; a turn that asks for the calendar and then
     for the TV keeps both. The numbers are documented, so they are asserted
@@ -165,8 +165,8 @@ def test_the_documented_surface_sizes_hold(registry: ModuleType) -> None:
 
     assert _surface() == 22
     assert _surface("productivity") == 27
-    assert _surface("media") == 24
-    assert _surface("productivity", "media") == 29
+    assert _surface("media") == 25
+    assert _surface("productivity", "media") == 30
 
 
 @pytest.mark.asyncio

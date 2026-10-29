@@ -27,13 +27,13 @@ class OpenToolbox(Tool):
         "ready and loads the rest on demand, so the FIRST time a turn needs one of these areas you call "
         "this, and then call the real tool in the same turn. "
         "Categories: `productivity` — the calendar, the to-do list, the cloud drive, email and Notion. "
-        "`media` — the television, and the family's own recorded videos (家庭影片) on the NAS, which are found "
-        "from a loose description — a trip, a place, a year, a subject — so open it and search rather than "
-        "asking the user for a file name. "
+        "`media` — videos and pictures on the living-room TV: YouTube; the family's own video library (影片庫, "
+        "家庭影片) on the NAS, whose clips are found from a loose description — a trip, a place, a year, a subject "
+        "— so open it and search rather than asking the user for a file name; and pictures drawn on request. "
         "Use when: the request needs a tool you cannot see yet. 行程／約／會議／待辦／任務／提醒／郵件／"
-        "寄信／雲端／檔案／Notion → productivity；電視／影片／MV／NAS／影片檔 → media。"
+        "寄信／雲端／檔案／Notion → productivity；電視／影片／MV／YouTube／NAS／影片庫／影片檔／畫圖 → media。"
         "「幫我加個行程」「加到待辦」「寄封信」「雲端有什麼」→ productivity；「電視上放那個」"
-        "「找一下那年拍的影片」→ media；「add a task」「put that on the TV」→ the matching category. "
+        "「找一下那年拍的影片」「幫我從 YouTube 找」→ media；「add a task」「put that on the TV」→ the matching category. "
         "Do NOT use when: the tool you need is already in your list — call it directly, never open a box "
         "first. 音樂 is ALWAYS loaded: 「放首歌」「音樂關掉」 go straight to the music tool. "
         "Do NOT use when: the request is about looking, moving, emotions, remembering a person, the lights, "
@@ -47,7 +47,7 @@ class OpenToolbox(Tool):
             "category": {
                 "type": "string",
                 "enum": list(TOOLBOX_CATEGORIES),
-                "description": "media 電視／NAS 影片；productivity 行程／待辦／雲端／郵件／Notion。",
+                "description": "media 電視上的 YouTube／NAS 影片庫／畫圖；productivity 行程／待辦／雲端／郵件／Notion。",
             },
         },
         "required": ["category"],

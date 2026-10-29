@@ -55,3 +55,22 @@ async def dispatch_family(
     forwarded = {key: value for key, value in kwargs.items() if key != "action" and value is not None}
     logger.info("Tool call: %s action=%s", family, action)
     return await actions[action](deps, **forwarded)
+
+
+async def forward_to(
+    *,
+    name: str,
+    delegate: Tool,
+    deps: ToolDependencies,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Hand a one-purpose tool's call to the original module that does the work (D-038).
+
+    The same contract as `dispatch_family` without an action to pick: nothing is
+    validated here, so the delegate's prerequisite check still answers before
+    its argument checks, and only `None` values are dropped -- a delegate reads
+    its arguments with `kwargs.get`, and `str(None)` would be a query.
+    """
+    forwarded = {key: value for key, value in kwargs.items() if value is not None}
+    logger.info("Tool call: %s", name)
+    return await delegate(deps, **forwarded)

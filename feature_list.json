@@ -571,7 +571,7 @@
       "verification": "Live: 「把我們在沖繩拍的家庭影片播一段到電視上」 → nas play with a path → NAS stream 206 lines → HA `playing`.",
       "state": "verified",
       "evidence": "2026-10-29 v1.27.1: the model found the clips, then called tv play_video with the clip name and cast a YouTube video while calling it the family's. v1.27.2 installed; not retested because the daemon app manager is wedged in `stopping` after an official stop (D-037). 2026-10-29 after the operator-instructed daemon restart, v1.27.2 retest: the model passed the clip's NAS path to tv play_video twice (YouTube no result, TV stayed off) and the first ask in a fresh session got a request for a file name. v1.27.3 (wheel 394994fa…): fresh session 08:45 UTC, 「把我們在沖繩拍的家庭影片播一段到電視上」 → open_toolbox media → nas query 沖繩 (0, all_trips) → Okinawa (16) → tv play_video with the path → refused (\"…play it with nas action=play…\") → nas play same path → `NAS stream: serving 266124445 of 266124445 bytes (status 206)` → HA media_player `playing`, app Default Media Receiver, media_title = the clip. Real-index probe on the robot: 4/4 observed tv queries named, 0/15 ordinary searches, ~0.1-0.14 s per scan (run off the loop). TV turned off afterwards (was off).",
-      "next_action": "Residual: the model still tries tv first (one refused call, ~2.5 s). In-room: confirm picture and sound on the TV."
+      "next_action": "Superseded by MEDIA-SOURCE-ROUTING (D-038, v1.28.0): the tv tool is retired and the guard now refuses only a NAS path or file name. In-room: confirm picture and sound on the TV."
     },
     {
       "id": "RPC-SAY-CONVERSATION-LOOP",
@@ -588,6 +588,22 @@
       "state": "known-defect-preexisting",
       "evidence": "2026-10-29: 「瑞奇。」 during a YouTube cast was answered with go_to_sleep; 08:46 「一次。」 during the NAS home clip was confirmed as a barge-in and cancelled Reachy's reply (D-037). Both times the TV was the likely source; nobody was confirmed in the room.",
       "next_action": "Diagnose before changing anything: check whether the VAD/echo path sees TV audio, and whether wait_for_user is offered in these turns (reachy-instructing-model rung order)."
+    },
+    {
+      "id": "MEDIA-SOURCE-ROUTING",
+      "behavior": "The source the user names decides the media tool: NAS / 影片庫 / the family's own recordings → nas; YouTube / the internet / public content → youtube; both play on the same TV, so 電視 decides nothing. No source named and no sign of whose video it is → Reachy asks which one. The named source has nothing → it says so and offers the other, switching only on a yes. A picture → draw_picture. The tv tool is retired (D-038, v1.28.0).",
+      "verification": "Live, a fresh session per request, mic muted over /rpc: each request calls only the named source's tools, with no refused call and no draw_picture call.",
+      "state": "implemented-unverified",
+      "evidence": "2026-10-29 v1.28.0 (wheel 52dd3f1a…), 11:35–11:42 UTC. (1) 「幫我從NAS找沖繩的影片，放一段到電視上」 → open_toolbox media → nas query Okinawa → nas play → NAS stream 206 → HA playing. (2) 「幫我從影片庫找我們在沖繩拍的」 → nas query; found the trip and asked whether to play all or one clip. (3) 「幫我從YouTube找沖繩美ら海水族館的影片，放到電視上」 → youtube only → HA playing YouTube; real title spoken. (4) \"search YouTube for a cat video and put it on the TV\" → youtube only → playing. (5) 「從NAS找周杰倫的MV」 → nas query Jay Chou → said the 影片庫 lacks it and offered YouTube, with no youtube call (wobble: also offered a retry with the keyword it had already used). Media box open = 25 tools. Suite 2095/31, ruff, mypy clean.",
+      "next_action": "Run case 6 (「電視上放沖繩的影片」, no source named: expect one short question and no nas/youtube call) once the daemon wedge is cleared; then mark verified. In-room: a spoken (not typed) NAS and YouTube request each."
+    },
+    {
+      "id": "DAEMON-STOP-WEDGE",
+      "behavior": "An official stop-current-app leaves the daemon app manager in `stopping` (start refused: \"An app is already running\") until the daemon restarts.",
+      "verification": "Upstream: stop_current_app clears current_app in a finally. Ours: capture the 400 body on every stop so the raising call is named.",
+      "state": "known-defect-preexisting",
+      "evidence": "Daemon v1.13.0 apps/manager.py stop_current_app (identical to the reference HEAD a9a2a42): a RuntimeError after the process exits — the pose read or enable_motors(), before the 'Returning robot to zero position' log — becomes HTTP 400 and skips `current_app = None`; when the stop also cancelled the monitor task, the state stays STOPPING. 2026-10-29: 06:01 after go_to_sleep (motors disabled; cleared by the operator-instructed restart at 08:29); 11:36:52 400 without a wedge (monitor finished first → DONE); 11:42:42 400 and wedged with motors enabled. 5 of 7 stops today were clean.",
+      "next_action": "Operator: authorize a daemon restart (or power-cycle) to clear it. Consider reporting upstream to pollen-robotics/reachy_mini with the code path above; capture the 400 detail first."
     }
   ]
 }

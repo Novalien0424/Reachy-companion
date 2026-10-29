@@ -9,8 +9,10 @@ import pytest
 
 from reachy_companion import home_net
 from reachy_companion.hanova import images, settings
+from reachy_companion.tools.youtube import Youtube
 from reachy_companion.tools.play_video import PlayVideo
 from reachy_companion.tools.show_on_tv import ShowOnTv
+from reachy_companion.tools.draw_picture import DrawPicture
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake"
@@ -114,6 +116,10 @@ def test_descriptions_carry_no_personal_identifier():
         assert "@" not in text
         assert "media_player." not in text
         assert len(text) <= 120
+    # D-038: the model reads these instead; they carry routing pairs, so no length cap.
+    for text in (Youtube().description, DrawPicture().description):
+        assert "@" not in text
+        assert "media_player." not in text
 
 
 @pytest.mark.asyncio
@@ -584,20 +590,21 @@ async def test_show_on_tv_rejects_an_empty_request(tmp_path):
 
 
 def test_both_tools_reach_the_model_session():
-    """The locked profile must list the family, or the model never sees them.
+    """The locked profile must list their tools, or the model never sees them.
 
-    2026-08-31 tool diet: these are no longer registered under their own
-    names -- they are the actions of the `tv` façade, which is what the
-    profile lists now. Their modules, names and prerequisite rows are
-    unchanged; only the surface the model reaches them through is.
+    2026-08-31 tool diet: these are not registered under their own names.
+    D-038 retired the `tv` façade that reached them: `youtube` and
+    `draw_picture` do now, one each, named for the source. Their modules, names
+    and prerequisite rows are unchanged; only the surface the model reaches
+    them through is.
     """
     core_tools = importlib.import_module("reachy_companion.tools.core_tools")
     core_tools.initialize_tools(force=True)
     try:
         registry = core_tools.get_tools()
-        assert "tv" in registry, "the locked profile no longer lists the family"
-        reachable = {tool.name for tool in type(registry["tv"]).ACTIONS.values()}
-        assert {"play_video", "show_on_tv"} <= reachable
+        assert "tv" not in registry, "the retired tv façade is back"
+        assert type(registry["youtube"]).DELEGATE.name == "play_video"
+        assert type(registry["draw_picture"]).DELEGATE.name == "show_on_tv"
     finally:
         core_tools._TOOLS_SIGNATURE = None
 
@@ -692,19 +699,27 @@ def home_archive(monkeypatch, tmp_path):
     "query",
     [
         _HOME_CLIP["path"],
-        "2020 SENTINEL_PLACE_q5 harbour at dusk",
+        "SENTINEL_TRIP_q5/7 harbour at dusk.mpg",
         "2020 SENTINEL_PLACE_q5 第7段 7 harbour at dusk.mpg",
         "2020 SENTINEL_PLACE_q5 第7 clips harbour at dusk.mpg",
     ],
-    ids=["path", "spoken title", "file name in a phrase", "file name without its clip number"],
+    ids=["path", "part of the path", "file name in a phrase", "file name without its clip number"],
 )
 async def test_play_video_hands_a_family_clip_back_to_nas(tmp_path, home_archive, query):
-    """Live 2026-10-29: the model passed a found clip's path, and earlier its title, to YouTube."""
+    """Live 2026-10-29: the model passed a clip's path from `nas query` to YouTube."""
     out = await PlayVideo()(deps=_deps(tmp_path), query=query)
     assert out["ok"] is False
     assert out["path"] == _HOME_CLIP["path"]
     assert "nas action=play" in out["error"]
     assert home_archive == []
+
+
+@pytest.mark.asyncio
+async def test_play_video_searches_words_even_when_they_are_a_clip_title(tmp_path, home_archive):
+    """D-038: 「幫我從 YouTube 找…」 goes to YouTube, whatever the words. Code does not pick the source."""
+    out = await PlayVideo()(deps=_deps(tmp_path), query="2020 SENTINEL_PLACE_q5 harbour at dusk")
+    assert out["ok"] is True and out["status"] == "casting"
+    assert home_archive == ["search:2020 SENTINEL_PLACE_q5 harbour at dusk", "script:tv_show_youtube"]
 
 
 @pytest.mark.asyncio

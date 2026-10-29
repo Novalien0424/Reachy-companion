@@ -9,6 +9,25 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
+
+Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`). Plan:
+`docs/plans/2026-10-29-media-source-routing-plan.md`. Decision D-038.
+
+- **「從 NAS 找」 and 「從 YouTube 找」 are different requests.** The TV tool
+  was named after the screen, so after finding a family clip on the NAS,
+  Reachy reached for it to put the clip "on the TV" and searched YouTube for
+  a file path. The video tools are now named for where a video comes from:
+  `youtube`, and `nas` for the family's 影片庫. Both play on the same TV, and
+  `draw_picture` puts a new picture there.
+- **Reachy asks when it can't tell.** If you don't say where and nothing shows
+  whether it's your own video or something public, Reachy asks which one you
+  mean. If the source you named has nothing, it says so and offers the other
+  one, and switches only if you agree.
+- **A YouTube request goes to YouTube.** The 1.27.3 check refused YouTube
+  searches whose words matched a home clip's title. It now refuses only a NAS
+  file path or file name, so whatever you ask YouTube for is searched.
+
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 
 Deployed as the twenty-seventh install (wheel sha `4a874796…`), then fix

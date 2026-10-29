@@ -92,7 +92,7 @@ def test_non_pair_descriptions_name_their_alternatives(monkeypatch: pytest.Monke
 
     assert "`look_around`" in descriptions["head_tracking"]
     assert "`move_head`" in descriptions["head_tracking"]
-    assert "`tv`" in descriptions["home_control"]
+    assert "`youtube`" in descriptions["home_control"]
     assert "`nas`" in descriptions["home_control"]
     assert "`music`" in descriptions["home_control"]
     assert "answer instead" in descriptions["wait_for_user"]

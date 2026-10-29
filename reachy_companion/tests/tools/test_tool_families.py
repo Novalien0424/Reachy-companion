@@ -15,19 +15,24 @@ from unittest.mock import MagicMock
 import pytest
 
 from reachy_companion.hanova import settings
-from reachy_companion.tools.tv import Tv
 from reachy_companion.tools.nas import Nas
 from reachy_companion.tools.drive import Drive
 from reachy_companion.tools.music import Music
 from reachy_companion.tools.tasks import Tasks
+from reachy_companion.tools.youtube import Youtube
 from reachy_companion.tools.calendar import Calendar
 from reachy_companion.tools.play_music import PlayMusic
+from reachy_companion.tools.play_video import PlayVideo
+from reachy_companion.tools.show_on_tv import ShowOnTv
 from reachy_companion.tools.calendar_add import CalendarAdd
+from reachy_companion.tools.draw_picture import DrawPicture
 from reachy_companion.tools.calendar_list import CalendarList
 from reachy_companion.tools.calendar_delete import CalendarDelete
 
 
-_FAMILIES = (Calendar, Tasks, Drive, Nas, Music, Tv)
+_FAMILIES = (Calendar, Tasks, Drive, Nas, Music)
+# D-038: one-purpose tools named for their source, each over one original module.
+_SINGLES = (Youtube, DrawPicture)
 
 
 def _deps() -> SimpleNamespace:
@@ -145,8 +150,9 @@ def test_the_eighteen_sub_tools_are_no_longer_registered() -> None:
         "play_music", "stop_music", "play_video", "show_on_tv",
     ):
         assert name not in registered, name
-    for name in ("calendar", "tasks", "drive", "nas", "music", "tv"):
+    for name in ("calendar", "tasks", "drive", "nas", "music", "youtube", "draw_picture"):
         assert name in registered, name
+    assert "tv" not in registered  # retired by D-038
 
 
 # --- delegation fidelity: the two answers, in their original order -----------
@@ -173,8 +179,6 @@ _UNAVAILABLE_CASES = (
     (Nas, "play_folder"),
     (Nas, "skip"),
     (Music, "play"),
-    (Tv, "play_video"),
-    (Tv, "show"),
 )
 
 
@@ -245,3 +249,44 @@ def test_no_family_suppresses_the_spoken_follow_up() -> None:
         assert family.needs_response is True
         for tool in family.ACTIONS.values():
             assert tool.needs_response is True
+
+
+# --- the one-purpose media tools (D-038) -------------------------------------
+
+
+@pytest.mark.parametrize("single,delegate", [(Youtube, PlayVideo), (DrawPicture, ShowOnTv)])
+def test_each_single_tool_delegates_to_its_original_module(single: Any, delegate: Any) -> None:
+    """The work, the prerequisite row and the error strings stay the original module's."""
+    assert isinstance(single.DELEGATE, delegate)
+    assert single.needs_response is True and single.DELEGATE.needs_response is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("single", _SINGLES)
+async def test_a_single_tool_answers_unavailable_before_the_missing_argument(
+    single: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same order the families keep: the delegate's prerequisite check comes first."""
+    seen: list[str] = []
+
+    def status(name: str) -> tuple[bool, str]:
+        seen.append(name)
+        return False, "SOME_PREREQ"
+
+    monkeypatch.setattr(settings, "tool_status", status)
+    assert await single()(_deps()) == settings.unavailable("SOME_PREREQ")
+    assert seen == [single.DELEGATE.name]
+
+
+@pytest.mark.asyncio
+async def test_a_single_tool_forwards_its_arguments_and_drops_only_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`str(None)` would be a search phrase, so a null argument must not reach the delegate."""
+    seen: list[dict[str, Any]] = []
+
+    async def _play(self, deps, **kwargs):
+        seen.append(kwargs)
+        return {"ok": True, "status": "casting"}
+
+    monkeypatch.setattr(PlayVideo, "__call__", _play)
+    assert await Youtube()(_deps(), query="a cat video", extra=None) == {"ok": True, "status": "casting"}
+    assert seen == [{"query": "a cat video"}]

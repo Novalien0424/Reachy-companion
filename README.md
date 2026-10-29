@@ -87,14 +87,17 @@ ends the visit.
 list the model picks from correctly. Music is among them, so 「音樂關掉」
 always reaches a tool with nothing to load first.
 
-The calendar / to-do / Drive / email / Notion family and the TV / NAS-video
-family are **loaded on demand**: the model calls `open_toolbox` and continues
+The calendar / to-do / Drive / email / Notion family and the media family
+(YouTube, the NAS video library, pictures on the TV) are **loaded on demand**: the model calls `open_toolbox` and continues
 to the real call in the same turn. Open boxes accumulate within a mode and are
 closed together on a mode switch, at sleep, and at the start of a new session.
 
-Six overlapping CRUD tools became one action-enum tool each — `calendar`,
-`tasks`, `drive`, `nas`, `music`, `tv` — with every spoken confirmation gate
-before a delete, a trash or an upload unchanged. Three tools nobody used
+Overlapping CRUD tools became one action-enum tool each — `calendar`,
+`tasks`, `drive`, `nas`, `music` — with every spoken confirmation gate
+before a delete, a trash or an upload unchanged. The media tools are split by
+where a video comes from, because that is what the user names: `youtube` and
+`nas` (the family's 影片庫) both play on the TV, and `draw_picture` puts a
+new picture there. Three tools nobody used
 (`sweep_look`, `self_destruct`, `mad_laugh`) were retired.
 
 ## Behavior notes

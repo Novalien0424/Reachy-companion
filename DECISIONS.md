@@ -2069,7 +2069,8 @@ search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
   had followed the 「瑞奇。」 `go_to_sleep`, motors disabled; the next stop
   (motors enabled) cleared in ~2 s — consistent with, not proof of, the
   pose step failing on a sleeping robot. Check `motor_control_mode` before
-  a stop.
+  a stop. **Disproved the same day (D-038):** a stop with motors enabled
+  wedged the same way at 11:42 UTC.
 - **Observed misfire:** a room utterance transcribed as 「瑞奇。」 (TV audio
   playing) was answered with `go_to_sleep`. Not changed; watch for repeats.
   Second case 2026-10-29 08:46: with the home clip playing, 「一次。」 was
@@ -2078,3 +2079,106 @@ search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
 - **Gap noted:** no tool can stop or pause what is on the TV (`tv` and `nas`
   only start playback; `home_control` only switches configured devices).
   Reachy said so truthfully when asked.
+
+## D-038 — Media tools split by source; the source the user names decides (2026-10-29)
+
+**Operator ruling (2026-10-29):** Reachy must tell 「幫我從 NAS 找」「幫我從影片庫找」
+from 「幫我從 YouTube 找」 / "search YouTube for me" on its own. The 1.27.3 guard
+(`tv play_video` refusing a NAS clip) was "not the right behavior": it caught
+the wrong call after the model made it. Plan:
+`docs/plans/2026-10-29-media-source-routing-plan.md` (self-reviewed, 9 items).
+
+**Cause.** In both live failures (1.27.2 at 08:33, 1.27.3 at 08:45 UTC) the
+model searched the right source (`nas query`), then played the found clip
+through `tv play_video`. The two media tools were named on different axes:
+`tv` for where a video goes, `nas` for where it comes from. Every home-video
+request says both ("our video", "on the TV"), and for gpt-realtime-2.1-mini
+`tv` + `play_video` read literally as "play a video on the TV". That beat the
+do-NOT-use line already in `tv`'s description.
+
+**Decision.** Media tools are named for their source, and every description
+says they all play on the same TV, so 電視 decides nothing:
+- `youtube` (new `tools/youtube.py`): `query` only, forwarded unchanged to
+  `PlayVideo` (prerequisite row `play_video`, home-network verdicts, tests).
+- `nas`: reframed as the family's 影片庫. When nothing fits, even after
+  `all_trips`, Reachy says so and offers YouTube, and searches it only once
+  the user agrees.
+- `draw_picture` (new `tools/draw_picture.py`): forwarded to `ShowOnTv`. It
+  is named for what it does, because a name with "tv" in it could pull video
+  requests.
+- `tv` is retired: `tools/tv.py` deleted, and a whole-word tripwire
+  (`test_the_retired_tv_tool_is_named_nowhere_the_model_reads`) covers
+  profiles, the hardening block, `persona.md` and every tool spec. It is
+  whole-word because `tv_not_responding` is a live status.
+- When the request names no source and nothing shows whether the video is the
+  family's or public, Reachy asks which one the user means (operator default,
+  accepted 2026-10-29).
+- `tool_family.forward_to` is the single-delegate twin of `dispatch_family`.
+  It validates nothing and drops only `None`, so D-029 decision 7 holds: the
+  delegate's prerequisite check answers before its argument checks.
+- **The guard is narrowed, not removed.** `nas.clips_by_file` (was
+  `clips_named_by`) matches only a NAS path, or a file name with its
+  extension. Words, including a clip's spoken title, are never refused,
+  because an explicit YouTube request goes to YouTube; picking the source is
+  the model's call.
+- Media box `("youtube", "nas", "draw_picture")`. Tools in session: 22 at
+  startup (unchanged), 25 with media, 30 with both boxes (D-029's 24 / 29
+  are historical).
+- `music`, `drive` and `home_control` now name `youtube` instead of `tv`.
+- `prompts.py` Tool Availability, `persona.md` (repo and robot, synced),
+  `profile.md` and the `open_toolbox` media line all name the sources.
+
+**Plan deviations, found in review while building.** `show_on_tv` could not
+be registered as itself: it is on `_RETIRED_TOOL_NAMES`, and the 120-character
+cap on the original modules' descriptions would have blocked its routing
+pairs. A wrapper keeps both rules. `tv` could not join that substring list
+either, because of `tv_not_responding`.
+
+**Verification.**
+- Suite 2095 passed / 31 skipped; ruff and mypy clean.
+- 1.28.0 deployed as the twenty-eighth install. Wheel `52dd3f1a…`, two-step
+  install, backup `20261029T113321Z-25088` (same present/absent set as
+  08:48), robot `persona.md` synced after its sha matched the committed copy.
+  Startup log: `persona: instance persona.md`, 22 tools; media open, 25.
+- Live, one fresh session per request (app stop/start), mic muted over
+  `/rpc` so room or TV sound could not add a turn:
+  1. 「幫我從NAS找沖繩的影片，放一段到電視上」 → `open_toolbox media` →
+     `nas query` Okinawa → `nas play` → NAS stream 206 → HA `playing`, title
+     = the clip. **Pass.**
+  2. 「幫我從影片庫找我們在沖繩拍的」 → `nas query` → it found the trip and
+     asked whether to play all of it or one clip. **Pass** (no play was
+     asked for).
+  3. 「幫我從YouTube找沖繩美ら海水族館的影片，放到電視上」 → `youtube` only →
+     HA `playing` YouTube, and Reachy spoke the real YouTube title. **Pass**,
+     even though Okinawa is also a family trip.
+  4. "search YouTube for a cat video and put it on the TV" → `youtube` only →
+     `playing`. **Pass.**
+  5. 「從NAS找周杰倫的MV」 → `nas query` "Jay Chou" → it said the 影片庫 does
+     not have it and offered YouTube, with no `youtube` call. **Pass**, with
+     a wobble: it also offered a retry with the keyword it had already used.
+  6. 「電視上放沖繩的影片」 (no source) — **not run.** The daemon wedged on
+     the stop before it.
+- No refused calls and no `draw_picture` call in 1–5. The TV was turned off
+  after each cast.
+
+**Daemon wedge, second occurrence (not fixed; upstream).** At 11:42:42 the
+stop before case 6 returned 400 and left the app manager in `stopping`
+("An app is already running" on start). Motors were `enabled`. The code
+(`apps/manager.py` `stop_current_app`, identical to v1.13.0) shows how:
+1. After "App stopped successfully" the method handles the monitor task.
+2. It then calls `backend.enable_motors()` and logs "Returning robot to zero
+   position", and only after that reaches `current_app = None`.
+3. A `RuntimeError` anywhere in between becomes the router's 400 and skips
+   that line.
+4. If the stop has also cancelled the monitor, nothing ever sets
+   `DONE`/`ERROR`, and the state sticks.
+
+The two 400s today fit this. At 11:36:52 the monitor finished first, the
+state went `DONE`, and the next start worked. At 11:42:42 the stop cancelled
+the monitor and the state stuck. Neither logged the return-to-zero line, so
+the failing call is the pose read or `enable_motors()`; the latter talks to
+the motor controller directly. The 400's detail text was not captured, so
+the exact exception is unconfirmed. Next time keep the stop response body.
+Recovery needs a daemon restart, which is the operator's call. This morning's
+authorization is used up. Upstream fix shape: clear `current_app` in a
+`finally`.

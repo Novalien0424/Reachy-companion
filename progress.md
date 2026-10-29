@@ -5,6 +5,46 @@ history of this file.
 
 ## Current state
 
+**v1.28.0 (twenty-eighth install — D-038) IS INSTALLED ON THE ROBOT (daemon
+v1.13.0), BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` AGAIN (11:42
+UTC), SO NO APP IS RUNNING.** Operator ruling: Reachy must tell 「從NAS／影片庫找」
+from 「從YouTube找」. The media tools are now named for their source: `youtube`
+and `nas` (the family's 影片庫), both playing on the same TV, plus
+`draw_picture`. `tv` is retired. Reachy asks when no source is named, and
+offers the other source only when the named one has nothing. The 1.27.3 guard
+now refuses only NAS paths and file names.
+
+Live, a fresh session per request with the mic muted:
+- 5 of 6 cases passed. NAS ×2, YouTube ×2 (zh/en), and a NAS miss that
+  offered YouTube without switching.
+- No refused calls. Casts were confirmed by HA, and the TV was turned off
+  after each one.
+- Case 6 (no source named) was not run, because the stop before it wedged.
+
+Deploy record:
+- Wheel `52dd3f1a…`; backup `20261029T113321Z-25088`.
+- `persona.md` synced; the startup log shows the instance persona and 22
+  tools (25 with media open).
+- Suite 2095 / 31; ruff and mypy clean.
+
+The shared apps venv was force-reinstalled at 11:10 by an update of the
+official `reachy_mini_conversation_app`, started from the LAN (dashboard or
+desktop app). Our pins survived it; `pip check` reports only the mediapipe
+line.
+
+Daemon wedge (`DAEMON-STOP-WEDGE`):
+- It happened with motors enabled, which disproves this morning's theory.
+- Mechanism, read from `apps/manager.py`: a `RuntimeError` after the process
+  exits skips `current_app = None`.
+- Clearing it needs the operator's daemon restart.
+
+Next, also blocked on the restart:
+- the operator's request to move the voice model to gpt-realtime-2.1-mini or
+  its latest alias, then re-check tool calls;
+- case 6.
+
+Earlier (2026-10-29):
+
 **v1.27.3 (twenty-seventh install, third fix redeploy — D-037) IS ON THE
 ROBOT (daemon v1.13.0), APP RUNNING (2026-10-29 08:45 UTC robot time); A
 HOME VIDEO PLAYED FROM THE NAS ON THE TV.** The wedged app manager was

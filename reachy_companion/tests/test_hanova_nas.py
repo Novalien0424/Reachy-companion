@@ -1544,21 +1544,22 @@ async def test_play_and_play_folder_misses_also_carry_the_catalogue(monkeypatch,
     assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
 
 
-def test_clips_named_by_finds_a_clip_by_path_name_or_title_but_not_by_a_place():
-    """The handoff the tv tool checks: a clip named outright, never a bare place or subject."""
+def test_clips_by_file_finds_a_clip_by_path_or_file_name_but_never_by_words():
+    """The check the YouTube search makes: a NAS file, never a place, a subject or a title (D-038)."""
     clip = CATALOGUE["videos"][1]
-    assert nas.clips_named_by(CATALOGUE, clip["path"]) == [clip]
-    assert nas.clips_named_by(CATALOGUE, nas.video_title(clip)) == [clip]
-    assert nas.clips_named_by(CATALOGUE, f"2021 Cape Town 第2段 {clip['name']}.mp4") == [
+    assert nas.clips_by_file(CATALOGUE, clip["path"]) == [clip]
+    assert nas.clips_by_file(CATALOGUE, f"2021 Cape Town 第2段 {clip['name']}.mp4") == [
         video for video in CATALOGUE["videos"] if video["name"] == clip["name"]
     ]
-    assert nas.clips_named_by(CATALOGUE, "Cape Town") == []
-    assert nas.clips_named_by(CATALOGUE, "a documentary about penguins") == []
-    assert nas.clips_named_by(CATALOGUE, "") == []
+    assert nas.clips_by_file(CATALOGUE, nas.video_title(clip)) == []
+    assert nas.clips_by_file(CATALOGUE, clip["name"]) == []
+    assert nas.clips_by_file(CATALOGUE, "Cape Town") == []
+    assert nas.clips_by_file(CATALOGUE, "a documentary about penguins") == []
+    assert nas.clips_by_file(CATALOGUE, "") == []
 
 
-def test_clips_named_by_ignores_a_file_name_that_is_only_a_number():
+def test_clips_by_file_ignores_a_file_name_that_is_only_a_number():
     """`123.mpg` must not shrink to "mpg" and claim every query that mentions the extension."""
     index = {"videos": [{"path": "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/123.mpg", "name": "123"}]}
-    assert nas.clips_named_by(index, "how to convert an mpg file") == []
-    assert nas.clips_named_by(index, "SENTINEL_TRIP_q4 第2段 123.mpg") == index["videos"]
+    assert nas.clips_by_file(index, "how to convert an mpg file") == []
+    assert nas.clips_by_file(index, "SENTINEL_TRIP_q4 第2段 123.mpg") == index["videos"]

@@ -30,7 +30,7 @@ class Music(Tool):
         "choose `action=play` with `query`. "
         "Use when: the user wants the robot's speaker playback stopped — 「音樂關掉」「停止播放」「stop the music」; "
         "choose `action=stop` and pass no extra fields; `stop` ALWAYS works, even when playing does not. "
-        "Do NOT use when: the user wants a video shown on the TV; that is tv or nas. "
+        "Do NOT use when: the user wants a video shown on the TV; that is youtube or nas. "
         "Do NOT use when: the user just wants you to be quiet for a moment; that is wait_for_user. "
         "Preamble sample for `play`: 「我找一下來播」 (示範語氣，不是觸發條件). "
         "Say a brief lead-in in the conversation's language before `play` because finding playable media can take "

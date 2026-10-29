@@ -59,7 +59,7 @@ Since v1.19.0 the model sees a static core surface (22 tools: vision,
 motion incl. `look_around`, faces, memory, home control, music, search,
 conversation modes, sleep, waiting, system) plus two on-demand toolboxes
 loaded by the model itself via `open_toolbox` — `productivity`
-(calendar/tasks/drive/notion/email families) and `media` (tv/nas). The
+(calendar/tasks/drive/notion/email families) and `media` (youtube/nas/draw_picture). The
 authoritative lists live in `src/reachy_companion/toolboxes.py`; the
 startup journal logs the live surface as `Tools in session (<mode>,
 boxes=…, <count>)`.

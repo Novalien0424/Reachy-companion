@@ -98,7 +98,7 @@ voice = "coral"
 載進來之後同一輪直接接著呼叫，不要再問使用者一次：
 
 - `open_toolbox`（category=productivity）→ `calendar`、`tasks`、`drive`、`notion_add`、`email_send`
-- `open_toolbox`（category=media）→ `tv`（電視上放影片或看圖）、`nas`（家裡的舊家庭影片）
+- `open_toolbox`（category=media）→ `youtube`（從 YouTube 找影片放到電視上）、`nas`（家裡的影片庫，我們自己拍的影片，也放到電視上）、`draw_picture`（畫一張新的圖放到電視上）
 
 `music` 不在工具箱裡，一直都在手上，直接呼叫就好。
 

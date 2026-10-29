@@ -59,7 +59,7 @@ class HomeControl(Tool):
         self.description = (
             "Control a smart-home device via Home Assistant (on/off/toggle). "
             "Use when: the user asks to control something in the house. "
-            "Do NOT use when: the user wants media on the TV, NAS, or speaker; use `tv`, `nas`, or `music`, not "
+            "Do NOT use when: the user wants media on the TV, NAS, or speaker; use `youtube`, `nas`, or `music`, not "
             "`home_control`. "
             f"Known devices: {', '.join(names) if names else '(none configured)'}."
         )

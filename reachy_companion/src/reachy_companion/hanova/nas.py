@@ -318,15 +318,17 @@ def video_title(video: Dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts if part).strip()
 
 
-def clips_named_by(index: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
-    """Return the clips `text` names outright: path, file name, name or spoken title (ours, 2026-10-29).
+def clips_by_file(index: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
+    """Return the clips `text` points at by NAS path or file name (ours, 2026-10-29).
 
-    For tools outside the archive that must not take one of its clips for a
-    search phrase -- live, `tv play_video` was handed a found clip's path and,
-    before that, its title. Failing an exact name, a file name with its
-    extension also counts inside a longer phrase, with or without its leading
-    clip number (live: "11 x.mpg" came back as "第11 clips x.mpg"). A bare place
-    or subject names no clip and stays a fair search.
+    For the YouTube search, which must not be handed one of the archive's
+    files -- live, `tv play_video` was given a clip's path that `nas query` had
+    just returned. Only file references count: a path, or a file name with its
+    extension, alone or inside a longer phrase, with or without its leading clip
+    number (live: "11 x.mpg" came back as "第11 clips x.mpg"). Words -- a place,
+    a subject, even a clip's spoken title -- point at no file: which source they
+    are meant for is the user's call, and an explicit YouTube request with them
+    goes to YouTube (D-038).
     """
     needle = _squash(text)
     if not needle:
@@ -336,21 +338,13 @@ def clips_named_by(index: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
         path = str(video.get("path") or "")
         filename = path.rsplit("/", 1)[-1]
         stem, dot, extension = filename.rpartition(".")
-        names = {
-            _squash(path),
-            _squash(filename),
-            _squash(stem),
-            _squash(video.get("name")),
-            _squash(video_title(video)),
-        }
-        names.discard("")
-        file_names = set()
-        if dot and stem:
-            file_names.add(_squash(filename))
-            unnumbered = _LEADING_NUMBER.sub("", stem)
-            if _squash(unnumbered):
-                file_names.add(_squash(f"{unnumbered}.{extension}"))
-        if needle in names:
+        if not (dot and stem):
+            continue
+        file_names = {_squash(filename)}
+        unnumbered = _LEADING_NUMBER.sub("", stem)
+        if _squash(unnumbered):
+            file_names.add(_squash(f"{unnumbered}.{extension}"))
+        if needle in {_squash(path), _squash(filename)}:
             exact.append(video)
         elif any(name in needle for name in file_names):
             within.append(video)

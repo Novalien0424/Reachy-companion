@@ -59,7 +59,10 @@ HOUSE_BOUND_TOOLS = frozenset(
 # same `Tool.name`, same `settings.tool_status` row, same confirmation gate --
 # so every invariant below still holds; it just has to look one level down to
 # find them.
-FAMILY_TOOLS = frozenset({"calendar", "tasks", "drive", "nas", "music", "tv"})
+FAMILY_TOOLS = frozenset({"calendar", "tasks", "drive", "nas", "music"})
+# D-038: the `tv` family became two one-purpose tools named for their source,
+# each over one original module (`DELEGATE`), found one level down the same way.
+SINGLE_TOOLS = frozenset({"youtube", "draw_picture"})
 
 
 @pytest.fixture
@@ -92,6 +95,10 @@ def family_actions(registry):
         assert family_name in registry, f"the locked profile no longer lists {family_name}"
         for tool in type(registry[family_name]).ACTIONS.values():
             actions[tool.name] = (family_name, tool)
+    for single_name in sorted(SINGLE_TOOLS):
+        assert single_name in registry, f"the locked profile no longer lists {single_name}"
+        tool = type(registry[single_name]).DELEGATE
+        actions[tool.name] = (single_name, tool)
     return actions
 
 
@@ -131,7 +138,7 @@ def test_every_family_description_is_identifier_free(specs):
     routing block that is the whole point of the consolidation. The identifier
     rules are unchanged -- these strings still reach the model and the logs.
     """
-    for name in sorted(FAMILY_TOOLS):
+    for name in sorted(FAMILY_TOOLS | SINGLE_TOOLS):
         description = specs[name]["description"]
         assert "@" not in description, f"{name} description contains an address-like token"
         assert "media_player." not in description, f"{name} description contains an HA entity id"
@@ -723,7 +730,7 @@ ROUTING_TOKENS = (
 # closed that gap, so the two lists are now deliberately the SAME list: the copy
 # that actually runs on the robot teaches the same six families as the profile,
 # and this alias is what makes a future drift fail rather than pass quietly.
-PROFILE_TOOL_TOKENS = ("music", "tv", "nas", "calendar", "tasks", "drive")
+PROFILE_TOOL_TOKENS = ("music", "youtube", "nas", "draw_picture", "calendar", "tasks", "drive")
 PERSONA_TOOL_TOKENS = PROFILE_TOOL_TOKENS
 
 
