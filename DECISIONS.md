@@ -1997,3 +1997,49 @@ own envelope is unchanged. A live search result shrinks 1,700 → 729 chars.
 The installed conversation app 1.0.0 (`mcp>=1.27.1`, v1 reads) degrades its
 own remote tools under mcp 2; it is not the running app — updating it from
 the dashboard fixes it. Plan: `docs/plans/2026-10-29-mcp-v2-search-trim-plan.md`.
+
+## D-037 — NAS search for loose Chinese requests; /rpc on the conversation loop; HA moved (2026-10-29)
+
+Operator request 2026-10-29: check boot, NAS search → Chromecast, and fuzzy NAS
+search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
+
+- **Boot:** startup app is `reachy_companion`; on the v1.13.0 daemon a boot
+  leaves the robot asleep and the first wake starts it (one-shot launcher).
+  Exercised without a reboot: app stopped, `goto_sleep`, daemon
+  `/api/move/play/wake_up` → `Auto-starting app: reachy_companion` 3 s later,
+  boot gate released.
+- **NAS search (rung 1, v1.27.0):** the index is catalogued in English and
+  users speak Chinese; the live model searched `日本` / `女兒` and told the
+  user nothing existed, and a 40-clip cap hid whole trips. Now: matching
+  ignores case, spacing and punctuation and needs every word in any order;
+  `query` returns `count` (all matches) and `trips` (every matching trip);
+  a miss returns `all_trips` (the catalogue); the `nas` description says to
+  translate first and to pick from `all_trips`. Live after the fix: 日本 →
+  `Japan` (9 trips), 女兒 → `daughter`, 去年 → `2025` (4 places), 企鵝 →
+  `penguin`, 沖繩 → miss → `all_trips` → `Okinawa` (16 clips).
+- **tv vs nas (rung 1, v1.27.2):** after finding the Okinawa clips the model
+  sent the clip name to `tv play_video`, cast a stranger's YouTube video and
+  called it the family's. The `tv` and `nas` descriptions now mirror each
+  other with the reason (the clips exist only on the NAS). Not yet verified
+  live — see the daemon wedge below.
+- **/rpc on the wrong loop (v1.27.1):** the SDK runs the settings app (and
+  `/rpc`) on its own thread and loop; `conversation.say` wrote to the
+  realtime websocket from there, raced the audio sends and corrupted frames
+  (150 `invalid_json` in 6 s). `conversation.say` / `.interrupt` now hop to
+  the conversation loop, like personality and tool settings. Upstream has
+  the same pattern (`console.py` `_rpc_say`); 0 `invalid_json` after the fix.
+- **Robot config drift (instance `.env`, no code):** HA moved on 2026-10-25
+  to the Colima VM's LAN address (HomeAssistant project `CLAUDE.md`), and
+  HA's rebuild that day re-registered the TV: `HA_URL` and
+  `HANOVA_CAST_ENTITY` (`…_3`, the D-022 entity) were both dead, so every
+  home, TV and NAS tool answered `home_status_unknown`. Repointed to the
+  documented address and the live `cast` entity `media_player.an_he_ke_ting`
+  (HA's own scripts already target it), dated backups beside the file.
+- **Daemon wedge (observed, not fixed):** an official `stop-current-app` at
+  06:01:51 stopped the app cleanly, then `stop_current_app` raised a
+  `RuntimeError` in its post-exit pose/motor step (HTTP 400), skipping
+  `current_app = None`; the app manager stays `stopping`, refusing every
+  start (API, dashboard, antenna). Daemon backend healthy. Recovery needs a
+  daemon restart, which is the operator's call (D-009).
+- **Observed misfire:** a room utterance transcribed as 「瑞奇。」 (TV audio
+  playing) was answered with `go_to_sleep`. Not changed; watch for repeats.

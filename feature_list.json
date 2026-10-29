@@ -94,7 +94,7 @@
       "verification": "On-robot at home with the index and NAS credentials present: query, play, skip; then force one cast failure and confirm the trip position did not move",
       "state": "verified",
       "evidence": "2026-08-22 on-robot (rounds 6,7): first live pass found the port gating the ORIGINAL path's extension, refusing every DVD-era trip (992/2743 entries) -- fixed in dd591f2 (containment-only source bound; 3 new tests). After redeploy: single clip staged over SMB and cast in ~17 s cold; nas_skip staged and cast the next clip in ~44 s; whole-trip nas_play_folder started a 30-clip ordered session in 0.7 s warm; nas_video_query listed real trips instantly. Minor friction logged: the model once passed the dir field as top_folder (no_match, self-recovered via direct clip play). LATENCY WORK 2026-08-22: /hanova-media/nas-stream Range-capable SMB proxy (HANOVA_NAS_STREAM=1 default); whole-trip start 0.32 s and skips 0.27-0.30 s (was 17-44 s); endpoint verified from a LAN peer with Chromecast request shapes (HEAD 200, 206 with Content-Range, 61 ms TTFB, 80 ms mid-file seek, 4.9 MB/s sustained). TV was off (cast entity unavailable) during these rounds, so no Chromecast fetch was observed yet.",
-      "next_action": "operator: with the TV on, replay one trip row to confirm the Chromecast fetches the stream URL end to end"
+      "next_action": "After the daemon restart: one in-room 「把我們在沖繩拍的家庭影片播一段到電視上」 that ends in nas play (not tv), NAS stream 206 lines from the Chromecast and HA `playing` (D-037)."
     },
     {
       "id": "HANOVA-GOOGLE",
@@ -548,6 +548,38 @@
       "state": "implemented-unverified",
       "evidence": "2026-10-29: live search from the robot 1,700 → 729 chars, keys [status, text]; 6 unit tests + updated runtime test.",
       "next_action": "In-room demo 4 (docs/five-demo-checklist.md) with the usage line of the search turn."
+    },
+    {
+      "id": "BOOT-INTO-APP",
+      "behavior": "Power-on boots the robot asleep with reachy_companion as startup app; the first wake (antenna touch or dashboard wake) starts it (daemon v1.13.0 one-shot launcher).",
+      "verification": "Startup-app API answers reachy_companion; with the app stopped and the robot asleep, a daemon wake-up logs `Auto-starting app: reachy_companion` and the boot gate releases.",
+      "state": "verified",
+      "evidence": "2026-10-29: GET /api/apps/startup-app = reachy_companion; power-on 2026-10-28 12:50 auto-started it (old daemon); on v1.13.0, stop + goto_sleep + POST /api/move/play/wake_up at 05:26:55 → `Auto-starting app: reachy_companion` 05:26:58, boot gate released 05:27:20.",
+      "next_action": "None; a real power cycle on v1.13 will re-confirm it in passing."
+    },
+    {
+      "id": "NAS-FUZZY-SEARCH",
+      "behavior": "Loose Chinese requests find the English-catalogued home videos: the model translates, matching ignores spelling/order, every matching trip is returned, a miss returns all_trips to choose from (D-037).",
+      "verification": "Live conversation: 日本 / 女兒小時候 / 去年 / 看企鵝那次 / 沖繩 each reach the right trips; no answer claims videos are missing when the archive has them.",
+      "state": "verified",
+      "evidence": "2026-10-29 v1.27.0 on robot via conversation.say: 日本→keyword Japan 89 clips/9 trips; 女兒→daughter (41-clip folder); 去年→2025, answer named Brisbane, Nagoya, Sri Lanka, UK; 企鵝→penguin (Tasmania, Falklands); 沖繩→0→all_trips→Okinawa 16 clips. Suite 2086/31, ruff, mypy clean.",
+      "next_action": "Watch real-speech sessions for a query that misses and is NOT recovered from all_trips."
+    },
+    {
+      "id": "NAS-PLAY-VIA-NAS",
+      "behavior": "A request to put a family video on the TV plays it with nas (path from query), never with tv/YouTube; tv and nas descriptions mirror each other with the reason (D-037, v1.27.2).",
+      "verification": "Live: 「把我們在沖繩拍的家庭影片播一段到電視上」 → nas play with a path → NAS stream 206 lines → HA `playing`.",
+      "state": "blocked",
+      "evidence": "2026-10-29 v1.27.1: the model found the clips, then called tv play_video with the clip name and cast a YouTube video while calling it the family's. v1.27.2 installed; not retested because the daemon app manager is wedged in `stopping` after an official stop (D-037).",
+      "next_action": "Operator restarts the daemon; then rerun the sentence above."
+    },
+    {
+      "id": "RPC-SAY-CONVERSATION-LOOP",
+      "behavior": "conversation.say / conversation.interrupt from /rpc (web UI, phone, harnesses) run on the conversation loop, never writing to the realtime websocket from the settings-app thread (D-037, v1.27.1).",
+      "verification": "Tests: say runs on the conversation loop; no loop → not_running. On robot: a say turn with 0 invalid_json errors.",
+      "state": "verified",
+      "evidence": "2026-10-29: before, one say produced 150 invalid_json errors in 6 s; after 1.27.1, say turns showed 0; new tests fail on the old code and pass on the fix.",
+      "next_action": "Consider reporting the same pattern upstream (conversation app console.py _rpc_say)."
     }
   ]
 }

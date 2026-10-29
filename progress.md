@@ -5,6 +5,29 @@ history of this file.
 
 ## Current state
 
+**v1.27.2 (twenty-seventh install + two fix redeploys — D-037) IS INSTALLED ON
+THE ROBOT, BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` (2026-10-29
+06:01:56 UTC robot time): NO APP RUNS UNTIL THE OPERATOR RESTARTS THE
+DAEMON.** An official `stop-current-app` stopped the app cleanly, then the
+daemon's post-exit pose/motor step raised (HTTP 400) before clearing
+`current_app`; every start (API, dashboard, antenna) is refused. Daemon
+backend healthy (ready, ~50 Hz loop, no errors, motors disabled).
+Verified today before the wedge: **boot into the app** (startup app
+`reachy_companion`; on v1.13 a daemon wake started it 3 s later);
+**NAS fuzzy search live** (日本→Japan 9 trips, 女兒→daughter, 去年→2025 with
+all four places, 企鵝→penguin, 沖繩→miss→`all_trips`→Okinawa);
+**`/rpc` say fix** (150 `invalid_json` before, 0 after). Robot instance
+`.env`: `HA_URL` and `HANOVA_CAST_ENTITY` repointed after HA's 2026-10-25
+move/rebuild (backups `.env.bak-20261029T053127Z-ha-url`,
+`…-cast-entity` beside the file); home verdict `home`, all families enabled.
+Not yet verified: a home video cast through `nas` (v1.27.1 played YouTube
+instead; the 1.27.2 description fix awaits the daemon restart). TV left
+`off` as found (two YouTube test casts stopped). Suite 2086 / 31, ruff, mypy
+clean. Wheels: 1.27.0 `4a874796…`, 1.27.1 `20d9ad6f…`, 1.27.2 `cecd7f1a…`;
+backups `20261029T054130Z-15564`, `…055723Z-18085`, `…060143Z-18616`.
+
+Earlier (2026-10-29):
+
 **THE TWENTY-SIXTH INSTALL (v1.26.0 — D-036: MCP v2 client, trimmed MCP
 results) IS ON THE ROBOT (daemon v1.13.0) WITH A CLEAN BOOT, APP RUNNING
 (2026-10-29 04:46 UTC robot time).** Wheel sha `69b0b60b…`, backup

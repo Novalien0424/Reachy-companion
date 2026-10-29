@@ -1,10 +1,10 @@
-# Session handoff — 2026-10-29 (v1.26.0 on daemon v1.13.0)
+# Session handoff — 2026-10-29 (v1.27.2 installed; daemon app manager wedged)
 
-State: **v1.26.0 installed and RUNNING** on daemon v1.13.0 (telemetry off,
-BLE/gpio services refreshed). Instance data in `~/.config/reachy_companion`
-(D-035). MCP client on the v2 SDK; remote MCP results reach the model once
-(D-036). `main` is pushed. No work in flight. Details: `progress.md` top
-entries; D-033 (+ outcome), D-034, D-035, D-036.
+State: **v1.27.2 installed, but no app is running**: the v1.13.0 daemon's app
+manager is stuck in `stopping` after an official stop (D-037), and every
+start is refused until the daemon restarts — the operator's call (D-009).
+Daemon backend itself healthy. `main` is pushed. Details: `progress.md` top
+entry; D-036, D-037.
 
 ## Shipped today
 
@@ -15,9 +15,17 @@ entries; D-033 (+ outcome), D-034, D-035, D-036.
   retry backoff, Wi-Fi watchdog module.
 - v1.26.0 (2026-10-29): MCP v2 client (upstream port, certifi-verified),
   trimmed MCP results (live search 1,700 → 729 chars).
+- v1.27.0–.2 (2026-10-29): NAS search for loose Chinese requests (verified
+  live), `/rpc` say on the conversation loop, tv/nas descriptions mirrored;
+  robot `.env` HA address + TV entity repointed after HA's 10-25 move.
 
 ## Next session
 
+0. **Operator:** restart the daemon (dashboard, power cycle, or
+   `ssh <user>@<host> sudo systemctl restart reachy-mini-daemon`), wake the
+   robot, then rerun 「把我們在沖繩拍的家庭影片播一段到電視上」: expect `nas`
+   `play` with a path, `NAS stream: serving … (status 206)` and HA `playing`
+   (`NAS-PLAY-VIA-NAS`). Turn the TV off afterwards if it was off.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

@@ -9,6 +9,36 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
+
+Deployed as the twenty-seventh install (wheel sha `4a874796…`), then fix
+redeploys 1.27.1 (`20d9ad6f…`) and 1.27.2 (`cecd7f1a…`). Plan:
+`docs/plans/2026-10-29-nas-fuzzy-search-plan.md`. Decision D-037.
+
+- **「日本的影片」 finds the Japan trips.** The video archive is catalogued in
+  English, so Reachy now translates what you say before searching, and when
+  a search still misses it gets the whole list of trips to choose from
+  instead of telling you the video does not exist. Live: 日本, 女兒小時候,
+  去年, 看企鵝那次 and 沖繩 all found the right trips.
+- **Every matching trip is mentioned.** Long answers used to stop at 40
+  clips, so 2025 sounded like Brisbane and Nagoya only; now Reachy hears
+  every trip that matched (Brisbane, Nagoya, Sri Lanka, UK).
+- **Loosely typed folder names match.** "chiang mai", "sri lanka" or
+  "tokyo okinawa" find their trips however the folder was spelled.
+- **1.27.1 — typing to Reachy no longer garbles the conversation.** A
+  message sent from the web UI or the phone was written to the OpenAI link
+  from the wrong thread and could corrupt it; it now goes through the
+  conversation's own loop.
+- **1.27.2 — home videos are played from the NAS, not looked up on
+  YouTube.** Reachy had once sent a home clip's name to the YouTube search
+  and played a stranger's video; the two TV tools now explain to the model
+  which one plays which.
+
+Robot configuration (no release): the Home Assistant address and the TV's
+Home Assistant entity in the robot's settings were updated after Home
+Assistant moved on 2026-10-25; until then every home, TV and NAS request
+answered that the robot could not tell whether it was at home.
+
 ## [1.26.0] — 2026-10-29 · MCP v2, leaner web results
 
 Deployed as the twenty-sixth install (wheel sha `69b0b60b…`, backup
