@@ -1,10 +1,9 @@
 """The one blocking-HTTP call every synchronous service module makes (D-018).
 
-Google, Notion and Drive are ported from stdlib `urllib` code and stay
-synchronous; tools call them through `asyncio.to_thread`. Routing all of them
-through this single function means one monkeypatch in a test covers every
-service, and there is exactly one place where a timeout or a header policy
-changes.
+Drive is ported from stdlib `urllib` code and stays synchronous; its tools
+call it through `asyncio.to_thread`. Routing every request through this single
+function means one monkeypatch in a test covers the service, and there is
+exactly one place where a timeout or a header policy changes.
 
 Callers MUST reach it through the module (`sync_http.request_bytes(...)`), not
 `from ... import request_bytes`, or monkeypatching will miss their binding.
@@ -48,14 +47,14 @@ def request_bytes(
         # Round 3 review, Important: a flaky link makes `urlopen` (or the
         # `read()` inside the `with`) raise `IncompleteRead`, `BadStatusLine` or
         # `LineTooLong`. Those descend from `HTTPException`, **not** from
-        # `OSError`, so without this they escape un-normalized -- and the six
-        # service modules that route through this one function all assume
-        # otherwise. `calendar_add` would hand the model an exception instead of
-        # `{"ok": False}`, and `calendar_delete` would spend the user's
-        # confirmation through its unexpected-failure fallback on what is in
-        # fact the most retryable fault there is. Converting to `OSError` puts it
-        # back on the branch every caller already handles, and makes
-        # `gauth.is_transient` answer True for it.
+        # `OSError`, so without this they escape un-normalized -- and every
+        # service call that routes through this one function assumes otherwise.
+        # A tool would hand the model an exception instead of `{"ok": False}`,
+        # and a confirmation-gated one would spend the user's confirmation
+        # through its unexpected-failure fallback on what is in fact the most
+        # retryable fault there is. Converting to `OSError` puts it back on the
+        # branch every caller already handles, and makes `gdrive.is_transient`
+        # answer True for it.
         #
         # Only the exception *class* is carried into the message: a status line
         # or a header is written by the far end, and finding 7 keeps far-end text

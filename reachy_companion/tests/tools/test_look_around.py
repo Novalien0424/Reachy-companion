@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reachy_companion.tools.head import Head
 from reachy_companion.tools.camera import Camera
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.look_around import LookAround
@@ -230,13 +231,19 @@ async def test_an_unknown_direction_opens_no_window(monkeypatch: pytest.MonkeyPa
 
 
 def test_descriptions_are_symmetric_and_route_directional_looks() -> None:
-    """Research §A2: the asymmetry between camera and move_head WAS the bug."""
-    for description in (Camera.description, MoveHead.description, LookAround.description):
+    """Research §A2: the asymmetry between camera and move_head WAS the bug.
+
+    Since 1.30.0 the turn-without-looking tool the model reads is `head`
+    (`action=turn`, delegating to `move_head`), whose operator text routes with
+    a "Do NOT use when" clause only.
+    """
+    for description in (Camera.description, LookAround.description):
         assert "Use when:" in description
         assert "Do NOT use when:" in description
+    assert "Do NOT use when:" in Head.description
     assert "look_around" in Camera.description
-    assert "look_around" in MoveHead.description
-    assert "camera" in LookAround.description and "move_head" in LookAround.description
+    assert "look_around" in Head.description and "camera" in Head.description
+    assert "camera" in LookAround.description and "head with action=turn" in LookAround.description
     # Chinese trigger phrasings must be enumerated, not implied (research §C7).
     for phrase in ("右邊", "左邊", "轉過去"):
         assert phrase in LookAround.description

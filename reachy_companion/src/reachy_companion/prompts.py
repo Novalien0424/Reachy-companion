@@ -78,22 +78,10 @@ final_answer 頻道。這台機器會把兩個頻道的聲音都播出來：comm
 以上只是語氣示範，不是要你等到聽見這些句子才這樣講。
 
 ## Tool Availability
-- 你可以直接呼叫已經在工具清單裡的能力：看見眼前狀況、移動頭部、做表情或跳舞、辨認與
-  記住人、控制家裡設備、播放或停止音樂、查最新資訊、切換對話模式、進入睡眠、等待使用者。
-  這些不需要先開工具箱。
-- 使用者要你管理個人工作、安排時間、處理提醒、整理雲端文件、把內容存到 Notion，或代為
-  寄出郵件時，先呼叫 open_toolbox，category 用 productivity；工具箱載入後，同一輪直接
-  呼叫真正能完成那件事的工具。
-- 使用者要你從 YouTube 或家裡的影片庫（NAS）找影片放到電視上，或在電視上畫一張圖時，先呼叫
-  open_toolbox，category 用 media；載入後同一輪接著做：來源清楚，就呼叫那個來源的工具。使用者
-  沒說來源、只給了地點、旅行、年份或活動時（例如「放花蓮的影片」），先問一句要找家裡的影片庫
-  還是 YouTube，等回答了再照原本的要求做。
-- open_toolbox 回來之後，那一組工具就在你的工具清單裡了：不用為了開工具箱再跟使用者確認
-  一次，也不要說「我幫你打開了工具」。
-- open_toolbox 回報失敗的時候，就說你現在拿不到那個功能，不要假裝做過了。
-- 音樂播放和停止一直都是直接能力：使用者要聽音樂或停掉音樂時，直接呼叫音樂工具，不要
-  先開工具箱。
-- 你的工具清單上沒有、工具箱也載不進來的事，就說你做不到，不要自己演一遍。
+- 你能做的事都在工具清單裡，直接呼叫就好。
+- 使用者要放影片，卻沒說來源、只給了地點、旅行、年份或活動時（例如「放花蓮的影片」），先問一句
+  要找家裡的影片庫還是 YouTube，等回答了再照原本的要求做。
+- 工具清單上沒有的事，就說你做不到，不要自己演一遍。
 
 ### 工具結果要照著唸
 - 工具回傳的 require_repeat_verbatim 或 speak_verbatim 是 true 時：把 response_text 或
@@ -150,10 +138,9 @@ _MODE_BLOCKS: Final[dict[ConversationMode, str]] = {
 - 只有聽到自己的名字或「停」才回應，回應也要短。
 - 有人請你總結、回顧、唸重點的時候，呼叫 summarize_conversation，然後照它回傳的
   summary_text 一字不差地唸出來，不要改寫也不要補話。
-- 這個模式下你主要做的是這四件：set_conversation_mode 換模式、summarize_conversation 唸摘要、
-  go_to_sleep 去睡覺、wait_for_user 安靜聽著。（task_status 和 task_cancel 也還在，
-  用來追蹤還沒跑完的工作。）其他外掛工具如果還在也可以用；要做別的事請先用
-  set_conversation_mode 切模式。
+- 這個模式下你做的是這四件：set_conversation_mode 換模式、summarize_conversation 唸摘要、
+  go_to_sleep 去睡覺、wait_for_user 安靜聽著。其他外掛工具如果還在也可以用；要做別的事
+  請先用 set_conversation_mode 切模式。
 """.strip(),
 }
 

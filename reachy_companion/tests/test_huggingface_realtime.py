@@ -1315,11 +1315,11 @@ async def test_current_person_is_cleared_for_every_new_session(monkeypatch: Any)
 
 @pytest.mark.asyncio
 async def test_a_new_session_opens_on_the_mode_scoped_core(monkeypatch: Any) -> None:
-    """Task 8: a session starts from the static core, with every box closed.
+    """Task 8: a session starts from the mode's surface, never the whole registry.
 
-    A box opened in the session that died says nothing about the one replacing
-    it, and a bare `get_tool_specs()` here would silently hand the model the
-    whole registry back — passing every other assertion in this file.
+    A bare `get_tool_specs()` here would silently hand the model the whole
+    registry back — `task_status` and `task_cancel` included, which no mode
+    sends since 1.30.0 — passing every other assertion in this file.
     """
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
@@ -1327,8 +1327,6 @@ async def test_a_new_session_opens_on_the_mode_scoped_core(monkeypatch: Any) -> 
     deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
     handler = HuggingFaceRealtimeHandler(deps)
     handler._startup_greeting_sent = True
-    # A box left open by the session that just died.
-    handler._open_toolboxes = {"productivity"}
 
     seen: list[list[str] | None] = []
 
@@ -1343,10 +1341,8 @@ async def test_a_new_session_opens_on_the_mode_scoped_core(monkeypatch: Any) -> 
 
     await handler._run_realtime_session()
 
-    assert handler._open_toolboxes == set()
-    # Computed AFTER the close, so the productivity family is back out of sight.
     # A bare `get_tool_specs()` would leave `None` here instead.
-    assert seen == [session_tool_exclusions(handler._conversation_mode, ())]
+    assert seen == [session_tool_exclusions(handler._conversation_mode)]
     assert seen[0] is not None
 
 

@@ -1178,3 +1178,68 @@ usually quoting the older tier.
 - <https://community.openai.com/t/realtime-api-preamble-inconsistent/1361953>
 - <https://community.openai.com/t/realtime-api-sometimes-creates-speech-before-a-tool-call-sometimes-doesnt/1153507>
 - Prior repo research: `docs/research-mini-tool-calling-2026-08.md`
+
+## 2026-10-30 refresh — context size on gpt-realtime-2.1-mini
+
+Read from the official pages' `.md` sources on 2026-10-30. Two URLs cited
+above have moved: `guides/realtime-models-prompting` →
+<https://developers.openai.com/api/docs/guides/voice-prompting>, and
+`guides/realtime-costs` →
+<https://developers.openai.com/api/docs/guides/voice-latency-cost>.
+
+- **Model page** (<https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini>):
+  - 128,000 context window; 32,000 max output.
+  - Features listed: function_calling and prompt_caching only. Structured
+    outputs aren't marked unsupported; they just aren't listed.
+  - Per 1M tokens:
+
+    | Type | Input | Cached input | Output |
+    |---|---|---|---|
+    | Text | $0.60 | $0.06 | $2.40 |
+    | Audio | $10 | $0.30 | $20 |
+    | Image | $0.80 | $0.08 | — |
+
+    So a cached text prefix is nearly free. The reason to cut it is quality,
+    not cost.
+- **Reasoning default:** the API reference
+  (<https://developers.openai.com/api/reference/resources/realtime>) gives
+  `effort` default `"low"`. The voice-prompting guide says to "Start with `low`
+  for most production voice agents".
+- **On mini specifically** (voice-latency-cost): "The tradeoff here tends to be
+  intelligence related to instruction following and function calling". This
+  is the first official statement of that.
+- **Voice-prompting guide:**
+  - "Start simple. Do not over-prompt upfront."
+  - "Use short, labeled sections."
+  - "you only provide what's relevant to the active phase" (tools and rules).
+  - Long text in tool outputs goes in a "small, explicit JSON envelope".
+- **Function calling**
+  (<https://developers.openai.com/api/docs/guides/function-calling>):
+  - "Aim for fewer than 20 functions available at the start of a turn" (a
+    soft suggestion).
+  - Definitions "count against the model's context limit and are billed as
+    input tokens… shortening descriptions where possible".
+  - "Combine functions that are always called in sequence".
+  - "Don't make the model fill arguments you already know".
+  - `tool_search` is GPT-5.4+ only, so it isn't available on Realtime.
+- **Tool outputs** (archived official cookbook, data-intensive Realtime apps):
+  "fewer tokens returned by function calls lead to better quality responses".
+  Use flat JSON, not large tables.
+- **Context management** (voice-latency-cost and the API reference):
+  - The whole conversation is sent with every response.
+  - `truncation`: `auto` (default), `disabled`, or `retention_ratio` with
+    `token_limits.post_instructions` (tokens after instructions and tools).
+    The cost example uses 0.8 and 8000.
+  - `conversation.item.delete` removes items. The cookbook pattern replaces
+    old turns with a summary.
+  - GPT-Live, when it rotates a long session, keeps "up to 8,192 tokens of
+    conversation history"
+    (<https://developers.openai.com/api/docs/guides/live-conversations>).
+- **Caching** is best-effort. Changing instructions or tools mid-session
+  "will reduce the cache rate", and so does truncation on every turn. Each
+  `open_toolbox` `session.update` is such a change.
+- **Audio:** user audio is 1 token per 100 ms; assistant audio is 1 token per
+  50 ms. No published image-token formula for Realtime; measure
+  `input_token_details.image_tokens`.
+- **Unconfirmed:** the 16,384-token cap on instructions plus tools comes only
+  from the Aug 2025 `gpt-realtime` notes.

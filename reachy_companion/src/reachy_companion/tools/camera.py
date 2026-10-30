@@ -22,7 +22,7 @@ class Camera(Tool):
         "Do NOT use when: the user asks you to physically turn or look in a direction (右邊/左邊/上面/下面/"
         "轉過去/那邊) — use look_around, which turns the head first and then looks. "
         "Do NOT use when: the question is about WHO a person is, whether you know or remember them, or what "
-        "someone's name is — that is who_is_this. "
+        "someone's name is — that is face with action=identify. "
         "The camera is live; each call captures the current moment."
     )
     parameters_schema = {

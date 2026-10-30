@@ -47,8 +47,7 @@ after an authentication failure, a refused recipient or a validation error keeps
 an approval alive for something that can never succeed as approved. Terminal
 failures call `complete()` instead: the authorisation is spent, and the model
 has to read a corrected action back. The classification itself lives with each
-error family (`gauth.is_transient`, `gdrive.is_transient`,
-`gmail_smtp.is_transient`), not here -- this module only enforces that whichever
+error family (`gdrive.is_transient`, `gmail_smtp.is_transient`), not here -- this module only enforces that whichever
 one is chosen presents the right claim id.
 
 Nothing here logs `summary` or `payload`: both are the user's own words about

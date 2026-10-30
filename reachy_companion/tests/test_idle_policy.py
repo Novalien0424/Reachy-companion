@@ -1,9 +1,14 @@
 from __future__ import annotations
 from typing import Any
 
+import pytest
+
 import reachy_companion.idle_policy as idle_policy_mod
+from reachy_companion.tools.head import Head
+from reachy_companion.tools.dance import Dance
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
+from reachy_companion.tools.dance_moves import Dance as DanceMoves
 from reachy_companion.tools.idle_do_nothing import IdleDoNothing
 
 
@@ -48,8 +53,42 @@ def test_choose_idle_tool_call_keeps_args_with_weighted_candidate(monkeypatch) -
     monkeypatch.setattr(idle_policy_mod.random, "choice", lambda _choices: "right")
 
     selected = idle_policy_mod.choose_idle_tool_call(
-        ["move_head"],
-        tool_registry={"move_head": MoveHead()},
+        ["head"],
+        tool_registry={"head": Head()},
     )
 
-    assert selected == ("move_head", {"direction": "right"})
+    assert selected == ("head", {"action": "turn", "direction": "right"})
+
+
+def test_the_idle_dance_goes_through_the_dance_family() -> None:
+    """1.30.0: `dance` is the family, so the idle call names the action that runs upstream's `Dance`."""
+    selected = idle_policy_mod.choose_idle_tool_call(["dance"], tool_registry={"dance": Dance()})
+
+    assert selected == ("dance", {"action": "play"})
+    assert isinstance(Dance.ACTIONS["play"], DanceMoves)
+
+
+def test_a_bare_move_head_is_no_longer_an_idle_candidate() -> None:
+    """The locked profile does not register `move_head`; the head family is the candidate."""
+    selected = idle_policy_mod.choose_idle_tool_call(["move_head"], tool_registry={"move_head": MoveHead()})
+
+    assert selected is None
+
+
+@pytest.mark.asyncio
+async def test_the_idle_head_turn_reaches_move_head_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The idle arguments are a valid `head` call: `turn` forwards the direction to `move_head`."""
+    seen: list[dict[str, Any]] = []
+
+    async def _move(self: MoveHead, deps: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs)
+        return {"status": "move_queued", "direction_requested": kwargs["direction"]}
+
+    monkeypatch.setattr(idle_policy_mod.random, "choice", lambda _choices: "left")
+    monkeypatch.setattr(MoveHead, "__call__", _move)
+    _name, arguments = idle_policy_mod.choose_idle_tool_call(["head"], tool_registry={"head": Head()}) or ("", {})
+
+    result = await Head()(None, **arguments)  # type: ignore[arg-type]
+
+    assert seen == [{"direction": "left"}]
+    assert result == {"status": "move_queued", "direction_requested": "left"}

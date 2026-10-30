@@ -1,90 +1,93 @@
-import random
-import logging
-from typing import Any, Dict
+"""Dance moves, and stopping any body motion, as one action-enum tool. Filename == Tool.name.
+
+Façade over upstream's `Dance` (moved unchanged to `dance_moves.py`, because
+this module must now hold the family) and the two upstream stop tools,
+`stop_dance` and `stop_emotion`, which keep their modules. See `tool_family.py`
+for why.
+
+`stop` is the one composite (mini context diet, 2026-10-30): it calls BOTH
+stop delegates, so the model never has to know whether a dance or an emotion
+is the motion running. Every delegate sets `needs_response = False` (motion is
+body language, not something to talk about), so the family does too; an error
+result still gets its spoken follow-up, as for every tool.
+"""
+
+from __future__ import annotations
+from typing import Any, Dict, Mapping, ClassVar
 
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
+from reachy_companion.tools.stop_dance import StopDance
+from reachy_companion.tools.dance_moves import Dance as DanceMoves
+from reachy_companion.tools.tool_family import dispatch_family
+from reachy_companion.tools.stop_emotion import StopEmotion
 
 
-logger = logging.getLogger(__name__)
+class _StopAllMotion(Tool):
+    """`dance stop`: end whatever dance or emotion motion is running.
 
-# Initialize dance library
-try:
-    from reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
-    from reachy_companion.dance_emotion_moves import DanceQueueMove
+    Never registered on its own (`_auto_register = False`): it exists only as
+    the family's `stop` action.
+    """
 
-    DANCE_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"Dance library not available: {e}")
-    AVAILABLE_MOVES = {}
-    DANCE_AVAILABLE = False
+    _auto_register: ClassVar[bool] = False
+    needs_response = False
+    name = "dance_stop"
+    description = "Stop any dance or emotion motion."
+    parameters_schema: Dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+    DELEGATES: ClassVar[tuple[Tool, ...]] = (StopDance(), StopEmotion())
 
-
-def get_available_dances_and_descriptions() -> str:
-    """Get formatted list of available dances with descriptions."""
-    if not DANCE_AVAILABLE:
-        return "Moves not available."
-
-    if not AVAILABLE_MOVES:
-        return "Moves not available."
-
-    output = ""
-    for move_name, (func, params, metadata) in AVAILABLE_MOVES.items():
-        description = metadata.get("description", "No description available.")
-        output += f"{move_name}: {description}\n"
-    return output
+    async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
+        """Call each stop delegate in turn and merge their answers into one."""
+        results = [await delegate(deps) for delegate in self.DELEGATES]
+        errors = [str(result["error"]) for result in results if "error" in result]
+        if errors:
+            return {"error": "; ".join(errors)}
+        return {"status": "stop_queued", "stopped": [result.get("stopped") for result in results]}
 
 
 class Dance(Tool):
-    """Play a named or random dance move once (or repeat). Non-blocking."""
+    """Play a dance move, or stop any body motion, through one tool."""
 
     name = "dance"
-    description = (
-        "Play a named or random music-like move sequence once or repeated. Non-blocking. "
-        "Use when: the user wants a dance or choreographed groove. "
-        "Do NOT use when: the user wants a short expressive reaction matching a feeling; that is `play_emotion`."
-    )
     needs_response = False
-    parameters_schema = {
+    ACTIONS: ClassVar[Mapping[str, Tool]] = {
+        "play": DanceMoves(),
+        "stop": _StopAllMotion(),
+    }
+    description = (
+        "Reachy's dance moves, and stopping any body motion. "
+        "Use when: the user wants a dance — 「跳支舞」「來跳一段」「dance for me」 — or wants Reachy to stop "
+        "moving — 「不要動了」「停下來」. `play` dances; leave `move` out for a random one. `stop` ends any "
+        "dance or emotion motion at once; call it with no preamble, because the person wants it ended now. "
+        "Do NOT use when: the user wants a short reaction to a feeling — that is play_emotion; or music on the "
+        "speaker should stop — that is music with action=stop."
+    )
+    parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["play", "stop"],
+                "description": "play: dance. stop: end any dance or emotion motion now.",
+            },
+            # The move NAMES are upstream's own enum; only the per-move
+            # description list is left out, because the model picks by name.
             "move": {
                 "type": "string",
-                "enum": list(AVAILABLE_MOVES.keys() if DANCE_AVAILABLE else []),
-                "description": f"""Name of the moves and their descriptions; omit for random.
-                                Here is a list of the available moves, you MUST only choose from these: \n
-                                {get_available_dances_and_descriptions()}
-                                """,
+                "enum": DanceMoves.parameters_schema["properties"]["move"]["enum"],
+                "description": "Which dance; leave out for a random one.",
             },
-            "repeat": {
-                "type": "integer",
-                "description": "How many times to repeat the move (default 1).",
-            },
+            "repeat": DanceMoves.parameters_schema["properties"]["repeat"],
         },
-        "required": [],
+        "required": ["action"],
     }
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
-        """Play a named or random dance move once (or repeat). Non-blocking."""
-        if not DANCE_AVAILABLE:
-            return {"error": "Dance system not available"}
-
-        if not AVAILABLE_MOVES:
-            return {"error": "No moves currently available"}
-
-        move_name = kwargs.get("move")
-        repeat = int(kwargs.get("repeat", 1))
-
-        logger.info("Tool call: dance move=%s repeat=%d", move_name, repeat)
-
-        if not move_name:
-            move_name = random.choice(list(AVAILABLE_MOVES.keys()))
-
-        if move_name not in AVAILABLE_MOVES:
-            return {"error": f"Unknown dance move '{move_name}'. Available: {list(AVAILABLE_MOVES.keys())}"}
-
-        movement_manager = deps.movement_manager
-        for _ in range(repeat):
-            dance_move = DanceQueueMove(move_name)
-            movement_manager.queue_move(dance_move)
-
-        return {"status": "queued", "move": move_name, "repeat": repeat}
+        """Forward one dance action to the tool that has always handled it."""
+        return await dispatch_family(
+            family=self.name,
+            action=kwargs.get("action"),
+            actions=self.ACTIONS,
+            deps=deps,
+            kwargs=kwargs,
+        )

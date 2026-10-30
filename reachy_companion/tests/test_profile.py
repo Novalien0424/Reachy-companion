@@ -11,57 +11,48 @@ from reachy_companion.config import LOCKED_PROFILE, DEFAULT_PROFILES_DIRECTORY
 from reachy_companion.memory import add_memory_fact
 from reachy_companion.prompts import get_session_instructions
 from reachy_companion.tools.nas import Nas
+from reachy_companion.tools.face import Face
+from reachy_companion.tools.head import Head
+from reachy_companion.tools.dance import Dance
 from reachy_companion.tools.drive import Drive
 from reachy_companion.tools.music import Music
-from reachy_companion.tools.tasks import Tasks
+from reachy_companion.tools.memory import Memory
 from reachy_companion.profile_store import read_profile
-from reachy_companion.tools.calendar import Calendar
+from reachy_companion.conversation_mode import ConversationMode
 
 
 EXPECTED_TOOLS = (
     "camera",
-    # 2026-08-31 conversation modes: the move_head → camera composite the mini
+    # 2026-08-31 conversation modes: the turn-then-look composite the mini
     # model would not chain for itself. Listed right after `camera` because the
     # two are read together — one looks, the other turns and then looks.
     "look_around",
     "play_emotion",
+    # 1.30.0 (mini context diet): nine body and memory tools became four
+    # action-enum families over the original classes — `dance` {play, stop},
+    # `head` {turn, follow, stop_following}, `face` {identify, remember} and
+    # `memory` {save, forget}.
     "dance",
-    "stop_dance",
-    "stop_emotion",
-    "move_head",
-    "head_tracking",
+    "head",
+    "face",
+    "memory",
     "home_control",
-    # Ported HomeAssistant-Nova capabilities (D-018). Each porting task adds its
-    # own names here in the same order the profile lists them, so this stays a
-    # tripwire for an *unplanned* addition rather than a blocker for a planned one.
-    #
-    # 2026-08-31 tool diet: the eighteen CRUD/action tools became six action-enum
-    # families. Their modules, names and prerequisite rows are untouched -- they
-    # are simply reached through a façade now, so only this list got shorter.
+    # Ported HomeAssistant-Nova capabilities (D-018), reached through action-enum
+    # families since the 2026-08-31 tool diet. Calendar, tasks and Notion were
+    # removed in 1.30.0.
     "music",
-    # D-038: the `tv` family is retired. Media tools are named for their source,
-    # because the user names the source and every request says "on the TV".
+    "pollen_robotics_reachy_mini_search_tool__search_web",
+    "set_conversation_mode",
+    "summarize_conversation",
+    "wait_for_user",
+    "go_to_sleep",
+    # D-038: media tools are named for their source, because the user names the
+    # source and every request says "on the TV". No toolbox since 1.30.0.
     "youtube",
     "nas",
     "draw_picture",
-    "calendar",
-    "tasks",
     "drive",
-    "notion_add",
     "email_send",
-    "go_to_sleep",
-    "set_conversation_mode",
-    "summarize_conversation",
-    # 2026-08-31 tool diet: the router that loads the productivity and media
-    # families on demand. Listed with the other conversation-level controls
-    # because it is one — it changes what the session can reach, not the world.
-    "open_toolbox",
-    "remember",
-    "forget",
-    "remember_face",
-    "who_is_this",
-    "wait_for_user",
-    "pollen_robotics_reachy_mini_search_tool__search_web",
 )
 
 
@@ -70,7 +61,7 @@ def test_locked_profile_is_chinese_companion() -> None:
     profile = read_profile(LOCKED_PROFILE)
 
     assert "中文" in profile.instructions
-    for tool in ("camera", "play_emotion", "head_tracking", "home_control", "go_to_sleep"):
+    for tool in ("camera", "play_emotion", "head", "home_control", "go_to_sleep"):
         assert tool in profile.default_tools
 
 
@@ -78,10 +69,12 @@ def test_locked_profile_ships_exactly_the_expected_tools() -> None:
     """The shipped tool list is the demo's contract; a silent addition is a regression.
 
     Two system tools (`task_status`, `task_cancel`) are appended at registry
-    build time (`tools/core_tools.py:_read_profile_tool_names`), so the session
-    the operator sees advertises these plus those two.
+    build time (`tools/core_tools.py:_read_profile_tool_names`), but since
+    1.30.0 they are hidden from the session in every mode, so the session the
+    operator sees advertises exactly these 19.
     """
     assert tuple(read_profile(LOCKED_PROFILE).default_tools) == EXPECTED_TOOLS
+    assert len(EXPECTED_TOOLS) == 19
 
 
 def test_locked_profile_can_be_told_to_go_to_sleep() -> None:
@@ -128,10 +121,9 @@ def test_locked_profile_can_remember_and_correct_facts_about_the_user() -> None:
     """
     profile = read_profile(LOCKED_PROFILE)
 
-    assert "remember" in profile.default_tools
-    assert "forget" in profile.default_tools
-    assert "對方分享值得長期記住的個人資訊時用 remember" in profile.instructions
-    assert "資訊有誤或對方要你忘記時用 forget" in profile.instructions
+    assert "memory" in profile.default_tools
+    assert "對方分享值得長期記住的個人資訊時用 memory（action=save）" in profile.instructions
+    assert "資訊有誤就存新的那一條，對方要你忘記時用 memory（action=forget）" in profile.instructions
 
 
 def test_locked_profile_can_remember_and_recall_a_face() -> None:
@@ -146,11 +138,10 @@ def test_locked_profile_can_remember_and_recall_a_face() -> None:
     """
     profile = read_profile(LOCKED_PROFILE)
 
-    assert "remember_face" in profile.default_tools
-    assert "who_is_this" in profile.default_tools
-    assert "對方希望你記住他本人的長相時用 remember_face，不要用 camera。" in profile.instructions
+    assert "face" in profile.default_tools
+    assert "對方希望你記住他本人的長相時用 face（action=remember），不要用 camera。" in profile.instructions
     assert (
-        "問題是在問「某個人是誰」——包含對方在問你認不認得他自己——一律用 who_is_this，"
+        "問題是在問「某個人是誰」——包含對方在問你認不認得他自己——一律用 face（action=identify），"
         "不要用 camera；認不出就坦白說認不出，不要猜。"
     ) in profile.instructions
 
@@ -206,16 +197,17 @@ _RETIRED_TOOL_NAMES = (
     "sweep_look", "self_destruct", "mad_laugh",
 )
 
-FAMILY_NAMES = ("music", "nas", "calendar", "tasks", "drive")
-# D-038: one-purpose tools the body must teach as well, being boxed.
-SINGLE_TOOL_NAMES = ("youtube", "draw_picture")
+# The families whose rules the locked profile's prose states (1.30.0). The
+# formerly boxed tools are no longer named in prose: with no toolbox, each is in
+# the session from the first turn and its own description carries its routing.
+FAMILY_NAMES = ("music", "head", "memory", "face")
 
 # Every family's live action enum, read off the shipped classes rather than
 # restated here: a family that renames an action must not be able to leave a
 # stale value behind in the prompt.
 _FAMILY_ACTIONS = {
     family.name: frozenset(family.parameters_schema["properties"]["action"]["enum"])
-    for family in (Calendar, Tasks, Drive, Nas, Music)
+    for family in (Drive, Nas, Music, Dance, Head, Memory, Face)
 }
 
 _ACTION_VALUE = re.compile(r"action=([a-z_]+(?:/[a-z_]+)*)")
@@ -358,10 +350,10 @@ def test_every_action_value_in_a_bundled_profile_is_real() -> None:
             assert action in _FAMILY_ACTIONS[owner], f"{path.name}: {owner} has no action {action!r} ({context})"
 
 
-def test_the_locked_profile_body_names_every_family_it_ships() -> None:
+def test_the_locked_profile_body_names_the_families_its_rules_use() -> None:
     """The other half of P2-6: the body must teach the names that DO exist."""
     body = read_profile(LOCKED_PROFILE).instructions
-    for family in FAMILY_NAMES + SINGLE_TOOL_NAMES:
+    for family in FAMILY_NAMES:
         assert family in body, family
 
 
@@ -399,3 +391,109 @@ def test_the_confirm_retry_tells_the_model_to_resend_its_action() -> None:
     body = read_profile(LOCKED_PROFILE).instructions
     confirm_rule = next(line for line in body.splitlines() if "needs_confirmation" in line)
     assert "同樣的 action" in confirm_rule, confirm_rule
+
+
+# --- tools removed in 1.30.0 (mini context diet) ------------------------------
+#
+# Their callable names must be gone from every surface the model reads: the
+# locked profile (front matter and body), the system prompt in every mode, the
+# operator's `persona.md`, and every schema the session sends. The upstream
+# profiles still list `stop_dance`, `move_head` and the rest — those modules are
+# kept as the families' delegates — so this scan covers only what OUR session
+# sends, unlike `_RETIRED_TOOL_NAMES` above.
+_REMOVED_IN_1_30 = (
+    "open_toolbox",
+    "calendar",
+    "tasks",
+    "notion_add",
+    "task_status",
+    "task_cancel",
+    "stop_dance",
+    "stop_emotion",
+    "move_head",
+    "head_tracking",
+    "remember_face",
+    "who_is_this",
+    "forget",
+)
+
+
+def _callable_mention(name: str) -> re.Pattern[str]:
+    """Match *name* only where it reads as a tool to call, so ordinary words pass.
+
+    A snake_case identifier is never an ordinary word, so any whole token counts.
+    A plain word (`calendar`, `tasks`, `forget`) counts only in a tool-name
+    position: backticked, quoted (a tool list or a JSON enum), followed by an
+    argument list, or after 用 / use / that is / call. A real family action such
+    as `memory（action=forget）` is blanked before this runs, by
+    `_tool_name_surface` in prose and `_spec_surface` in a family's own schema.
+    """
+    token = rf"(?<![0-9A-Za-z_]){re.escape(name)}(?![0-9A-Za-z_])"
+    if "_" in name:
+        return re.compile(token)
+    quoted = rf"`{re.escape(name)}`|\"{re.escape(name)}\""
+    called = rf"(?:用|\buse|\bthat is|\bcall)\s*{token}|{token}\s*[（(]"
+    return re.compile(rf"{quoted}|{called}", re.IGNORECASE)
+
+
+def _model_read_surfaces(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Every text our session puts in front of the model, prose blanked of real actions."""
+    from reachy_companion import toolboxes
+    from reachy_companion.prompts import hardening_block, mode_rules_block
+
+    surfaces = {
+        "profile.md": _tool_name_surface(
+            (Path(DEFAULT_PROFILES_DIRECTORY) / LOCKED_PROFILE / "profile.md").read_text(encoding="utf-8")
+        ),
+        "hardening_block": _tool_name_surface(hardening_block()),
+        "persona.md": _tool_name_surface(
+            (Path(__file__).resolve().parents[2] / "persona.md").read_text(encoding="utf-8")
+        ),
+    }
+    for mode in ConversationMode:
+        surfaces[f"mode_rules_block:{mode.value}"] = _tool_name_surface(mode_rules_block(mode))
+    core_tools = importlib.import_module("reachy_companion.tools.core_tools")
+    # `test_external_loading` re-imports `core_tools`, which leaves `toolboxes`
+    # bound to a stale, empty registry; point it at the live one (the same cure
+    # as `test_toolboxes.registry`).
+    monkeypatch.setattr(toolboxes, "get_tools", core_tools.get_tools)
+    monkeypatch.setattr(toolboxes, "EXTRA_TOOLS", core_tools.EXTRA_TOOLS)
+    core_tools.initialize_tools(force=True)
+    try:
+        for mode in ConversationMode:
+            for spec in core_tools.get_tool_specs(exclusion_list=toolboxes.session_tool_exclusions(mode)):
+                surfaces[f"spec:{spec['name']}"] = _spec_surface(spec)
+    finally:
+        core_tools._TOOLS_SIGNATURE = None
+    return surfaces
+
+
+def test_no_surface_the_model_reads_names_a_removed_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The prompt must never name a tool the session lacks (plan, Step 1)."""
+    surfaces = _model_read_surfaces(monkeypatch)
+    assert {"profile.md", "hardening_block", "persona.md", "spec:face", "spec:camera"} <= set(surfaces)
+    for where, text in surfaces.items():
+        for name in _REMOVED_IN_1_30:
+            match = _callable_mention(name).search(text)
+            context = "" if match is None else text[max(0, match.start() - 40) : match.end() + 40]
+            assert match is None, f"{where} names the removed tool {name!r}: ...{context}..."
+
+
+@pytest.mark.parametrize(
+    ("text", "name", "hit"),
+    [
+        ("用 `who_is_this` 認人", "who_is_this", True),
+        ("that is who_is_this.", "who_is_this", True),
+        ("use `forget` to remove it", "forget", True),
+        ('default_tools = ["forget"]', "forget", True),
+        ("用 calendar 加行程", "calendar", True),
+        ("tasks(action=add)", "tasks", True),
+        ("when they ask you to forget it", "forget", False),
+        ("the background tasks finish", "tasks", False),
+        ("a calendar year", "calendar", False),
+        ("stop_dance_floor", "stop_dance", False),
+    ],
+)
+def test_the_removed_name_scan_tells_a_tool_from_a_word(text: str, name: str, hit: bool) -> None:
+    """The scan's own contract: callable names fail, ordinary English does not."""
+    assert bool(_callable_mention(name).search(text)) is hit

@@ -1,8 +1,8 @@
 """Contract tests for the HomeAssistant-Nova config surface (D-018, R5/R9/R11).
 
 Also pins review round 1 findings 6 (no identifier/path/script defaults),
-10 (per-tool prerequisites, table-driven over all 22 tools) and 13 (bounded
-numeric readers, validated timezone).
+10 (per-tool prerequisites, table-driven over every ported tool) and 13
+(bounded numeric readers).
 """
 
 import os
@@ -22,7 +22,6 @@ def clean_env(monkeypatch):
         if name.startswith("HANOVA_") or name in {
             "HA_URL",
             "HA_TOKEN",
-            "GOOGLE_CREDS_DIR",
             "HERMES_DRIVE_SECRETS",
             "OPENAI_API_KEY",
         }:
@@ -31,16 +30,13 @@ def clean_env(monkeypatch):
 
 def test_defaults_are_generic_never_operator_derived():
     """Only vendor/behaviour defaults survive; nothing traceable to the operator."""
-    assert settings.timezone_name() == "Asia/Taipei"
     assert settings.music_keep() == 12
     assert settings.nas_cast_keep() == 8
-    assert settings.notion_title_prop() == "Name"  # Notion's own default title property
     assert settings.smtp_host() == "smtp.gmail.com"  # a vendor endpoint, not an identifier
     assert settings.smtp_port() == 465
     assert settings.ytdlp_search_n() == 2  # measured 13.4 s at 5 vs 8.3 s at 2 on the robot
     assert settings.ytdlp_timeout_s() == 20
     assert settings.ytdlp_download_timeout_s() == 120
-    assert settings.cal_delete_window_days() == 14
     assert settings.confirm_ttl_s() == 90.0
     assert settings.home_probe_timeout_s() == 1.5
     assert settings.home_cache_ttl_s() == 30.0
@@ -50,13 +46,9 @@ def test_defaults_are_generic_never_operator_derived():
 def test_identifier_path_and_script_keys_all_default_to_empty():
     """Finding 6: a value derived from the operator's setup is never a default."""
     for reader in (
-        settings.gcal_calendar_id,
-        settings.gtasks_list_id,
         settings.drive_parent_id,
-        settings.google_account,
         settings.cast_entity,
         settings.nas_host,
-        settings.notion_data_source_id,
         settings.smtp_user,
         # finding 6: all three used to carry the operator's own share name and
         # folder layout as defaults. Round 2, finding 5: this comment does not
@@ -74,11 +66,9 @@ def test_identifier_path_and_script_keys_all_default_to_empty():
 
 def test_env_values_win_and_are_stripped(monkeypatch):
     """Whitespace around a pasted value must not corrupt it."""
-    monkeypatch.setenv("HANOVA_TZ", "  Europe/Paris  ")
     monkeypatch.setenv("HANOVA_MUSIC_KEEP", " 3 ")
     monkeypatch.setenv("HANOVA_CONFIRM_TTL_S", "45.5")
     monkeypatch.setenv("HA_URL", "http://ha.example.invalid:8123/")
-    assert settings.timezone_name() == "Europe/Paris"
     assert settings.music_keep() == 3
     assert settings.confirm_ttl_s() == 45.5
     assert settings.ha_url() == "http://ha.example.invalid:8123"
@@ -109,7 +99,6 @@ def test_every_numeric_accessor_stays_inside_finite_bounds(monkeypatch):
         "HANOVA_MUSIC_KEEP",
         "HANOVA_NAS_CAST_KEEP",
         "HANOVA_IMAGE_KEEP",
-        "HANOVA_CAL_DELETE_WINDOW_DAYS",
         "HANOVA_SMTP_PORT",
         "HANOVA_YTDLP_SEARCH_N",
         "HANOVA_YTDLP_TIMEOUT_S",
@@ -123,7 +112,6 @@ def test_every_numeric_accessor_stays_inside_finite_bounds(monkeypatch):
         settings.music_keep(),
         settings.nas_cast_keep(),
         settings.image_keep(),
-        settings.cal_delete_window_days(),
         settings.smtp_port(),
         settings.ytdlp_search_n(),
         settings.ytdlp_timeout_s(),
@@ -142,23 +130,16 @@ def test_home_cache_ttl_may_be_zero_only_because_tests_need_it(monkeypatch):
     assert settings.home_cache_ttl_s() == 0.0
 
 
-def test_timezone_is_validated_against_the_tz_database(monkeypatch):
-    """Finding 13: an unknown zone must degrade, not blow up inside a tool."""
-    monkeypatch.setenv("HANOVA_TZ", "Mars/Olympus_Mons")
-    assert settings.timezone_name() == "Asia/Taipei"
-    monkeypatch.setenv("HANOVA_TZ", "UTC")
-    assert settings.timezone_name() == "UTC"
-
-
 # --- per-tool prerequisites (finding 10) ----------------------------------
 def test_every_ported_tool_declares_prerequisites():
-    """All 19 names are covered; a new tool cannot be silently ungated.
+    """All 11 names are covered; a new tool cannot be silently ungated.
 
     Twenty since 2026-08-31: `self_destruct` and `mad_laugh` were retired, and
     their two clip-id prerequisites left `_PREREQS` with them. Nineteen since
-    2026-10-30: `nas_play_folder` merged into `play_nas_video`.
+    2026-10-30: `nas_play_folder` merged into `play_nas_video`. Eleven since
+    1.30.0 (mini context diet): calendar, tasks and Notion were removed.
     """
-    assert len(settings.TOOL_PREREQS) == 19
+    assert len(settings.TOOL_PREREQS) == 11
     for family, names in settings.FAMILY_TOOLS.items():
         assert family in settings.FAMILIES
         for name in names:
@@ -171,7 +152,7 @@ def test_with_zero_config_only_the_always_on_tools_are_available():
     """stop_music is the safety lane and must answer even with nothing set up."""
     available = {name for name in settings.TOOL_PREREQS if settings.tool_available(name)}
     assert "stop_music" in available
-    assert "calendar_add" not in available
+    assert "drive_list" not in available
     assert "email_send" not in available
 
 
@@ -190,32 +171,19 @@ def test_every_disabled_tool_names_the_key_not_a_value():
             assert "@" not in reason and "/" not in reason
 
 
-def test_google_calendar_tools_need_the_creds_file_and_a_calendar_id(monkeypatch, tmp_path):
-    """Finding 10: upstream's family gate ignored the calendar and list ids."""
-    creds_dir = tmp_path / "google-workspace-mcp"
-    creds_dir.mkdir()
-    monkeypatch.setenv("GOOGLE_CREDS_DIR", str(creds_dir))
-    monkeypatch.setenv("HANOVA_GOOGLE_ACCOUNT", "someone@example.com")
-    assert settings.tool_status("calendar_list") == (False, "GOOGLE_CREDS_FILE")
-    (creds_dir / "someone@example.com.json").write_text("{}", encoding="utf-8")
-    assert settings.tool_status("calendar_list") == (False, "HANOVA_GCAL_CALENDAR_ID")
-    monkeypatch.setenv("HANOVA_GCAL_CALENDAR_ID", "cal-under-test")
-    assert settings.tool_available("calendar_list") is True
-    # task_add needs its own list id; task_list does not.
-    assert settings.tool_status("task_add") == (False, "HANOVA_GTASKS_LIST_ID")
-    assert settings.tool_available("task_list") is True
+def test_calendar_tasks_and_notion_are_gone_from_the_prerequisite_table():
+    """1.30.0 (mini context diet): the operator gave up calendar, tasks and Notion.
 
-
-def test_google_creds_dir_must_be_writable(monkeypatch, tmp_path):
-    """Finding 10: gauth rewrites the file on refresh; a read-only dir is broken."""
-    creds_dir = tmp_path / "google-workspace-mcp"
-    creds_dir.mkdir()
-    (creds_dir / "someone@example.com.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("GOOGLE_CREDS_DIR", str(creds_dir))
-    monkeypatch.setenv("HANOVA_GOOGLE_ACCOUNT", "someone@example.com")
-    monkeypatch.setenv("HANOVA_GCAL_CALENDAR_ID", "cal-under-test")
-    monkeypatch.setattr(settings.os, "access", lambda path, mode: False)
-    assert settings.tool_status("calendar_list") == (False, "GOOGLE_CREDS_DIR not writable")
+    Their modules are deleted, not just unlisted, so no row, family or
+    prerequisite key may still name them.
+    """
+    for name in ("calendar_add", "calendar_list", "calendar_delete", "task_add", "task_list", "task_complete",
+                 "task_delete", "notion_add"):
+        assert name not in settings.TOOL_PREREQS, name
+    assert "google-workspace" not in settings.FAMILIES and "notion" not in settings.FAMILIES
+    for key in ("GOOGLE_CREDS_DIR", "HANOVA_GOOGLE_ACCOUNT", "HANOVA_GCAL_CALENDAR_ID", "HANOVA_GTASKS_LIST_ID",
+                "HANOVA_NOTION_TOKEN", "HANOVA_NOTION_DATA_SOURCE_ID"):
+        assert key not in settings._PREREQS, key
 
 
 def test_play_video_needs_no_lan_base_and_no_cast_entity(monkeypatch):
@@ -314,8 +282,7 @@ def test_log_family_status_emits_one_line_per_family(caplog):
 def test_startup_log_never_prints_a_configured_value(monkeypatch, caplog, tmp_path):
     """Finding 7: the verdict names keys, never the operator's values."""
     secret = "SENTINEL_PRIVATE_x7"
-    monkeypatch.setenv("HANOVA_GCAL_CALENDAR_ID", secret)
-    monkeypatch.setenv("HANOVA_NOTION_TOKEN", secret)
+    monkeypatch.setenv("HANOVA_DRIVE_PARENT_ID", secret)
     monkeypatch.setenv("HANOVA_NAS_HOST", secret)
     monkeypatch.setenv("HANOVA_SMTP_USER", secret)
     caplog.set_level(logging.DEBUG)

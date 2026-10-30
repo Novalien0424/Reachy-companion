@@ -25,7 +25,6 @@ import logging
 import ipaddress
 from typing import Any, Dict, List, Tuple
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Round 2, finding 6: this module logs too, so it goes through the same helper
 # every tool does. `redact` imports nothing from `hanova`, so there is no cycle.
@@ -111,25 +110,6 @@ def ha_token() -> str:
 
 
 # --- general ---------------------------------------------------------------
-_DEFAULT_TZ = "Asia/Taipei"
-
-
-def timezone_name() -> str:
-    """IANA timezone used for calendar/task times (R11), validated at read time.
-
-    An unknown zone here would surface much later as a `ZoneInfoNotFoundError`
-    deep inside a calendar tool, so it is checked against the tz database now
-    and degraded to the default (review finding 13).
-    """
-    raw = env_str("HANOVA_TZ", _DEFAULT_TZ)
-    try:
-        ZoneInfo(raw)
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        logger.warning("HANOVA_TZ is not a known IANA timezone; using %s.", _DEFAULT_TZ)
-        return _DEFAULT_TZ
-    return raw
-
-
 def cast_entity() -> str:
     """Return the optional media_player entity id forwarded to the HA cast scripts.
 
@@ -192,32 +172,6 @@ def image_keep() -> int:
     return env_int("HANOVA_IMAGE_KEEP", 12, minimum=1, maximum=1000)
 
 
-# --- Google Calendar / Tasks -----------------------------------------------
-def google_account() -> str:
-    """Google account whose OAuth JSON is used for Calendar and Tasks."""
-    return env_str("HANOVA_GOOGLE_ACCOUNT")
-
-
-def google_creds_dir() -> Path | None:
-    """Directory holding `<account>.json`; must be writable (gauth rewrites it)."""
-    return env_path("GOOGLE_CREDS_DIR")
-
-
-def gcal_calendar_id() -> str:
-    """Default calendar id for add/list/delete."""
-    return env_str("HANOVA_GCAL_CALENDAR_ID")
-
-
-def gtasks_list_id() -> str:
-    """Default Google Tasks list id for task_add."""
-    return env_str("HANOVA_GTASKS_LIST_ID")
-
-
-def cal_delete_window_days() -> int:
-    """Forward search window, in days, for resolving a calendar_delete match."""
-    return env_int("HANOVA_CAL_DELETE_WINDOW_DAYS", 14, minimum=1, maximum=365)
-
-
 # --- Google Drive (separate OAuth grant) -----------------------------------
 def drive_secrets_path() -> Path | None:
     """Path to the Drive OAuth secret JSON (flat or nested shape)."""
@@ -227,22 +181,6 @@ def drive_secrets_path() -> Path | None:
 def drive_parent_id() -> str:
     """Drive folder id that drive_list reads and drive_upload writes into."""
     return env_str("HANOVA_DRIVE_PARENT_ID")
-
-
-# --- Notion (distinct from the NOTION_MCP_* remote lane) -------------------
-def notion_token() -> str:
-    """Notion internal-integration bearer token."""
-    return env_str("HANOVA_NOTION_TOKEN")
-
-
-def notion_data_source_id() -> str:
-    """Notion data-source id the notes database writes into."""
-    return env_str("HANOVA_NOTION_DATA_SOURCE_ID")
-
-
-def notion_title_prop() -> str:
-    """Name of the title property on that data source."""
-    return env_str("HANOVA_NOTION_TITLE_PROP", "Name")
 
 
 # --- Email -----------------------------------------------------------------
@@ -438,9 +376,7 @@ def media_mount_ready() -> bool:
 
 # --- per-tool prerequisites (R5, review finding 10) ------------------------
 FAMILIES: tuple[str, ...] = (
-    "google-workspace",
     "drive",
-    "notion",
     "email",
     "nas",
     "media-cast",
@@ -448,17 +384,7 @@ FAMILIES: tuple[str, ...] = (
 )
 
 FAMILY_TOOLS: Dict[str, Tuple[str, ...]] = {
-    "google-workspace": (
-        "calendar_add",
-        "calendar_list",
-        "calendar_delete",
-        "task_add",
-        "task_list",
-        "task_complete",
-        "task_delete",
-    ),
     "drive": ("drive_list", "drive_trash", "drive_upload"),
-    "notion": ("notion_add",),
     "email": ("email_send",),
     "nas": ("nas_video_query", "play_nas_video", "nas_skip"),
     "media-cast": ("play_video", "show_on_tv"),
@@ -482,21 +408,6 @@ def _music_wheels_ready() -> tuple[bool, str]:
     return True, ""
 
 
-def _google_creds_file_ready() -> bool:
-    creds_dir = google_creds_dir()
-    account = google_account()
-    if creds_dir is None or not account:
-        return False
-    return (creds_dir / f"{account}.json").is_file()
-
-
-def _google_creds_dir_writable() -> bool:
-    # gauth rewrites `<account>.json` on every token refresh, so a read-only
-    # directory is a working credential that will stop working within the hour.
-    creds_dir = google_creds_dir()
-    return creds_dir is not None and os.access(creds_dir, os.W_OK)
-
-
 def _nas_index_ready() -> bool:
     index = nas_index_path()
     return index is not None and index.is_file()
@@ -513,17 +424,9 @@ _PREREQS: Dict[str, Any] = {
     "HANOVA_MEDIA_HTTP_BASE": lambda: bool(media_http_base()),
     "HANOVA_MEDIA_MOUNT": media_mount_ready,
     "OPENAI_API_KEY": lambda: bool((os.getenv("OPENAI_API_KEY") or "").strip()),
-    "GOOGLE_CREDS_DIR": lambda: google_creds_dir() is not None,
-    "HANOVA_GOOGLE_ACCOUNT": lambda: bool(google_account()),
-    "GOOGLE_CREDS_FILE": _google_creds_file_ready,
-    "GOOGLE_CREDS_DIR not writable": _google_creds_dir_writable,
-    "HANOVA_GCAL_CALENDAR_ID": lambda: bool(gcal_calendar_id()),
-    "HANOVA_GTASKS_LIST_ID": lambda: bool(gtasks_list_id()),
     "HERMES_DRIVE_SECRETS": lambda: drive_secrets_path() is not None,
     "DRIVE_SECRET_FILE": lambda: (drive_secrets_path() or Path("/nonexistent")).is_file(),
     "HANOVA_DRIVE_PARENT_ID": lambda: bool(drive_parent_id()),
-    "HANOVA_NOTION_TOKEN": lambda: bool(notion_token()),
-    "HANOVA_NOTION_DATA_SOURCE_ID": lambda: bool(notion_data_source_id()),
     "HANOVA_SMTP_USER": lambda: bool(smtp_user()),
     "HANOVA_SMTP_APP_PASSWORD": lambda: bool(smtp_app_password()),
     "HANOVA_NAS_INDEX_PATH": lambda: nas_index_path() is not None,
@@ -537,12 +440,6 @@ _PREREQS: Dict[str, Any] = {
     "MUSIC_WHEELS": lambda: _music_wheels_ready()[0],
 }
 
-_GOOGLE_BASE: Tuple[str, ...] = (
-    "GOOGLE_CREDS_DIR",
-    "HANOVA_GOOGLE_ACCOUNT",
-    "GOOGLE_CREDS_FILE",
-    "GOOGLE_CREDS_DIR not writable",
-)
 _DRIVE_BASE: Tuple[str, ...] = ("HERMES_DRIVE_SECRETS", "DRIVE_SECRET_FILE", "HANOVA_DRIVE_PARENT_ID")
 _HA_BASE: Tuple[str, ...] = ("HA_URL", "HA_TOKEN")
 _URL_CAST_BASE: Tuple[str, ...] = _HA_BASE + ("HANOVA_MEDIA_HTTP_BASE", "HANOVA_MEDIA_MOUNT")
@@ -570,20 +467,11 @@ TOOL_PREREQS: Dict[str, Tuple[str, ...]] = {
     "nas_video_query": ("HANOVA_NAS_INDEX_PATH", "NAS_INDEX_FILE"),
     "play_nas_video": _NAS_FETCH + _URL_CAST_BASE + ("HANOVA_HA_SCRIPT_VIDEO_URL",),
     "nas_skip": _NAS_FETCH + _URL_CAST_BASE + ("HANOVA_HA_SCRIPT_VIDEO_URL",),
-    # google-workspace
-    "calendar_add": _GOOGLE_BASE + ("HANOVA_GCAL_CALENDAR_ID",),
-    "calendar_list": _GOOGLE_BASE + ("HANOVA_GCAL_CALENDAR_ID",),
-    "calendar_delete": _GOOGLE_BASE + ("HANOVA_GCAL_CALENDAR_ID",),
-    "task_add": _GOOGLE_BASE + ("HANOVA_GTASKS_LIST_ID",),
-    "task_list": _GOOGLE_BASE,
-    "task_complete": _GOOGLE_BASE,
-    "task_delete": _GOOGLE_BASE,
     # drive
     "drive_list": _DRIVE_BASE,
     "drive_trash": _DRIVE_BASE,
     "drive_upload": _DRIVE_BASE,
-    # notion / email
-    "notion_add": ("HANOVA_NOTION_TOKEN", "HANOVA_NOTION_DATA_SOURCE_ID"),
+    # email
     "email_send": ("HANOVA_SMTP_USER", "HANOVA_SMTP_APP_PASSWORD"),
 }
 

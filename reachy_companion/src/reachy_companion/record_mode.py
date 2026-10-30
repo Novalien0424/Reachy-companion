@@ -60,20 +60,18 @@ def clear_record_log(deps: ToolDependencies) -> None:
     deps.record_log.clear()
 
 
-# What 紀錄模式 leaves on the table: SIX local names — the four the model uses
-# plus two structural ones. `task_status` and `task_cancel` are `SystemTool`
-# values the background tool manager injects into every profile, and the model
-# needs them to follow up a long-running call, so hiding them would break the
-# tools that ARE allowed. MCP extras (`EXTRA_TOOLS`) are additionally always
-# kept — see `toolboxes.session_tool_exclusions` (Codex round 1, P2-8).
+# What 紀錄模式 leaves on the table: the four local names the model uses. The
+# `SystemTool` entries `task_status` and `task_cancel` stay registered for the
+# background tool manager but are sent in no mode (mini context diet,
+# 2026-10-30, `toolboxes.CORE_TOOL_NAMES`). MCP extras (`EXTRA_TOOLS`) are
+# additionally always kept — see `toolboxes.session_tool_exclusions` (Codex
+# round 1, P2-8).
 RECORD_TOOL_ALLOWLIST: Final[frozenset[str]] = frozenset(
     {
         "set_conversation_mode",
         "summarize_conversation",
         "go_to_sleep",
         "wait_for_user",
-        "task_status",
-        "task_cancel",
     }
 )
 

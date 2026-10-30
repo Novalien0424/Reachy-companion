@@ -82,9 +82,6 @@ def _solo_handler() -> OpenAIRealtimeHandler:
     """Return a solo-mode handler with only the barge-relevant state, no __init__."""
     h = OpenAIRealtimeHandler.__new__(OpenAIRealtimeHandler)
     h._conversation_mode = ConversationMode.ONE_ON_ONE
-    # Task 8: `set_conversation_mode` closes every open toolbox on a flip, and
-    # two tests here flip mid-pause.
-    h._open_toolboxes = set()
     h._party_last_accept_at = None
     h._party_speech_open = False
     h._party_utterance_seq = 0

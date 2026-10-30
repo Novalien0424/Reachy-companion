@@ -156,7 +156,7 @@ No single file demonstrates all three, and none can: the destructive tools are
 all cloud tools, and a cloud tool is forbidden to touch the home-network probe
 (convention 2 below, enforced in both directions by
 `tests/test_hanova_integration.py`). Read two worked examples instead —
-`src/reachy_companion/tools/calendar_delete.py` for conventions 1 and 3
+`src/reachy_companion/tools/drive_trash.py` for conventions 1 and 3
 (per-tool gating, then the full arm/claim/complete lifecycle), and
 `src/reachy_companion/tools/play_video.py` for convention 2 (per-tool gating,
 then the three-way home verdict).

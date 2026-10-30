@@ -22,14 +22,6 @@ PORTED_TOOLS = frozenset(
         "nas_video_query",
         "play_nas_video",
         "nas_skip",
-        "calendar_add",
-        "calendar_delete",
-        "calendar_list",
-        "task_add",
-        "task_complete",
-        "task_delete",
-        "task_list",
-        "notion_add",
         "drive_list",
         "drive_trash",
         "drive_upload",
@@ -39,9 +31,6 @@ PORTED_TOOLS = frozenset(
 
 GATED_TOOLS = frozenset(
     {
-        "calendar_delete",
-        "task_complete",
-        "task_delete",
         "drive_trash",
         "drive_upload",
         "email_send",
@@ -57,8 +46,9 @@ HOUSE_BOUND_TOOLS = frozenset(
 # (`tools/tool_family.py`). Nothing about those eighteen changed -- same module,
 # same `Tool.name`, same `settings.tool_status` row, same confirmation gate --
 # so every invariant below still holds; it just has to look one level down to
-# find them.
-FAMILY_TOOLS = frozenset({"calendar", "tasks", "drive", "nas", "music"})
+# find them. Calendar, tasks and Notion were removed in 1.30.0 (mini context
+# diet): the operator gave them up, and their modules went with them.
+FAMILY_TOOLS = frozenset({"drive", "nas", "music"})
 # D-038: the `tv` family became two one-purpose tools named for their source,
 # each over one original module (`DELEGATE`), found one level down the same way.
 SINGLE_TOOLS = frozenset({"youtube", "draw_picture"})
@@ -109,15 +99,16 @@ def ported_tools(registry, family_actions):
     return live
 
 
-def test_all_nineteen_ported_tools_reach_the_model(ported_tools):
+def test_all_eleven_ported_tools_reach_the_model(ported_tools):
     """R2: every ported tool is still reachable in the session.
 
-    Nineteen, not the original twenty-two: `self_destruct` and `mad_laugh` were
-    retired on 2026-08-31 to buy two of the tool diet's slots back, and
+    Eleven, not the original twenty-two: `self_destruct` and `mad_laugh` were
+    retired on 2026-08-31 to buy two of the tool diet's slots back,
     `nas_play_folder` merged into `play_nas_video` on 2026-10-30 (one call plays
-    a trip).
+    a trip), and the seven calendar and task tools and `notion_add` were removed
+    in 1.30.0 (mini context diet).
     """
-    assert len(PORTED_TOOLS) == 19
+    assert len(PORTED_TOOLS) == 11
     missing = sorted(PORTED_TOOLS - set(ported_tools))
     assert missing == [], f"not reachable: {missing}"
 
@@ -281,9 +272,9 @@ def test_re_arming_an_executing_action_is_refused():
     GATE.reset()
     GATE.begin_session()
     try:
-        GATE.arm("calendar_delete", "delete 'Dentist'", {"event_id": "abc"})
-        assert GATE.claim("calendar_delete") is not None
-        assert GATE.arm("calendar_delete", "delete 'Optician'", {"event_id": "xyz"})["status"] == ("action_in_flight")
+        GATE.arm("drive_trash", "move 'a.txt' to Drive trash", {"file_id": "abc"})
+        assert GATE.claim("drive_trash") is not None
+        assert GATE.arm("drive_trash", "move 'b.txt' to Drive trash", {"file_id": "xyz"})["status"] == ("action_in_flight")
     finally:
         GATE.reset()
 
@@ -649,7 +640,6 @@ _REDACT_EXEMPT = {
     "audio_drain.py": "logs durations and timeouts only",
     "music_hooks.py": "logs turn-phase transitions only",
     "music_player.py": "logs generation numbers, fixed daemon API paths and HTTP statuses only",
-    "gauth.py": "one fixed line about forcing a token refresh; every caller-facing error goes through friendly_message",
     "stop_music.py": "logs the fixed string 'Tool call: stop_music' and takes no arguments",
     "nas_video_query.py": "one line, a COUNT of how many filters were supplied -- never a filter's value",
 }
@@ -725,13 +715,17 @@ ROUTING_TOKENS = (
 
 # The routing rules are only worth anything if the file also names the tools
 # they route. The two lists used to differ, because the locked profile went
-# through the 2026-08-31 tool diet and the operator's `persona.md` had not —
-# `persona.md` still taught `play_music`, `nas_skip`, the other sixteen retired
-# sub-tools, `party_mode` and the retired `self_destruct`. The pre-merge re-sync
-# closed that gap, so the two lists are now deliberately the SAME list: the copy
-# that actually runs on the robot teaches the same six families as the profile,
-# and this alias is what makes a future drift fail rather than pass quietly.
-PROFILE_TOOL_TOKENS = ("music", "youtube", "nas", "draw_picture", "calendar", "tasks", "drive")
+# through the 2026-08-31 tool diet and the operator's `persona.md` had not; the
+# pre-merge re-sync made them deliberately the SAME list, and this alias is what
+# makes a future drift fail rather than pass quietly.
+#
+# 1.30.0 (mini context diet): there are no toolboxes, so every tool is in the
+# session from the first turn and its own description carries its routing
+# ("each fact once, where the model looks for it"). The prose stopped naming
+# the formerly boxed tools on purpose; what both files still teach in prose is
+# the speaker-music rule. That a name the prose DOES use is a real session tool
+# is checked in `test_profile.py`.
+PROFILE_TOOL_TOKENS = ("music",)
 PERSONA_TOOL_TOKENS = PROFILE_TOOL_TOKENS
 
 

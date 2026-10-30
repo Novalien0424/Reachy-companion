@@ -303,7 +303,6 @@ def run(
         # (not at deps construction) is what keeps the seam correct across
         # handler rebuilds by the settings UI (voice changes).
         deps.set_conversation_mode = handler.set_conversation_mode
-        deps.open_toolbox = handler.open_toolbox
         # Same rewire-on-rebuild reason: the sleep path must wait on the
         # handler that is actually live, not the one the settings UI replaced.
         deps.wait_for_reply_finished = handler.wait_for_reply_finished

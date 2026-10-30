@@ -65,8 +65,12 @@ def test_profile_listing_requires_profile_document(tmp_path: Path) -> None:
 
 
 def test_bundled_profiles_enable_head_tracking_by_default() -> None:
-    """Every bundled personality should start with head tracking available."""
+    """Every bundled personality should start with head tracking available.
+
+    reachy_companion 1.30.0: the locked profile reaches `head_tracking` through
+    the `head` family (`follow` / `stop_following`).
+    """
     for profile_name in list_profile_names(DEFAULT_PROFILES_DIRECTORY):
         profile = read_profile_from_directory(profile_name, DEFAULT_PROFILES_DIRECTORY / profile_name)
 
-        assert "head_tracking" in profile.default_tools, profile_name
+        assert {"head_tracking", "head"} & set(profile.default_tools), profile_name

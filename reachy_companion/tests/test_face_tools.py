@@ -1631,34 +1631,34 @@ async def test_greeting_hook_runs_recognition_off_the_event_loop(monkeypatch: py
 
 
 def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
-    """D-013 routing fix: camera must disclaim identity; who_is_this must claim it.
+    """D-013 routing fix: camera must disclaim identity; `face identify` must claim it.
 
     The 2026-08-24 party session proved the model answers 「是誰」 with `camera`.
     These clauses are the machine-visible contract that prevents that; if a
-    rewrite drops them, this test is the tripwire.
+    rewrite drops them, this test is the tripwire. Since 1.30.0 the model reads
+    the `face` family's description, not `who_is_this`'s or `remember_face`'s
+    (those are its delegates now), and the emphatic rule moved there from the
+    persona (plan review log, item 9).
     """
+    from reachy_companion.tools.face import Face
     from reachy_companion.tools.camera import Camera
-    from reachy_companion.tools.who_is_this import WhoIsThis
-    from reachy_companion.tools.remember_face import RememberFace
 
     camera = Camera.description
-    who = WhoIsThis.description
-    remember = RememberFace.description
+    face = Face.description
 
-    assert "who_is_this" in camera  # camera redirects identity asks
     # Task 7 rewrote the description into the symmetric "Use when / Do NOT use
     # when" form, so the emphatic redirect is that block's own wording now
     # rather than the bare "NEVER" it used to carry. Pinned in full — a stronger
     # tripwire than the single word — so the clause cannot be softened to a hint.
     assert (
         "Do NOT use when: the question is about WHO a person is, whether you know or remember them, "
-        "or what someone's name is — that is who_is_this."
+        "or what someone's name is — that is face with action=identify."
     ) in camera
-    assert "instead of the camera tool" in who
-    assert "not the camera tool" in remember
+    assert "Use it, not camera, for any question about who someone is" in face
     # The recall clause: without it the model receives `known_facts` and has no
     # instruction to use them, so the recognition sounds like a stranger's.
-    # Since the fact-fidelity rewrite the promise is worded as reporting the
-    # facts *as returned*, paired with an explicit ban on inventing a name.
-    assert "facts as returned" in who
-    assert "never guess a name" in who
+    assert "Say the name and facts exactly as returned" in face
+    assert "never guess a name" in face
+    assert "`require_repeat_verbatim`" in face and "`response_text` word for word" in face
+    # Enrollment: the posed moment is announced before the call.
+    assert "ask them to look at you and hold still" in face

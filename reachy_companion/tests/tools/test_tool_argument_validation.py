@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from reachy_mini.utils import create_head_pose
-from reachy_companion.toolboxes import TOOLBOX_CATEGORIES
+from reachy_companion.tools.head import Head
+from reachy_companion.tools.dance import Dance as DanceFamily
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.core_tools import ToolDependencies
 from reachy_companion.tools.stop_dance import StopDance
 from reachy_companion.conversation_mode import MODE_VALUES
-from reachy_companion.tools.open_toolbox import OpenToolbox
 from reachy_companion.tools.stop_emotion import StopEmotion
 from reachy_companion.tools.head_tracking import HeadTracking
 from reachy_companion.tools.set_conversation_mode import SetConversationMode
@@ -55,20 +55,6 @@ async def test_head_tracking_passes_a_real_boolean_through(enabled: bool) -> Non
 
 
 @pytest.mark.asyncio
-async def test_open_toolbox_validates_the_category_before_the_seam() -> None:
-    """The seam validates too, but the model must never reach it with a guess."""
-    seam = AsyncMock()
-    deps = _deps(open_toolbox=seam)
-
-    result = await OpenToolbox()(deps, category="calendar")
-
-    assert result["ok"] is False
-    assert result["error"] == f"category must be one of {', '.join(TOOLBOX_CATEGORIES)}"
-    assert result["categories"] == list(TOOLBOX_CATEGORIES)
-    seam.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_set_conversation_mode_validates_the_mode_before_the_seam() -> None:
     """Chinese display labels are rejected in favor of the enum values."""
     seam = AsyncMock()
@@ -98,7 +84,7 @@ def test_the_stop_tools_take_no_arguments(tool: object) -> None:
 
 @pytest.mark.parametrize(
     "tool",
-    [MoveHead(), HeadTracking(), OpenToolbox(), SetConversationMode(), StopDance(), StopEmotion()],
+    [MoveHead(), HeadTracking(), SetConversationMode(), StopDance(), StopEmotion(), Head(), DanceFamily()],
 )
 def test_no_robot_action_tool_ships_a_placeholder_parameter(tool: object) -> None:
     """Placeholders teach the model that inventing arguments is normal."""
@@ -161,9 +147,9 @@ async def test_no_physical_tool_status_claims_a_completed_motion() -> None:
 @pytest.mark.asyncio
 async def test_the_already_honest_returns_are_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dance and play_emotion already say `queued`; the audit confirms, not churns."""
-    from reachy_companion.tools import dance as dance_module
+    from reachy_companion.tools import dance_moves as dance_module
     from reachy_companion.tools import play_emotion as emotion_module
-    from reachy_companion.tools.dance import Dance
+    from reachy_companion.tools.dance_moves import Dance
     from reachy_companion.tools.play_emotion import PlayEmotion
 
     class _DanceQueueMove:

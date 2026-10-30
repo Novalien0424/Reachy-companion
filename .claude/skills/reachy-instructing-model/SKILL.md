@@ -103,9 +103,9 @@ When the robot misbehaves, fix in this order, and record which rung you used:
   preambles), `# Reasoning` (per-turn effort steering — cheaper than
   raising the session level, which is A/B-gated), `## Tool Availability`
   (a prompt describing tools absent from the current tool list invites the
-  model to *simulate* them — mandatory with `open_toolbox` gating; the
-  prompt must never say "use X" for a boxed tool without naming
-  `open_toolbox` first), and a cross-channel language clause (preambles,
+  model to *simulate* them; since 1.30.0 every tool is always loaded — no
+  `open_toolbox` boxes — so it is one line: what is not in your tool list,
+  say you can't do), and a cross-channel language clause (preambles,
   bridges, tool messages, answers all in the same language).
 
 ## Boundary moments (greetings, goodbyes, mode switches)
@@ -140,9 +140,8 @@ the model writes the sentence is instructing.
   practitioner-reported inference — the 2.1-mini model page itself claims
   only "distilled, faster, lower-cost".)
 - Every instruction-surface change re-checks the ACTIVE tool surface: the
-  `Tools in session` count per mode/toolbox state, and that the prompt
-  names no capability that is currently unexposed without routing through
-  `open_toolbox`.
+  `Tools in session` count per mode (19 / 19 / 4 since 1.30.0), and that the
+  prompt names no capability that is currently unexposed.
 - More `reasoning.effort` is not "smarter": 2026 results show it increases
   tool hallucination and decreases instruction adherence while helping
   multi-step selection. Change effort only with an on-robot A/B that

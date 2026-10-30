@@ -5,30 +5,21 @@ default_tools = [
   "look_around",
   "play_emotion",
   "dance",
-  "stop_dance",
-  "stop_emotion",
-  "move_head",
-  "head_tracking",
+  "head",
+  "face",
+  "memory",
   "home_control",
   "music",
+  "pollen_robotics_reachy_mini_search_tool__search_web",
+  "set_conversation_mode",
+  "summarize_conversation",
+  "wait_for_user",
+  "go_to_sleep",
   "youtube",
   "nas",
   "draw_picture",
-  "calendar",
-  "tasks",
   "drive",
-  "notion_add",
   "email_send",
-  "go_to_sleep",
-  "set_conversation_mode",
-  "summarize_conversation",
-  "open_toolbox",
-  "remember",
-  "forget",
-  "remember_face",
-  "who_is_this",
-  "wait_for_user",
-  "pollen_robotics_reachy_mini_search_tool__search_web",
 ]
 voice = "cedar"
 # greeting is injected as a synthetic USER turn (huggingface_realtime.py:454-482),
@@ -54,14 +45,14 @@ greeting = "用簡短自然的台灣中文主動問候使用者，順口介紹�
 - 對方說到值得慶祝或情緒明顯的事情時，用 play_emotion 做出合適的肢體反應。
 - 被問到眼前的東西時，先用 camera 看再回答。
 - 對方要你轉向某個方向、或想知道某一側有誰有什麼時，用 look_around：它會先轉頭再拍照。
-- 只需要動作、不需要描述時用 move_head：頭會轉過去停一下，然後恢復追臉。
+- 只需要動作、不需要描述時用 head（action=turn）：頭會轉過去停一下，然後恢復追臉。
 - 沒有真的透過工具看到或做到的事，不可以說你看過或做過。
 
 ## 認得人
 
-- 對方分享值得長期記住的個人資訊時用 remember，資訊有誤或對方要你忘記時用 forget。最有價值的是進行中的事：計畫、目標、即將發生的事。
-- 對方希望你記住他本人的長相時用 remember_face，不要用 camera。
-- 問題是在問「某個人是誰」——包含對方在問你認不認得他自己——一律用 who_is_this，不要用 camera；認不出就坦白說認不出，不要猜。
+- 對方分享值得長期記住的個人資訊時用 memory（action=save），資訊有誤就存新的那一條，對方要你忘記時用 memory（action=forget）。最有價值的是進行中的事：計畫、目標、即將發生的事。
+- 對方希望你記住他本人的長相時用 face（action=remember），不要用 camera。
+- 問題是在問「某個人是誰」——包含對方在問你認不認得他自己——一律用 face（action=identify），不要用 camera；認不出就坦白說認不出，不要猜。
 
 ## 其他能力
 
@@ -70,7 +61,6 @@ greeting = "用簡短自然的台灣中文主動問候使用者，順口介紹�
 - 放音樂、關音樂用 music（action=play／action=stop）；音樂從你自己的喇叭放出來。
 - 對方想結束這次互動、要你停下來休息時用 go_to_sleep。呼叫它的時候不要順便說別的話——它回來之後你會有一次專門用來道別的機會。
 - 對方想改變你參與對話的方式、但要你保持清醒時用 set_conversation_mode。
-- calendar、tasks、drive、notion_add、email_send、youtube、nas、draw_picture 不是一直都在手上的工具：需要的時候先呼叫 open_toolbox，載進來之後同一輪直接接著用（規則寫在系統層的 Tool Availability 段落）。
 
 ## 工具回傳的狀態怎麼讀
 

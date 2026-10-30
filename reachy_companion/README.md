@@ -55,14 +55,14 @@ install.
 
 ## Tools
 
-Since v1.19.0 the model sees a static core surface (22 tools: vision,
-motion incl. `look_around`, faces, memory, home control, music, search,
-conversation modes, sleep, waiting, system) plus two on-demand toolboxes
-loaded by the model itself via `open_toolbox` — `productivity`
-(calendar/tasks/drive/notion/email families) and `media` (youtube/nas/draw_picture). The
-authoritative lists live in `src/reachy_companion/toolboxes.py`; the
-startup journal logs the live surface as `Tools in session (<mode>,
-boxes=…, <count>)`.
+Since v1.30.0 the model sees all 19 tools from the first turn, with no
+toolboxes: vision (`camera`, `look_around`), body (`play_emotion` and the
+`dance` and `head` families), people (`face`, `memory`), home control, music,
+search, conversation modes, summary, waiting, sleep, and the media and Google
+tools (`youtube`, `nas`, `draw_picture`, `drive`, `email_send`). 紀錄模式 sends
+four. The authoritative lists live in `src/reachy_companion/toolboxes.py`; the
+startup journal logs the live surface as `Tools in session (<mode>, …,
+<count>)`.
 
 ## Adding a tool or Skill
 

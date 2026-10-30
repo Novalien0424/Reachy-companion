@@ -1,6 +1,6 @@
 """Google Drive v3 calls, adapted from upstream `gdrive.py` (D-018).
 
-This uses a *different* OAuth grant from `gauth.py` -- Drive's own secret file,
+This uses Drive's own OAuth grant -- its own secret file,
 whose scope is full `https://www.googleapis.com/auth/drive`. Copying it to the
 robot grants the robot full Drive, which is why the drive family is off by
 default and why both write tools are confirmation-gated.

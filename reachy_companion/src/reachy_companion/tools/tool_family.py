@@ -20,12 +20,38 @@ so a family module importing its delegates registers nothing extra.
 
 from __future__ import annotations
 import logging
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, ClassVar
 
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
 
 logger = logging.getLogger(__name__)
+
+
+class BoundAction(Tool):
+    """One family action that is its delegate called with a fixed argument.
+
+    `head follow` is `head_tracking(enabled=True)`: the action names the value,
+    so the model never has to pass the boolean. The delegate still runs
+    unchanged and still validates what it receives. Never registered on its
+    own (`_auto_register = False`); it exists only inside a family's `ACTIONS`.
+    Its own `needs_response` is never read: the realtime handler reads the
+    flags of the REGISTERED tool, the family, which mirrors its delegates'.
+    """
+
+    _auto_register: ClassVar[bool] = False
+
+    def __init__(self, delegate: Tool, **arguments: Any) -> None:
+        """Remember the delegate and the arguments this action always sends it."""
+        self.delegate = delegate
+        self.arguments = arguments
+        self.name = delegate.name
+        self.description = delegate.description
+        self.parameters_schema = {"type": "object", "properties": {}, "required": []}
+
+    async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
+        """Call the delegate with the forwarded arguments, the bound ones winning."""
+        return await self.delegate(deps, **{**kwargs, **self.arguments})
 
 
 async def dispatch_family(

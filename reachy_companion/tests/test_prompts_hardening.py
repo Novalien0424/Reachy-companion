@@ -245,18 +245,20 @@ def test_every_negative_rule_carries_its_reason_or_an_alternative() -> None:
     assert "比忍住不說話可靠" in block
 
 
-def test_the_prompt_names_no_boxed_tool_outside_tool_availability() -> None:
-    """Skill: a prompt naming an absent tool invites the model to SIMULATE it."""
-    from itertools import chain
+def test_the_prompt_names_no_tool_the_session_lacks() -> None:
+    """Skill: a prompt naming an absent tool invites the model to SIMULATE it.
 
+    1.30.0 retired the toolboxes, so nothing can bring a tool into the session
+    later: the Tool Availability block names no box and no router, and says
+    plainly that what is not in the tool list cannot be done. The full scan for
+    every removed name, over every surface the model reads, is
+    `test_profile.test_no_surface_the_model_reads_names_a_removed_tool`.
+    """
     from reachy_companion.prompts import hardening_block
-    from reachy_companion.toolboxes import TOOLBOXES
 
     block = hardening_block()
-    availability_at = block.index("## Tool Availability")
-    for name in sorted(set(chain.from_iterable(TOOLBOXES.values()))):
-        position = block.find(name)
-        if position == -1:
-            continue
-        assert position > availability_at, f"{name} is named before the Tool Availability block"
-    assert "open_toolbox" in block[availability_at:]
+    availability = block[block.index("## Tool Availability") :]
+    assert "open_toolbox" not in block and "工具箱" not in block
+    assert "task_status" not in block and "task_cancel" not in block
+    assert "你能做的事都在工具清單裡" in availability
+    assert "工具清單上沒有的事，就說你做不到" in availability

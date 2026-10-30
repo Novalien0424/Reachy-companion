@@ -8,6 +8,10 @@ Default idle weights among active, registered tools:
 
 Profiles or sessions can disable tools. When one or more idle tools are unavailable, selection is renormalized across the
 remaining active candidates.
+
+reachy_companion (mini context diet, 2026-10-30): `dance` and `move_head` are reached through the `dance` and `head`
+families, so the candidates are those family classes with the action that runs upstream's `Dance` and `MoveHead`
+unchanged. Same weights, same moves.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from collections.abc import Mapping, Callable, Iterable
 
 from reachy_companion.tools import core_tools
 from reachy_companion.streaming import AdditionalOutputs
+from reachy_companion.tools.head import Head
 from reachy_companion.tools.dance import Dance
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.play_emotion import PlayEmotion
@@ -53,15 +58,19 @@ def _idle_do_nothing_args() -> dict[str, Any]:
     return {"reason": "random idle policy selected stillness"}
 
 
+def _dance_args() -> dict[str, Any]:
+    return {"action": "play"}
+
+
 def _move_head_args() -> dict[str, Any]:
-    return {"direction": random.choice(tuple(MoveHead.DELTAS))}
+    return {"action": "turn", "direction": random.choice(tuple(MoveHead.DELTAS))}
 
 
 _IDLE_TOOL_CANDIDATES: Final[tuple[IdleToolCandidate, ...]] = (
     IdleToolCandidate(IdleDoNothing, 0.60, _idle_do_nothing_args),
-    IdleToolCandidate(Dance, 0.16, _no_args),
+    IdleToolCandidate(Dance, 0.16, _dance_args),
     IdleToolCandidate(PlayEmotion, 0.16, _no_args),
-    IdleToolCandidate(MoveHead, 0.08, _move_head_args),
+    IdleToolCandidate(Head, 0.08, _move_head_args),
 )
 
 
