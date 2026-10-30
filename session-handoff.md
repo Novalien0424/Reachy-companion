@@ -1,6 +1,6 @@
-# Session handoff — 2026-10-30 (v1.31.2 installed; home_control reads back)
+# Session handoff — 2026-10-30 (v1.31.3 installed; home_control reads back)
 
-State: **v1.31.2 installed 12:38 UTC; Reachy asleep (app stopped by its own
+State: **v1.31.3 installed 12:52 UTC; Reachy asleep (app stopped by its own
 `go_to_sleep` at 11:01 UTC), TV off, mic unmuted.** Daemon v1.13.0. `main` is
 pushed.
 
@@ -45,13 +45,12 @@ pushed.
   - A timeout now still reads the device back, and a refusal is named as one.
   - The LAN URL no longer reaches the model.
   - Live: TV on, off and already-off each 3/3; an unknown device 3/3.
+- v1.31.3: turning a device on counts as slow work, so Reachy speaks
+  first. Live preamble 1/4 → 5/5; the journal now logs preamble text.
 
 ## Next session
 
 0a. **home_control gaps** (D-040 § Open):
-   - Reachy says nothing for the 6–9 s of a TV turn-on: the system rules
-     class home control as a fast action with no preamble. The candidate is
-     one description line, behind a live A/B.
    - A scene, script, cover or lock entry would be judged wrongly: their
      states aren't on/off. Decide before adding one.
    - The case where a device ignores the command is unit-tested only. Stage

@@ -1963,6 +1963,38 @@ async def test_commentary_audio_is_audible_but_transcript_is_withheld(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_commentary_transcript_reaches_the_journal_and_nothing_else(monkeypatch: Any, caplog: Any) -> None:
+    """A live check must see what a preamble said (did it claim success before the result?).
+
+    It is still not answer history: no transcript observer, output queue or record.
+    """
+    handler = _commentary_handler(
+        monkeypatch,
+        (
+            _FakeEvent(
+                "response.output_item.added",
+                item={"id": "item_pre", "phase": "commentary"},
+                response_id="resp_1",
+                output_index=0,
+            ),
+            _FakeEvent("response.output_audio.delta", item_id="item_pre", response_id="resp_1", delta=_silent_delta()),
+            _FakeEvent("response.output_audio_transcript.done", item_id="item_pre", transcript="好，我開一下電視"),
+        ),
+    )
+    transcripts: list[tuple[str, str, bool]] = []
+    records: list[tuple[str, str]] = []
+    handler.set_transcript_observer(lambda role, text, final: transcripts.append((role, text, final)))
+    monkeypatch.setattr(hf_mod, "record_transcript", lambda _deps, role, text: records.append((role, text)))
+
+    with caplog.at_level(logging.INFO, logger=hf_mod.logger.name):
+        await handler._run_realtime_session()
+
+    assert transcripts == [] and records == []
+    assert _queued_messages(_drain_queue(handler)) == []
+    assert any(r.levelno == logging.INFO and "好，我開一下電視" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_commentary_item_carried_on_a_pydantic_style_model_is_audible(monkeypatch: Any) -> None:
     """The real SDK hands us an `extra="allow"` model, not a dict."""
     remembered: list[str] = []

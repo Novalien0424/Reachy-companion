@@ -5,8 +5,15 @@ history of this file.
 
 ## Current state
 
-**v1.31.2 INSTALLED (2026-10-30 12:38 UTC), installed while asleep; app
-stopped, TV off, mic unmuted.**
+**v1.31.3 INSTALLED (2026-10-30 12:52 UTC); app stopped (asleep), TV off, mic
+unmuted.**
+- 「把電視打開」 now gets a short line first: 5/5 live, against 1/4 before.
+  None of those lines claimed success early.
+- First sound about 3 s after the request instead of about 9 s.
+- The journal logs the preamble text.
+- Suite 2076 / 31 (D-040).
+
+**v1.31.2 (12:38 UTC).**
 - 1.31.2: a timed-out command is still read back, and a refusal is named.
 - Suite 2074 / 31.
 - A direct on-robot call returned `was_already: off`.

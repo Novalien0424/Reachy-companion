@@ -4607,11 +4607,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # Plan rev 3 B1: the preamble may be spoken, but it
                             # is not part of the answer; keep it out of the text
                             # output queue, operator transcript, room log and
-                            # sleep-summary tail.
-                            logger.debug(
-                                "withholding commentary-phase transcript for item %s",
-                                getattr(event, "item_id", None),
-                            )
+                            # sleep-summary tail. The journal still gets it, so a
+                            # live check can see what the preamble said.
+                            logger.info("Preamble transcript: %s", getattr(event, "transcript", "") or "")
                             continue
                         self._mark_activity("assistant_transcript_done")
                         logger.debug(f"Assistant transcript: {event.transcript}")

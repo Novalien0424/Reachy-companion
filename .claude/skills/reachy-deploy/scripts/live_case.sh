@@ -48,11 +48,14 @@ fi
 
 push
 T0=$("${R[@]}" 'date -u +%H:%M:%S')
+echo "$T0 said: $2"
 printf '%s' "$2" | "${R[@]}" "$PY /tmp/rpc.py say" 2>&1 | grep -v '^Warning'
 sleep "${3:-30}"
-# Tool calls, transcripts and the token count of each response. The first
-# "usage in=" of a fresh session is the fixed prefix (instructions + tools).
-"${R[@]}" "journalctl -u reachy-mini-daemon --since '$T0' --no-pager -o cat | grep reachy_companion \
+# Tool calls, transcripts and the token count of each response, with UTC times.
+# The first "usage in=" of a fresh session is the fixed prefix (instructions +
+# tools). out_audio on the response that carries a tool call is its spoken
+# preamble (0 = silent until the result); "Preamble transcript" is its text.
+"${R[@]}" "journalctl -u reachy-mini-daemon --since '$T0' --no-pager -o short-iso | grep reachy_companion \
   | grep -E 'Tool call received|Tools in session|role=user|role=assistant content=|transcript|casting|NAS stream: serving|Response usage' \
-  | sed -E 's/.*\| //; s/^Response usage: id=[^ ]* status=[a-z]* (in=[0-9]+ in_cached=[0-9]+).*/  [usage \1]/' | cut -c1-420"
+  | sed -E 's/^[0-9-]+T([0-9:]+)[^|]*\| /\1 /; s/^([0-9:]+) Response usage: id=[^ ]* status=[a-z]* (in=[0-9]+ in_cached=[0-9]+).* (out_audio=[0-9-]+).*/\1   [usage \2 \3]/' | cut -c1-420"
 "${R[@]}" "$PY /tmp/tv_state.py"

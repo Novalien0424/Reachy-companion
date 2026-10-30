@@ -9,6 +9,26 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.31.3] — 2026-10-30 · Reachy says something while the TV comes on
+
+Fix redeploy of the thirty-second install (wheel sha `f886ff8e…`). Decision
+D-040.
+
+- **「把電視打開」 gets a reply right away.** The TV takes 4–7 s to come on,
+  and Reachy used to stay silent until it had, because the rules treat home
+  control as a quick action. The tool's description now says turning a
+  device on can take up to ten seconds and counts as slow work. Live:
+  - a short line first in 5 of 5 turn-ons, against 1 of 4 before (for
+    example 「好，來開一下電視，稍微等一下。」);
+  - none of those lines claimed the TV was on before it was;
+  - in a warm session the first sound now comes about 3 s after the request
+    instead of about 9 s;
+  - turning off stays quick and mostly silent until the answer.
+- **The journal shows what a preamble said.** Preamble text stays out of the
+  transcript and memory as before, but now gets a `Preamble transcript`
+  journal line, so a live check can confirm it doesn't claim a result early.
+- The fixed prefix grew by 31 tokens (5,827 → 5,858).
+
 ## [1.31.2] — 2026-10-30 · a slow answer is checked, a refusal is named
 
 Fix redeploy of the thirty-second install (wheel sha `bb955ab7…`). Decision

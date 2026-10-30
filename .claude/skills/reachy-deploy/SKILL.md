@@ -319,6 +319,12 @@ Every behavior change is judged on the robot, by mini, in fresh sessions.
   keeps an earlier turn from steering the next one.
 - **Run each case 3–4 times and report k/n**, next to the rate of the build
   before. One pass on mini is an anecdote: 3/3 on 1.28.3 became 2/3 on 1.28.4.
+- **A spoken preamble** shows as `out_audio` > 0 on the usage line of the
+  response that carries the tool call; its words are the `Preamble
+  transcript` line. That text never reaches the transcript or memory, so the
+  journal is the only place to see it.
+- **Timing:** in a fresh session the greeting is still playing when the text
+  arrives, so measure delays on a second turn.
 - **The prefix size** is the first `usage in=` of a fresh session, with
   `in_cached=0`. Compare builds with that number, not with JSON character
   counts (D-039).

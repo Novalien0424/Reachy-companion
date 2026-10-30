@@ -78,6 +78,8 @@ class HomeControl(Tool):
             "Use when: the user asks to turn a device in the house on or off, like 「把電視關掉」. "
             "Do NOT use when: the user wants something played — on the TV that is youtube or nas, on your "
             "speaker that is music. "
+            "Turning a device on can take up to ten seconds, so it is slow work: say a short line before "
+            "the call. Turning one off is quick. "
             f"Known devices: {', '.join(names) if names else '(none configured)'}."
         )
         self.parameters_schema = {

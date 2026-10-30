@@ -60,6 +60,12 @@ def test_tool_contract_enumerates_configured_devices():
     assert "客厅的灯" in tool.description  # model sees the real device names
 
 
+def test_the_description_marks_turning_on_as_slow_work():
+    """The TV takes 4-9 s to come on; without this, mini went silent for that long (3 of 4 runs)."""
+    description = HomeControl().description
+    assert "up to ten seconds" in description and "slow work" in description
+
+
 def test_spec_exposes_the_instance_schema_not_the_class_default():
     """Tool.spec() -- the only path to the realtime session -- reads the instance."""
     spec = HomeControl().spec()

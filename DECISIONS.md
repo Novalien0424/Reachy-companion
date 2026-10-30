@@ -2598,10 +2598,21 @@ device on hand ignores commands. The test entry was removed and the instance
 7. **An HTTP refusal is named as a refusal** ("refused the command, HTTP
    400"), not "not responding".
 
+**1.31.3:**
+8. **Turning on is slow work.** The `home_control` description says turning
+   a device on can take up to ten seconds, so it is slow work and gets a
+   short line before the call (the system rules' preamble rule then
+   applies). Turning off is quick. This is rung 1, one line, +31 tokens.
+   - Live A/B, turn-on preamble (`out_audio` > 0 on the tool-calling
+     response): 1/4 before, 5/5 after.
+   - No premature 「開好了」 in 5/5; one used the 「讓我想一下」 filler.
+   - Warm session: first sound about 3 s after the request instead of
+     about 9 s.
+9. **Preamble text goes to the journal** (`Preamble transcript:` at INFO),
+   still withheld from the transcript, room log and memory. Without it, a
+   live check could not tell whether a preamble claimed the result early.
+
 **Open:**
-- **No preamble for a slow turn-on.** The TV takes 4–7 s to come on, and
-  Reachy says nothing for 6–9 s. The system rules class home control as a
-  fast action. The candidate is one description line, behind a live A/B.
 - **States that aren't on/off.** `scene`, `script`, `cover` and `lock` would
   be misjudged: a scene's state is a timestamp, and a short script reads off
   again before the poll. None is configured.
