@@ -460,7 +460,7 @@ FAMILY_TOOLS: Dict[str, Tuple[str, ...]] = {
     "drive": ("drive_list", "drive_trash", "drive_upload"),
     "notion": ("notion_add",),
     "email": ("email_send",),
-    "nas": ("nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"),
+    "nas": ("nas_video_query", "play_nas_video", "nas_skip"),
     "media-cast": ("play_video", "show_on_tv"),
     "music": ("play_music", "stop_music"),
 }
@@ -569,7 +569,6 @@ TOOL_PREREQS: Dict[str, Tuple[str, ...]] = {
     # nas -- querying the index is local and needs no SMB credentials at all.
     "nas_video_query": ("HANOVA_NAS_INDEX_PATH", "NAS_INDEX_FILE"),
     "play_nas_video": _NAS_FETCH + _URL_CAST_BASE + ("HANOVA_HA_SCRIPT_VIDEO_URL",),
-    "nas_play_folder": _NAS_FETCH + _URL_CAST_BASE + ("HANOVA_HA_SCRIPT_VIDEO_URL",),
     "nas_skip": _NAS_FETCH + _URL_CAST_BASE + ("HANOVA_HA_SCRIPT_VIDEO_URL",),
     # google-workspace
     "calendar_add": _GOOGLE_BASE + ("HANOVA_GCAL_CALENDAR_ID",),

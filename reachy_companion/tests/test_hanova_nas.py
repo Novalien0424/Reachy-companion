@@ -30,7 +30,6 @@ from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.nas_skip import NasSkip
 from reachy_companion.hanova.music_player import PLAYER
 from reachy_companion.tools.play_nas_video import PlayNasVideo
-from reachy_companion.tools.nas_play_folder import NasPlayFolder
 from reachy_companion.tools.nas_video_query import NasVideoQuery
 
 
@@ -75,7 +74,6 @@ INDEX = {
 _TOOL_MODULES = (
     "reachy_companion.tools.nas_video_query",
     "reachy_companion.tools.play_nas_video",
-    "reachy_companion.tools.nas_play_folder",
     "reachy_companion.tools.nas_skip",
 )
 
@@ -102,7 +100,7 @@ def configured(monkeypatch, tmp_path):
     # `_tool` above and the same idiom in `tests/test_hanova_cast.py`.
     for module, class_name in zip(
         _TOOL_MODULES,
-        ("NasVideoQuery", "PlayNasVideo", "NasPlayFolder", "NasSkip"),
+        ("NasVideoQuery", "PlayNasVideo", "NasSkip"),
     ):
         monkeypatch.setitem(globals(), class_name, _tool(module, class_name))
     index_path = tmp_path / "nas-video-index.json"
@@ -168,13 +166,12 @@ def test_tool_names_match_their_filenames():
     """The loader resolves tools by filename == Tool.name."""
     assert NasVideoQuery.name == "nas_video_query"
     assert PlayNasVideo.name == "play_nas_video"
-    assert NasPlayFolder.name == "nas_play_folder"
     assert NasSkip.name == "nas_skip"
 
 
 def test_descriptions_carry_no_personal_identifier():
     """R10: upstream put the owner's name and real place names in these."""
-    for tool in (NasVideoQuery(), PlayNasVideo(), NasPlayFolder(), NasSkip()):
+    for tool in (NasVideoQuery(), PlayNasVideo(), NasSkip()):
         assert "@" not in tool.description
         assert "SENTINEL_PLACE_q4" not in tool.description
         assert len(tool.description) <= 120
@@ -660,7 +657,7 @@ async def test_nas_video_query_is_away_from_home_off_the_lan(monkeypatch, tmp_pa
     [
         ("nas_video_query", "NasVideoQuery", {"place": "sentinel_place_q4"}),
         ("play_nas_video", "PlayNasVideo", {"place": "sentinel_place_q4"}),
-        ("nas_play_folder", "NasPlayFolder", {"top_folder": "SENTINEL_TRIP_q4"}),
+        ("play_nas_video", "PlayNasVideo", {"top_folder": "SENTINEL_TRIP_q4"}),
         ("nas_skip", "NasSkip", {}),
     ],
 )
@@ -754,19 +751,41 @@ async def test_play_nas_video_reports_no_match(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kwargs", [{}, {"top_folder": "SENTINEL_TRIP_q4"}], ids=["nothing", "a folder only"])
-async def test_play_nas_video_refuses_to_pick_a_clip_for_the_model(monkeypatch, tmp_path, kwargs):
-    """Live 2026-10-29: `play` with only `top_folder` matched the whole archive and cast its first clip.
+async def test_play_nas_video_refuses_to_pick_a_clip_for_the_model(monkeypatch, tmp_path):
+    """Live 2026-10-29: `play` with nothing to choose by cast the archive's first clip.
 
     Reachy then described that clip as the trip the user asked for. Without a
-    path or a filter there is nothing to choose by, so nothing is cast, and the
-    error names the calls that would work.
+    path, a trip or a filter nothing is cast, and the error names what works.
     """
     recorded = _stub_transfer(monkeypatch)
-    out = await PlayNasVideo()(deps=_deps(tmp_path), **kwargs)
+    out = await PlayNasVideo()(deps=_deps(tmp_path))
     assert out["ok"] is False
-    assert "action=query" in out["error"]
-    assert ("action=play_folder" in out["error"]) is bool(kwargs)
+    assert "a place, year or keyword" in out["error"]
+    assert recorded == {"fetched": [], "cast": []}
+
+
+@pytest.mark.asyncio
+async def test_play_by_place_plays_the_one_matching_trip_in_one_call(monkeypatch, tmp_path, catalogue):
+    """2026-10-30: the call the model reaches for first finishes the job.
+
+    Live, the mini model searched before every play and twice stopped in
+    between. `play` with a place now finds the trip, casts its first matching
+    clip and queues the rest, so no search step is needed.
+    """
+    recorded = _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), place="cape town")
+    assert out["ok"] is True and out["status"] == "casting"
+    assert out["top_folder"] == "2021 Cape Town" and out["remaining"] == 2
+    assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/2021 Cape Town/clip01.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_play_asks_back_when_several_trips_match(monkeypatch, tmp_path, catalogue):
+    """Several trips match: nothing is cast on a guess, and each trip is offered by name."""
+    recorded = _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), year=2021)
+    assert out["ok"] is False and "ask which one" in out["error"]
+    assert [trip["top_folder"] for trip in out["candidates"]] == ["2021 Cape Town", "2021_Rio+Lisbon"]
     assert recorded == {"fetched": [], "cast": []}
 
 
@@ -798,10 +817,10 @@ async def test_an_unlisted_nas_error_text_never_reaches_the_caller(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_nas_play_folder_starts_at_the_first_clip(monkeypatch, tmp_path):
+async def test_play_by_top_folder_starts_the_trip_at_its_first_clip(monkeypatch, tmp_path):
     """A whole trip plays in order, starting from the first clip."""
     recorded = _stub_transfer(monkeypatch)
-    out = await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     assert out["ok"] is True and out["remaining"] == 1
     assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4"]
 
@@ -810,7 +829,7 @@ async def test_nas_play_folder_starts_at_the_first_clip(monkeypatch, tmp_path):
 async def test_nas_skip_advances_to_the_next_clip(monkeypatch, tmp_path):
     """Move to "the next one" -- the whole of the auto-advance capability we port."""
     recorded = _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     out = await NasSkip()(deps=_deps(tmp_path))
     assert out["ok"] is True and out["status"] == "casting"
     assert recorded["fetched"][-1] == "SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip02.mp4"
@@ -820,7 +839,7 @@ async def test_nas_skip_advances_to_the_next_clip(monkeypatch, tmp_path):
 async def test_nas_skip_reports_the_end_of_a_trip(monkeypatch, tmp_path):
     """At the end there is nothing to skip to, and that must be said plainly."""
     _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     await NasSkip()(deps=_deps(tmp_path))
     out = await NasSkip()(deps=_deps(tmp_path))
     assert out["ok"] is False and out["error"] == "last_clip"
@@ -838,7 +857,7 @@ async def test_nas_skip_without_a_session_reports_nothing_playing(tmp_path):
 async def test_a_failed_skip_does_not_consume_a_clip(monkeypatch, tmp_path):
     """Finding 16: the cursor moved before the cast, so a failure ate a clip."""
     recorded = _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
 
     async def failing_cast(script_name, data, timeout_s=60.0):
         return {"ok": False, "error": "Home Assistant returned HTTP 500"}
@@ -861,7 +880,7 @@ async def test_a_failed_skip_does_not_consume_a_clip(monkeypatch, tmp_path):
 async def test_the_trip_session_does_not_survive_a_new_conversation(monkeypatch, tmp_path):
     """Finding 16: the session was a process global that outlived its context."""
     _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     assert nas.remaining() == 1
 
     GATE.begin_session()  # a realtime reconnect
@@ -923,7 +942,7 @@ async def test_a_session_replacement_during_an_in_flight_cast_is_refused(monkeyp
     import asyncio as _asyncio
 
     recorded = _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
 
     released = _asyncio.Event()
 
@@ -993,7 +1012,7 @@ async def test_two_concurrent_skips_advance_the_trip_by_exactly_one(monkeypatch,
 async def test_music_supersedes_the_trip_session(monkeypatch, tmp_path):
     """Finding 16: nas_skip must not silently continue a trip nobody is watching."""
     _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     assert nas.remaining() == 1
 
     nas.clear_session()  # what a superseding media action calls on success
@@ -1211,7 +1230,7 @@ async def test_the_shutdown_hook_clears_the_trip_session(monkeypatch, tmp_path):
     token = await music_hooks.on_session_started(hook_deps)
 
     _stub_transfer(monkeypatch)
-    await NasPlayFolder()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
     assert nas.remaining() == 1
 
     await music_hooks.on_session_shutdown(hook_deps, token)
@@ -1469,7 +1488,7 @@ def test_all_four_tools_reach_the_model_session():
         registry = core_tools.get_tools()
         assert "nas" in registry, "the locked profile no longer lists the family"
         reachable = {tool.name for tool in type(registry["nas"]).ACTIONS.values()}
-        assert {"nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"} <= reachable
+        assert {"nas_video_query", "play_nas_video", "nas_skip"} <= reachable
     finally:
         core_tools._TOOLS_SIGNATURE = None
 
@@ -1546,20 +1565,34 @@ async def test_query_lists_every_matching_trip_even_when_the_clips_are_capped(tm
 
 @pytest.mark.asyncio
 async def test_a_query_that_matches_nothing_hands_back_the_whole_catalogue(tmp_path, catalogue):
-    """「日本」 against an English index: the model gets every trip to choose from, not a bare zero."""
-    out = await NasVideoQuery()(deps=_deps(tmp_path), keyword="開普敦")
-    assert out["ok"] is True and out["count"] == 0 and out["videos"] == []
+    """An English miss may be a naming miss: the model gets every trip to choose from, not a bare zero."""
+    out = await NasVideoQuery()(deps=_deps(tmp_path), keyword="atlantis")
+    assert out["ok"] is False and out["error"] == "no_match"
     assert {row["top_folder"] for row in out["all_trips"]} == set(CATALOGUE["folders"])
 
 
 @pytest.mark.asyncio
-async def test_play_and_play_folder_misses_also_carry_the_catalogue(monkeypatch, tmp_path, catalogue):
-    """Same recovery path when the model goes straight to play."""
+async def test_a_chinese_miss_says_to_search_again_in_english(monkeypatch, tmp_path, catalogue):
+    """Live 2026-10-30: 「沖繩」 untranslated → 0 → 「查不到」, though the trip was in the catalogue.
+
+    The answer to a Chinese miss is the one thing that fixes it, for both
+    actions, and it quotes the user's own words rather than any place name.
+    """
+    recorded = _stub_transfer(monkeypatch)
+    for tool in (NasVideoQuery(), PlayNasVideo()):
+        out = await tool(deps=_deps(tmp_path), place="開普敦")
+        assert out["ok"] is False and "all_trips" not in out
+        assert out["error"] == "nothing is catalogued under 「開普敦」: the archive is in English, so search again in English"
+    assert recorded == {"fetched": [], "cast": []}
+
+
+@pytest.mark.asyncio
+async def test_play_misses_also_carry_the_catalogue(monkeypatch, tmp_path, catalogue):
+    """Same recovery path when the model goes straight to play, by words or by a wrong trip name."""
     _stub_transfer(monkeypatch)
-    out = await PlayNasVideo()(deps=_deps(tmp_path), place="開普敦")
-    assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
-    out = await NasPlayFolder()(deps=_deps(tmp_path), place="開普敦")
-    assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
+    for kwargs in ({"place": "atlantis"}, {"top_folder": "Taiwan_暫存"}):
+        out = await PlayNasVideo()(deps=_deps(tmp_path), **kwargs)
+        assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
 
 
 def test_clips_by_file_finds_a_clip_by_path_or_file_name_but_never_by_words():

@@ -21,7 +21,6 @@ PORTED_TOOLS = frozenset(
         "show_on_tv",
         "nas_video_query",
         "play_nas_video",
-        "nas_play_folder",
         "nas_skip",
         "calendar_add",
         "calendar_delete",
@@ -50,7 +49,7 @@ GATED_TOOLS = frozenset(
 )
 
 HOUSE_BOUND_TOOLS = frozenset(
-    {"play_video", "show_on_tv", "nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip"}
+    {"play_video", "show_on_tv", "nas_video_query", "play_nas_video", "nas_skip"}
 )
 
 # 2026-08-31 tool diet: eighteen of the 22 ported tools left the profile's
@@ -110,13 +109,15 @@ def ported_tools(registry, family_actions):
     return live
 
 
-def test_all_twenty_ported_tools_reach_the_model(ported_tools):
+def test_all_nineteen_ported_tools_reach_the_model(ported_tools):
     """R2: every ported tool is still reachable in the session.
 
-    Twenty, not the original twenty-two: `self_destruct` and `mad_laugh` were
-    retired on 2026-08-31 to buy two of the tool diet's slots back.
+    Nineteen, not the original twenty-two: `self_destruct` and `mad_laugh` were
+    retired on 2026-08-31 to buy two of the tool diet's slots back, and
+    `nas_play_folder` merged into `play_nas_video` on 2026-10-30 (one call plays
+    a trip).
     """
-    assert len(PORTED_TOOLS) == 20
+    assert len(PORTED_TOOLS) == 19
     missing = sorted(PORTED_TOOLS - set(ported_tools))
     assert missing == [], f"not reachable: {missing}"
 

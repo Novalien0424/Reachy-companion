@@ -1,9 +1,13 @@
 """The household video archive as one action-enum tool. Filename == Tool.name.
 
-Façade over `nas_video_query` / `play_nas_video` / `nas_play_folder` /
-`nas_skip`, which keep their modules, their names, their `settings.tool_status`
-prerequisite rows and their home-network verdict branches. See `tool_family.py`
-for why.
+Façade over `play_nas_video` / `nas_video_query` / `nas_skip`, which keep their
+modules, their names, their `settings.tool_status` prerequisite rows and their
+home-network verdict branches. See `tool_family.py` for why.
+
+2026-10-30: three actions, by intent. `play` finds and plays in one call (it
+absorbed `play_folder`), `list` only tells what is there. Live, the mini model
+searched first in every session and sometimes stopped there, and a 2,000-char
+description of rules did not change that.
 
 Naming: this is `reachy_companion.tools.nas`, not `reachy_companion.hanova.nas`
 -- the latter is the index/playlist layer the delegates use, and absolute
@@ -17,7 +21,6 @@ from reachy_companion.tools.nas_skip import NasSkip
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 from reachy_companion.tools.tool_family import dispatch_family
 from reachy_companion.tools.play_nas_video import PlayNasVideo
-from reachy_companion.tools.nas_play_folder import NasPlayFolder
 from reachy_companion.tools.nas_video_query import NasVideoQuery
 
 
@@ -26,58 +29,35 @@ class Nas(Tool):
 
     name = "nas"
     ACTIONS: ClassVar[Mapping[str, Tool]] = {
-        "query": NasVideoQuery(),
         "play": PlayNasVideo(),
-        "play_folder": NasPlayFolder(),
+        "list": NasVideoQuery(),
         "skip": NasSkip(),
     }
     description = (
-        "The family's own video library (家裡的影片庫) on the NAS: search it, play one clip or a whole trip on the "
-        "living-room TV, or skip to the next clip. "
-        "Use when: the user names the NAS or the video library, or means videos the family recorded, by year, "
-        "place, trip or subject — 「幫我從 NAS 找」「從影片庫找二零一九年在花蓮拍的」「放我們拍的那部」「播那個資料夾」"
-        "「下一部」「play our old videos」「skip」. "
-        "Ask first when: the request gives only a place, a trip, a year or an event — 「放花蓮的影片」 could be the "
-        "family's own trip or a travel video online — so ask whether they mean the 影片庫 or YouTube, and call "
-        "neither tool until they answer; then do what they first asked — if it was to put something on, play "
-        "it. "
-        "Do NOT use when: the user names YouTube or the internet, or wants something public such as an MV or a "
-        "trailer — that is youtube; an answer from the web is the search tool. "
-        "Do NOT use when: the user wants music rather than video — that is music. "
-        "Both this and youtube play on the TV, so 電視 decides nothing: the source does. "
-        "To put videos on the TV, play in one call: `play_folder` with `place` (or `year`) starts a trip from its "
-        "first clip and queues the rest, answering with `candidates` instead of guessing when several trips "
-        "match; `play` with `keyword` or `place` puts on the one clip that matches. Pass `path` or `top_folder` "
-        "only when a result gave you one. `query` is for when the user wants to know what is there or to choose "
-        "— not a step before playing. `skip` moves to the next clip of the running trip. These clips exist only "
-        "here, so play them here, never through youtube. "
-        "The archive is catalogued in English, so search with English words: translate a place or subject "
-        "first (巴黎 → Paris, 生日 → birthday). `query` lists every matching trip in `trips`. When nothing "
-        "matches, the result carries `all_trips`, the whole catalogue: pick the trip the user means from it "
-        "and search or play that one, because a miss is usually a wording miss rather than a missing video. "
-        "When no trip there fits either, say the 影片庫 does not have it and offer YouTube; search YouTube only "
-        "once they agree."
+        "The family's own videos (家裡的影片庫) on the NAS, played on the living-room TV. "
+        "Use when: the user names the NAS or the 影片庫, or means videos the family recorded — 「幫我從 NAS 找」"
+        "「放我們在花蓮拍的」「下一部」. "
+        "Ask first when: the request gives only a place, a trip, a year or an event, like 「放花蓮的影片」 — ask "
+        "影片庫 or YouTube and wait for the answer, then do what they asked. "
+        "Do NOT use when: the user names YouTube or wants something public, such as an MV — that is youtube; or "
+        "wants music — that is music. "
+        "`play` finds a clip or a trip and plays it, in one call; `list` tells what is there and plays nothing; "
+        "`skip` plays the next clip. Search words are English, as the archive is catalogued. "
+        "If nothing in the 影片庫 fits, say so and offer YouTube."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["play", "play_folder", "query", "skip"],
-                "description": (
-                    "query 搜尋家庭影片；play 播一段影片；play_folder 播整個資料夾（整趟旅行）；"
-                    "skip 播下一段。"
-                ),
+                "enum": ["list", "play", "skip"],
+                "description": "play 找出來並放到電視上；list 只說有哪些，不播放；skip 播下一段。",
             },
-            # `query` goes last on purpose. `year`, `place` and `keyword` are
-            # shared by three of these four and the last spread wins;
-            # NasVideoQuery describes them plainly ("Exact year to match.")
-            # where the two play tools qualify them with their own fallback
-            # ("Year, when no folder name is known."), which reads as a
-            # restriction the family does not have. `path` and `top_folder`
-            # are unique to one action each and survive either way.
+            # `year`, `place` and `keyword` are shared by `play` and `list`, and
+            # the last spread wins, so the model reads `list`'s wording, which
+            # carries the translation examples. `path` and `top_folder` belong to
+            # `play` alone.
             **PlayNasVideo.parameters_schema["properties"],
-            **NasPlayFolder.parameters_schema["properties"],
             **NasSkip.parameters_schema["properties"],
             **NasVideoQuery.parameters_schema["properties"],
         },

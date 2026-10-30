@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_LOCK = threading.Lock()
 # `generation` (round 2, finding 11) is what a cursor token compares against. It
-# is distinct from the confirmation epoch: a `nas_play_folder` inside one
+# is distinct from the confirmation epoch: a trip started by `play_nas_video` inside one
 # conversation starts a new *playlist* without starting a new conversation.
 _SESSION: Dict[str, Any] = {"playlist": [], "index": -1, "epoch": "", "generation": 0}
 
@@ -277,6 +277,28 @@ def summarize_folders(index: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
     rows.sort(key=lambda row: (row["year"] or 0, str(row["place"] or "")))
     return rows
+
+
+_HAN = re.compile(r"[㐀-鿿豈-﫿]")
+
+
+def search_miss(index: Dict[str, Any], words: List[Any]) -> Dict[str, Any]:
+    """Answer a search that matched nothing (2026-10-30, live).
+
+    The catalogue is in English. A miss on Chinese search words is a
+    translation miss, and the one thing that fixes it is searching again in
+    English -- live, a bare zero plus the whole catalogue was answered with
+    「查不到」. Any other miss hands over every trip, in case the one meant is
+    named differently.
+    """
+    untranslated = [str(word) for word in words if word and _HAN.search(str(word))]
+    if untranslated:
+        quoted = "、".join(f"「{word}」" for word in untranslated)
+        return {
+            "ok": False,
+            "error": f"nothing is catalogued under {quoted}: the archive is in English, so search again in English",
+        }
+    return {"ok": False, "error": "no_match", "all_trips": summarize_folders(index)}
 
 
 def trip_summary(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

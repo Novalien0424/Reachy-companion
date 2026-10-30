@@ -26,18 +26,11 @@ class NasVideoQuery(Tool):
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            "year": {"type": "integer", "description": "Exact year to match."},
-            "year_from": {"type": "integer", "description": "Earliest year to include."},
-            "year_to": {"type": "integer", "description": "Latest year to include."},
-            "place": {
-                "type": "string",
-                "description": "Place or trip, in English as the archive is catalogued; translate first (巴黎 → Paris).",
-            },
-            "keyword": {
-                "type": "string",
-                "description": "Any English word to match in the records, e.g. a subject or event (生日 → birthday).",
-            },
-            "limit": {"type": "integer", "description": "Maximum clips to return. Default 40."},
+            "year": {"type": "integer", "description": "Year."},
+            "year_from": {"type": "integer", "description": "First year of a range."},
+            "year_to": {"type": "integer", "description": "Last year of a range."},
+            "place": {"type": "string", "description": "Place or trip, in English (巴黎 → Paris)."},
+            "keyword": {"type": "string", "description": "Any English word to match, e.g. 生日 → birthday."},
         },
         "required": [],
     }
@@ -84,10 +77,7 @@ class NasVideoQuery(Tool):
             keyword=str(filters["keyword"]) if filters["keyword"] else None,
         )
         if not matches:
-            # 2026-10-29: the catalogue is in English and the user speaks Chinese, so
-            # a miss is usually a translation miss, not an absent video. Hand the
-            # model the whole catalogue to choose from instead of a bare zero.
-            return {"ok": True, "count": 0, "videos": [], "all_trips": nas.summarize_folders(index)}
+            return nas.search_miss(index, [filters["place"], filters["keyword"]])
         videos = matches[: max(1, min(200, limit))]
         return {
             "ok": True,

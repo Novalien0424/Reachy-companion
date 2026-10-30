@@ -146,7 +146,7 @@ def test_the_eighteen_sub_tools_are_no_longer_registered() -> None:
         "calendar_add", "calendar_list", "calendar_delete",
         "task_add", "task_list", "task_complete", "task_delete",
         "drive_list", "drive_trash", "drive_upload",
-        "nas_video_query", "play_nas_video", "nas_play_folder", "nas_skip",
+        "nas_video_query", "play_nas_video", "nas_skip",
         "play_music", "stop_music", "play_video", "show_on_tv",
     ):
         assert name not in registered, name
@@ -174,9 +174,8 @@ _UNAVAILABLE_CASES = (
     (Drive, "list"),
     (Drive, "trash"),
     (Drive, "upload"),
-    (Nas, "query"),
+    (Nas, "list"),
     (Nas, "play"),
-    (Nas, "play_folder"),
     (Nas, "skip"),
     (Music, "play"),
 )
@@ -307,15 +306,17 @@ def test_youtube_and_nas_ask_first_with_the_same_words() -> None:
     assert "電視上放" not in Youtube.description
 
 
-def test_nas_teaches_one_call_play_and_query_for_browsing() -> None:
-    """D-038 follow-through: "path/top_folder from query. Preferred." made every play a two-step chain.
+def test_nas_plays_in_one_call_and_lists_only_to_browse() -> None:
+    """D-038 follow-through, 2026-10-30: the mini model searched before every play.
 
-    After the source question the mini model stopped after `query` and talked
-    about the trip. One call (`play_folder` with `place`) is what it can do
-    reliably; `query` stays for browsing or choosing.
+    It stopped between the search and the play in 2 of 7 sessions, and a long
+    recipe in the description did not change which call it reached for first.
+    So the actions are named by intent, `play` finds and plays in one call, and
+    the description stays short.
     """
-    schema_text = str(Nas.parameters_schema)
-    assert "Preferred" not in schema_text and "from a call with action=query" not in schema_text
-    assert "play in one call: `play_folder` with `place`" in Nas.description
-    assert "not a step before playing" in Nas.description
-    assert "then do what they first asked" in _ask_first_clause(Nas.description)
+    assert Nas.parameters_schema["properties"]["action"]["enum"] == ["list", "play", "skip"]
+    assert "`play` finds a clip or a trip and plays it, in one call" in Nas.description
+    assert "`list` tells what is there and plays nothing" in Nas.description
+    assert "limit" not in Nas.parameters_schema["properties"]
+    assert len(Nas.description) < 800 and len(Youtube.description) < 600
+    assert "wait for the answer, then do what they asked" in _ask_first_clause(Nas.description)

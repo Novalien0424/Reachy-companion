@@ -1,8 +1,12 @@
-"""Cast one home video to the TV (D-018, R2/R4/R6). Filename == Tool.name.
+"""Find a home video and cast it to the TV, in one call (D-018, R2/R4/R6). Filename == Tool.name.
 
 The clip is copied off the NAS into the LAN-served media cache and its URL is
 cast, because a Chromecast dereferences the URL itself. The rest of the clip's
 trip becomes the session playlist, so `nas_skip` can move through it.
+
+2026-10-30: this also plays a whole trip (it absorbed `nas_play_folder`). Live,
+the mini model searched first in every session and twice stopped between the
+search and the play, so the first call it reaches for has to finish the job.
 """
 
 from __future__ import annotations
@@ -18,25 +22,26 @@ logger = logging.getLogger(__name__)
 
 
 class PlayNasVideo(Tool):
-    """Play one home video on the TV."""
+    """Find and play a home video, or a whole trip, on the TV."""
 
     name = "play_nas_video"
-    description = "Play one family home video on the TV. 用於播放某一段家庭影片。"
+    description = "Find a family home video and play it on the TV. 用於找出並播放家庭影片。"
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            # 2026-08-31 tool diet: this description reaches the model through the
-            # `nas` family schema, so it must name a call the model can still make.
-            "path": {"type": "string", "description": "Exact clip path, as action=query returns it."},
-            "year": {"type": "integer", "description": "Year, when no path is known."},
-            "place": {"type": "string", "description": "Place or trip name, when no path is known."},
-            "keyword": {"type": "string", "description": "Any text to narrow the match."},
+            # 2026-08-31 tool diet: these reach the model through the `nas` family
+            # schema, so they must name a call the model can still make.
+            "path": {"type": "string", "description": "A clip's path, from an earlier result."},
+            "top_folder": {"type": "string", "description": "A trip's top_folder, from an earlier result."},
+            "year": {"type": "integer", "description": "Year."},
+            "place": {"type": "string", "description": "Place or trip, in English."},
+            "keyword": {"type": "string", "description": "Any English word to match."},
         },
         "required": [],
     }
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
-        """Resolve one clip, stage it on the LAN, and cast it."""
+        """Resolve one clip (or a trip's first), stage it on the LAN, and cast it."""
         available, reason = settings.tool_status(self.name)
         if not available:
             return settings.unavailable(reason)
@@ -55,29 +60,40 @@ class PlayNasVideo(Tool):
             return settings.unavailable("NAS_INDEX_FILE")
 
         path = str(kwargs.get("path") or "").strip()
-        if not path and all(kwargs.get(key) in (None, "") for key in ("year", "place", "keyword")):
-            # Ours (2026-10-29, live): `play` with only `top_folder` -- an argument of
-            # `play_folder` -- matched the whole archive and cast its first clip,
-            # which Reachy then described as the trip asked for.
-            error = "say which clip: pass its path from action=query"
-            if kwargs.get("top_folder"):
-                error += "; to play a whole trip, use action=play_folder with that top_folder"
-            return {"ok": False, "error": error}
+        top_folder = str(kwargs.get("top_folder") or "").strip()
+        filters = {key: kwargs.get(key) for key in ("year", "year_from", "year_to", "place", "keyword")}
+        if not path and not top_folder and all(value in (None, "") for value in filters.values()):
+            return {"ok": False, "error": "say what to play: a place, year or keyword, or a path or top_folder"}
         if path:
             matches = [video for video in index.get("videos", []) if video.get("path") == path]
+        elif top_folder:
+            matches = nas.folder_playlist(index, top_folder)
         else:
             matches = nas.filter_index(
                 index,
-                year=kwargs.get("year"),
-                place=str(kwargs.get("place")) if kwargs.get("place") else None,
-                keyword=str(kwargs.get("keyword")) if kwargs.get("keyword") else None,
+                year=filters["year"],
+                year_from=filters["year_from"],
+                year_to=filters["year_to"],
+                place=str(filters["place"]) if filters["place"] else None,
+                keyword=str(filters["keyword"]) if filters["keyword"] else None,
             )
         if not matches:
-            return {"ok": False, "error": "no_match", "all_trips": nas.summarize_folders(index)}
+            # Only the free-text words can be a translation miss: real folder
+            # names and paths contain Chinese.
+            words = [] if path or top_folder else [filters["place"], filters["keyword"]]
+            return nas.search_miss(index, words)
 
         ready = [video for video in matches if video.get("cast_ready")]
         if not ready:
             return {"ok": False, "error": "not_ready"}
+        trips = nas.trip_summary(ready)
+        if len(trips) > 1:
+            # Nothing is cast on a guess: which trip is the user's call.
+            return {
+                "ok": False,
+                "error": "several trips match; ask which one, then play it by top_folder",
+                "candidates": trips,
+            }
         video = ready[0]
 
         logger.info("Tool call: play_nas_video %s", redact.ident(video.get("path")))
@@ -104,6 +120,5 @@ class PlayNasVideo(Tool):
             # The trip it belongs to, so the one Reachy names comes from here (live
             # 2026-10-29: a Taiwan clip was announced as the trip asked for).
             "top_folder": video.get("top_folder"),
-            "ambiguous": len(ready) > 1,
             "remaining": nas.remaining(),
         }

@@ -5,7 +5,8 @@ Live-checked 2026-10-30 (results in D-038). The checks found an ask-first
 regression from this plan's 「要放就直接放」, fixed in 1.28.5. Since 1.28.4,
 follow-through after the source question is 4 of 5. The model never used
 the one-call recipe: the answer turn ran `query` first in 6 of 6 sessions.
-The next step is a full-tier diagnostic.
+Superseded by `2026-10-30-nas-one-call-play-plan.md` (1.29.0). The operator runs
+on mini only, so the tool was fitted to the model instead.
 
 ## The failure
 

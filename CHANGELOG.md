@@ -9,6 +9,23 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.29.0] — 2026-10-30 · one call puts the trip on the TV
+
+Deployed as the twenty-ninth install (wheel sha `dadb2dc3…`). Plan:
+`docs/plans/2026-10-30-nas-one-call-play-plan.md`. Decision D-038.
+
+- **「家裡的影片庫」 now puts the video on in one step.** Reachy always
+  looked a trip up before playing it, and sometimes stopped after the lookup
+  and only talked about the trip. Asking it to play is now a single step: it
+  finds the trip and starts it. When several trips match, it asks which one.
+  Asking what's there is a separate step that never plays anything.
+- **Searching in Chinese no longer ends in 「查不到」.** The video library is
+  catalogued in English. A Chinese word that finds nothing now tells Reachy
+  to search again in English, instead of answering that nothing is there.
+- **Shorter instructions.** The NAS tool's text went from about 2,000 to 720
+  characters and the YouTube tool's from about 1,000 to 560. The prompt
+  says the media rule once.
+
 ## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
 
 Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redeploys

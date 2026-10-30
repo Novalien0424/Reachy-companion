@@ -152,12 +152,13 @@ def test_timezone_is_validated_against_the_tz_database(monkeypatch):
 
 # --- per-tool prerequisites (finding 10) ----------------------------------
 def test_every_ported_tool_declares_prerequisites():
-    """All 20 names are covered; a new tool cannot be silently ungated.
+    """All 19 names are covered; a new tool cannot be silently ungated.
 
     Twenty since 2026-08-31: `self_destruct` and `mad_laugh` were retired, and
-    their two clip-id prerequisites left `_PREREQS` with them.
+    their two clip-id prerequisites left `_PREREQS` with them. Nineteen since
+    2026-10-30: `nas_play_folder` merged into `play_nas_video`.
     """
-    assert len(settings.TOOL_PREREQS) == 20
+    assert len(settings.TOOL_PREREQS) == 19
     for family, names in settings.FAMILY_TOOLS.items():
         assert family in settings.FAMILIES
         for name in names:
@@ -275,7 +276,7 @@ def test_family_verdict_is_partial_when_only_some_tools_qualify(monkeypatch, tmp
     monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(index))
     verdict, reason = settings.family_status("nas")
     assert verdict == "partial"
-    assert "1/4" in reason
+    assert "1/3" in reason
 
 
 def test_family_status_never_raises_for_any_family():

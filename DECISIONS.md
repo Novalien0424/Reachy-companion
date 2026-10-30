@@ -2321,7 +2321,7 @@ design which is best for our realtime model"). Design:
 
 **Live checks, 2026-10-30 01:41–02:05 UTC** (operator: "yes wake it and run
 the checks"). One fresh session per run, mic muted, TV off after each cast,
-9 app stops, none wedged. Reachy was put back to sleep afterwards.
+8 app stops, none wedged. Reachy was put back to sleep afterwards.
 - **1.28.4:**
   - V1 asked first in 2 of 3. Run 2 opened the box and called `youtube`
     「沖繩 影片 旅遊」 at once: a YouTube travel guide played.
@@ -2352,4 +2352,33 @@ the checks"). One fresh session per run, mic muted, TV off after each cast,
   step on the ladder is one diagnostic on full `gpt-realtime-2.1`. That
   needs the operator's OK: it changes the robot's model setting for the run
   and costs more per session.
+
+**1.29.0 — `nas` fitted to the mini model** (operator, 2026-10-30: "I have to
+run on mini model … keep your tools correct/concise and fit the model without
+way too much instructions"). The full-tier diagnostic is dropped. Plan:
+`docs/plans/2026-10-30-nas-one-call-play-plan.md`.
+- **Rule:** the call the mini model reaches for first must finish the job,
+  and the instruction text gets shorter rather than longer.
+- **Actions by intent:**
+  - `play` finds and plays in one call (`play_folder` merged into it, and
+    `nas_play_folder` deleted). One trip matches → cast and queue it; several
+    → `candidates`, nothing cast.
+  - `list` (was `query`) only says what is there. `skip` is unchanged.
+- **Misses:** Chinese search words that match nothing → "nothing is
+  catalogued under 「…」: the archive is in English, so search again in
+  English". Any other miss → `no_match` + `all_trips`.
+- **Shorter text:** `nas` 2,038 → 719 characters, `youtube` 1,014 → 559.
+  `limit` leaves the schema. The `open_toolbox` media line drops "open it and
+  search". The prompt's media rule is one bullet.
+- Suite 2102 / 31; ruff and mypy clean. Wheel `dadb2dc3…`, installed
+  06:08 UTC (backup `20261030T060849Z-44639`).
+- **Index probe on the robot:** Okinawa → 1 trip, Japan → 9 and Tokyo → 3
+  candidates; 「沖繩」 → the search-in-English error.
+- **Live V1 run 1:** asked the source (before opening the box). The answer
+  turn was `open_toolbox` → `nas play place=Okinawa` → playing, with the trip
+  named: the first one-call play.
+- **Run 2 was blocked:** the stop wedged the daemon. It returned 400 "Motor
+  communication error!"; the app exited but the manager is stuck at
+  `stopping` (DAEMON-STOP-WEDGE, ninth stop of the day). The remaining checks
+  wait for an authorized restart.
 

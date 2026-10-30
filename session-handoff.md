@@ -1,8 +1,9 @@
-# Session handoff — 2026-10-30 (v1.28.5 installed; robot asleep; follow-through 4/5)
+# Session handoff — 2026-10-30 (v1.29.0 installed; DAEMON WEDGED; checks 1 of 6 run)
 
-State: **v1.28.5 installed**, robot asleep (the app was stopped after the
-2026-10-30 live checks), TV off. The next wake loads 1.28.5. Live results by
-run are in D-038; `main` is pushed.
+State: **v1.29.0 installed; the daemon is wedged** (stop → 400 "Motor
+communication error!", the app stuck at `stopping`). The app process exited,
+the motors are off and the TV is off. Restarting the daemon service needs the
+operator's authorization. `main` is pushed.
 
 ## Shipped today
 
@@ -24,20 +25,21 @@ run are in D-038; `main` is pushed.
   Live 5/6 passed (D-038).
 - v1.28.1–.5 (2026-10-29/30): ask-first and follow-through fixes. Asked
   3/3 before any video tool, follow-through 4/5 (D-038).
+- v1.29.0 (2026-10-30): `nas` fitted to the mini model: `play` finds and
+  plays in one call, `list` browses, Chinese misses say to search in English,
+  and the descriptions are about half as long (D-038).
 
 ## Next session
 
-0. **Media follow-through (MEDIA-SOURCE-ROUTING next_action):**
-   - After the source question, the answer turn runs `query` first every time
-     (6 of 6), and stopped there in 1 of 3 on 1.28.5. Rungs 1-2 are spent.
-   - Proposed next: the V1 pair ×3 once on full `gpt-realtime-2.1`. This
-     needs the operator's OK, because it changes the model setting for the
-     run and costs more.
-   - Also open: an untranslated 「沖繩」 query missed and Reachy said the trip
-     isn't there (NAS-FUZZY-SEARCH, now a known defect).
-   - Still open: `NAS-PLAY-REQUIRES-SELECTOR` hasn't fired live yet. There is
-     no tool to stop or pause the TV, but Reachy still offered 「想讓我停一下嗎？」.
-   - `TV-AUDIO-PHANTOM-TURNS` and the `show_on_tv` image 400 are unchanged.
+0. **After an authorized daemon restart, finish the 1.29.0 checks**
+   (`docs/plans/2026-10-30-nas-one-call-play-plan.md`, MEDIA-SOURCE-ROUTING
+   next_action): V1 runs 2–3, V2 (list only, trip found), V3, and V4
+   (Japan → candidates, nothing cast). Run 1 passed: one-call play.
+   - The operator runs on mini only. Fit tools to what the model does, and
+     keep text short: no full-tier diagnostic, no added instruction text.
+   - Still open: there is no tool to stop or pause the TV (Reachy offered
+     「想讓我停一下嗎？」 anyway), `TV-AUDIO-PHANTOM-TURNS`, and the
+     `show_on_tv` image 400.
    - Every app stop carries the daemon-wedge risk: keep the response body and
      report a wedge. Each restart needs the operator's authorization.
    - For live tests: one fresh session per case, mic muted over `/rpc`

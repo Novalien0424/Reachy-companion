@@ -5,10 +5,28 @@ history of this file.
 
 ## Current state
 
+**v1.29.0 INSTALLED (2026-10-30 06:08 UTC). THE DAEMON IS WEDGED: a stop
+answered 400 "Motor communication error!" and the app state is stuck at
+`stopping` (DAEMON-STOP-WEDGE). The app process exited, the motors are off and
+the TV is off. Only a daemon service restart clears it, and that needs the
+operator's authorization.**
+
+1.29.0 fits `nas` to the mini model (D-038):
+- `play` finds and plays in one call; `list` only browses; `skip`.
+- A Chinese miss says to search in English.
+- The descriptions are much shorter.
+
+Suite 2102 / 31. Live V1 run 1 passed: `open_toolbox` → `nas play
+place=Okinawa` → playing, the first one-call play. Still to run: V1 runs 2–3,
+V2, V3 and V4.
+
+Earlier (2026-10-30 01:41–02:05 UTC): 1.28.4 and 1.28.5 live checks, 8 clean
+stops, follow-through 4/5 and always search-first (D-038).
+
 **v1.28.5 INSTALLED (2026-10-30); THE ROBOT IS ASLEEP AGAIN (app stopped after the
 live checks), TV off. The next wake loads 1.28.5.**
 
-Live checks 01:41–02:05 UTC, a fresh session per run, 9 app stops, none wedged
+Live checks 01:41–02:05 UTC, a fresh session per run, 8 app stops, none wedged
 (D-038 has every run):
 - **1.28.4:**
   - V1 asked the source 2 of 3 times. Run 2 played a YouTube guide without
