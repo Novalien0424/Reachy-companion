@@ -2319,3 +2319,37 @@ design which is best for our realtime model"). Design:
 - **Live checks** (V1 ×3, V2 browse-only, V3 case 1) have not run. Running
   them needs a wake and TV casts, and someone had just put Reachy to sleep.
 
+**Live checks, 2026-10-30 01:41–02:05 UTC** (operator: "yes wake it and run
+the checks"). One fresh session per run, mic muted, TV off after each cast,
+9 app stops, none wedged. Reachy was put back to sleep afterwards.
+- **1.28.4:**
+  - V1 asked first in 2 of 3. Run 2 opened the box and called `youtube`
+    「沖繩 影片 旅遊」 at once: a YouTube travel guide played.
+  - When asked, the answer turn played the Okinawa trip 2 of 2 (`query` →
+    `play_folder`), naming it from the returned `top_folder`.
+  - V2 called only `query` (browse kept) but with `keyword` 「沖繩」
+    untranslated → 0 matches. It said 「查不到」 though `all_trips` listed
+    "2023 Tokyo and Okinawa" (NAS-FUZZY-SEARCH).
+  - V3 passed: `query` place Okinawa → `play` with path → playing.
+- **1.28.5 — ask-first wording** (rung 2, prompt and `persona.md` only):
+  - Cause: 1.28.4's 「要放就直接放」 ("just play it") next to the media line's
+    「同一輪直接呼叫真正能完成那件事的工具」. Read literally, these are two pushes
+    to call a tool right after opening the box.
+  - Fix: the media line offers both paths: 來源清楚就呼叫那個來源的工具，來源不清楚就先問.
+    The ask rule says 「對方回答之前，youtube 和 nas 都先不要呼叫」 and keeps its reason.
+    `persona.md`'s box line says the same; `直接放` is test-pinned out.
+  - Suite 2101 / 31; wheel `c2114015…`; backup `20261030T015315Z-41154`;
+    instance `persona.md` synced (`35592d79…`).
+  - Live: no video tool before the answer in 3 of 3. The source question
+    was asked in 2 of 3; run 1 asked only 「你是想放沖繩的影片在電視上對吧？」.
+  - Follow-through 2 of 3. Run 3 asked before opening the box, so its answer
+    turn needed `open_toolbox` → `query` → play. It stopped after `query`,
+    saying 「接下來我就幫你開始播這個資料夾」 with no call.
+- **What this shows:** the answer turn ran `query` first in 6 of 6 sessions;
+  the 1.28.4 one-call recipe was never used. Every follow-through failure
+  so far (1.28.3 once, 1.28.5 once) is a stop right after `query`. Rung 1
+  (the recipe) and rung 2 (the carry-over rule) are both spent. The next
+  step on the ladder is one diagnostic on full `gpt-realtime-2.1`. That
+  needs the operator's OK: it changes the robot's model setting for the run
+  and costs more per session.
+

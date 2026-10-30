@@ -5,20 +5,30 @@ history of this file.
 
 ## Current state
 
-**v1.28.4 INSTALLED; THE ROBOT IS ASLEEP (a person said 「OK，Richie，進入睡眠
-模式。」 at 12:50 UTC), so the next wake loads 1.28.4.**
+**v1.28.5 INSTALLED (2026-10-30); THE ROBOT IS ASLEEP AGAIN (app stopped after the
+live checks), TV off. The next wake loads 1.28.5.**
 
-1.28.4 fixes the follow-through after the source question:
-- the `nas` description teaches a one-call play (`play_folder` + `place`,
-  which returns `candidates` instead of guessing);
-- `query` is only for browsing;
-- the parameter text no longer says query-first;
-- `play` returns `top_folder`;
-- the ask-first rule now says to do what the user first asked.
+Live checks 01:41–02:05 UTC, a fresh session per run, 9 app stops, none wedged
+(D-038 has every run):
+- **1.28.4:**
+  - V1 asked the source 2 of 3 times. Run 2 played a YouTube guide without
+    asking.
+  - After the answer it played the Okinawa trip 2 of 2.
+  - V2 stayed browse-only, but the untranslated 「沖繩」 missed and Reachy said
+    the trip isn't there (NAS-FUZZY-SEARCH, now a known defect).
+  - V3 passed.
+- **1.28.5** (prompt and `persona.md` wording only; suite 2101 / 31):
+  - The ask rule waits for the answer before calling `youtube` or `nas`, and
+    「要放就直接放」 is gone.
+  - No video tool before the answer 3 of 3; the source question proper
+    2 of 3.
+  - Follow-through 2 of 3. Run 3 stopped after `query`, saying it would play.
 
-Suite 2100 / 31. The live checks (V1 ×3, V2, V3, D-038) have not run,
-because someone had just put Reachy to sleep and the checks need a wake and
-TV casts.
+The answer turn always runs `query` first (6 of 6), so the one-call recipe
+went unused. The next step needs the operator's OK: a diagnostic on full
+`gpt-realtime-2.1` (MEDIA-SOURCE-ROUTING next_action).
+
+Earlier (2026-10-30, before the checks): v1.28.4 installed, robot asleep.
 
 Earlier (2026-10-29):
 

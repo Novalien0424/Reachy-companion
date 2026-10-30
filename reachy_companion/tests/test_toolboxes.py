@@ -496,6 +496,21 @@ def test_the_continuation_rule_leaves_room_for_an_ask_first_question() -> None:
     assert "先問一句要找家裡的" in hardening_block()
 
 
+def test_the_ask_first_rule_waits_for_the_answer_before_playing() -> None:
+    """1.28.4 live: 「要放就直接放」 read as "play now", and one run skipped the question.
+
+    The rule must keep its order: ask, wait for the answer, then play from the
+    source the user chose. The media line names the question path too, so
+    "continue in the same turn" never reads as "always call a tool".
+    """
+    from reachy_companion.prompts import hardening_block
+
+    block = hardening_block()
+    assert "直接放" not in block
+    assert "對方回答之前，youtube 和 nas 都先不要呼叫" in block
+    assert "來源不清楚，就先問" in block
+
+
 def test_the_prompt_carries_the_same_routing_rules() -> None:
     """Research §A3: state the routing rule in both places, semantically."""
     from reachy_companion.prompts import hardening_block

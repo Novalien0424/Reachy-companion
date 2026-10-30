@@ -1,10 +1,8 @@
-# Session handoff — 2026-10-29 (v1.28.4 installed; robot asleep; live checks pending)
+# Session handoff — 2026-10-30 (v1.28.5 installed; robot asleep; follow-through 4/5)
 
-State: **v1.28.4 installed**, robot asleep (put to sleep by a person at 12:50
-UTC). The startup app is `reachy_companion`, so the next wake loads 1.28.4.
-1.28.4 makes NAS play a single call and carries the play request across the
-source question (D-038; plan `docs/plans/2026-10-29-nas-play-follow-through-plan.md`).
-`main` is pushed.
+State: **v1.28.5 installed**, robot asleep (the app was stopped after the
+2026-10-30 live checks), TV off. The next wake loads 1.28.5. Live results by
+run are in D-038; `main` is pushed.
 
 ## Shipped today
 
@@ -24,19 +22,26 @@ source question (D-038; plan `docs/plans/2026-10-29-nas-play-follow-through-plan
 - v1.28.0 (2026-10-29): media tools named by source — `youtube`, `nas`
   (影片庫) and `draw_picture`; `tv` retired; ask when no source is named.
   Live 5/6 passed (D-038).
+- v1.28.1–.5 (2026-10-29/30): ask-first and follow-through fixes. Asked
+  3/3 before any video tool, follow-through 4/5 (D-038).
 
 ## Next session
 
-0. **Live checks on 1.28.4, once the household agrees to a wake and TV casts:**
-   V1 ×3, V2 and V3 as in `MEDIA-SOURCE-ROUTING` next_action. Other open items:
-   - `NAS-PLAY-REQUIRES-SELECTOR`: the refusal has not fired live yet.
-   - Every app stop carries the daemon-wedge risk. Keep the response body,
-     and report a wedge: only a service restart clears it, and each restart
-     needs the operator's authorization.
+0. **Media follow-through (MEDIA-SOURCE-ROUTING next_action):**
+   - After the source question, the answer turn runs `query` first every time
+     (6 of 6), and stopped there in 1 of 3 on 1.28.5. Rungs 1-2 are spent.
+   - Proposed next: the V1 pair ×3 once on full `gpt-realtime-2.1`. This
+     needs the operator's OK, because it changes the model setting for the
+     run and costs more.
+   - Also open: an untranslated 「沖繩」 query missed and Reachy said the trip
+     isn't there (NAS-FUZZY-SEARCH, now a known defect).
+   - Still open: `NAS-PLAY-REQUIRES-SELECTOR` hasn't fired live yet. There is
+     no tool to stop or pause the TV, but Reachy still offered 「想讓我停一下嗎？」.
+   - `TV-AUDIO-PHANTOM-TURNS` and the `show_on_tv` image 400 are unchanged.
+   - Every app stop carries the daemon-wedge risk: keep the response body and
+     report a wedge. Each restart needs the operator's authorization.
    - For live tests: one fresh session per case, mic muted over `/rpc`
-     `conversation.mic`, and unmute when done.
-   - Still open: `TV-AUDIO-PHANTOM-TURNS`, no tool to stop or pause the TV,
-     and the `show_on_tv` image 400.
+     `conversation.mic`. Stop the app or unmute when done.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

@@ -1,8 +1,11 @@
 # NAS play follow-through — design (2026-10-29)
 
-Status: built and installed as 1.28.4 (wheel `d5295120…`) on 2026-10-29. Live
-checks are pending: a person put Reachy to sleep at 12:50 UTC, so it was not
-woken for tests.
+Status: built and installed as 1.28.4 (wheel `d5295120…`) on 2026-10-29.
+Live-checked 2026-10-30 (results in D-038). The checks found an ask-first
+regression from this plan's 「要放就直接放」, fixed in 1.28.5. Since 1.28.4,
+follow-through after the source question is 4 of 5. The model never used
+the one-call recipe: the answer turn ran `query` first in 6 of 6 sessions.
+The next step is a full-tier diagnostic.
 
 ## The failure
 

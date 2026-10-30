@@ -12,7 +12,7 @@ the eighteenth install was a metadata-only redeploy that re-shipped the
 ## [1.28.0] — 2026-10-29 · the source you name decides where Reachy looks
 
 Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redeploys
-1.28.1 (`52dc3577…`), 1.28.2 (`950010c2…`), 1.28.3 (`20ee340a…`) and 1.28.4 (`d5295120…`, installed, not yet live-checked). Plan:
+1.28.1 (`52dc3577…`), 1.28.2 (`950010c2…`), 1.28.3 (`20ee340a…`), 1.28.4 (`d5295120…`) and 1.28.5 (`c2114015…`). Plan:
 `docs/plans/2026-10-29-media-source-routing-plan.md`. Decision D-038.
 
 - **「從 NAS 找」 and 「從 YouTube 找」 are different requests.** The TV tool
@@ -50,6 +50,14 @@ Deployed as the twenty-eighth install (wheel sha `52dd3f1a…`), then fix redepl
   searching only when you want to see what's there, and it remembers what you
   asked for when it asks where to look. A clip that starts playing also
   reports which trip it belongs to.
+- **1.28.5 — the question comes before the video again.** In live checks of
+  1.28.4, one of three sessions skipped the 「影片庫還是 YouTube？」 question
+  and played a YouTube travel guide: the new wording 「要放就直接放」 ("just
+  play it") read as permission to play at once. The rule now says to wait
+  for the answer before calling either video tool, then play from the
+  source chosen. Live: no video tool before the answer in 3 of 3 sessions.
+  Still open: after the answer, Reachy always searches first, and in 1 of 3
+  sessions it said it would play and stopped there.
 
 ## [1.27.0] — 2026-10-29 · finding the family's videos the way people ask
 
