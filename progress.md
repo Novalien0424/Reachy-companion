@@ -5,8 +5,14 @@ history of this file.
 
 ## Current state
 
-**v1.31.1 INSTALLED (2026-10-30 12:14 UTC), app stopped as found (asleep), TV
-off, mic unmuted.** `home_control` reads the device back (D-040):
+**v1.31.2 INSTALLED (2026-10-30 12:38 UTC), installed while asleep; app
+stopped, TV off, mic unmuted.**
+- 1.31.2: a timed-out command is still read back, and a refusal is named.
+- Suite 2074 / 31.
+- A direct on-robot call returned `was_already: off`.
+- Open (D-040): no preamble for the 6–9 s TV turn-on; non-on/off domains.
+
+**v1.31.1 (12:14 UTC).** `home_control` reads the device back (D-040):
 - TV on 3/3 and off 3/3, already off 3/3 truthful;
 - a device HA doesn't have 3/3 reported, not claimed;
 - the old 8 s limit timed out the TV's 9 s turn-on;

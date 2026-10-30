@@ -2592,3 +2592,18 @@ The ignore case (HA 200, state unchanged) is covered by unit tests only; no
 device on hand ignores commands. The test entry was removed and the instance
 `.env` compared byte-identical to the pre-test backup.
 
+**1.31.2:**
+6. **A command HA did not answer in time is still read back.** The state
+   decides, so a slow TV that came on is reported on.
+7. **An HTTP refusal is named as a refusal** ("refused the command, HTTP
+   400"), not "not responding".
+
+**Open:**
+- **No preamble for a slow turn-on.** The TV takes 4–7 s to come on, and
+  Reachy says nothing for 6–9 s. The system rules class home control as a
+  fast action. The candidate is one description line, behind a live A/B.
+- **States that aren't on/off.** `scene`, `script`, `cover` and `lock` would
+  be misjudged: a scene's state is a timestamp, and a short script reads off
+  again before the poll. None is configured.
+- **The ignore case** is unit-tested only.
+

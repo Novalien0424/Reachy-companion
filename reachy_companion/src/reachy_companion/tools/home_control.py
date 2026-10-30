@@ -149,9 +149,17 @@ class HomeControl(Tool):
         service = "turn_on" if want_on else "turn_off"
 
         sent = await ha_client.ha_call_service(domain, service, {"entity_id": entity_id}, timeout_s=_SERVICE_TIMEOUT_S)
-        if not sent.get("ok"):
-            return _not_responding(target, sent)
+        if not sent.get("ok") and sent.get("status_code") is not None:
+            return {
+                "ok": False,
+                "action": action,
+                "target": target,
+                "error": f"Home Assistant refused the command for {target} (HTTP {sent['status_code']}), so it "
+                "was not switched. Tell the person you cannot do that with it right now.",
+            }
 
+        # Read back even when HA did not answer in time: a slow TV can still
+        # come on, and only its state says whether the command landed.
         state = await _settled_state(entity_id, want_on)
         if _reads_as(state, want_on):
             result: Dict[str, Any] = {"ok": True, "action": action, "target": target, "state": state}
@@ -159,12 +167,13 @@ class HomeControl(Tool):
                 result["was_already"] = "on" if want_on else "off"
             return result
         word = "on" if want_on else "off"
+        took = "took the command" if sent.get("ok") else f"did not answer the command ({sent.get('error')})"
         return {
             "ok": False,
             "action": action,
             "target": target,
             "state": state or "unreadable",
-            "error": f"Home Assistant took the command, but {target} still reads {state or 'unreadable'}. "
+            "error": f"Home Assistant {took}, and {target} still reads {state or 'unreadable'}. "
             f"Tell the person it did not turn {word}, and suggest checking its power or switch; "
             "do not say it worked.",
         }

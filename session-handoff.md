@@ -1,7 +1,8 @@
-# Session handoff — 2026-10-30 (v1.31.0 running; mini context diet done)
+# Session handoff — 2026-10-30 (v1.31.2 installed; home_control reads back)
 
-State: **v1.31.0 installed and running** (daemon v1.13.0, restarted 10:17
-UTC under the standing authorization), mic unmuted, TV off. `main` is pushed.
+State: **v1.31.2 installed 12:38 UTC; Reachy asleep (app stopped by its own
+`go_to_sleep` at 11:01 UTC), TV off, mic unmuted.** Daemon v1.13.0. `main` is
+pushed.
 
 ## Shipped today
 
@@ -36,9 +37,25 @@ UTC under the standing authorization), mic unmuted, TV off. `main` is pushed.
   - The TV is a home device.
   - Each rule is written once.
   - The fixed prefix went from 9,866 to about 5,820 tokens.
+- Project skills updated from this session's failures (`4531ee4`). The live
+  harness is `.claude/skills/reachy-deploy/scripts/live_case.sh`.
+- v1.31.1/1.31.2 (D-040): `home_control` reads the device back.
+  - It reported success on HA's 200 alone.
+  - Its 8 s limit timed out the TV's turn-on, which takes 4–9 s.
+  - A timeout now still reads the device back, and a refusal is named as one.
+  - The LAN URL no longer reaches the model.
+  - Live: TV on, off and already-off each 3/3; an unknown device 3/3.
 
 ## Next session
 
+0a. **home_control gaps** (D-040 § Open):
+   - Reachy says nothing for the 6–9 s of a TV turn-on: the system rules
+     class home control as a fast action with no preamble. The candidate is
+     one description line, behind a live A/B.
+   - A scene, script, cover or lock entry would be judged wrongly: their
+     states aren't on/off. Decide before adding one.
+   - The case where a device ignores the command is unit-tested only. Stage
+     it with a real light switched off at the wall.
 0. **Follow-ups from the diet** (D-039, none blocking):
    - **EMOTION-WITHOUT-SPEECH:** `play_emotion` moves silently. The candidate
      fix is `needs_response=True`, behind a live A/B.
@@ -48,12 +65,12 @@ UTC under the standing authorization), mic unmuted, TV off. `main` is pushed.
      - the locked profile's fallback prose still has the old conventions;
      - the `tzdata` dev dependency is unused;
      - `REALTIME_PROMPT_HARDENING=0` leaves the verbatim flag undefined.
-   - **Live tests:**
+   - **Live tests:** `reachy-deploy` § Live verification;
      - one fresh session per case, mic muted over `/rpc` `conversation.mic`;
      - with a family member in view, skip `memory` tests, because they
        write to that person's record;
      - unmute when done.
-   - **A stop can wedge the daemon.** Clear it with `sudo systemctl restart
+   - **A stop can wedge the daemon.** Clear it with `sudo -n systemctl restart
      reachy-mini-daemon` (standing authorization) and record the time.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`

@@ -9,6 +9,19 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.31.2] — 2026-10-30 · a slow answer is checked, a refusal is named
+
+Fix redeploy of the thirty-second install (wheel sha `bb955ab7…`). Decision
+D-040.
+
+- **A command Home Assistant didn't answer in time is still checked.** The
+  tool used to say the device was not switched; a slow TV can still come on,
+  so it now reads the device back and reports what it shows.
+- **A refusal is called a refusal.** HA answering 400 or 401 used to come out
+  as "not responding". Now Reachy hears that HA refused the command.
+- Installed while Reachy slept. A direct on-robot call against the real TV
+  returned `state: off, was_already: off`.
+
 ## [1.31.1] — 2026-10-30 · a device is "on" only when it reads on
 
 Fix redeploy of the thirty-second install (wheel sha `73ec8d60…`). Decision

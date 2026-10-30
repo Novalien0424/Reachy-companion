@@ -643,8 +643,8 @@
       "behavior": "home_control reports a device as switched only when Home Assistant reads it on the asked side afterwards; a device that ignores the command, is offline or is unknown to HA comes back as an error that says what to tell the person",
       "verification": "tests/test_home_control.py (obeys, ignores, slow, awake media states, toggle, already, offline, 404, transport error without address, no entity id in the result) + live runs on the robot",
       "state": "verified",
-      "evidence": "2026-10-30 v1.31.1 (wheel 73ec8d60…): suite 2071 / 31. Live: TV on 3/3, off 3/3, already off 3/3, unknown device 3/3. The ignore case (HA 200, state unchanged) is covered by tests only: no device on hand that ignores commands.",
-      "next_action": "When the operator adds a light or switch, run on/off live with it; then the ignore case can be staged by switching it off at the wall."
+      "evidence": "2026-10-30 v1.31.1 (wheel 73ec8d60…): suite 2071 / 31. Live: TV on 3/3, off 3/3, already off 3/3, unknown device 3/3. The ignore case (HA 200, state unchanged) is covered by tests only: no device on hand that ignores commands. 1.31.2 (wheel bb955ab7…): a timed-out command is read back; an HTTP refusal is named. Suite 2074 / 31; on-robot direct call was_already off.",
+      "next_action": "Open (D-040): (1) no preamble for the 6–9 s TV turn-on, candidate one description line behind a live A/B; (2) scene/script/cover/lock states aren't on/off, decide before configuring one; (3) stage the ignore case with a real light switched off at the wall."
     }
   ]
 }

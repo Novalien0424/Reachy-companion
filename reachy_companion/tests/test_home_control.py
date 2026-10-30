@@ -89,9 +89,11 @@ class _FakeHA:
     and *on_state* is what a device reads once it is on.
     """
 
-    def __init__(self, states, *, obeys=True, settle_reads=0, on_state="on"):
+    def __init__(self, states, *, obeys=True, settle_reads=0, on_state="on", service_status=200, service_timeout=False):
         self.states = dict(states)
         self.obeys = obeys
+        self.service_status = service_status
+        self.service_timeout = service_timeout
         self.settle_reads = settle_reads
         self.on_state = on_state
         self.calls = []
@@ -115,9 +117,15 @@ class _FakeHA:
         if method == "POST" and path.startswith("/api/services/"):
             service = path.rsplit("/", 1)[1]
             entity = json["entity_id"]
+            if self.service_status != 200:
+                return _Reply(self.service_status, {"message": "refused"})
             if self.obeys:
                 after = {"turn_on": self.on_state, "turn_off": "off"}[service]
                 self._pending = [entity, after, self.settle_reads]
+            if self.service_timeout:
+                import httpx
+
+                raise httpx.ReadTimeout("timed out")
             return _Reply(200, [])
         raise AssertionError(f"unexpected request {method} {path}")
 
@@ -256,6 +264,39 @@ async def test_ha_error_is_reported_not_raised_and_carries_no_address(monkeypatc
     assert out["ok"] is False
     assert "not responding" in out["error"]
     assert "homeassistant.local" not in str(out)
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_command_that_landed_is_still_confirmed(fake_ha):
+    """HA does not answer in time, but the TV comes on anyway: the read-back decides, not the timeout."""
+    fake_ha({"light.living_room": "off"}, service_timeout=True)
+
+    out = await HomeControl()(deps=None, action="turn_on", target="客厅的灯")
+
+    assert out["ok"] is True and out["state"] == "on"
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_command_that_did_not_land_says_so(fake_ha):
+    """No answer and no change: not switched, and never 'it worked'."""
+    fake_ha({"light.living_room": "off"}, obeys=False, service_timeout=True)
+
+    out = await HomeControl()(deps=None, action="turn_on", target="客厅的灯")
+
+    assert out["ok"] is False and out["state"] == "off"
+    assert "did not turn on" in out["error"] and "do not say it worked" in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_command_is_not_called_not_responding(fake_ha):
+    """HA answers 400 (the device has no such service): it refused, it did answer."""
+    fake_ha({"light.living_room": "off"}, service_status=400)
+
+    out = await HomeControl()(deps=None, action="turn_on", target="客厅的灯")
+
+    assert out["ok"] is False
+    assert "refused" in out["error"] and "HTTP 400" in out["error"]
+    assert "not responding" not in out["error"]
 
 
 @pytest.mark.asyncio
