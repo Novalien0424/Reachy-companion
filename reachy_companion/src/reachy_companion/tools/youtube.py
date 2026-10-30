@@ -21,13 +21,12 @@ class Youtube(Tool):
     name = "youtube"
     DELEGATE: ClassVar[Tool] = PlayVideo()
     description = (
-        "YouTube on the living-room TV: search YouTube and play the best match. "
-        "Use when: the user names YouTube or the internet, or wants something public — an MV, a trailer, a show, a "
-        "how-to — 「幫我從 YouTube 找」「上網找一部做蛋糕的影片」「放周杰倫的 MV」「search YouTube for a cat video」. "
-        "Ask first when: the request gives only a place, a trip, a year or an event, like 「放花蓮的影片」 — ask "
-        "影片庫 or YouTube and wait for the answer, then do what they asked. "
-        "Do NOT use when: the user names the NAS or the 影片庫, or means the family's own recordings — that is nas; "
-        "or wants sound only — that is music."
+        "YouTube on the living-room TV: search YouTube and play the best match. Use when: the user names "
+        "YouTube or the internet, or wants something public — an MV, a trailer, a show, a how-to — like "
+        "「放周杰倫的 MV」. Ask first when: the request gives only a place, a trip, a year or an event, like "
+        "「放花蓮的影片」 — ask 影片庫 or YouTube and wait for the answer, then do what they asked. Do NOT use "
+        "when: the user names the NAS or the 影片庫, or means the family's own recordings — that is nas; or "
+        "wants sound only — that is music."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

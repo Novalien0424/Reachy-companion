@@ -30,20 +30,13 @@ class GoToSleep(Tool):
 
     name = "go_to_sleep"
     description = (
-        "End the interaction entirely: Reachy stops, rests, and the conversation is over. Use when you are "
-        "sure the user wants Reachy gone, off, asleep, or the conversation over — in any wording or "
-        "language. The judgment: they want you to STOP being active, not to keep participating in a "
-        "different way (that is set_conversation_mode: 一對一聊天模式 / 多人聊天模式 / 紀錄模式). "
-        "Do NOT use when: the user only wants you quiet for a moment — that is wait_for_user. "
-        "Do NOT use when: the user wants you to listen differently, record, or stop recording — that is "
-        "set_conversation_mode. "
-        "Do not use for idle turns, sleepy emotions, silence, or ambiguous requests. "
-        "Do not generate any other text or response when calling this tool: nothing before it, nothing "
-        "alongside it. "
-        "The result comes back with `status: sleeping_soon` and a `farewell_context`. That is your cue to "
-        "say ONE natural goodbye — in the conversation's language, in character, using the context if it "
-        "helps — and then stay quiet. Nothing else is expected after that sentence; the body lies down "
-        "once it has finished playing."
+        "End the visit: Reachy stops, rests, and the conversation is over. Use when: you are sure the "
+        "user wants you gone, off or asleep, in any wording. Do NOT use when: they want you to listen "
+        "differently or record — that is set_conversation_mode; quiet for a moment — that is "
+        "wait_for_user; or the request is unclear. Do not generate any other text when calling this "
+        "tool: nothing before it, nothing alongside it. The result returns `status: sleeping_soon` and a "
+        "`farewell_context`; then say one natural goodbye in character and stay quiet. The body lies "
+        "down when it has finished playing."
     )
     needs_response = False
     ends_session: ClassVar[bool] = True

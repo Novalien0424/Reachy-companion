@@ -1,6 +1,10 @@
 # Mini context diet: fewer tools, no boxes, each fact once — plan (2026-10-30)
 
-Status: draft for the operator's OK. Nothing built. Count: 30 − 6 removed − 9 merged + 4 families = 19.
+Status: done (2026-10-30). Step 0 (TV as home device), Step 1 (1.30.0) and
+Step 2 (1.31.0) are built, installed and live-tested. Fixed prefix 9,866 →
+5,821 tokens with all 19 tools loaded. Results, fixes and open items are in
+D-039. Not done: hiding `home_control` when its device list is empty (moot
+with the TV configured).
 
 Operator, 2026-10-30:
 - "seems we have way too many tools for mini model, I can give up

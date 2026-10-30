@@ -29,14 +29,10 @@ class SummarizeConversation(Tool):
 
     name = "summarize_conversation"
     description = (
-        "Summarize everything Reachy has heard and said in this visit, using the running record kept while "
-        "紀錄模式 (record mode) is on. "
-        "Use when: the user asks for a summary or a recap of what was said — 「幫我總結」「剛剛講了什麼」"
-        "「做個會議記錄」「唸一下重點」「summarize what we said」「recap the meeting」. "
-        "Do NOT use when: the user asks what YOU remember about a person or a fact — that is the memory tools. "
-        "Do NOT use when: the user asks what you can see — that is camera or look_around. "
-        "The result is an envelope: when `speak_verbatim` is true, read `summary_text` out loud EXACTLY as "
-        "returned, in 台灣中文, and add nothing of your own."
+        "Summarize what was heard and said in this visit, from the running record kept while 紀錄模式 "
+        "(record mode) is on. Use when: the user asks for a summary, a recap or meeting notes. Do NOT "
+        "use when: the user asks what you remember about a person or a fact — that is memory; or what "
+        "you can see — that is camera."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

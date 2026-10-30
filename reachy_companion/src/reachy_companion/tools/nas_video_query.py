@@ -78,20 +78,17 @@ class NasVideoQuery(Tool):
         )
         if not matches:
             return nas.search_miss(index, [filters["place"], filters["keyword"]])
-        videos = matches[: max(1, min(200, limit))]
-        return {
-            "ok": True,
-            "count": len(matches),
-            # Every matching trip, even when `videos` is capped (2026-10-29).
-            "trips": nas.trip_summary(matches),
-            "videos": [
-                {
-                    "path": video.get("path"),
-                    "title": nas.video_title(video),
-                    "year": video.get("year"),
-                    "place": video.get("place"),
-                    "ready": bool(video.get("cast_ready")),
-                }
-                for video in videos
-            ],
-        }
+        # Every matching trip, even when the clips are capped (2026-10-29).
+        trips = nas.trip_summary(matches)
+        result: dict[str, Any] = {"ok": True, "count": len(matches), "trips": trips}
+        if len(trips) == 1:
+            # One trip: its clips, as the path `play` takes and a title; the trip
+            # row already carries year and place. Several trips: the trip rows
+            # alone. The clips of nine trips were ~2.5k tokens that stayed in the
+            # conversation for the rest of the visit (2026-10-30 context diet).
+            result["videos"] = [
+                {"path": video.get("path"), "title": nas.video_title(video)}
+                | ({} if video.get("cast_ready") else {"ready": False})
+                for video in matches[: max(1, min(200, limit))]
+            ]
+        return result

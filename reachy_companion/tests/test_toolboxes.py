@@ -282,14 +282,16 @@ def test_the_nineteen_schemas_are_smaller_than_the_old_twenty_two_core(
 
 
 def test_the_prompt_names_no_toolbox() -> None:
-    """There is nothing to open, so the prompt must not teach opening it."""
+    """There is nothing to open, so the prompt must not teach opening it.
+
+    Since 2026-10-30 (context diet) the two availability rules are one sentence.
+    """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
     assert "工具箱" not in block
     assert "open_toolbox" not in block
-    assert "你能做的事都在工具清單裡，直接呼叫就好。" in block
-    assert "工具清單上沒有的事，就說你做不到，不要自己演一遍。" in block
+    assert "你能做的事都在工具清單裡，直接呼叫就好；清單上沒有的事，就說你做不到，不要自己演一遍。" in block
 
 
 def test_the_ask_first_rule_waits_for_the_answer_before_playing() -> None:

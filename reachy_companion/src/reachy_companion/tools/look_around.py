@@ -40,20 +40,12 @@ class LookAround(Tool):
 
     name = "look_around"
     description = (
-        "Physically turn the head to one side and then look with the camera: this tool moves FIRST and takes "
-        "the picture afterwards. Directions: left 左邊, right 右邊, up 上面, down 下面, front 正前方. "
-        "Use when: the user names one of those directions, or points at something away from where you are "
-        "already facing — 「轉到右邊去看看有誰」「看左邊」「往上看」「轉過去看看」「turn right and see who is "
-        "there」「look to your left」. "
-        "Use when: the user asks who or what is to one side rather than straight ahead. "
-        "Do NOT use when: the user asks what you see with NO direction at all — use camera, which looks "
-        "without moving. "
-        "Do NOT use when: the user only wants the movement and no description — use head with action=turn. "
-        "Do NOT use when: the question is about WHO a person is or whether you remember them — that is "
-        "face with action=identify. "
-        "The result contains `direction_requested`: it names where the head was sent. Say you turned that "
-        "way only when that field came back with the direction you claim, and describe what the returned "
-        "PICTURE shows — never a room, a person or an object you did not see in it."
+        "Turn the head toward a direction first, then take a picture there and describe it. Use when: "
+        "the user wants to know who or what is in a direction, like 「轉到右邊去看看有誰」. Do NOT use when: no "
+        "direction is named — that is camera, which looks without moving; the user wants only the "
+        "movement — that is head with action=turn; or asks who a person is — that is face with "
+        "action=identify. Say you turned only if `direction_requested` names that direction, and "
+        "describe only what the returned picture shows."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
@@ -62,15 +54,13 @@ class LookAround(Tool):
                 "type": "string",
                 "enum": ["left", "right", "up", "down", "front"],
                 "description": (
-                    "Where to turn the head before taking the picture: left 左邊、right 右邊、up 上面、"
-                    "down 下面、front 正前方。"
+                    "left 左邊、right 右邊、up 上面、down 下面、front 正前方。"
                 ),
             },
             "question": {
                 "type": "string",
                 "description": (
-                    "What to observe once the head has turned. Examples: 那邊有誰、那一側有什麼東西、"
-                    "上面有什麼。"
+                    "What to look for there, e.g. 那邊有誰。"
                 ),
             },
         },

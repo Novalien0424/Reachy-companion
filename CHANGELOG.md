@@ -9,6 +9,34 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.31.0] — 2026-10-30 · Reachy reads less and says it right
+
+Deployed as the thirty-second install (wheel sha `9e6e945b…`). Decision D-039.
+
+- **What Reachy reads before every answer dropped by 41 %** (9,866 → about
+  5,800 tokens). Every rule is now written once, where it's needed: tool
+  descriptions are shorter and lost their lists of example phrases, the
+  persona keeps who Reachy is, and the advice for a failure comes with the
+  failure itself.
+- **Email read-back is complete.** Reachy reads one sentence naming the
+  recipient, the copies, the subject and the whole message before asking to
+  send.
+- **Failures Reachy can fix, it fixes.** A search in Chinese, or a song query
+  that finds nothing, is retried on its own instead of being handed back to
+  you.
+- **Asking 影片庫 or YouTube is skipped when you've already named one.**
+
+## [1.30.0] — 2026-10-30 · every tool at hand, and the TV turns off by voice
+
+Deployed as the thirty-first install (wheel sha `4382beb5…`). Decision D-039.
+
+- **No more toolboxes.** All 19 tools are always available, so playing a
+  video no longer needs an extra step first.
+- **Calendar, tasks and Notion are gone**, as decided.
+- **Fewer tools to choose from.** One `dance` that also stops any motion,
+  one `head`, one `memory` and one `face` replace eight separate tools.
+- **「把電視關掉」 works.** The TV is now a home device.
+
 ## [1.29.1] — 2026-10-30 · Reachy sees the trips it should ask about
 
 Deployed as the thirtieth install (wheel sha `35379bea…`). Decision D-038.

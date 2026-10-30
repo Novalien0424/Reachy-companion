@@ -1,8 +1,7 @@
-# Session handoff — 2026-10-30 (v1.29.1 running; 1.29.x checks done)
+# Session handoff — 2026-10-30 (v1.31.0 running; mini context diet done)
 
-State: **v1.29.1 installed and running** (daemon v1.13.0, restarted 07:23
-UTC under the operator's standing authorization), mic unmuted, TV off.
-`main` is pushed.
+State: **v1.31.0 installed and running** (daemon v1.13.0, restarted 10:17
+UTC under the standing authorization), mic unmuted, TV off. `main` is pushed.
 
 ## Shipped today
 
@@ -30,22 +29,32 @@ UTC under the operator's standing authorization), mic unmuted, TV off.
 - v1.29.1 (2026-10-30): error results reach the model whole (`candidates`
   and similar fields were dropped in transport, for every tool), and
   `remaining` is now `clips_left`. Live: V4 2/2, V3 in one call (D-038).
+- v1.30.0 and 1.31.0 (2026-10-30): the mini context diet (D-039).
+  - 19 tools are always loaded; there are no toolboxes; calendar, tasks and
+    Notion are gone.
+  - Families: `dance`, `head`, `memory`, `face`.
+  - The TV is a home device.
+  - Each rule is written once.
+  - The fixed prefix went from 9,866 to about 5,820 tokens.
 
 ## Next session
 
-0. **Media follow-ups** (none blocking):
-   - The model mostly sends Chinese search words first. The corrective error
-     fixes that in one extra call. Leave it unless latency matters.
-   - There is no tool to stop or pause the TV, though Reachy offers
-     「想讓我停一下嗎？」 anyway. Also open: `TV-AUDIO-PHANTOM-TURNS` and the
-     `show_on_tv` image 400.
-   - The operator runs on mini only. Fit tools to what the model does, and
-     keep text short: no full-tier diagnostic, no added instruction text.
-   - Live tests: one fresh session per case, mic muted over `/rpc`
-     `conversation.mic`. Unmute or stop the app when done.
-   - A stop can wedge the daemon (DAEMON-STOP-WEDGE). Under the standing
-     authorization, clear it with `sudo systemctl restart reachy-mini-daemon`
-     and record the restart.
+0. **Follow-ups from the diet** (D-039, none blocking):
+   - **EMOTION-WITHOUT-SPEECH:** `play_emotion` moves silently. The candidate
+     fix is `needs_response=True`, behind a live A/B.
+   - **V1 ask-first is about 3/4 on mini.** The misses go straight to
+     YouTube.
+   - **Leftovers:**
+     - the locked profile's fallback prose still has the old conventions;
+     - the `tzdata` dev dependency is unused;
+     - `REALTIME_PROMPT_HARDENING=0` leaves the verbatim flag undefined.
+   - **Live tests:**
+     - one fresh session per case, mic muted over `/rpc` `conversation.mic`;
+     - with a family member in view, skip `memory` tests, because they
+       write to that person's record;
+     - unmute when done.
+   - **A stop can wedge the daemon.** Clear it with `sudo systemctl restart
+     reachy-mini-daemon` (standing authorization) and record the time.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

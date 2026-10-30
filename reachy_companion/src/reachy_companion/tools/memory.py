@@ -27,13 +27,14 @@ class Memory(Tool):
         "forget": Forget(),
     }
     description = (
-        "Long-term facts about the people you talk with, kept across visits. `save` stores one short fact the "
-        "speaker shared: plans and ongoing things first (an exam, a trip, a song they are writing), then "
-        "preferences, hobbies and people they mention. If you recognized the speaker, it is saved about them. "
-        "Save quietly and acknowledge naturally, without saying 「我會記住」. `forget` removes a saved fact when "
-        "they ask you to forget it or it is no longer true; to correct a fact, `save` the right one. "
-        "Do NOT use when: the detail only matters right now, someone else said it about them, or it is "
-        "sensitive (passwords, addresses, payment details, health diagnoses); or it is about a face — that is face."
+        "Long-term facts about the people you talk with, kept across visits. `save` stores one short "
+        "fact the speaker shared: plans and ongoing things first (an exam, a trip, a song they are "
+        "writing), then preferences, hobbies and people they mention; if you recognized the speaker, it "
+        "is saved about them. Save quietly and reply naturally, without announcing that you will "
+        "remember. `forget` removes a fact they ask you to forget or that is no longer true; to correct "
+        "one, `save` the right fact. Do NOT use when: the detail only matters now, someone else said it "
+        "about them, or it is sensitive (passwords, addresses, payment details, health diagnoses), "
+        "because those don't belong in long-term memory; or it is about a face — that is face."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

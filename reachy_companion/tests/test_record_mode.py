@@ -401,10 +401,23 @@ async def test_tool_returns_the_verbatim_envelope() -> None:
     }
 
 
-def test_tool_description_names_the_envelope_and_the_triggers() -> None:
-    """The mini tier follows the description or nothing; both halves must be in it."""
+def test_tool_description_names_the_trigger_and_the_envelope_rule_lives_in_the_prompt() -> None:
+    """The trigger lives in the description; the verbatim rule lives once, in the prompt.
+
+    2026-10-30 (context diet): the description no longer restates the
+    `speak_verbatim` rule -- it lives once in the system rules (`### 工具結果`)
+    and in the record-mode block, both of which the model reads -- and the
+    list of example trigger phrases (「幫我總結」...) was removed on purpose:
+    listed examples raise selection whether or not the tool fits. The use-when
+    side is a condition: a summary, a recap or meeting notes.
+    """
+    from reachy_companion.prompts import hardening_block, mode_rules_block
     from reachy_companion.tools.summarize_conversation import SummarizeConversation
 
     description = SummarizeConversation.description
-    for phrase in ("speak_verbatim", "summary_text", "幫我總結", "Do NOT use when", "紀錄模式"):
+    for phrase in ("Use when: the user asks for a summary, a recap or meeting notes", "Do NOT use when", "紀錄模式"):
         assert phrase in description
+    assert "speak_verbatim" not in description and "「" not in description
+    rules = hardening_block()
+    assert "speak_verbatim" in rules and "summary_text 一字不差地唸出來" in rules
+    assert "summary_text 一字不差地唸出來" in mode_rules_block(ConversationMode.RECORD)

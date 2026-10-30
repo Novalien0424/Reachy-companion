@@ -19,11 +19,9 @@ class DrawPicture(Tool):
     name = "draw_picture"
     DELEGATE: ClassVar[Tool] = ShowOnTv()
     description = (
-        "Draw a new picture with AI and put it on the living-room TV. "
-        "Use when: the user asks you to draw, illustrate or imagine something for the big screen — "
-        "「畫一張圖放到電視上」「在電視上畫一隻貓給我看」「draw me a dragon on the TV」. "
-        "Do NOT use when: the user wants a video, or a photo or clip that already exists — youtube and nas play "
-        "those, and this only makes a new image."
+        "Draw a new picture with AI and put it on the living-room TV. Use when: the user asks you to "
+        "draw, illustrate or imagine something for the big screen. Do NOT use when: the user wants a "
+        "video or an existing photo or clip — that is youtube or nas; this only makes a new image."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

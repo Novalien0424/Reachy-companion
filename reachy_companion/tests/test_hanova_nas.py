@@ -637,7 +637,7 @@ async def test_nas_video_query_is_unavailable_without_the_index(monkeypatch, tmp
     """R5: the tool is dead without the operator-supplied index, and it says so."""
     monkeypatch.delenv("HANOVA_NAS_INDEX_PATH")
     out = await NasVideoQuery()(deps=_deps(tmp_path), place="sentinel_place_q4")
-    assert out == {"status": "unavailable", "reason": "HANOVA_NAS_INDEX_PATH"}
+    assert out == settings.unavailable("HANOVA_NAS_INDEX_PATH")
 
 
 @pytest.mark.asyncio
@@ -649,7 +649,7 @@ async def test_nas_video_query_is_away_from_home_off_the_lan(monkeypatch, tmp_pa
 
     monkeypatch.setattr("reachy_companion.tools.nas_video_query.home_state", not_home)
     out = await NasVideoQuery()(deps=_deps(tmp_path), place="sentinel_place_q4")
-    assert out == {"status": "away_from_home"}
+    assert out == home_net.away_from_home()
 
 
 @pytest.mark.parametrize(
@@ -1200,7 +1200,7 @@ async def test_a_house_bound_early_return_leaves_the_trip_alone(monkeypatch, tmp
     _live_trip()
 
     out = await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary")
-    assert out == {"status": "away_from_home"}
+    assert out == home_net.away_from_home()
     assert nas.remaining() == 1, "an away verdict changed nothing on the TV"
 
 
@@ -1553,13 +1553,61 @@ def test_keyword_reaches_the_category_and_the_year():
 
 @pytest.mark.asyncio
 async def test_query_lists_every_matching_trip_even_when_the_clips_are_capped(tmp_path, catalogue):
-    """The 2025 miss: a 40-clip cap must not hide whole trips from the model."""
+    """The 2025 miss: a 40-clip cap must not hide whole trips from the model.
+
+    2026-10-30 (context diet): when several trips match, the result is the trip
+    rows alone -- no `videos` at all. The clips of nine trips were ~2.5k tokens
+    that stayed in the conversation for the rest of the visit, and `play` takes
+    a trip (`top_folder`), not a clip, so every trip must still be listed.
+    """
     out = await NasVideoQuery()(deps=_deps(tmp_path), year=2021, limit=2)
-    assert out["count"] == 5
-    assert len(out["videos"]) == 2
+    assert out["ok"] is True and out["count"] == 5
+    assert "videos" not in out
     assert [(trip["top_folder"], trip["clips"]) for trip in out["trips"]] == [
         ("2021 Cape Town", 3),
         ("2021_Rio+Lisbon", 2),
+    ]
+    assert set(out) == {"ok", "count", "trips"}
+
+
+@pytest.mark.asyncio
+async def test_a_one_trip_query_lists_its_clips_as_path_and_title_only(tmp_path, catalogue):
+    """2026-10-30 (context diet): one matching trip returns its clips, trimmed.
+
+    Each clip is the `path` `play` can take plus a spoken `title`; year and
+    place already ride on the one trip row, so they are not repeated per clip,
+    and `ready` is left out for the ordinary, cast-ready clip. The clip cap still
+    never hides the trip: the trip row counts every clip.
+    """
+    out = await NasVideoQuery()(deps=_deps(tmp_path), place="cape town", limit=2)
+    assert out["ok"] is True and out["count"] == 3
+    assert [(trip["top_folder"], trip["clips"]) for trip in out["trips"]] == [("2021 Cape Town", 3)]
+    assert out["videos"] == [
+        {"path": "SENTINEL_SRC_DIR_q4/2021 Cape Town/clip01.mp4", "title": "2021 Cape Town part 1"},
+        {"path": "SENTINEL_SRC_DIR_q4/2021 Cape Town/clip02.mp4", "title": "2021 Cape Town part 2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_one_trip_query_marks_only_the_clips_that_are_not_cast_ready(monkeypatch, tmp_path):
+    """`ready: false` appears exactly on the clips the TV cannot play yet (2026-10-30).
+
+    The model must not offer an unconverted clip as playable, so the exception
+    is marked; a cast-ready clip carries no `ready` key at all.
+    """
+    index = json.loads(json.dumps(CATALOGUE))
+    for video in index["videos"]:
+        if video["top_folder"] == "2021_Rio+Lisbon" and video["seq"] == 2:
+            video["cast_ready"] = False
+    path = tmp_path / "half-ready.json"
+    path.write_text(json.dumps(index), encoding="utf-8")
+    monkeypatch.setenv("HANOVA_NAS_INDEX_PATH", str(path))
+
+    out = await NasVideoQuery()(deps=_deps(tmp_path), place="lisbon rio")
+    assert [trip["top_folder"] for trip in out["trips"]] == ["2021_Rio+Lisbon"]
+    assert out["videos"] == [
+        {"path": "SENTINEL_SRC_DIR_q4/2021_Rio+Lisbon/clip01.mp4", "title": "2021 Rio & Lisbon part 1"},
+        {"path": "SENTINEL_SRC_DIR_q4/2021_Rio+Lisbon/clip02.mp4", "title": "2021 Rio & Lisbon part 2", "ready": False},
     ]
 
 
@@ -1582,7 +1630,12 @@ async def test_a_chinese_miss_says_to_search_again_in_english(monkeypatch, tmp_p
     for tool in (NasVideoQuery(), PlayNasVideo()):
         out = await tool(deps=_deps(tmp_path), place="開普敦")
         assert out["ok"] is False and "all_trips" not in out
-        assert out["error"] == "nothing is catalogued under 「開普敦」: the archive is in English, so search again in English"
+        # The fix is the model's own retry, not a question to the user (2026-10-30, live:
+        # "search again in English" was relayed to the user as advice).
+        assert out["error"] == (
+            "nothing is catalogued under 「開普敦」: the archive is in English; "
+            "call again yourself with the English words, without asking the user"
+        )
     assert recorded == {"fetched": [], "cast": []}
 
 

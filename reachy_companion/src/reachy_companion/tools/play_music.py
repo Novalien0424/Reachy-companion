@@ -34,7 +34,7 @@ class PlayMusic(Tool):
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Song, artist, or mood to search for.",
+                "description": "Song, artist or mood.",
             },
         },
         "required": ["query"],
@@ -60,7 +60,13 @@ class PlayMusic(Tool):
             # nothing else, so the shape of the failure was lost; `redact.text`
             # is the renderer for free text nobody vouched for (Task 4 review).
             logger.info("play_music search failed: %s", redact.text(found["error"] or ""))
-            return {"ok": False, "error": "no playable result for that request"}
+            return {
+                "ok": False,
+                "error": (
+                    "no playable result for that query: try again yourself with a song title or an artist plus a "
+                    "song, and tell the user only if that also finds nothing"
+                ),
+            }
 
         music_dir = media_store.media_dir("music", deps.instance_path)
         # No mp3 re-encode for music: the daemon's playbin decodes the native

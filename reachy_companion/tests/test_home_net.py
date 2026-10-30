@@ -84,8 +84,20 @@ def clean_probe(monkeypatch):
 
 
 def test_away_payload_is_exactly_the_contract():
-    """R4 fixes this shape; house-bound tools return it verbatim."""
-    assert home_net.away_from_home() == {"status": "away_from_home"}
+    """R4 fixes this shape; house-bound tools return it verbatim.
+
+    Since 2026-10-30 (context diet) the payload carries its own advice in
+    `error`: the persona's `away_from_home` convention moved here, to where the
+    status is produced. It says what happened and what to tell the user, and
+    keeps the old rule that being away is not a fault.
+    """
+    assert home_net.away_from_home() == {
+        "status": "away_from_home",
+        "error": (
+            "The robot is not on the home network, so home devices and the TV cannot be reached. "
+            "Say you are away from home right now and can do it once you are back; nothing is broken."
+        ),
+    }
 
 
 def test_unknown_payload_is_its_own_status_not_a_flavour_of_away():
@@ -94,6 +106,11 @@ def test_unknown_payload_is_its_own_status_not_a_flavour_of_away():
     assert out["status"] == "home_status_unknown"
     assert out["status"] != "away_from_home"
     assert out["error"]
+    # The two advices must not blur either (2026-10-30: the advice moved from
+    # the persona into these strings): "away" says you are away, "unknown"
+    # says you cannot tell and must not claim anyone is out of the house.
+    assert "not sure" in out["error"] and "do not tell the user they are out" in out["error"]
+    assert "not sure" not in home_net.away_from_home()["error"]
 
 
 def test_unknown_payload_carries_no_caller_supplied_text():

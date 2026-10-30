@@ -69,11 +69,16 @@ def test_sibling_tool_descriptions_name_each_other(monkeypatch: pytest.MonkeyPat
 
 
 def test_dance_stop_routes_speaker_music_to_the_music_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stopping a dance or an emotion is not the same as stopping speaker playback."""
+    """Stopping a dance or an emotion is not the same as stopping speaker playback.
+
+    Pinned to the compact 2026-10-30 wording; `stop` still ends both motions
+    and still goes without a preamble.
+    """
     descriptions = _target_descriptions(monkeypatch)
 
-    assert "that is music with action=stop" in descriptions["dance"]
-    assert "`stop` ends any dance or emotion motion at once" in descriptions["dance"]
+    assert "the music should stop — that is music with action=stop" in descriptions["dance"]
+    assert "`stop`, which ends any dance or emotion motion" in descriptions["dance"]
+    assert "call it with no preamble, because they want it ended now" in descriptions["dance"]
 
 
 def test_non_pair_descriptions_name_their_alternatives(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,10 +87,11 @@ def test_non_pair_descriptions_name_their_alternatives(monkeypatch: pytest.Monke
 
     assert "look_around" in descriptions["head"]
     assert "camera" in descriptions["head"]
-    assert "`youtube`" in descriptions["home_control"]
-    assert "`nas`" in descriptions["home_control"]
-    assert "`music`" in descriptions["home_control"]
-    assert "answer instead" in descriptions["wait_for_user"]
+    # 2026-10-30: plain tool names, as in the other descriptions; the TV sources
+    # and the speaker are still named as the alternatives for playback.
+    assert "on the TV that is youtube or nas" in descriptions["home_control"]
+    assert "on your speaker that is music" in descriptions["home_control"]
+    assert "asking for help — answer them" in descriptions["wait_for_user"]
 
 
 def test_audited_tool_descriptions_have_no_numeric_length_caps(monkeypatch: pytest.MonkeyPatch) -> None:

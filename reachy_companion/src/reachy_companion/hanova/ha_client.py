@@ -150,5 +150,9 @@ def tv_not_responding(state: str | None) -> Dict[str, Any]:
         "ok": False,
         "status": "tv_not_responding",
         "tv_state": state or "unknown",
-        "error": "the cast was sent, but the TV shows no playback; it may be off or offline",
+        "error": (
+            "the cast was sent, but the TV shows no playback; it may be off or offline. Say the picture "
+            "probably did not come up and ask them to check that the TV is on, then try again; do not say "
+            "it is playing."
+        ),
     }

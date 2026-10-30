@@ -28,12 +28,12 @@ class Head(Tool):
         "stop_following": BoundAction(HeadTracking(), enabled=False),
     }
     description = (
-        "Moves the head without looking. `turn` points it one way for a moment as body language — "
-        "「抬頭」「低頭」「頭轉過去」「看鏡頭」; it takes no picture, and face-following resumes by itself "
-        "afterwards. `follow` keeps the head on the user's face until told otherwise — 「一直看著我」「跟著我轉」; "
-        "`stop_following` ends that. Do NOT use when: the user wants to know who or what is in a direction — "
-        "that is look_around; or what is in front of you — that is camera. After `turn`, never say you saw "
-        "anything; say you turned that way only when `direction_requested` came back with that direction."
+        "Move the head without looking. `turn` points it one way for a moment as body language, like "
+        "「抬頭」; it takes no picture, and face-following resumes by itself afterwards. `follow` keeps the "
+        "head on the user's face, like 「一直看著我」, until `stop_following`. Do NOT use when: the user wants "
+        "to know who or what is in a direction — that is look_around; or what is in front of you — that "
+        "is camera. After `turn`, say you turned that way only when `direction_requested` came back with "
+        "that direction, and never that you saw something."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

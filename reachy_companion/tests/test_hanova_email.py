@@ -5,7 +5,7 @@ import importlib
 
 import pytest
 
-from reachy_companion.hanova import gmail_smtp
+from reachy_companion.hanova import settings, gmail_smtp
 from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.email_send import EmailSend
 
@@ -53,10 +53,50 @@ def test_tool_name_matches_the_filename():
 
 
 def test_description_carries_no_personal_identifier():
-    """R10: upstream put the real sender address in this description."""
+    """R10: upstream put the real sender address in this description.
+
+    2026-10-30 (context diet): the 120-character cap is gone on purpose. The
+    description now carries the confirmation contract the persona used to hold
+    (pinned below), so it is long; it must still be identifier-free.
+    """
     text = EmailSend().description
     assert "@" not in text
-    assert len(text) <= 120
+
+
+def test_description_carries_the_confirmation_contract():
+    """The persona's needs_confirmation / retryable / BCC rules moved here (2026-10-30).
+
+    This description is read when the tool is called, which is when the rules
+    apply. The safety meaning is unchanged: the whole summary is read word for
+    word, `confirm` is sent only after a clear yes and carries no other field,
+    BCC does not exist, and only a `retryable` failure may be retried on the
+    same yes.
+    """
+    text = EmailSend().description
+    # The read-back is the armed result's `response_text` (2026-10-30, live: the
+    # English `summary` read "word for word" lost the subject and the cc line).
+    assert "needs_confirmation" in text and "`response_text`" in text
+    assert "recipients, cc, subject and the whole body" in text and "say it word for word" in text
+    assert "Only after a clear yes, call again with `confirm=true` and no other fields" in text
+    assert "Without a clear yes, do not send `confirm`, because the yes is what allows sending" in text
+    assert "There is no BCC" in text
+    assert "`retryable: true`" in text and "any other failure needs the corrected message read back again" in text
+
+
+@pytest.mark.asyncio
+async def test_the_armed_result_carries_a_chinese_read_back_under_the_verbatim_flag(monkeypatch):
+    """Every part of the envelope is in the sentence Reachy reads, in the conversation's language.
+
+    2026-10-30, live: asked to read the English `summary` word for word, the model
+    read the recipient and the body and dropped the subject and the cc line. The
+    verbatim flag is defined once, in the system rules; `summary` stays the record.
+    """
+    body = "今天晚上七點一起吃飯"
+    out = await EmailSend()(deps=_deps(), to="a@example.com", cc="b@example.com", subject="測試", body=body)
+    assert out["status"] == "needs_confirmation" and out["require_repeat_verbatim"] is True
+    assert out["response_text"] == "我要寄信給 a@example.com，副本給 b@example.com，主旨是「測試」。內容是：「今天晚上七點一起吃飯」。要寄出嗎？"
+    alone = await EmailSend()(deps=_deps(), to="a@example.com", subject="測試", body=body)
+    assert "，沒有副本，" in alone["response_text"]
 
 
 def test_send_mail_builds_the_message_and_logs_in(monkeypatch):
@@ -169,6 +209,9 @@ async def test_a_body_over_the_cap_is_refused_and_arms_nothing(monkeypatch):
     assert out["status"] == "body_too_long"
     assert out["ok"] is False
     assert out["max_chars"] == gmail_smtp.MAX_BODY_CHARS
+    # The persona's body_too_long convention moved into the error (2026-10-30):
+    # ask for a shorter message, never condense it and send the digest.
+    assert "Ask the user for a shorter message; do not shorten it yourself and send it." in out["error"]
     assert GATE.claim("email_send") is None
 
 
@@ -248,7 +291,7 @@ async def test_email_send_is_unavailable_without_config(monkeypatch):
     """R5: an unconfigured tool answers, it does not raise, and it names the key."""
     monkeypatch.delenv("HANOVA_SMTP_APP_PASSWORD")
     out = await EmailSend()(deps=_deps(), to="a@example.com", subject="Dinner", body="hi")
-    assert out == {"status": "unavailable", "reason": "HANOVA_SMTP_APP_PASSWORD"}
+    assert out == settings.unavailable("HANOVA_SMTP_APP_PASSWORD")
 
 
 @pytest.mark.asyncio

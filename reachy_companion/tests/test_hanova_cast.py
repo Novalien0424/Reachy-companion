@@ -127,7 +127,7 @@ async def test_play_video_is_unavailable_without_its_ha_script(monkeypatch, tmp_
     """Finding 6: the script name has no default, so an unset one disables the tool."""
     monkeypatch.delenv("HANOVA_HA_SCRIPT_YOUTUBE")
     out = await PlayVideo()(deps=_deps(tmp_path), query="a documentary")
-    assert out == {"status": "unavailable", "reason": "HANOVA_HA_SCRIPT_YOUTUBE"}
+    assert out == settings.unavailable("HANOVA_HA_SCRIPT_YOUTUBE")
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_play_video_is_away_from_home_off_the_lan(monkeypatch, tmp_path):
     """R4: house-bound tools say where they are, they do not blame the house."""
     _home_state(monkeypatch, "play_video", home_net.AWAY)
     out = await PlayVideo()(deps=_deps(tmp_path), query="a documentary")
-    assert out == {"status": "away_from_home"}
+    assert out == home_net.away_from_home()
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,7 @@ async def test_a_declared_off_home_address_is_away_and_also_does_no_work(monkeyp
 
     monkeypatch.setattr(home_net, "local_address", resolve)
     out = await PlayVideo()(deps=_deps(tmp_path), query="a documentary")
-    assert out == {"status": "away_from_home"}
+    assert out == home_net.away_from_home()
     assert house_probe == []
 
 
@@ -473,7 +473,7 @@ async def test_show_on_tv_is_unavailable_without_an_openai_key(monkeypatch, tmp_
     """The image half of the capability has its own credential."""
     monkeypatch.delenv("OPENAI_API_KEY")
     out = await ShowOnTv()(deps=_deps(tmp_path), request="draw a cat")
-    assert out == {"status": "unavailable", "reason": "OPENAI_API_KEY"}
+    assert out == settings.unavailable("OPENAI_API_KEY")
 
 
 @pytest.mark.asyncio
@@ -481,7 +481,7 @@ async def test_show_on_tv_is_unavailable_when_the_media_mount_failed(tmp_path):
     """Finding 11: without a live route the TV would fetch nothing."""
     settings.set_media_mount_ready(False)
     out = await ShowOnTv()(deps=_deps(tmp_path), request="draw a cat")
-    assert out == {"status": "unavailable", "reason": "HANOVA_MEDIA_MOUNT"}
+    assert out == settings.unavailable("HANOVA_MEDIA_MOUNT")
 
 
 @pytest.mark.asyncio
@@ -489,7 +489,7 @@ async def test_show_on_tv_is_away_from_home_off_the_lan(monkeypatch, tmp_path):
     """R4 again: the TV is at home and so is this capability."""
     _home_state(monkeypatch, "show_on_tv", home_net.AWAY)
     out = await ShowOnTv()(deps=_deps(tmp_path), request="draw a cat")
-    assert out == {"status": "away_from_home"}
+    assert out == home_net.away_from_home()
 
 
 @pytest.mark.asyncio

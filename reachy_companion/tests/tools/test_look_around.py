@@ -244,15 +244,27 @@ def test_descriptions_are_symmetric_and_route_directional_looks() -> None:
     assert "look_around" in Camera.description
     assert "look_around" in Head.description and "camera" in Head.description
     assert "camera" in LookAround.description and "head with action=turn" in LookAround.description
-    # Chinese trigger phrasings must be enumerated, not implied (research §C7).
-    for phrase in ("右邊", "左邊", "轉過去"):
-        assert phrase in LookAround.description
+    # 2026-10-30 (context diet): the enumerated trigger phrasings (research §C7)
+    # were removed on purpose -- listed examples raise selection whether or not
+    # the tool fits. One Chinese anchor stays, for the observed confusion (a
+    # directional "who is there" answered with `camera`), and the Chinese
+    # direction words are glossed once, in the `direction` enum. `camera`
+    # still lists the directional words in its Do NOT clause, so a request
+    # naming a direction routes away from it.
+    assert "「轉到右邊去看看有誰」" in LookAround.description
+    gloss = LookAround.parameters_schema["properties"]["direction"]["description"]
+    for value, word in (("left", "左邊"), ("right", "右邊"), ("up", "上面"), ("down", "下面"), ("front", "正前方")):
+        assert f"{value} {word}" in gloss
+        assert word not in LookAround.description.replace("「轉到右邊去看看有誰」", ""), f"{word} is glossed twice"
+    for phrase in ("左邊", "右邊", "轉過去"):
+        assert phrase in Camera.description
     # No `behind`: the schema cannot express it and body rotation is out of
     # scope this wave (Codex round 1, P2-4).
-    assert "後面" not in LookAround.description
-    assert "behind" not in LookAround.description
+    for text in (LookAround.description, gloss):
+        assert "後面" not in text
+        assert "behind" not in text
     assert "direction_requested" in LookAround.description
-    assert "does not move" in Camera.description or "it does not move" in Camera.description
+    assert "it moves nothing" in Camera.description
 
 
 def test_schema_enumerates_the_five_directions() -> None:

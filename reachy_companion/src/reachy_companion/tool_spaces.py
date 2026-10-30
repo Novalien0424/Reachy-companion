@@ -56,10 +56,9 @@ PREINSTALLED_TOOL_SPACE_SPECS = {
             ),
             description=(
                 "Search the web for current information and return a short list of results (title, snippet, url). "
-                "Use when: the user asks to search, check the web, look something up, find today's events, "
-                "or learn what is happening now. "
-                "Do NOT use when: the user wants media played, such as a song, an artist, a YouTube video, "
-                "or playback; that is `music`, not search. "
+                "Use when: the answer depends on current facts — news, weather, prices, scores, today's events — "
+                "even if the user did not say search; answer those from the results, not from memory. "
+                "Do NOT use when: the user wants media played — that is music, youtube or nas. "
                 "Preamble sample for slow web lookup: 「我查一下」 (示範語氣，不是觸發條件). "
                 "Say a brief lead-in in the conversation's language, then call this tool; "
                 "the lead-in is not a substitute for the call."

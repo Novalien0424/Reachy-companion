@@ -236,9 +236,10 @@ class PlayEmotion(Tool):
 
     name = "play_emotion"
     description = (
-        "Play a short expressive robot reaction matching a feeling. "
-        "Use when: the user wants a brief emotional cue from the robot's body. "
-        "Do NOT use when: the user wants a music-like move sequence; that is `dance`."
+        "Play a short body reaction that matches a feeling, alongside what you say. Use when: the moment "
+        "calls for one — good news, a joke, surprise, sympathy — or the user asks for an emotion. Say "
+        "your reply as usual; the reaction only adds the body. Do NOT use when: the user wants a dance — "
+        "that is dance."
     )
     needs_response = False
     parameters_schema = {
@@ -248,9 +249,7 @@ class PlayEmotion(Tool):
                 "type": "string",
                 "enum": list(EMOTION_INTENTS),
                 "description": (
-                    "Compact emotional intent to express. Choose one of the enum values. Use nuanced "
-                    "labels like no_sad, no_excited, no_firm, or yes_understanding when plain yes/no "
-                    "loses meaning. Use random if no clear intent fits."
+                    "The feeling to show; random if none fits."
                 ),
             },
         },

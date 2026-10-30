@@ -362,11 +362,25 @@ def test_tool_schema_enumerates_every_mode() -> None:
     assert schema["required"] == ["mode"]
 
 
-def test_tool_description_carries_the_chinese_switch_phrases() -> None:
-    """Literal-interpretation trap (research §C7): enumerate real phrasings."""
+def test_the_mode_enum_carries_the_chinese_mode_names_once() -> None:
+    """The model must map 「紀錄模式」 etc. to an enum value; the names are glossed once.
+
+    Replaces `test_tool_description_carries_the_chinese_switch_phrases`
+    (2026-10-30, context diet). The list of example switch phrases was removed
+    on purpose: listed examples raise selection whether or not the tool fits
+    (plan Step 2 additions). The Chinese mode names the prompt and the user
+    use now live once, in the `mode` enum gloss, next to the value they map
+    to; the description keeps the routing away from go_to_sleep and
+    wait_for_user.
+    """
     description = SetConversationMode.description
-    for phrase in ("一對一聊天模式", "多人聊天模式", "紀錄模式", "go_to_sleep", "Do NOT use when"):
-        assert phrase in description
+    gloss = SetConversationMode.parameters_schema["properties"]["mode"]["description"]
+    for value, name in (("one_on_one", "一對一聊天模式"), ("group", "多人聊天模式"), ("record", "紀錄模式")):
+        assert f"{value} {name}" in gloss
+        assert name not in description, f"{name} is glossed twice"
+    assert "「" not in description, "no example-phrase list in the description"
+    assert "Do NOT use when" in description
+    assert "that is go_to_sleep" in description and "that is wait_for_user" in description
 
 
 # --------------------------------------------------------------------------

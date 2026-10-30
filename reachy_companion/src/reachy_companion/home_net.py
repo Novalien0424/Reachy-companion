@@ -316,8 +316,18 @@ async def home_state() -> str:
 
 
 def away_from_home() -> Dict[str, Any]:
-    """Return the exact payload a house-bound tool emits off the home network (R4)."""
-    return {"status": "away_from_home"}
+    """Return the exact payload a house-bound tool emits off the home network (R4).
+
+    The advice rides in `error` (2026-10-30 context diet): it used to live in
+    the persona's Tool Result Conventions and was read on every turn.
+    """
+    return {
+        "status": "away_from_home",
+        "error": (
+            "The robot is not on the home network, so home devices and the TV cannot be reached. "
+            "Say you are away from home right now and can do it once you are back; nothing is broken."
+        ),
+    }
 
 
 def home_unknown() -> Dict[str, Any]:

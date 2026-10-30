@@ -21,7 +21,7 @@ full cannot be confirmed at all.
 Review round 1, finding 17: **there is no BCC.** A blind recipient is one the
 read-back cannot surface.
 
-The gate discipline is `calendar_delete`'s, copied deliberately (Task 2 review
+The gate discipline is the one `calendar_delete` had (removed in 1.30.0), copied deliberately (Task 2 review
 ruling): the armed payload is the only executable source, **every path settles
 the claim, in a `finally`**, and only a known transient transport fault releases
 the authorisation for a bare retry.
@@ -47,7 +47,15 @@ class EmailSend(Tool):
     """Send a plain-text email after the user confirms the whole envelope."""
 
     name = "email_send"
-    description = "Send an email. 需要先確認：先讀回收件人、副本、主旨再寄出。"
+    description = (
+        "Send an email. Use when: the user asks you to email someone. It takes two calls: the first "
+        "returns `needs_confirmation` with a `response_text` that names the recipients, cc, subject and "
+        "the whole body — say it word for word and wait. Only after a clear yes, call again with "
+        "`confirm=true` and no other fields; what was read is what is sent. Without a clear yes, do not "
+        "send `confirm`, because the yes is what allows sending. There is no BCC: everyone in to and cc "
+        "sees the message. After a failure with `retryable: true`, you may offer to try again; any other "
+        "failure needs the corrected message read back again."
+    )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -58,10 +66,10 @@ class EmailSend(Tool):
             },
             "subject": {"type": "string", "description": "Subject line."},
             "body": {"type": "string", "description": "Plain-text message body."},
-            "cc": {"type": "string", "description": "Optional comma-separated cc addresses."},
+            "cc": {"type": "string", "description": "Optional cc addresses, comma separated."},
             "confirm": {
                 "type": "boolean",
-                "description": "Set true only after the user has confirmed the full envelope read back to them.",
+                "description": "true only after a clear yes to the summary read back.",
             },
         },
         # Finding 4: optional in the schema, mandatory in the non-confirm branch.
@@ -122,7 +130,7 @@ class EmailSend(Tool):
                 "error": (
                     f"that message is {len(body)} characters, longer than the "
                     f"{gmail_smtp.MAX_BODY_CHARS} the robot can read back before sending. "
-                    "Ask the user for a shorter message."
+                    "Ask the user for a shorter message; do not shorten it yourself and send it."
                 ),
             }
 
@@ -139,11 +147,22 @@ class EmailSend(Tool):
             f"(end of message; {gmail_smtp.body_digest(body)}). "
             "There are no blind recipients."
         )
-        return GATE.arm(
+        armed = GATE.arm(
             self.name,
             summary,
             {"to": to_valid, "cc": cc_valid, "subject": subject, "body": body},
         )
+        if armed.get("status") == "needs_confirmation":
+            # The read-back the user confirms, in the conversation's language and
+            # under the verbatim render flag the system rules define (2026-10-30,
+            # live: told to read the English `summary` word for word, the model
+            # dropped the subject and the cc line). `summary` stays the record.
+            cc_zh = f"，副本給 {'、'.join(cc_valid)}" if cc_valid else "，沒有副本"
+            armed["response_text"] = (
+                f"我要寄信給 {'、'.join(to_valid)}{cc_zh}，主旨是「{subject}」。內容是：「{body}」。要寄出嗎？"
+            )
+            armed["require_repeat_verbatim"] = True
+        return armed
 
     async def _execute_confirmed(self) -> Dict[str, Any]:
         """Send the mail the user already authorised, settling the claim on every path."""

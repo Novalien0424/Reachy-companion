@@ -113,11 +113,25 @@ def test_all_eleven_ported_tools_reach_the_model(ported_tools):
     assert missing == [], f"not reachable: {missing}"
 
 
+# 2026-10-30 (context diet, plan Step 2): `email_send` now carries the
+# confirmation contract the persona used to hold for every turn, so its
+# description is read only when the tool is called. That contract cannot fit in
+# 120 characters; the `drive` family carries the same contract and, like every
+# family description, was never capped.
+CONTRACT_CARRYING_TOOLS = frozenset({"email_send"})
+
+
 def test_every_ported_description_is_short_and_identifier_free(ported_tools):
-    """R10: descriptions go into the model prompt and into every transcript."""
+    """R10: descriptions go into the model prompt and into every transcript.
+
+    2026-10-30: the 120-character cap no longer applies to
+    `CONTRACT_CARRYING_TOOLS` (the confirmation contract moved into them). The
+    identifier rules still hold for every ported tool, those included.
+    """
     for name in sorted(PORTED_TOOLS):
         description = ported_tools[name].description
-        assert len(description) <= 120, f"{name} description is {len(description)} chars"
+        if name not in CONTRACT_CARRYING_TOOLS:
+            assert len(description) <= 120, f"{name} description is {len(description)} chars"
         assert "@" not in description, f"{name} description contains an address-like token"
         assert "media_player." not in description, f"{name} description contains an HA entity id"
         assert "/Users/" not in description
@@ -722,11 +736,18 @@ ROUTING_TOKENS = (
 # 1.30.0 (mini context diet): there are no toolboxes, so every tool is in the
 # session from the first turn and its own description carries its routing
 # ("each fact once, where the model looks for it"). The prose stopped naming
-# the formerly boxed tools on purpose; what both files still teach in prose is
-# the speaker-music rule. That a name the prose DOES use is a real session tool
-# is checked in `test_profile.py`.
+# the formerly boxed tools on purpose; what the locked profile still teaches in
+# prose is the speaker-music rule. That a name the prose DOES use is a real
+# session tool is checked in `test_profile.py`.
+#
+# 1.31.0 (2026-10-30, plan Step 2): the operator's `persona.md` -- the body the
+# robot actually reads (D-016) -- dropped its `## Tools`, `## Tool Result
+# Conventions` and `## What Reachy Cannot Do` sections. Each rule moved to where
+# the model meets it: an error string, or the description of the tool that
+# produces the status. The two files therefore no longer share one list; the
+# persona tests below check the rules at their new homes instead.
 PROFILE_TOOL_TOKENS = ("music",)
-PERSONA_TOOL_TOKENS = PROFILE_TOOL_TOKENS
+PERSONA = PACKAGE_ROOT.parent / "persona.md"
 
 
 def test_profile_teaches_the_result_conventions():
@@ -736,18 +757,103 @@ def test_profile_teaches_the_result_conventions():
         assert token in body, f"profile.md does not mention {token}"
 
 
-def test_repo_persona_teaches_the_same_conventions():
-    """persona.md is the copy that actually runs on the robot after a deploy."""
-    body = (PACKAGE_ROOT.parent / "persona.md").read_text(encoding="utf-8")
-    for token in ROUTING_TOKENS + PERSONA_TOOL_TOKENS:
-        assert token in body, f"persona.md does not mention {token}"
+@pytest.mark.asyncio
+async def test_each_result_convention_lives_where_its_status_is_produced(monkeypatch, specs):
+    """R4/R10: the model must know what each result status means.
+
+    Replaces `test_repo_persona_teaches_the_same_conventions` (2026-10-30, plan
+    Step 2). The persona's Tool Result Conventions were read on every turn; each
+    one now rides in the payload that carries its status (`error`), or in the
+    description of the gated tools that return `needs_confirmation`, and the
+    system rules say once that an `error` is advice to follow. Every safety
+    meaning the persona taught is checked here at its new home.
+    """
+    from reachy_companion import prompts, home_net
+    from reachy_companion.hanova import confirm, settings, ha_client, gmail_smtp
+    from reachy_companion.tools.email_send import EmailSend
+
+    block = prompts.hardening_block()
+    # An error is advice: a fix the model can make itself is retried, a message for the
+    # person is said (2026-10-30, live: a retry advice was relayed to the user).
+    assert "error 會說發生了什麼、接下來怎麼做" in block
+    assert "就直接再呼叫一次" in block and "是要跟對方說的" in block
+
+    away = home_net.away_from_home()["error"]
+    assert "not on the home network" in away and "nothing is broken" in away
+    unknown = home_net.home_unknown()["error"]
+    assert "not sure" in unknown and "do not tell the user they are out of the house" in unknown
+    unavailable = settings.unavailable("HANOVA_NAS_HOST")["error"]
+    assert "HANOVA_NAS_HOST" in unavailable and "say you cannot do that" in unavailable
+    in_flight = confirm.action_in_flight()["error"]
+    assert "already running" in in_flight and "Wait for it to finish" in in_flight
+    not_responding = ha_client.tv_not_responding("off")["error"]
+    assert "check that the TV is on" in not_responding and "do not say it is playing" in not_responding
+
+    monkeypatch.setenv("HANOVA_SMTP_USER", "sender@example.com")
+    monkeypatch.setenv("HANOVA_SMTP_APP_PASSWORD", "app-password")
+    too_long = await EmailSend()(
+        deps=None, to="a@example.com", subject="Dinner", body="x" * (gmail_smtp.MAX_BODY_CHARS + 1)
+    )
+    assert too_long["status"] == "body_too_long"
+    assert "Ask the user for a shorter message" in too_long["error"]
+    assert "do not shorten it yourself" in too_long["error"]
+
+    for name in ("email_send", "drive"):
+        description = specs[name]["description"]
+        assert "needs_confirmation" in description, f"{name} does not explain needs_confirmation"
+        assert "word for word" in description, f"{name} does not say to read the summary verbatim"
+        assert "confirm=true" in description and "clear yes" in description, f"{name} lost the yes gate"
 
 
-def test_the_persona_records_the_two_approved_non_goals():
-    """Finding 17: a dropped capability the character cannot explain is a bug."""
-    body = (PACKAGE_ROOT.parent / "persona.md").read_text(encoding="utf-8")
-    assert "drive" in body.lower() and "還原" in body, "Drive restore must be explained, not attempted"
-    assert "密件" in body or "bcc" in body.lower(), "BCC must be explained, not silently dropped"
+@pytest.mark.parametrize("name", ["email_send", "drive"])
+def test_retryable_is_explained_by_every_tool_that_returns_it(specs, name):
+    """A `retryable` flag needs a surface that says what it permits (2026-10-30).
+
+    The persona's `retryable` convention -- a transient failure may be retried on
+    the same yes, any other failure needs the corrected summary read again --
+    moved into the gated tools' descriptions (plan Step 2: "needs_confirmation,
+    retryable, BCC and Drive restore -> the email_send and drive descriptions").
+    `email_send`, `drive_trash` and `drive_upload` all return `retryable: True`,
+    and a render flag is only legitimate when a higher-authority surface already
+    defines it (reachy-instructing-model skill).
+    """
+    assert "retryable" in specs[name]["description"], f"{name} returns retryable but never explains it"
+
+
+def test_the_persona_no_longer_carries_the_result_conventions(specs):
+    """Each fact once (2026-10-30, plan Step 2): the persona keeps character only.
+
+    `persona.md` is the copy that actually runs on the robot after a deploy, so
+    a convention left in it would be read on every turn, and twice whenever its
+    tool is called. Its tool sections are gone; the rules live where the test
+    above checks them, and the speaker-music rule lives in the `music`
+    description.
+    """
+    assert "your own speaker" in specs["music"]["description"]
+    body = PERSONA.read_text(encoding="utf-8")
+    for heading in ("## Tools", "## Tool Result Conventions", "## What Reachy Cannot Do"):
+        assert heading not in body, f"persona.md still has {heading}"
+    for token in ROUTING_TOKENS + ("tv_not_responding",):
+        assert token not in body, f"persona.md still restates {token}"
+
+
+def test_the_two_approved_non_goals_are_explained_where_they_apply(specs):
+    """Finding 17: a dropped capability the character cannot explain is a bug.
+
+    Replaces `test_the_persona_records_the_two_approved_non_goals` (2026-10-30,
+    plan Step 2): BCC is explained by `email_send` and Drive restore by `drive`,
+    the descriptions read when those tools are called, and the persona no longer
+    repeats either.
+    """
+    email = specs["email_send"]["description"]
+    assert "There is no BCC" in email, "BCC must be explained, not silently dropped"
+    drive = specs["drive"]["description"]
+    assert "can't be restored by voice" in drive and "about 30 days" in drive, (
+        "Drive restore must be explained, not attempted"
+    )
+    body = PERSONA.read_text(encoding="utf-8")
+    assert "密件" not in body and "bcc" not in body.lower()
+    assert "還原" not in body
 
 
 def test_deploy_skill_backs_up_the_new_instance_files():

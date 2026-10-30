@@ -2435,3 +2435,122 @@ results never carry `b64_im`.
     (東京、京都、名古屋、北海道) and cast nothing.
   - V3 passes in one call (`play place=Okinawa`). The trip was named and
     there was no seconds claim.
+
+## D-039 — Mini context diet: 19 tools always loaded, each fact once (2026-10-30)
+
+Operator, 2026-10-30:
+- "seems we have way too many tools for mini model, I can give up
+  calendar/tasks/notion".
+- "keep those, TV should be one of them, but still think how we can minimize
+  the context send to mini model, think deep from 1st principal and read mini
+  model instructions".
+- "go ahead, do all steps and test, ensure it is optimized".
+
+Plan: `docs/plans/2026-10-30-mini-context-diet-plan.md`. Research:
+`docs/research-compact-tool-text-2026-10.md`, plus the 2026-10-30 refresh in
+`research-instructing-realtime-voice-2026-09.md`.
+
+**Decisions:**
+1. **Every session tool is always loaded, and there are no toolboxes**
+   (supersedes the box part of D-029's tool diet).
+   - Mini fails between calls, and each box was a forced extra call plus a
+     mid-session tools change, which lowers the cache rate.
+   - Phases stay where the app knows them: record mode sees 4 tools.
+   - Surface: 19 / 19 / 4.
+2. **Removed:**
+   - calendar, tasks and notion_add, with gcal, gtasks, notion_client and
+     gauth;
+   - task_status and task_cancel leave the session (they stay registered);
+   - open_toolbox.
+3. **Families of 2–3 actions** over the unchanged upstream classes:
+   - `dance` {play, stop}; stop ends both dance and emotion. Upstream `Dance`
+     moved unchanged to `dance_moves.py`.
+   - `head` {turn, follow, stop_following}.
+   - `memory` {save, forget}.
+   - `face` {identify, remember}.
+   - No further merging: task-level families beat both single-purpose and
+     all-in-one tools on small models (MCP-GRANITE).
+4. **Each fact once, where the model needs it.**
+   - The persona keeps personality, voice, body and people.
+   - Status advice lives in each `error`.
+   - The confirmation rules live in the `email_send`/`drive` descriptions.
+   - The verbatim flag is defined once, in the system rules.
+   - Descriptions keep purpose, scope, contrast with siblings and grounding
+     rules. They have at most one Chinese anchor where a confusion was
+     observed, no English examples, and no assertive cues.
+5. **Errors name their fix.** A fix the model can make itself says "call
+   again yourself"; the system rules separate a self-fix from a message for
+   the person.
+6. **The TV is a home device.** `HA_ENTITIES` on the robot holds the cast
+   media_player as 「電視」, so 「把電視關掉」 is `home_control turn_off`. The
+   value never left the robot.
+7. **Email read-back.** The armed result carries a Chinese `response_text`
+   under `require_repeat_verbatim`. `summary` stays the gate's record.
+8. **`nas list`** returns trip rows only when several trips match, and
+   path + title per clip for one trip.
+
+**Measured** (robot `Response usage`, first response of a fresh session):
+
+| Build | Tools in session | Fixed prefix (tokens) |
+|---|---|---|
+| 1.29.1 | 22 | 9,866 (about 10.6k with the media box open) |
+| 1.30.0 | 19, all loaded | 8,941 |
+| 1.31.0 | 19, all loaded | 5,821–5,827 |
+
+That is −41 %. By section:
+- Tool render (harmony TS estimate): 4,495 → 3,652.
+- Persona: 2,430 → 580.
+- System rules: about 1,450 → about 1,000.
+- A `nas list` for one trip adds about 700 tokens; several trips add about 400
+  (was about 2,500).
+
+**Live 1.30.0** (fresh sessions, mic muted): all pass.
+- `nas play place=Okinawa` in one call.
+- `home_control turn_off 電視` → TV off.
+- `face identify`; `look_around`; `head turn`.
+- `dance play` / `stop`; `play_emotion`.
+- `search_web` for news.
+- `memory save` / `forget` (global scope; the test fact was removed).
+
+**Live 1.31.0.** Three regressions were found and fixed in the same release:
+- A retry advice was relayed to the user. The fix is the self-fix vs.
+  message rule, and the nas error now says "call again yourself".
+- One V4 run asked the source although 影片庫 was named. The fix is one
+  clause: naming 影片庫, NAS or YouTube counts as naming the source.
+- The email read-back dropped the subject and cc. The fix is the Chinese
+  `response_text`.
+- Also: music voiced a first miss after its own successful retry. The music
+  and youtube misses now name their fix.
+
+Final build (wheel `9e6e945b…`, persona sha `b5dee4e0…`):
+
+| Check | Result |
+|---|---|
+| V1 | 3/4: asked, then played, with a self-retry 沖繩 → Okinawa. One run went straight to YouTube without asking, the rate seen since 1.28.4. |
+| V2 | list only |
+| V4 | 4/4: candidates offered, nothing cast |
+| YouTube | MV cast |
+| TV off by voice | ×5 |
+| face, look_around, head | pass |
+| dance play / stop | pass |
+| play_emotion | 3/4 |
+| News | search_web |
+| memory | save / forget |
+| email | read-back verbatim (subject, cc, body); nothing sent |
+| record mode | 4 tools, silent, summary read verbatim, back to 19 |
+| music | silent retry, then the right title |
+
+Suite 2064 / 31; ruff and mypy clean.
+
+**Open:**
+- `play_emotion` moves without speech. Seen on 1.30.0 too; no pre-diet sample.
+- V1's ask-first rule is about 3/4 on mini.
+- Two stop wedges (DAEMON-STOP-WEDGE) were cleared by restarts at 10:08:22
+  and 10:17:32 UTC under the standing authorization. Since 08:00 there were
+  24 clean stops.
+- Not done: hiding `home_control` with an empty device list. It is moot with
+  the TV configured, and it would make the session count depend on config.
+- The locked profile's fallback prose still carries the old conventions. It
+  runs only without an instance persona.
+- `tzdata` dev dependency: its timezone consumer is gone, so it is unused.
+- With `REALTIME_PROMPT_HARDENING=0`, the verbatim flag has no definition.

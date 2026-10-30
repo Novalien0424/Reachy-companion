@@ -13,17 +13,11 @@ class Camera(Tool):
 
     name = "camera"
     description = (
-        "Take a picture with the camera and describe what is in front of the robot RIGHT NOW. It sees only "
-        "where the head is already pointing; it does not move anything. "
-        "Use when: the user asks what you see, or about something in front of you, what they are holding, "
-        "their outfit, or how they look — 「你看到什麼」「這是什麼」「看看我今天穿的衣服」「what do you see」. "
-        "Use when: the user asks you to look with no direction at all — do not ask for clarification, call "
-        "this tool and describe what you see. "
-        "Do NOT use when: the user asks you to physically turn or look in a direction (右邊/左邊/上面/下面/"
-        "轉過去/那邊) — use look_around, which turns the head first and then looks. "
-        "Do NOT use when: the question is about WHO a person is, whether you know or remember them, or what "
-        "someone's name is — that is face with action=identify. "
-        "The camera is live; each call captures the current moment."
+        "Take a picture where the head already points and describe what is in front of you now; it moves "
+        "nothing. Use when: the user asks what you see, what they are holding or wearing, or how they "
+        "look, or asks you to look with no direction — call it rather than asking which way. Do NOT use "
+        "when: the user names a direction (左邊、右邊、上面、下面、轉過去) — that is look_around, which turns first; or "
+        "asks who someone is or whether you know them — that is face with action=identify."
     )
     parameters_schema = {
         "type": "object",
@@ -31,9 +25,7 @@ class Camera(Tool):
             "question": {
                 "type": "string",
                 "description": (
-                    "What to observe or ask about in the picture. "
-                    "Examples: what is the user holding, describe the user's outfit, "
-                    "what do you see around you, how does the user look today."
+                    "What to look at or answer from the picture."
                 ),
             },
         },

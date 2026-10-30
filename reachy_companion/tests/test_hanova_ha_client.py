@@ -438,7 +438,15 @@ async def test_confirm_cast_survives_unreadable_state_answers(monkeypatch):
 
 
 def test_tv_not_responding_shape():
-    """The result the persona's tv_not_responding convention is written against."""
+    """The result the persona's tv_not_responding convention was written against.
+
+    Since 2026-10-30 (context diet) the convention itself rides in `error`:
+    the picture probably did not come up, ask them to check the TV, and never
+    say it is playing.
+    """
     out = ha_client.tv_not_responding("off")
     assert out["ok"] is False and out["status"] == "tv_not_responding" and out["tv_state"] == "off"
     assert ha_client.tv_not_responding(None)["tv_state"] == "unknown"
+    assert "the picture probably did not come up" in out["error"]
+    assert "check that the TV is on" in out["error"]
+    assert "do not say it is playing" in out["error"]

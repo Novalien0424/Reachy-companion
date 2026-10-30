@@ -44,11 +44,11 @@ class DriveTrash(Tool):
                 # 2026-08-31 tool diet: this description reaches the model through
                 # the `drive` family schema, so it must name a call the model can
                 # still make.
-                "description": "Drive file or folder id, from a call with action=list. Omit when confirming.",
+                "description": "From an earlier list; leave out when confirming.",
             },
             "confirm": {
                 "type": "boolean",
-                "description": "Set true only after the user has confirmed the exact item read back to them.",
+                "description": "true only after a clear yes to the summary read back.",
             },
         },
         # Finding 4: optional in the schema, mandatory in the non-confirm branch.

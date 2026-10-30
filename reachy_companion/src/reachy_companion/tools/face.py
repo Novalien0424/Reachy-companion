@@ -25,15 +25,14 @@ class Face(Tool):
         "remember": RememberFace(),
     }
     description = (
-        "Faces you know. `identify` looks at the person in front of the camera and checks whether you know them. "
-        "Use it, not camera, for any question about who someone is — 「你認得我嗎」「我是誰」「誰來了」"
-        "「do you remember me」. It returns a status and no picture: recognized (with the name and short facts), "
-        "unknown, ambiguous, no_face, too_far or unavailable. If it is not recognized, say so and never guess a "
-        "name. Say the name and facts exactly as returned; when `require_repeat_verbatim` is true, say "
-        "`response_text` word for word first, then go on naturally. `remember` learns the face of the one person "
-        "in front of you under the name they gave — 「記住我」「我是小明，記住我的臉」. Before calling it, ask them "
-        "to look at you and hold still for two seconds. It refuses unless exactly one person is in frame; then ask "
-        "them to face you alone. Only the name, a face signature and one snapshot are stored."
+        "Faces you know. `identify` checks whether you know the person in front of the camera; it is the "
+        "tool for any question about who someone is, like 「你認得我嗎」, since camera only describes. It "
+        "returns a status and no picture: recognized (with the name and short facts), unknown, "
+        "ambiguous, no_face, too_far or unavailable. If not recognized, say so without guessing a name; "
+        "say names and facts exactly as returned. `remember` learns the face of the one person in front "
+        "of you under the name they gave, like 「記住我的臉」: first ask them to look at you and hold still for "
+        "two seconds. It refuses unless exactly one person is in frame; then ask them to face you alone. "
+        "Only the name, a face signature and one snapshot are stored."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

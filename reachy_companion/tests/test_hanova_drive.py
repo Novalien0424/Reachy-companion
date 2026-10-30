@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from reachy_companion.hanova import gdrive, sync_http
+from reachy_companion.hanova import gdrive, settings, sync_http
 from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.drive_list import DriveList
 from reachy_companion.tools.drive_trash import DriveTrash
@@ -60,6 +60,24 @@ def test_descriptions_carry_no_personal_identifier():
         assert "@" not in text
         assert PARENT_ID not in text
         assert len(text) <= 120
+
+
+def test_the_drive_family_description_carries_the_confirmation_contract():
+    """The persona's needs_confirmation and Drive-restore rules moved here (2026-10-30).
+
+    `drive` is the schema the model reads; its delegates' descriptions are not.
+    `trash` and `upload` read the summary word for word and send `confirm=true`
+    only after a clear yes; a trashed file cannot be restored by voice. The
+    identifier rule holds for the family text too.
+    """
+    from reachy_companion.tools.drive import Drive
+
+    text = Drive.description
+    assert "`trash` and `upload` ask first" in text
+    assert "`needs_confirmation` with a `summary`; read it word for word" in text
+    assert "call again with `confirm=true` only after a clear yes" in text
+    assert "A trashed file can't be restored by voice" in text and "about 30 days" in text
+    assert "@" not in text and PARENT_ID not in text
 
 
 def test_drive_token_is_minted_from_the_refresh_token(monkeypatch):
@@ -152,7 +170,7 @@ async def test_drive_list_is_unavailable_without_config(monkeypatch):
     """R5: an unconfigured tool answers, it does not raise, and it names the key."""
     monkeypatch.delenv("HERMES_DRIVE_SECRETS")
     out = await DriveList()(deps=_deps())
-    assert out == {"status": "unavailable", "reason": "HERMES_DRIVE_SECRETS"}
+    assert out == settings.unavailable("HERMES_DRIVE_SECRETS")
 
 
 def test_no_tool_can_untrash_anything():

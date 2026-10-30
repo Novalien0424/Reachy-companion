@@ -26,7 +26,7 @@ class DriveList(Tool):
         "properties": {
             "limit": {
                 "type": "integer",
-                "description": "How many entries to return. Default 50.",
+                "description": "How many to list.",
                 "minimum": 1,
                 "maximum": _MAX_LIMIT,
             },

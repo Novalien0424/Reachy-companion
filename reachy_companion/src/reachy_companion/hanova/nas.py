@@ -296,7 +296,7 @@ def search_miss(index: Dict[str, Any], words: List[Any]) -> Dict[str, Any]:
         quoted = "、".join(f"「{word}」" for word in untranslated)
         return {
             "ok": False,
-            "error": f"nothing is catalogued under {quoted}: the archive is in English, so search again in English",
+            "error": f"nothing is catalogued under {quoted}: the archive is in English; call again yourself with the English words, without asking the user",
         }
     return {"ok": False, "error": "no_match", "all_trips": summarize_folders(index)}
 

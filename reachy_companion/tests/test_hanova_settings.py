@@ -261,11 +261,21 @@ def test_unknown_family_is_reported_not_raised():
 
 
 def test_unavailable_payload_is_exactly_the_contract():
-    """R5 fixes this shape; tools return it verbatim."""
-    assert settings.unavailable() == {"status": "unavailable", "reason": "not_configured"}
+    """R5 fixes this shape; tools return it verbatim.
+
+    Since 2026-10-30 (context diet) the payload carries its own advice in
+    `error`, naming the missing key: the persona's `unavailable` convention
+    moved here. `reason` stays a key name, never a configured value.
+    """
+    assert settings.unavailable() == {
+        "status": "unavailable",
+        "reason": "not_configured",
+        "error": "this needs not_configured, which is not set up on this robot; say you cannot do that right now",
+    }
     assert settings.unavailable("HANOVA_NAS_HOST") == {
         "status": "unavailable",
         "reason": "HANOVA_NAS_HOST",
+        "error": "this needs HANOVA_NAS_HOST, which is not set up on this robot; say you cannot do that right now",
     }
 
 

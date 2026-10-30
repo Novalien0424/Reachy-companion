@@ -55,12 +55,11 @@ class Dance(Tool):
         "stop": _StopAllMotion(),
     }
     description = (
-        "Reachy's dance moves, and stopping any body motion. "
-        "Use when: the user wants a dance — 「跳支舞」「來跳一段」「dance for me」 — or wants Reachy to stop "
-        "moving — 「不要動了」「停下來」. `play` dances; leave `move` out for a random one. `stop` ends any "
-        "dance or emotion motion at once; call it with no preamble, because the person wants it ended now. "
-        "Do NOT use when: the user wants a short reaction to a feeling — that is play_emotion; or music on the "
-        "speaker should stop — that is music with action=stop."
+        "Reachy's dance moves, and stopping any body motion. Use when: the user wants a dance — `play`; "
+        "leave `move` out for a random one — or wants you to stop moving — `stop`, which ends any dance "
+        "or emotion motion; call it with no preamble, because they want it ended now. Do NOT use when: a "
+        "short reaction to a feeling fits — that is play_emotion; or the music should stop — that is "
+        "music with action=stop."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

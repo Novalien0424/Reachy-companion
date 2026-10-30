@@ -5,8 +5,40 @@ history of this file.
 
 ## Current state
 
-**v1.29.1 INSTALLED AND RUNNING (2026-10-30 07:39 UTC), mic unmuted, TV
-off. The daemon was restarted at 07:23 UTC under the operator's standing
+**v1.31.0 INSTALLED AND RUNNING (2026-10-30 10:17 UTC), mic unmuted, TV off.**
+The mini context diet is done (D-039):
+- **The fixed prefix shrank** from 9,866 to about 5,820 tokens, with all 19
+  tools always loaded and no toolboxes.
+- **Removed:** calendar, tasks and Notion.
+- **Merged into families:** `dance` (stop ends any motion), `head`, `memory`,
+  `face`.
+- **The TV is a home device:** 「把電視關掉」 → `home_control`.
+- **Each rule lives in one place:**
+  - the persona is who Reachy is;
+  - status advice comes in each error;
+  - the email and Drive confirmation rules are in those tools' descriptions;
+  - the email read-back is a Chinese `response_text` read verbatim.
+
+Live, final build:
+- V1 3/4: one run went straight to YouTube.
+- V2 and V4 4/4 pass; YouTube passes.
+- TV off works.
+- face, look and head routing pass.
+- dance and stop pass.
+- play_emotion 3/4, always silent (EMOTION-WITHOUT-SPEECH).
+- News search passes.
+- memory, email read-back, record mode and music retry pass.
+
+Two stop wedges were cleared by daemon restarts at 10:08 and 10:17 UTC, under
+the standing authorization.
+
+Suite 2064 / 31.
+
+Earlier (2026-10-30 06:08–07:39 UTC): v1.29.0 and v1.29.1 (NAS one-call play,
+error results delivered whole).
+
+
+**(superseded by v1.31.0 above) v1.29.1 installed 2026-10-30 07:39 UTC. The daemon was restarted at 07:23 UTC under the operator's standing
 authorization ("I auth all daemon restart", D-038). No wedge since.**
 
 The 1.29.0 checks are done (D-038 has every run):

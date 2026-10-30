@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from reachy_companion.hanova import ytdlp
+from reachy_companion.hanova import ytdlp, settings
 from reachy_companion.tools.play_music import PlayMusic
 from reachy_companion.tools.stop_music import StopMusic
 from reachy_companion.hanova.music_player import PLAYER
@@ -365,7 +365,7 @@ async def test_play_music_reports_unavailable_when_wheels_are_missing(daemon, mo
         "reachy_companion.hanova.settings._music_wheels_ready", lambda: (False, "yt-dlp not installed")
     )
     out = await PlayMusic()(deps=_deps(), query="anything")
-    assert out == {"status": "unavailable", "reason": "MUSIC_WHEELS"}
+    assert out == settings.unavailable("MUSIC_WHEELS")
 
 
 @pytest.mark.asyncio

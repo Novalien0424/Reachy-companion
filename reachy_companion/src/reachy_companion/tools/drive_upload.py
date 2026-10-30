@@ -40,7 +40,7 @@ class DriveUpload(Tool):
             "name": {"type": "string", "description": "Optional file name for the photo."},
             "confirm": {
                 "type": "boolean",
-                "description": "Set true only after the user has confirmed the upload read back to them.",
+                "description": "true only after a clear yes to the summary read back.",
             },
         },
         "required": [],

@@ -57,10 +57,10 @@ class HomeControl(Tool):
         """Build the description and schema from the configured device allowlist."""
         names = sorted(_entities())
         self.description = (
-            "Control a smart-home device via Home Assistant (on/off/toggle). "
-            "Use when: the user asks to control something in the house. "
-            "Do NOT use when: the user wants media on the TV, NAS, or speaker; use `youtube`, `nas`, or `music`, not "
-            "`home_control`. "
+            "Switch a home device on or off through Home Assistant. "
+            "Use when: the user asks to turn a device in the house on or off, like 「把電視關掉」. "
+            "Do NOT use when: the user wants something played — on the TV that is youtube or nas, on your "
+            "speaker that is music. "
             f"Known devices: {', '.join(names) if names else '(none configured)'}."
         )
         self.parameters_schema = {

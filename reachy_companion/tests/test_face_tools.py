@@ -1640,6 +1640,7 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     (those are its delegates now), and the emphatic rule moved there from the
     persona (plan review log, item 9).
     """
+    from reachy_companion.prompts import hardening_block
     from reachy_companion.tools.face import Face
     from reachy_companion.tools.camera import Camera
 
@@ -1650,15 +1651,24 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     # when" form, so the emphatic redirect is that block's own wording now
     # rather than the bare "NEVER" it used to carry. Pinned in full — a stronger
     # tripwire than the single word — so the clause cannot be softened to a hint.
-    assert (
-        "Do NOT use when: the question is about WHO a person is, whether you know or remember them, "
-        "or what someone's name is — that is face with action=identify."
-    ) in camera
-    assert "Use it, not camera, for any question about who someone is" in face
+    #
+    # 2026-10-30 (context diet): pinned to the compact wording. The identity
+    # clause is still a "Do NOT use when" in `camera` that names `face`, and
+    # `face` still claims every who-is-this question against `camera`. The
+    # example-phrase list is down to the one observed anchor, 「你認得我嗎」.
+    # The verbatim-flag rule is no longer restated here: it lives once in the
+    # system rules, checked below, and `face` must not duplicate it.
+    identity = "or asks who someone is or whether you know them — that is face with action=identify."
+    assert identity in camera
+    assert camera.index("Do NOT use when:") < camera.index(identity), "the identity clause must be a Do NOT"
+    assert "it is the tool for any question about who someone is, like 「你認得我嗎」, since camera only describes" in face
     # The recall clause: without it the model receives `known_facts` and has no
     # instruction to use them, so the recognition sounds like a stranger's.
-    assert "Say the name and facts exactly as returned" in face
-    assert "never guess a name" in face
-    assert "`require_repeat_verbatim`" in face and "`response_text` word for word" in face
+    assert "say names and facts exactly as returned" in face
+    assert "If not recognized, say so without guessing a name" in face
+    assert "require_repeat_verbatim" not in face
+    rules = hardening_block()
+    verbatim = next(line for line in rules.splitlines() if "require_repeat_verbatim" in line)
+    assert "response_text" in verbatim and "一字不差" in verbatim
     # Enrollment: the posed moment is announced before the call.
-    assert "ask them to look at you and hold still" in face
+    assert "first ask them to look at you and hold still" in face

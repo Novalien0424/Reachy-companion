@@ -25,13 +25,14 @@ class Drive(Tool):
         "upload": DriveUpload(),
     }
     description = (
-        "The user's cloud drive: list recent files, move one to the trash, or upload one. "
-        "Use when: the user talks about files in the cloud — 「雲端有什麼檔案」「幫我上傳」「把那個檔案丟掉」"
-        "「what's in my drive」「upload that」「delete that file」. "
-        "Do NOT use when: the user means a photo you should LOOK at right now — that is camera or look_around. "
-        "Do NOT use when: the user means a video to play on the TV — that is youtube or nas. "
-        "Pick `action`: `list` optionally takes limit; `trash` takes file_id; `upload` takes name. Both `trash` "
-        "and `upload` ask the user out loud to confirm first."
+        "The user's Google Drive: list recent files, move one to the trash, or upload a photo from the "
+        "camera. Use when: the user talks about files in the cloud. Do NOT use when: the user means "
+        "something to look at now — that is camera or look_around; or a video for the TV — that is "
+        "youtube or nas. `trash` takes a file_id from `list`. `trash` and `upload` ask first: the first "
+        "call returns `needs_confirmation` with a `summary`; read it word for word, and call again with "
+        "`confirm=true` only after a clear yes. After a failure with `retryable: true`, you may offer to "
+        "try again; any other failure needs the summary read again. A trashed file can't be restored by "
+        "voice; it stays in Google Drive's trash for about 30 days."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
@@ -40,8 +41,7 @@ class Drive(Tool):
                 "type": "string",
                 "enum": ["list", "trash", "upload"],
                 "description": (
-                    "list 列出雲端檔案；trash 把檔案丟到垃圾桶（會先口頭確認）；"
-                    "upload 拍照上傳（會先口頭確認）。"
+                    "list 列出雲端檔案；trash 丟到垃圾桶；upload 拍照上傳。"
                 ),
             },
             # `trash` goes last on purpose. `confirm` is the one name two of

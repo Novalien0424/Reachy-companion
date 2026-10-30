@@ -109,19 +109,20 @@ def test_hardening_block_carries_the_verbatim_and_example_rules() -> None:
     `summarize_conversation`. A rule that named only one would leave the other
     looking like ordinary tool output, which is exactly the paraphrasing the
     envelope exists to stop.
+
+    Since 2026-10-30 (context diet) the verbatim rule and the did-it-really-
+    happen rule share one `### 工具結果` section, and the length examples are a
+    labelled bullet inside `### 回答長度` instead of a section of their own.
     """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
-    for phrase in (
-        "回答長度範例",
-        "require_repeat_verbatim",
-        "speak_verbatim",
-        "response_text",
-        "summary_text",
-        "只講真的做過的事",
-    ):
-        assert phrase in block
+    results = _hardening_section(block, "工具結果")
+    verbatim = next(line for line in results.splitlines() if "require_repeat_verbatim" in line)
+    for phrase in ("speak_verbatim", "response_text", "summary_text", "一字不差"):
+        assert phrase in verbatim
+    assert "工具成功回傳之後才說做好了" in results
+    assert "「現在幾點？」" in _hardening_section(block, "回答長度")
 
 
 def test_hardening_block_states_no_numeric_length_cap() -> None:
@@ -143,41 +144,55 @@ def test_length_examples_are_labelled_as_style_not_as_triggers() -> None:
 
     Community reports have the mini tier treating an illustrative exchange as a
     trigger condition — waiting to hear "現在幾點？" before answering briefly.
-    The heading and the closing line are what keep the block a demonstration.
+    Since 2026-10-30 (context diet) the examples are one bullet whose leading
+    label says so, replacing the old heading and closing line: the label must
+    come before the first example, in the same bullet.
+    """
+    from reachy_companion.prompts import hardening_block
+
+    section = _hardening_section(hardening_block(), "回答長度")
+    label = section.index("示範語氣，不是觸發條件")
+    first_example = section.index("「現在幾點？」")
+    assert label < first_example
+    assert "\n- " not in section[label:first_example]
+
+
+def test_the_block_carries_the_2x_structure_the_models_expect() -> None:
+    """§C6 of the realtime research: 2.x models read these blocks by name.
+
+    Since 2026-10-30 (context diet) message channels and preambles are one
+    block, `### 頻道與開場白`, which still names both channels.
     """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
-    assert "示範語氣，不是觸發條件" in block
-    assert "不是要你等到聽見這些句子才這樣講" in block
-
-
-def test_the_block_carries_the_2x_structure_the_models_expect() -> None:
-    """§C6 of the realtime research: 2.x models read these blocks by name."""
-    from reachy_companion.prompts import hardening_block
-
-    block = hardening_block()
-    for heading in ("訊息頻道", "開場白", "思考", "Tool Availability"):
+    for heading in ("### 頻道與開場白", "### 思考", "## Tool Availability"):
         assert heading in block
+    channels = _hardening_section(block, "頻道與開場白")
+    assert "commentary" in channels and "final_answer" in channels
 
 
 def test_the_preamble_block_promises_slow_work_leadins_and_fast_actions_go_direct() -> None:
-    """Plan rev 3 B1: commentary is audible, but only slow work gets lead-ins."""
+    """Plan rev 3 B1: commentary is audible, but only slow work gets lead-ins.
+
+    Pinned to the compact 2026-10-30 wording: the slow-work class is named by
+    examples (查網路、找音樂、畫圖), and the lead-in is not a substitute for the call.
+    """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
-    assert "commentary" in block
-    assert "final_answer" in block
-    assert "會把兩個頻道的聲音都播出來" in block
-    assert "讓對方知道慢工作" in block
-    assert "查網路" in block
-    assert "找出能播放的音樂" in block
-    assert "MCP" in block
-    assert "接著直接呼叫工具" in block
-    assert "拿到結果再說結果" in block
-    assert "快速的機器人動作" in block
-    assert "直接做" in block
-    assert "只會讓對方多等" in block
+    section = _hardening_section(block, "頻道與開場白")
+    assert "commentary" in section
+    assert "final_answer" in section
+    assert "都會播出來" in section
+    assert "查網路" in section
+    assert "找音樂" in section
+    assert "要花時間的工作" in section
+    assert "接著直接呼叫工具" in section
+    assert "拿到結果再說結果" in section
+    assert "前導語不能代替呼叫" in section
+    assert "快速動作直接做" in section
+    assert "只會讓對方多等" in section
     assert "不會發出聲音" not in block
     assert "被丟掉" not in block
 
@@ -188,11 +203,11 @@ def test_hardening_block_carries_variety_rule_without_phrase_list() -> None:
 
     block = hardening_block()
     assert block.count("### 變化") == 1
-    assert block.index("### 開場白") < block.index("### 變化") < block.index("### 思考")
+    assert block.index("### 頻道與開場白") < block.index("### 變化") < block.index("### 思考")
     section = _hardening_section(block, "變化")
-    assert "不要直接重複你上一輪剛用過的句子" in section
-    assert "會像錄音" in section
-    assert "示範語氣只是一種說法，不是唯一說法" in section
+    assert "不重複上一輪的句子" in section
+    assert "因為重複聽起來像錄音" in section
+    assert "示範語氣只是其中一種說法" in section
     assert QUOTED_PHRASE_LIST.search(section) is None
 
 
@@ -261,4 +276,4 @@ def test_the_prompt_names_no_tool_the_session_lacks() -> None:
     assert "open_toolbox" not in block and "工具箱" not in block
     assert "task_status" not in block and "task_cancel" not in block
     assert "你能做的事都在工具清單裡" in availability
-    assert "工具清單上沒有的事，就說你做不到" in availability
+    assert "清單上沒有的事，就說你做不到" in availability

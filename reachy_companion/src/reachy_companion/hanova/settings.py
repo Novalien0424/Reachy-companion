@@ -542,7 +542,11 @@ def unavailable(reason: str = "not_configured") -> Dict[str, Any]:
     *reason* is a prerequisite key name from `tool_status`, so the model can say
     which switch is missing without ever seeing what its value would be.
     """
-    return {"status": "unavailable", "reason": reason}
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "error": f"this needs {reason}, which is not set up on this robot; say you cannot do that right now",
+    }
 
 
 def log_family_status() -> None:

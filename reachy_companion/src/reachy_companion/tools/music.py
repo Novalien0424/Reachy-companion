@@ -24,18 +24,12 @@ class Music(Tool):
         "stop": StopMusic(),
     }
     description = (
-        "Play or stop audio through the robot's own speaker. "
-        "Use when: the user wants audio played through the robot, including a song, an artist, "
-        "background music, or YouTube playback — 「放首歌」「放周杰倫」「play some music」; "
-        "choose `action=play` with `query`. "
-        "Use when: the user wants the robot's speaker playback stopped — 「音樂關掉」「停止播放」「stop the music」; "
-        "choose `action=stop` and pass no extra fields; `stop` ALWAYS works, even when playing does not. "
-        "Do NOT use when: the user wants a video shown on the TV; that is youtube or nas. "
-        "Do NOT use when: the user just wants you to be quiet for a moment; that is wait_for_user. "
-        "Preamble sample for `play`: 「我找一下來播」 (示範語氣，不是觸發條件). "
-        "Say a brief lead-in in the conversation's language before `play` because finding playable media can take "
-        "a moment, then call the tool. "
-        "`stop` is instant and should have no preamble because the person wants silence now."
+        "Play or stop audio on your own speaker. Use when: the user wants a song, an artist or a mood "
+        "played, like 「放周杰倫的歌」 — `play` with `query`; or the speaker stopped — `stop`, which always "
+        "works, even when play failed. Do NOT use when: the user wants a video on the TV — that is "
+        "youtube or nas; or only wants you quiet — that is wait_for_user. Before `play`, say a short "
+        "lead-in, because finding a track takes a moment (示範語氣，不是觸發條件：「我找一下來播」); `stop` needs none, "
+        "because the person wants silence now."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",
@@ -43,7 +37,7 @@ class Music(Tool):
             "action": {
                 "type": "string",
                 "enum": ["play", "stop"],
-                "description": "play 放音樂（要帶 query）；stop 停止播放（不用帶任何欄位）。",
+                "description": "play 放音樂（要帶 query）；stop 停止播放。",
             },
             **PlayMusic.parameters_schema["properties"],
             **StopMusic.parameters_schema["properties"],

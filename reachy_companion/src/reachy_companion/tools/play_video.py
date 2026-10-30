@@ -86,7 +86,13 @@ class PlayVideo(Tool):
         found = await asyncio.to_thread(ytdlp.search, query, None)
         if not found["ok"]:
             logger.info("play_video search failed: %s", redact.text(found["error"] or ""))
-            return {"ok": False, "error": "no playable result for that request"}
+            return {
+                "ok": False,
+                "error": (
+                    "no playable result for that query: try again yourself with different words, and tell the user "
+                    "only if that also finds nothing"
+                ),
+            }
 
         fields: Dict[str, Any] = {"youtube_id": found["id"]}
         entity = settings.cast_entity()
