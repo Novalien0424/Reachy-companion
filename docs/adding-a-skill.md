@@ -1,7 +1,7 @@
 # Adding a Skill
 
 A "Skill" is a tool the model can call mid-conversation. Adding one is **one new
-file plus one line in a profile** — the conversational core (`huggingface_realtime.py`,
+file, one line in a profile and one entry in `CORE_TOOL_NAMES`** — the conversational core (`huggingface_realtime.py`,
 `conversation_handler.py`, the dispatcher) is never touched. `home_control` was added
 exactly this way; read `reachy_companion/src/reachy_companion/tools/home_control.py`
 alongside this guide.
@@ -74,6 +74,12 @@ default_tools = [
 
 If the model needs a routing hint ("when the user asks X, use Y"), add one sentence to
 the instruction body below the `+++` block. `home_control` has one.
+
+Since 1.30.0 the session sends only the names in `CORE_TOOL_NAMES`
+(`toolboxes.py`), so add the tool there too, or `session_tool_exclusions` hides
+it; then update the counts in `tests/test_toolboxes.py`. The session holds 19
+tools, all loaded, and a 20th needs the operator's OK (D-039): first see whether
+the new action belongs in an existing family (`tools/tool_family.py`).
 
 ## Step 3 — restart the app
 
@@ -235,7 +241,7 @@ exempt module's log lines to keep the claim honest. (Scope note: this covers the
 ported tool surface. The framework's own model-visible tool-result logging is
 unchanged by D-018.)
 
-Adding a tool to one of these families is still one file plus one profile line;
+Adding a tool to one of these families is still one file, one profile line and one `CORE_TOOL_NAMES` entry;
 it just also needs an entry in `TOOL_PREREQS`, possibly a home check, redacted
 logging, and — if it destroys anything — a `confirm` parameter and the
 claim/complete two-branch body.

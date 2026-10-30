@@ -5,7 +5,27 @@ history of this file.
 
 ## Current state
 
-**v1.31.0 INSTALLED AND RUNNING (2026-10-30 10:17 UTC), mic unmuted, TV off.**
+**2026-10-30 ~12:00 UTC: project skills updated from this session's failures.**
+- `reachy-instructing-model`:
+  - check what mini got before rewording;
+  - stop after two text tries that don't move a live rate (no full-tier step);
+  - 19 tools, all loaded, families of 2–3 actions;
+  - each fact once, errors name their fix and who acts;
+  - a red-flags table.
+- `reachy-deploy`:
+  - § Live verification, with the harness in `scripts/` (`live_case.sh`,
+    `rpc.py`, `tv_state.py`);
+  - `sudo -n` for the wedge restart; no persistence on the robot;
+  - stale tool names fixed.
+- `docs/adding-a-skill.md` now names the `CORE_TOOL_NAMES` step that 1.30.0
+  added.
+- Tested on a fresh agent with three unhinted scenarios (a light that stays
+  off, timers, a stop wedge): it followed the rules. Its gap notes were fixed.
+- `live_case.sh` ran on the robot for ssh, copy, TV state and cleanup. The
+  `/rpc` mic path wasn't run: Reachy has been asleep since 11:01 UTC
+  (`go_to_sleep`).
+
+**v1.31.0 INSTALLED (2026-10-30 10:17 UTC); asleep since 11:01 UTC, TV off.**
 The mini context diet is done (D-039):
 - **The fixed prefix shrank** from 9,866 to about 5,820 tokens, with all 19
   tools always loaded and no toolboxes.

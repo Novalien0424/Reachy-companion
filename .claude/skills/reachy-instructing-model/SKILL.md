@@ -1,6 +1,6 @@
 ---
 name: reachy-instructing-model
-description: Use when changing anything the realtime model reads or is judged by — system prompt / persona.md, tool names, schemas, descriptions, return values, error strings, session config (reasoning, VAD, per-response instructions) — or when tempted to fix a model misbehavior with deterministic code around the model.
+description: Use when changing anything the realtime model reads or is judged by — system prompt / persona.md, tool names, schemas, descriptions, return values, error strings, session config (reasoning, VAD, per-response instructions) — when adding, merging or removing a tool, when a live test shows Reachy calling the wrong tool, asking or not asking, or saying the wrong thing, or when tempted to fix a model misbehavior with deterministic code around the model.
 ---
 
 # Reachy Instructing Model
@@ -9,158 +9,176 @@ description: Use when changing anything the realtime model reads or is judged by
 
 Operator ruling (2026-09-01, memory `llm-first-instruction-design`): **the
 model understands intent and decides which tools to call and what to say; the
-app instructs it and holds the safety rails.** This skill is the operating
-contract for every change to the model's instruction surface. Evidence for
-every rule lives in the four research docs; do not re-litigate them, cite
-them:
+app instructs it and holds the safety rails.** Reachy runs on
+`gpt-realtime-2.1-mini` only (operator, 2026-10-30): every rule here is about
+what mini does. Evidence lives in the research docs; cite them, don't
+re-litigate them:
 
-- `docs/research-instructing-realtime-voice-2026-09.md` (realtime/voice, Sept 2026)
-- `docs/research-instructing-llms-2026-09.md` (general instructing SOTA, Sept 2026)
-- `docs/codex-research-instructing-2026-09.md` (independent Codex survey —
-  required for the 2.1 feature-matrix caveats, e.g. structured outputs
-  UNSUPPORTED on both 2.1 realtime models, and the Chinese voice-eval
-  ecosystem: VCB-Bench, VocalBench-zh)
-- `docs/research-mini-tool-calling-2026-08.md` (mini-tier tool calling — two
-  findings superseded: see "Supersessions" below)
+- `docs/research-compact-tool-text-2026-10.md` (how mini sees tools, what
+  short text keeps working on small models; the newest, D-039)
+- `docs/research-instructing-realtime-voice-2026-09.md` (realtime/voice; has a
+  2026-10-30 refresh)
+- `docs/research-instructing-llms-2026-09.md` (general instructing SOTA)
+- `docs/codex-research-instructing-2026-09.md` (2.1 feature matrix:
+  structured outputs UNSUPPORTED on both 2.1 realtime models)
+- `docs/research-mini-tool-calling-2026-08.md` (partly superseded, see the end)
+
+## First: check what mini actually got
+
+Before rewording anything, read the robot journal for the failing turn:
+
+- `Tool call received` lines: which tool mini reached for **first**, with what
+  arguments.
+- The tool's result as delivered to the model, not as the tool returned it.
+  In 1.29.1 an error result lost every field but its message on the way to
+  the model; the fix was transport, not wording.
+- `Tools in session (<mode>, startup, N)`: the surface it had (19 / 19 / 4).
+- The first `Response usage in=` of a fresh session: the fixed prefix.
 
 ## The escalation ladder (house rule)
 
-When the robot misbehaves, fix in this order, and record which rung you used:
+Fix in this order, and record which rung you used:
 
 1. **The tool** — name, schema, description, *return shape*, error strings.
-   This is the highest-yield surface by measured evidence (renaming to
-   in-distribution conventions: +17% accuracy; description rewrites: +60%
+   The highest-yield surface by measured evidence (description rewrites: +60%
    query success; prompt rewording: "no consistent performance trends").
 2. **The context** — what is in the prompt and *where*; per-response
    instructions for boundary moments (system-prompt compliance decays from
    ~85% at turn 1 to ~34% by turn 5 — placement beats volume).
 3. **Code — only at the execution boundary**: safety, irreversibility,
-   timing, interruption, physical-state truth (tracking weights, quiesce
-   ordering, motor limits). "Add code" appears on no vendor's ladder for
-   *behavioral* fixes.
+   timing, interruption, physical-state truth (read the device back before
+   reporting success: `hanova/ha_client.confirm_cast_started`). "Add code"
+   appears on no vendor's ladder for *behavioral* fixes.
 
-## Tool design rules
+**Two text revisions that don't move a live rate end the rewording.** Change
+the tool's shape (one composite action, new return fields, error advice), or
+record the rate as mini's current ceiling with k/n in `feature_list.json`.
+Never propose a full-tier run or a model switch: mini is fixed. Four of the
+five 1.28.x fixes were text changes, and the stall after 「家裡的影片庫」
+outlived them all. 1.29.0 made `nas play` find the trip itself, and it
+played in one call.
 
-- **Names in-distribution — as an A/B, not a rule.** The common-tool-name
-  list (`finish_session` etc.) is documented for `gpt-realtime-1.5` only;
-  transfer to 2.x is untested. Treat renames as measured A/B candidates
-  (and mind the registration cost: profile tool lists, toolboxes, tests all
-  hard-code names — use an alias tool, not a raw rename). Check the
-  realtime doc §3.3 before inventing a new name.
-- **Descriptions: use-when / do-NOT-use-when pairs**, symmetric across
-  sibling tools (the camera/move_head asymmetry was the original look-bug).
-  Slow tools carry PREAMBLE sample phrases *in the description*; fast tools
-  are marked proactive. Session-ending tools instead say: do not generate
-  any other text when calling this.
-- **Enums and required fields, not prose — enforced at runtime too.** The
-  mini tier's characteristic failure is confident guessing. But know the
-  platform limit: both 2.1 realtime models support function-calling JSON
-  Schema and do NOT support structured outputs — schema adherence on
-  arguments is not guaranteed, and reply text is never schema-constrained.
-  So every robot-action tool validates its arguments at the tool boundary
-  (reject with a corrective, model-readable error naming the allowed
-  values — never silently coerce or fall back). Format rules buried in
-  parameter descriptions are poorly followed — use enums.
-- **Returns carry ground truth in named fields.** If the robot may say it, a
-  tool must have returned it in a named field (`direction_moved`, not vibes
-  — free-text extraction: 22–26% inconsistency; named field: ~1%).
-  Fabricated action narration is fixed by making the true fact the easiest
-  thing to say, not by prohibition.
-- **Returns state facts and render cues, never new policy.** Tool messages
-  hold "No Authority" in the 2026 Model Spec; a `next_step: "call camera"`
-  field is officially non-authoritative. Render flags
-  (`require_repeat_verbatim`, farewell context) are legitimate ONLY when a
-  higher-authority surface — the session prompt or the tool description —
-  already defines how to interpret them; the return itself creates no
-  policy. Flow control belongs to `response.create` / `tool_choice` (e.g.
-  `tool_choice: "none"` on a farewell response so no late tool call can
-  ride it).
-- **Errors are advice addressed to the model**, written to enable
-  self-correction: "head is already at the right limit; call camera to see
-  what is there" — never a bare traceback or status code.
+## Tool surface
+
+- **Design for mini's first call.** Mini doesn't chain tools reliably. Watch
+  which call it makes first for an intent and make that call finish the job
+  (`nas play` finds and plays). In 1.28.4 a 2,038-character description
+  taught a one-call play, and mini never used it.
+- **Under 20 tools, all loaded, no toolboxes** (OpenAI: "fewer than 20
+  functions at the start of a turn"). A box cost an extra call mini could
+  miss, and changing tools mid-session lowers the cache rate. A phase the app
+  knows gets its own smaller surface (record mode: 4).
+- **Families of 2–3 related actions** (`dance`, `head`, `memory`, `face`, via
+  `tool_family.dispatch_family` over the unchanged upstream classes). Stop
+  there: an all-in-one tool raised no-call runs from 10% to 28% (MCP-GRANITE).
+  A new capability joins a family or replaces a tool; going past 19 needs the
+  operator's OK. Wiring a tool in: `docs/adding-a-skill.md` (the profile's
+  `default_tools` and `CORE_TOOL_NAMES`).
+- **Names: in-distribution, as an A/B.** Renames touch the profile's
+  `default_tools`, `CORE_TOOL_NAMES` and tests; check the realtime doc §3.3
+  first.
+
+## Tool text
+
+- **A description holds purpose, scope, the contrast with sibling tools, and
+  grounding rules.** Contrast must be symmetric across siblings (the
+  camera/move_head asymmetry was the original look bug).
+- **No lists of example phrases and no ALL-CAPS or assertive cues:** both make
+  small models over-trigger. Use at most one Chinese anchor, where a confusion
+  was observed (「把電視關掉」 on `home_control`). Keep the Chinese→English
+  glosses on arguments. The search tool keeps its one 示範語氣 preamble.
+  Session-ending tools say "do not generate any other text when calling this".
+- **Write full sentences, fewer of them.** Telegraphic compression hurts.
+  Measure with the harmony render or the robot's `usage in=`, not with JSON
+  characters, which overstate tools by about 14%.
+- **Enums and required fields, validated at the tool boundary.** Function-
+  calling JSON Schema is supported, structured outputs are not, so argument
+  adherence isn't guaranteed. Reject with a corrective error naming the
+  allowed values.
+- **Returns carry ground truth in named fields.** If Reachy may say it, a
+  tool returned it in a named field. Fabricated narration is fixed by making
+  the true fact the easiest thing to say.
+- **Refuse, never fall back silently.** In 1.28.3, `nas` played the archive's
+  first clip when no clip was picked, and Reachy called it Okinawa.
+- **Errors name their fix and who acts.** A fix the model can make says "call
+  again yourself with …" (the archive is English: retry with the English
+  words, without asking the user). A message for the person says to tell
+  them. A shared "say what the error says" rule made mini read retry advice
+  aloud (1.31.0).
+- **Exact read-backs come from the tool.** Before an irreversible act whose
+  details the person must hear (email), the result carries the sentence in
+  `response_text` under `require_repeat_verbatim`. Composing it alone, mini
+  dropped the subject and cc.
+- **Render flags, not policy.** Tool messages hold "No Authority"; a flag
+  like `require_repeat_verbatim` works only because the system rules define
+  it, once. Flow control belongs to `response.create` / `tool_choice`.
 
 ## Prompt rules
 
-- **Lean beats thorough.** 2026 reversal of 2024 advice: leaner prompts
-  scored 10–15% better; repetition and ALL-CAPS emphasis now cause
-  over-triggering. Start under-specified, add only against observed failure.
-- **Positive rules, and every negative carries its reason.** Bare negation
-  costs 23–32% accuracy. Enumerated banlists become "a menu of likely
-  outputs" — keep negatives to a handful (a review heuristic, not a hard
-  count — the no-numeric-caps rule applies to our own contracts too), each
-  with its why and an alternative action. The strongest alternative to a
-  prohibition is a *tool*: `wait_for_user` is the official no-op action for
-  silence, background audio, and speech not addressed to the robot — a
-  valid thing to *do* instead of a rule about not speaking.
-- **No numeric length caps, no keyword-trigger lists** (operator rule,
-  memory `prompt-style-judgment-over-caps`, now evidence-backed). Prefer a
-  well-stated calibration principle; add few-shot examples only where a
-  principle demonstrably failed, and label them 示範語氣，不是觸發條件.
-- **Structure blocks the 2.x models expect**: `# Message Channels` /
-  `# Preambles` ("tool calls happen in the commentary channel" — say what
-  should be spoken before/during/after tool use in relation to it; check
-  what the client does with commentary-phase items BEFORE promising audible
-  preambles), `# Reasoning` (per-turn effort steering — cheaper than
-  raising the session level, which is A/B-gated), `## Tool Availability`
-  (a prompt describing tools absent from the current tool list invites the
-  model to *simulate* them; since 1.30.0 every tool is always loaded — no
-  `open_toolbox` boxes — so it is one line: what is not in your tool list,
-  say you can't do), and a cross-channel language clause (preambles,
-  bridges, tool messages, answers all in the same language).
+- **Each fact once, where the model needs it.** Before adding a rule, grep
+  `persona.md`, `prompts.py` (`_HARDENING_BLOCK`), every tool description and
+  the locked profile for the rules it repeats or collides with. Moving or
+  deleting one beats adding one. 1.28.1 failed because
+  「不要再問使用者一次」 sat in four places and outranked the video tools.
+- **Mini reads every phrase as an instruction.** 「要放就直接放」 became
+  "play without asking" (1.28.4). When an equivalence matters, state it:
+  naming 影片庫, NAS or YouTube counts as naming the source.
+- **Lean beats thorough.** Every rule competes with the others. The reason to
+  cut is quality, not cost: cached text is cheap.
+- **Positive rules; every negative carries its reason** and an alternative
+  action. The strongest alternative is a tool: `wait_for_user` is the no-op
+  for silence and speech not meant for Reachy.
+- **No numeric length caps, no keyword-trigger lists** (memory
+  `prompt-style-judgment-over-caps`). Few-shot only where a principle
+  demonstrably failed, labelled 示範語氣，不是觸發條件.
+- **Structure blocks 2.x expects:** message channels and preambles (tool
+  calls go in the commentary channel), per-turn reasoning steering, one
+  `## Tool Availability` line (what is not in your tool list, say you can't
+  do), and a cross-channel language clause.
 
-## Boundary moments (greetings, goodbyes, mode switches)
+## Boundary moments (greetings, goodbyes, mode switches, app-started turns)
 
-Mid-conversation ceremony is an **instructed generation turn**, not a static
-string and not a hope that the model volunteers it. Project house rule
-(supported by LiveKit/Vapi/Retell practice, not a sourced field consensus):
-who *composes the words* decides whether it is instructing (model composes)
-or hard-coding (app composes). A system-triggered `response.create` where
-the model writes the sentence is instructing.
+Mid-conversation ceremony is an **instructed generation turn**: the app
+inserts the facts as a conversation item, then triggers `response.create`,
+and the model composes the words (`_send_startup_greeting_prompt`).
 
-- **Speak-then-act is not promptable.** When a message and a tool call share
-  one response, execution timing belongs to the platform; preamble ordering
-  fails 15–33% even on full-tier models. For speak-then-irreversibly-act
-  (sleep): the tool description forbids extra speech AND pre-declares how
-  the return's farewell context is to be used; the `function_call_output`
-  carries the context as facts; the app issues the follow-up
-  `response.create` with `tool_choice: "none"` (the documented OpenAI
-  protocol — and no late tool call can ride the goodbye), waits for THAT
-  response's `response.done` plus audio playout, then acts.
+- **Speak-then-act is not promptable.** For speak-then-irreversibly-act
+  (sleep): the tool description forbids extra speech and says how the
+  return's farewell context is used; the app issues the follow-up
+  `response.create` with `tool_choice: "none"`, waits for its `response.done`
+  plus audio playout, then acts.
 - **The override trap.** `response.create.instructions` *replaces* the
-  session prompt for that response — persona, Chinese pinning and
-  anti-fabrication rules all vanish. Any per-response instruction must
-  either re-state what matters or ride the `function_call_output` /
-  a conversation item instead. Never ship a bare per-response instruction.
+  session prompt for that response. Re-state what matters or ride the
+  `function_call_output` instead; never ship a bare per-response instruction.
 
-## Small-model (mini-tier) specifics
+## Session config
 
-- Expect: literal interpretation, no reliable tool chaining (compose
-  sequences into one tool), fastest degradation on non-Latin scripts,
-  worse results from *longer* reasoning chains. (The capability loss is
-  practitioner-reported inference — the 2.1-mini model page itself claims
-  only "distilled, faster, lower-cost".)
-- Every instruction-surface change re-checks the ACTIVE tool surface: the
-  `Tools in session` count per mode (19 / 19 / 4 since 1.30.0), and that the
-  prompt names no capability that is currently unexposed.
-- More `reasoning.effort` is not "smarter": 2026 results show it increases
-  tool hallucination and decreases instruction adherence while helping
-  multi-step selection. Change effort only with an on-robot A/B that
-  measures all three.
-- If a failure survives rungs 1–2, run the same prompt once on full
-  `gpt-realtime-2.1` as a diagnostic: if full-tier fixes it, it is a cost
-  decision, not a prompting problem — stop spending prompt revisions on it.
+- More `reasoning.effort` is not smarter: it raises tool hallucination and
+  lowers adherence while helping multi-step selection. Change it (`medium`
+  since 09-01) only with an on-robot A/B that measures all three.
+
+## Red flags
+
+| Thought | Do instead |
+|---|---|
+| "One more wording tweak" after two that didn't move the rate | Change the tool's shape, or record the ceiling |
+| "Check it on the full model" | Mini is fixed; don't propose it |
+| "Add a rule to the prompt" | Grep for the rule it collides with; can a return or error carry it? |
+| "It passed" after one run | 3–4 fresh runs, k/n against the last build |
+| "The error text must be wrong" | Check the model received it whole |
+| "Add example phrases so it triggers" | They over-trigger; add the contrast with the sibling tool |
 
 ## Supersessions
 
-Two items in `docs/research-mini-tool-calling-2026-08.md` are superseded by
-the Sept 2026 docs: its capitals-and-redundancy advice (now over-triggering
-risk) and its unqualified "try `reasoning.effort: medium`" (must measure
-tool hallucination + adherence + selection together).
+Superseded by D-039 and the 2026-10 research: example-phrase lists in
+descriptions (the search preamble stays), the full-tier diagnostic rung, and
+`open_toolbox` gating. From `research-mini-tool-calling-2026-08.md`: its
+capitals-and-redundancy advice and its unqualified "try
+`reasoning.effort: medium`".
 
 ## Verification
 
-Instruction changes get evidence like code changes: name the observed
-failure, the rung used, and the on-robot journal signal that would show the
-fix (tool-call lines, `Tools in session`, transcript). Prompt-only changes
-still ride the persona sync ritual (`reachy-deploy`) and an antenna-wake
-check.
+Name the observed failure, the rung used and the journal signal that shows
+the fix. Then run it live (`reachy-deploy` § Live verification): fresh
+sessions, mic muted, 3–4 runs per case, k/n against the previous build, and
+the new prefix size. Prompt-only changes still ride the persona sync ritual.

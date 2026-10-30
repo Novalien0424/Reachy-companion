@@ -1,6 +1,6 @@
 ---
 name: reachy-deploy
-description: Use when deploying, installing, updating, starting, or stopping the reachy_companion app on the physical Reachy Mini robot — "deploy to the robot", "install the app on reachy", "push to the robot", "run it on the real robot", syncing persona.md to the robot — or when preparing on-robot demo verification.
+description: Use when deploying, installing, updating, starting, or stopping the reachy_companion app on the physical Reachy Mini robot — "deploy to the robot", "install the app on reachy", "push to the robot", "run it on the real robot", syncing persona.md to the robot — or when running live tests or demo verification on the robot, or when the app stop hangs.
 ---
 
 # Reachy Deploy
@@ -84,35 +84,32 @@ read `windows.md` in this skill's directory first.
      (or restart the app) to load it — no wheel rebuild. Keep the two copies in
      step: whichever side was edited last wins, and this repo copy is the one
      under version control.
-   - `memory.v1.json` — the long-term facts the `remember`/`forget` tools
+   - `memory.v1.json` — the long-term facts the `memory` tool (`save`/`forget`)
      wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
      redeploy**; a user who told Reachy their name last week must not have to
      say it again because we shipped a wheel.
-   - `faces.v1.json` — the enrolled faces the `remember_face` tool wrote
+   - `faces.v1.json` — the enrolled faces `face remember` wrote
      (`faces.py:33`, `FACES_FILENAME`, D-013). Same rule, higher cost to lose:
      re-enrolling means asking every person to stand in front of the camera
      again, and the wake-time greeting silently stops using anyone's name.
    - `people.v1.json` — the per-person facts store (`people.py`, D-025).
-     Person-scoped memory written by the `remember` tool while someone is
+     Person-scoped memory written by `memory save` while someone is
      recognized, and pushed by the Mac backend. Losing it silently strips the
      personalized greeting of its content.
    - `face_snapshots/` (directory) — one enrollment snapshot JPEG per person
      (`face_snapshot.py`, D-026). Lost snapshots are not recoverable until
      that person re-enrolls; the Mac backend may already hold imported
      copies, but the robot-side originals are the source.
-   - `google-workspace-mcp/<account>.json` — the Google Calendar/Tasks OAuth
-     credentials (D-018). **This file is rewritten by the app** every time the
-     access token is refreshed, so the robot's copy is authoritative for its own
-     expiry and must survive a redeploy. Losing it means re-running the OAuth
-     bootstrap by hand; both calendar and task tools answer
-     `unavailable`/`not_configured` until it is back.
+   - `google-workspace-mcp/<account>.json` — the old Google Calendar/Tasks
+     OAuth credentials (D-018). Since 1.30.0 (D-039) no tool reads them, but
+     they are still a live grant: keep backing them up while present, and
+     deleting them is the operator's call.
    - `google-oauth.json` — the Drive OAuth secret (D-018), a **separate** grant
      carrying full `https://www.googleapis.com/auth/drive` scope. Losing it
-     disables `drive_list`, `drive_trash` and `drive_upload`.
+     disables the `drive` tool.
    - `nas-video-index.json` — the operator-supplied home-video index (D-018).
      Not a credential, but personal data and not reproducible on the robot: it is
-     built on the operator's own machine. Losing it disables all four `nas_*`
-     tools.
+     built on the operator's own machine. Losing it disables the `nas` tool.
 
    Deliberately **not** backed up: `hanova_media/` (the downloaded music, staged
    NAS clips and generated images). It is a regenerable cache with keep-N caps,
@@ -125,8 +122,10 @@ read `windows.md` in this skill's directory first.
    addresses) reaches the transcript.
 
    ```sh
-   INST=$(/venvs/apps_venv/bin/python -c \
-     "import reachy_companion, pathlib; print(pathlib.Path(reachy_companion.__file__).parent)")
+   INST="$HOME/.config/reachy_companion"
+   # Up to v1.24.0 only, the package directory instead:
+   # INST=$(/venvs/apps_venv/bin/python -c \
+   #   "import reachy_companion, pathlib; print(pathlib.Path(reachy_companion.__file__).parent)")
 
    STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
    BACKUP="/tmp/reachy_companion_backup/$STAMP"
@@ -306,6 +305,44 @@ read `windows.md` in this skill's directory first.
    operator's step); `journalctl -t reachy-wifi-watchdog` shows its
    transitions, `--status` its state.
 
+## Live verification
+
+Every behavior change is judged on the robot, by mini, in fresh sessions.
+`scripts/` in this skill holds the harness; run it with bash from the Mac:
+
+- `bash scripts/live_case.sh 1 "<話>"` starts a fresh session (app stop and
+  start), mutes the mic, and sends the text over the app's `/rpc`
+  `conversation.say`. Then it prints the tool calls, the transcripts, the
+  `[usage in= in_cached=]` of each response, and the TV state.
+  `bash scripts/live_case.sh 0 "<話>"` is the next turn in the same session.
+- **Muting the mic** keeps room speech out of a run. A fresh session per case
+  keeps an earlier turn from steering the next one.
+- **Run each case 3–4 times and report k/n**, next to the rate of the build
+  before. One pass on mini is an anecdote: 3/3 on 1.28.3 became 2/3 on 1.28.4.
+- **The prefix size** is the first `usage in=` of a fresh session, with
+  `in_cached=0`. Compare builds with that number, not with JSON character
+  counts (D-039).
+- **Exit 3 means the app stop wedged.** Restart the daemon (Hard limits),
+  record the time, and rerun the case.
+- **Ending a run:** `bash scripts/live_case.sh cleanup` unmutes the mic,
+  prints the TV state and removes the robot copies. Run `tv-off` only if the
+  TV was off when testing began. Remove every test memory fact you saved.
+- **People:** while someone is recognized, skip tests that save memory. A
+  test fact would go into that person's record. Their names stay out of
+  notes.
+- **Records:** the journal carries LAN addresses and the TV's entity ID. Copy
+  the tool calls and transcripts into notes, never raw journal lines.
+
+Shell habits that cost time here:
+- To run Python on the robot, write the file locally, `scp` it, then run it with
+  `/venvs/apps_venv/bin/python -I`. Heredocs inside `ssh '…'` break on
+  quoting.
+- Build paths from `$HOME`, never a typed home path.
+- In zsh, quote globs: `--include='*.py'`. An unquoted glob that matches
+  nothing aborts the whole command.
+- Never pass `-p no:logging` to pytest: it disables `caplog` and about 200
+  tests error.
+
 ## Hard limits
 
 - Never `pip install`/upgrade anything into the daemon's environment; only
@@ -320,10 +357,16 @@ read `windows.md` in this skill's directory first.
   (`daemon_config.json` startup-app entry may be set via the official
   `PUT /api/apps/startup-app` API only, and only if the operator asks).
 - Never reboot the robot or kill daemon processes. A wedged daemon (app state
-  stuck at `stopping`) may be cleared with `sudo systemctl restart
+  stuck at `stopping`) may be cleared with `sudo -n systemctl restart
   reachy-mini-daemon` under the operator's standing authorization
-  (2026-10-30, D-038). Record each restart, and tell the operator.
-  `POST /api/daemon/restart` does not clear the wedge.
+  (2026-10-30, D-038 § "Standing daemon-restart authorization"). Record each
+  restart with its UTC time and the stop's response body, and tell the
+  operator. `POST /api/daemon/restart` does not clear the wedge. After the
+  restart the app is `null`; start it with the start-app API (step 9).
+- Nothing persistent on the robot from us: no cron lines, services or
+  startup hooks. Before proposing one, say why the app can't do the job
+  itself. The operator questioned the watchdog's cron line ("why do we need
+  a cron job"), and installing one stays the operator's step.
 - Robot port 8000 = robot daemon (real). Dev machine port 8001 = local
   mockup-sim daemon. Do not confuse them.
 
