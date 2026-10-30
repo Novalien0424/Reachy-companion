@@ -2382,3 +2382,56 @@ way too much instructions"). The full-tier diagnostic is dropped. Plan:
   `stopping` (DAEMON-STOP-WEDGE, ninth stop of the day). The remaining checks
   wait for an authorized restart.
 
+
+**Standing daemon-restart authorization (operator, 2026-10-30: "I auth all
+daemon restart").** A wedged daemon may be cleared with `sudo systemctl
+restart reachy-mini-daemon` without asking again; record each restart here
+or in the deploy notes. Rebooting the robot, killing daemon processes and
+daemon package changes stay as before (D-009, D-033). First use: 07:23:46
+UTC. The daemon came back on v1.13.0 with app `null`. In the 18 stop calls
+since, there were 8 clean stops (200), 3 "No app is currently running", and no
+wedge.
+
+**1.29.0 live checks after the restart** (fresh session per run, mic muted, TV
+off after each cast):
+- **V1 runs 2–3 pass (3/3 with run 1).** Both asked the source before any
+  tool. Each answer turn: `open_toolbox` → `nas play` with 「沖繩」 (alone, or
+  as `keyword` next to `place=Okinawa`) → the search-in-English error →
+  `nas play keyword=Okinawa` → playing. The corrective error did its job
+  every time, at the cost of one extra call. Run 3 did not name the trip.
+- **V2 passes.** `list keyword=沖繩` → error → `list keyword=Okinawa` → the trip
+  named, its clips described, nothing played.
+- **V3 passes, with one false statement.** Playing after the same retry, but
+  Reachy said 「播放時間還剩大約 15 秒」: it read `remaining: 15` (clips left
+  in the trip) as seconds.
+- **V4 failed twice.** Run 1 opened the box and asked a vague question
+  without calling `nas`. Run 2 called `nas play place=Japan`, but the model
+  received only `{"error": "several trips match; …"}`, without `candidates`,
+  and offered trips that do not exist (花蓮).
+
+**Root cause, V4: error results lost their facts in transport** (ours and
+upstream). `BackgroundToolManager._run_tool` treats any result with an
+`error` key as failed and keeps only the string. `_deliver_tool_result` then
+sends `{"error": <string>}`. Every error result's other fields never reached
+the model: `nas` `candidates` and `all_trips`, `calendar_delete` and
+`task_delete` `candidates`, `home_control` `known_devices`, `retryable`,
+`look_around`'s `direction_requested` on a capture failure. All of them are
+facts written for the model. The scan found nothing bulky or private: error
+results never carry `b64_im`.
+
+**1.29.1** (rung 1, tool returns; one transport fix at the boundary):
+- **The failed result is kept and delivered whole.** The manager stores it
+  on the notification, and delivery sends it through
+  `_sanitize_tool_result_for_model`. A crash or timeout with no result still
+  sends `{"error": …}`. Status, logging and the error follow-up are
+  unchanged.
+- **`remaining` → `clips_left`** in `nas play` and `skip`, so the unit is in
+  the name.
+- Suite 2105 / 31 (3 new tests); ruff and mypy clean. Wheel `35379bea…`,
+  installed 07:39 UTC (backup `20261030T073819Z-48533`).
+- **Live:**
+  - V4 ×2 pass. Run 1: `list keyword=Japan` → the real trips. Run 2: `play
+    keyword=Japan` → `candidates` delivered. Both asked among real trips
+    (東京、京都、名古屋、北海道) and cast nothing.
+  - V3 passes in one call (`play place=Okinawa`). The trip was named and
+    there was no seconds claim.

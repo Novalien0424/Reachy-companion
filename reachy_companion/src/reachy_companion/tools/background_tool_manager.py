@@ -196,6 +196,9 @@ class BackgroundToolManager(BaseModel):
                     f"Background tool failed: {background_tool.tool_name} (id={background_tool.id}): {error}"
                 )
             background_tool.error = result["error"]
+            # The rest of an error result is facts for the model (`candidates`,
+            # `all_trips`), so it is kept, not reduced to the string (2026-10-30).
+            background_tool.result = result
 
         else:
             background_tool.result = result

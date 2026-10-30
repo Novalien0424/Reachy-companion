@@ -3877,8 +3877,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 completed_tool.id,
                 completed_tool.error,
             )
-            tool_result = {"error": completed_tool.error}
-            tool_result_for_model = tool_result
+            # The whole error result, when there is one: a bare string dropped
+            # `nas play`'s `candidates` and the model invented trips (2026-10-30).
+            tool_result = (
+                completed_tool.result
+                if isinstance(completed_tool.result, dict)
+                else {"error": completed_tool.error}
+            )
+            tool_result_for_model = self._sanitize_tool_result_for_model(completed_tool.tool_name, tool_result)
         elif completed_tool.result is not None:
             tool_result = completed_tool.result
             tool_result_for_model = (

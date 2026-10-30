@@ -120,5 +120,5 @@ class PlayNasVideo(Tool):
             # The trip it belongs to, so the one Reachy names comes from here (live
             # 2026-10-29: a Taiwan clip was announced as the trip asked for).
             "top_folder": video.get("top_folder"),
-            "remaining": nas.remaining(),
+            "clips_left": nas.remaining(),
         }

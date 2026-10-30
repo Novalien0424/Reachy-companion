@@ -1,9 +1,8 @@
-# Session handoff — 2026-10-30 (v1.29.0 installed; DAEMON WEDGED; checks 1 of 6 run)
+# Session handoff — 2026-10-30 (v1.29.1 running; 1.29.x checks done)
 
-State: **v1.29.0 installed; the daemon is wedged** (stop → 400 "Motor
-communication error!", the app stuck at `stopping`). The app process exited,
-the motors are off and the TV is off. Restarting the daemon service needs the
-operator's authorization. `main` is pushed.
+State: **v1.29.1 installed and running** (daemon v1.13.0, restarted 07:23
+UTC under the operator's standing authorization), mic unmuted, TV off.
+`main` is pushed.
 
 ## Shipped today
 
@@ -27,23 +26,26 @@ operator's authorization. `main` is pushed.
   3/3 before any video tool, follow-through 4/5 (D-038).
 - v1.29.0 (2026-10-30): `nas` fitted to the mini model: `play` finds and
   plays in one call, `list` browses, Chinese misses say to search in English,
-  and the descriptions are about half as long (D-038).
+  and the descriptions are about half as long (D-038). Live: V1 3/3, V2, V3.
+- v1.29.1 (2026-10-30): error results reach the model whole (`candidates`
+  and similar fields were dropped in transport, for every tool), and
+  `remaining` is now `clips_left`. Live: V4 2/2, V3 in one call (D-038).
 
 ## Next session
 
-0. **After an authorized daemon restart, finish the 1.29.0 checks**
-   (`docs/plans/2026-10-30-nas-one-call-play-plan.md`, MEDIA-SOURCE-ROUTING
-   next_action): V1 runs 2–3, V2 (list only, trip found), V3, and V4
-   (Japan → candidates, nothing cast). Run 1 passed: one-call play.
+0. **Media follow-ups** (none blocking):
+   - The model mostly sends Chinese search words first. The corrective error
+     fixes that in one extra call. Leave it unless latency matters.
+   - There is no tool to stop or pause the TV, though Reachy offers
+     「想讓我停一下嗎？」 anyway. Also open: `TV-AUDIO-PHANTOM-TURNS` and the
+     `show_on_tv` image 400.
    - The operator runs on mini only. Fit tools to what the model does, and
      keep text short: no full-tier diagnostic, no added instruction text.
-   - Still open: there is no tool to stop or pause the TV (Reachy offered
-     「想讓我停一下嗎？」 anyway), `TV-AUDIO-PHANTOM-TURNS`, and the
-     `show_on_tv` image 400.
-   - Every app stop carries the daemon-wedge risk: keep the response body and
-     report a wedge. Each restart needs the operator's authorization.
-   - For live tests: one fresh session per case, mic muted over `/rpc`
-     `conversation.mic`. Stop the app or unmute when done.
+   - Live tests: one fresh session per case, mic muted over `/rpc`
+     `conversation.mic`. Unmute or stop the app when done.
+   - A stop can wedge the daemon (DAEMON-STOP-WEDGE). Under the standing
+     authorization, clear it with `sudo systemctl restart reachy-mini-daemon`
+     and record the restart.
 1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
    `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
    then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.

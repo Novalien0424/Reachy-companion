@@ -1,9 +1,11 @@
 # NAS: one call plays, shorter media surface — plan (2026-10-30)
 
 Status: built and installed as 1.29.0 (wheel `dadb2dc3…`), 2026-10-30
-06:08 UTC. Index probe passed. Live V1 run 1 passed (open_toolbox → `nas
-play place=Okinawa` → playing). The other checks wait for a daemon restart:
-the next stop wedged it (D-038).
+06:08 UTC. All checks passed after a daemon restart: V1 3/3, V2, V3 (D-038).
+V4 failed at first because error results lost their `candidates` in
+transport. Fixed in 1.29.1 (wheel `35379bea…`), and V4 passed 2/2 after
+that. 1.29.1 also renamed `remaining` to `clips_left`, after Reachy read the
+count as seconds.
 
 Operator, 2026-10-30: "I have to run on mini model, you need to consider the
 mini model limitations and keep your tools correct/concise and fit the model

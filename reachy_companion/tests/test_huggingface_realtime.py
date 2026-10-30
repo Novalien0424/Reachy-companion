@@ -1504,6 +1504,50 @@ async def test_a_tool_result_without_a_picture_creates_no_image_item(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a_failed_result_reaches_the_model_with_its_facts(monkeypatch: Any) -> None:
+    """The model reads the whole error result, not only its error string (2026-10-30, live).
+
+    `nas play place=Japan` returned `candidates`; the model got a bare
+    `{"error": …}` and offered trips that do not exist.
+    """
+    handler = _image_tool_handler(monkeypatch)
+    result = {"ok": False, "error": "several trips match", "candidates": [{"top_folder": "A"}]}
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_nas",
+            tool_name="nas",
+            is_idle_tool_call=False,
+            status=ToolState.FAILED,
+            result=result,
+            error="several trips match",
+        )
+    )
+
+    (output,) = handler.connection.created_items
+    assert json.loads(output["output"]) == result
+
+
+@pytest.mark.asyncio
+async def test_a_failure_without_a_result_still_reaches_the_model(monkeypatch: Any) -> None:
+    """A crash or timeout carries only the error string, and the model still gets it."""
+    handler = _image_tool_handler(monkeypatch)
+
+    await handler._deliver_tool_result(
+        ToolNotification(
+            id="call_x",
+            tool_name="nas",
+            is_idle_tool_call=False,
+            status=ToolState.FAILED,
+            error="RuntimeError: boom",
+        )
+    )
+
+    (output,) = handler.connection.created_items
+    assert json.loads(output["output"]) == {"error": "RuntimeError: boom"}
+
+
+@pytest.mark.asyncio
 async def test_the_base_handler_sends_no_image_detail(monkeypatch: Any) -> None:
     """Latency plan L3: `detail` is an OpenAI-backend knob; the base item is unchanged."""
     handler = _image_tool_handler(monkeypatch)

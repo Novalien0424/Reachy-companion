@@ -609,3 +609,20 @@ class TestNotificationQueue:
         n = manager._notification_queue.get_nowait()
         assert n.status == ToolState.FAILED
         assert n.error == "Search backend unavailable"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_result_keeps_its_other_fields(self, manager: BackgroundToolManager) -> None:
+        """An error result's facts travel with it (2026-10-30, live).
+
+        `nas play` answered "several trips match" with `candidates`; keeping only
+        the error string left the model to invent trips to offer.
+        """
+        payload = {"ok": False, "error": "several trips match", "candidates": [{"top_folder": "A"}]}
+        routine = _make_routine("nas", result=payload)
+        await manager.start_tool("c1", routine, is_idle_tool_call=False)
+        await asyncio.sleep(0.05)
+
+        n = manager._notification_queue.get_nowait()
+        assert n.status == ToolState.FAILED
+        assert n.error == "several trips match"
+        assert n.result == payload

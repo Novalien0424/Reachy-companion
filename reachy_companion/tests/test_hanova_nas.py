@@ -775,7 +775,7 @@ async def test_play_by_place_plays_the_one_matching_trip_in_one_call(monkeypatch
     recorded = _stub_transfer(monkeypatch)
     out = await PlayNasVideo()(deps=_deps(tmp_path), place="cape town")
     assert out["ok"] is True and out["status"] == "casting"
-    assert out["top_folder"] == "2021 Cape Town" and out["remaining"] == 2
+    assert out["top_folder"] == "2021 Cape Town" and out["clips_left"] == 2
     assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/2021 Cape Town/clip01.mp4"]
 
 
@@ -821,7 +821,7 @@ async def test_play_by_top_folder_starts_the_trip_at_its_first_clip(monkeypatch,
     """A whole trip plays in order, starting from the first clip."""
     recorded = _stub_transfer(monkeypatch)
     out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
-    assert out["ok"] is True and out["remaining"] == 1
+    assert out["ok"] is True and out["clips_left"] == 1
     assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/SENTINEL_TRIP_q4/clip01.mp4"]
 
 

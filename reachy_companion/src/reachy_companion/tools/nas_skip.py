@@ -59,5 +59,5 @@ class NasSkip(Tool):
             # staging. The clip is on the TV either way; the playlist position
             # belongs to whoever won, so this call does not claim it.
             logger.info("nas_skip: the cursor moved under this cast; not advancing again")
-            return {"ok": True, "status": "casting", "title": result["title"], "remaining": nas.remaining()}
-        return {"ok": True, "status": "casting", "title": result["title"], "remaining": nas.remaining()}
+            return {"ok": True, "status": "casting", "title": result["title"], "clips_left": nas.remaining()}
+        return {"ok": True, "status": "casting", "title": result["title"], "clips_left": nas.remaining()}

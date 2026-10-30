@@ -5,20 +5,32 @@ history of this file.
 
 ## Current state
 
-**v1.29.0 INSTALLED (2026-10-30 06:08 UTC). THE DAEMON IS WEDGED: a stop
-answered 400 "Motor communication error!" and the app state is stuck at
-`stopping` (DAEMON-STOP-WEDGE). The app process exited, the motors are off and
-the TV is off. Only a daemon service restart clears it, and that needs the
-operator's authorization.**
+**v1.29.1 INSTALLED AND RUNNING (2026-10-30 07:39 UTC), mic unmuted, TV
+off. The daemon was restarted at 07:23 UTC under the operator's standing
+authorization ("I auth all daemon restart", D-038). No wedge since.**
 
-1.29.0 fits `nas` to the mini model (D-038):
-- `play` finds and plays in one call; `list` only browses; `skip`.
-- A Chinese miss says to search in English.
-- The descriptions are much shorter.
+The 1.29.0 checks are done (D-038 has every run):
+- **V1 3/3:** asked the source, then played the Okinawa trip.
+- **V2:** listed only, and found the trip.
+- **V3:** playing.
 
-Suite 2102 / 31. Live V1 run 1 passed: `open_toolbox` → `nas play
-place=Okinawa` → playing, the first one-call play. Still to run: V1 runs 2–3,
-V2, V3 and V4.
+The model mostly sends 「沖繩」 first. The search-in-English error corrects
+it every time, at the cost of one extra call.
+
+1.29.1 fixes the two defects the checks found:
+- **Error results now reach the model whole.** Before, the transport kept
+  only the error string, so `candidates`, `all_trips`, `known_devices` and
+  similar fields were lost. V4 offered trips that don't exist (花蓮 for Japan).
+  This applied to every tool and upstream has the same code
+  (TOOL-ERROR-RESULT-FACTS).
+- **`remaining` is now `clips_left`.** Reachy had read "15 left" as seconds.
+
+Suite 2105 / 31. Live on 1.29.1:
+- **V4 ×2:** offered only real trips and cast nothing.
+- **V3:** played in one call.
+
+Earlier (2026-10-30 06:08–07:23 UTC): v1.29.0 installed, V1 run 1 passed, then
+the 06:11 stop wedged the daemon.
 
 Earlier (2026-10-30 01:41–02:05 UTC): 1.28.4 and 1.28.5 live checks, 8 clean
 stops, follow-through 4/5 and always search-first (D-038).

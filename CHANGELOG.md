@@ -9,6 +9,18 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.29.1] — 2026-10-30 · Reachy sees the trips it should ask about
+
+Deployed as the thirtieth install (wheel sha `35379bea…`). Decision D-038.
+
+- **"Which trip?" now offers real trips.** When several trips matched, Reachy
+  asked which one but made up the choices (once offering 花蓮 for Japan). The
+  list of matching trips never reached it. It does now, and the same fix
+  delivers the choices from every tool that asks back: calendar and task
+  deletes, unknown home devices.
+- **No more "15 seconds left".** After starting a trip Reachy read the number
+  of clips left as seconds. The field is now called `clips_left`.
+
 ## [1.29.0] — 2026-10-30 · one call puts the trip on the TV
 
 Deployed as the twenty-ninth install (wheel sha `dadb2dc3…`). Plan:

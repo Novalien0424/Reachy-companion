@@ -10,7 +10,8 @@ description: Use when deploying, installing, updating, starting, or stopping the
 Deploy `reachy_companion` to the physical Reachy Mini Wireless **as a managed
 app only** (operator authorization 2026-08-17, D-009): no daemon package
 changes outside the official updater, no daemon config edits, no service
-restarts beyond the app start/stop API, no system packages. The daemon on
+restarts beyond the app start/stop API (except clearing a wedge, Hard limits
+below), no system packages. The daemon on
 port 8000 is the robot's infrastructure; it is upgraded only as authorized in
 Hard limits below (D-033).
 
@@ -318,8 +319,11 @@ read `windows.md` in this skill's directory first.
 - Never edit files under the daemon's installation or its config
   (`daemon_config.json` startup-app entry may be set via the official
   `PUT /api/apps/startup-app` API only, and only if the operator asks).
-- Never reboot the robot or kill daemon processes; if the daemon is wedged,
-  report to the operator.
+- Never reboot the robot or kill daemon processes. A wedged daemon (app state
+  stuck at `stopping`) may be cleared with `sudo systemctl restart
+  reachy-mini-daemon` under the operator's standing authorization
+  (2026-10-30, D-038). Record each restart, and tell the operator.
+  `POST /api/daemon/restart` does not clear the wedge.
 - Robot port 8000 = robot daemon (real). Dev machine port 8001 = local
   mockup-sim daemon. Do not confuse them.
 
