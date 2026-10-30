@@ -9,6 +9,28 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.31.1] — 2026-10-30 · a device is "on" only when it reads on
+
+Fix redeploy of the thirty-second install (wheel sha `73ec8d60…`). Decision
+D-040.
+
+- **Reachy checks the device before saying it's done.** `home_control` used
+  to report success as soon as Home Assistant answered, and HA answers yes
+  whether or not the device moved. It now reads the device before the
+  command and again until it settles, and returns that state. A device that
+  ignores the command, is offline or isn't known to HA comes back as a
+  failure that says what to tell the person. Toggling is judged against the
+  state before the call, and a device already in the asked state says so
+  (`was_already`). Live: TV on 3/3, off 3/3, already off 3/3, and a device
+  Home Assistant doesn't have 3/3, each said truthfully.
+- **「把電視打開」 no longer times out.** The TV took 9.0 s to answer turn-on
+  in a probe, past the old 8 s limit, so the tool reported an error for a TV
+  that did come on. The limit is now 20 s.
+- **No LAN address in errors.** An HTTP error used to carry Home Assistant's
+  full URL into the model's result and the log. Requests now go through the
+  shared HA client, which redacts it, and the result no longer carries the
+  entity ID.
+
 ## [1.31.0] — 2026-10-30 · Reachy reads less and says it right
 
 Deployed as the thirty-second install (wheel sha `9e6e945b…`). Decision D-039.

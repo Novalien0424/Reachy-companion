@@ -6,7 +6,7 @@ Upstream used a blocking `urllib` call inside a single-threaded stdin loop
 `httpx.AsyncClient` and never blocks the audio path.
 
 Every function returns a result dict and never raises: a tool failure must reach
-the model as tool output, exactly like `tools/home_control.py:111-113` does.
+the model as tool output, exactly like `tools/home_control.py` does.
 """
 
 from __future__ import annotations

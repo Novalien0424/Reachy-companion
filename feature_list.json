@@ -37,7 +37,7 @@
       "behavior": "Natural-language command controls one real home device via Home Assistant",
       "verification": "Live run: 'Turn on the living room lights' → HA service call succeeds → light state changes",
       "state": "planned",
-      "evidence": " 2026-10-30 v1.30.0/1.31.0 live: 「把電視關掉」 → home_control turn_off 電視 → TV off (HA_ENTITIES holds the cast media_player as 電視; value kept on the robot), 5 runs.",
+      "evidence": " 2026-10-30 v1.30.0/1.31.0 live: 「把電視關掉」 → home_control turn_off 電視 → TV off (HA_ENTITIES holds the cast media_player as 電視; value kept on the robot), 5 runs. 2026-10-30 v1.31.1 live (fresh sessions, mic muted): home_control now reads the device back. 「把電視打開」 3/3 (state idle, TV on; turn_on takes about 9 s, past the old 8 s limit), 「把電視關掉」 3/3 (state off), already off 3/3 truthful (was_already off), a device HA does not have (temporary test entry, removed) 3/3 told the person it could not switch it.",
       "next": "Task 13",
       "next_action": "In-room run of the five-demo checklist; add other devices (lights) when the operator names them."
     },
@@ -637,6 +637,14 @@
       "state": "known-defect",
       "evidence": "2026-10-30 v1.30.0 and v1.31.0: play_emotion fired 3 of 4 times, never with speech (its response carried only the call; play_emotion needs_response=False, so no follow-up). The one run without the emotion spoke. No pre-diet sample.",
       "next_action": "Candidate (A/B on the robot): needs_response=True on play_emotion so a reply follows the reaction; watch for double speech when the model already spoke."
+    },
+    {
+      "id": "HOME-CONTROL-READBACK",
+      "behavior": "home_control reports a device as switched only when Home Assistant reads it on the asked side afterwards; a device that ignores the command, is offline or is unknown to HA comes back as an error that says what to tell the person",
+      "verification": "tests/test_home_control.py (obeys, ignores, slow, awake media states, toggle, already, offline, 404, transport error without address, no entity id in the result) + live runs on the robot",
+      "state": "verified",
+      "evidence": "2026-10-30 v1.31.1 (wheel 73ec8d60…): suite 2071 / 31. Live: TV on 3/3, off 3/3, already off 3/3, unknown device 3/3. The ignore case (HA 200, state unchanged) is covered by tests only: no device on hand that ignores commands.",
+      "next_action": "When the operator adds a light or switch, run on/off live with it; then the ignore case can be staged by switching it off at the wall."
     }
   ]
 }

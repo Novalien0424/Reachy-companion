@@ -5,6 +5,15 @@ history of this file.
 
 ## Current state
 
+**v1.31.1 INSTALLED (2026-10-30 12:14 UTC), app stopped as found (asleep), TV
+off, mic unmuted.** `home_control` reads the device back (D-040):
+- TV on 3/3 and off 3/3, already off 3/3 truthful;
+- a device HA doesn't have 3/3 reported, not claimed;
+- the old 8 s limit timed out the TV's 9 s turn-on;
+- HA's LAN URL no longer reaches the model.
+
+Suite 2071 / 31. The instance `.env` is byte-identical to the pre-test backup.
+
 **2026-10-30 ~12:00 UTC: project skills updated from this session's failures.**
 - `reachy-instructing-model`:
   - check what mini got before rewording;

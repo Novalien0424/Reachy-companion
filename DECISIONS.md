@@ -2554,3 +2554,41 @@ Suite 2064 / 31; ruff and mypy clean.
   runs only without an instance persona.
 - `tzdata` dev dependency: its timezone consumer is gone, so it is unused.
 - With `REALTIME_PROMPT_HARDENING=0`, the verbatim flag has no definition.
+
+## D-040 — A home device is switched when it reads switched (2026-10-30)
+
+Operator, 2026-10-30: "go fix home_control and test it live".
+
+**Decisions:**
+1. **Success is the device's state afterwards, not HA's answer.** HA answers
+   200 to a service call whether or not the device moved. `home_control`
+   reads the state before the call and polls it after (8 s, 1 s apart), the
+   way `ha_client.confirm_cast_started` does for casts (D-018). The result
+   carries `state`, and `was_already` when nothing needed to change.
+2. **On and off are judged by side.** Off is `off` or `standby`; any other
+   readable state is on, because the cast TV reads `idle`, then `paused`,
+   after `turn_on` (probe). `unavailable`/`unknown` mean HA cannot reach the
+   device: nothing is sent.
+3. **Toggle is resolved against the state before the call** into `turn_on`
+   or `turn_off`, so the read-back knows what to expect.
+4. **Requests go through `hanova/ha_client`.** Its errors are redacted, so
+   HA's LAN URL no longer reaches the model or the log; the result no longer
+   carries the entity ID either. The service timeout is 20 s: the TV took
+   9.0 s to answer `turn_on`, past the old 8 s limit.
+5. **Each error names who acts** (D-039): offline, unknown device, HA not
+   answering, and "took the command but still reads off" each say what to
+   tell the person, and "do not say it worked".
+
+**Live (1.31.1, fresh sessions, mic muted):**
+
+| Request | Result |
+|---|---|
+| 「把電視打開」 | 3/3 `turn_on`, `state: idle`, TV on |
+| 「把電視關掉」 | 3/3 `turn_off`, `state: off`, TV off |
+| 「電視幫我關掉」, already off | 3/3 truthful; the first build's `already: true` came out as 「已經自動關掉了」, so the field became `was_already: "off"` |
+| 「把客廳燈打開」, a test entry HA does not have | 3/3 said the device can't be found and wasn't switched |
+
+The ignore case (HA 200, state unchanged) is covered by unit tests only; no
+device on hand ignores commands. The test entry was removed and the instance
+`.env` compared byte-identical to the pre-test backup.
+
