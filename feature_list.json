@@ -749,6 +749,54 @@
       "verification": "device_check.sh and qa_replay.py runs on 1.36.0",
       "evidence": "about 50 text turns plus 3 wakes covered what about 40 voice sessions had covered (D-044)",
       "next": "use them first for every playback or tool-choice change"
+    },
+    {
+      "id": "REPLY-RAIL-4096",
+      "state": "verified",
+      "behavior": "the per-reply output-token rail defaults to 4096 (the API's largest finite value, about 160 s of speech), so a news rundown or a requested story is not cut mid-word",
+      "verification": "live on 1.36.7, fresh session: the long-story request completed (out_audio=1594, no `Reply cut off` warning); the news turn after it completed (out_audio=620)",
+      "evidence": "900 cut 4 replies in 10 days, 2 in the 2026-10-31 journey (news, story); 2400 (1.36.4) still cut the story; uncapped text-mode stories run 920-1180 chars (3-4 min) (D-045)",
+      "next_action": "operator: keep 4096, or `inf` (upstream's default) so a 3-4 minute story is never cut; instance .env REALTIME_MAX_OUTPUT_TOKENS=inf needs no redeploy"
+    },
+    {
+      "id": "VIDEO-OUR-TRIP-SOURCE",
+      "state": "known-defect",
+      "behavior": "「放我們去波士頓旅行的影片」 plays the family's own video in one call; a place alone (「放花蓮的影片」) still asks 影片庫 or YouTube",
+      "verification": "qa_replay our-trip / place-only-asks (4+ runs) and fresh live sessions on the robot",
+      "evidence": "replay our-trip: 1.36.3 0/4, 1.36.4 1/4, 1.36.7 12/24; live 1.36.7 0/3 fresh + 0/1 mid-session (live 1.36.3 0/1); place-only-asks 12/12. Two text revisions (D-045); the ask costs one turn, and the answer 「家裡影片庫的」 played in one call",
+      "next_action": "mini's current ceiling for text. Shape change is the operator's call: default a trip request to the 影片庫 (nas already says so and offers YouTube when nothing fits), which overturns D-038's ask-first rule"
+    },
+    {
+      "id": "DANCE-SPEAKS-ON-GOOD-NEWS",
+      "state": "known-defect",
+      "behavior": "「我今天升職了！跳一段開心的舞慶祝一下吧」 gets a dance and a spoken 恭喜 in the same turn",
+      "verification": "qa_replay dance-good-news, 4 runs per build",
+      "evidence": "1/4 on 1.36.3, 1/4 with the dance description sentence, 1/4 with the hardening line scoped (override). A spoken follow-up after the dance (needs_response) gave 恭喜 4/4 but narrated the queue on plain dances (「已經幫你排進去囉」) and chatted 2-3 sentences after 「停」 4/4, so it did not ship (D-045)",
+      "next_action": "mini's current ceiling; a per-action follow-up for `dance play` only is the operator's call"
+    },
+    {
+      "id": "SMB-LOG-QUIET",
+      "state": "verified",
+      "behavior": "the NAS index refresh at wake logs no SMB handshake lines (they named the NAS address and the SMB username)",
+      "verification": "journal of a 1.36.7 wake: 0 smbprotocol lines (33 per wake before); test_smbprotocol_handshake_logs_stay_out_of_the_journal",
+      "evidence": "utils.setup_logger pins smbprotocol to WARNING, DEBUG runs included",
+      "next_action": "none"
+    },
+    {
+      "id": "HARNESS-STATUS-OVERRIDE",
+      "state": "verified",
+      "behavior": "live_case.sh prints a non-completed response status and the app's WARNING/ERROR lines; qa_replay.py --override measures a candidate wording before it ships, and prints chars= per run",
+      "verification": "live_case output showed `status=incomplete` + the rail warning on the 1.36.6 story and the sleep stop-timeout warning; --override runs on 1.36.4/1.36.5",
+      "evidence": "on 2026-10-31 two cut replies had passed as normal turns in live_case output",
+      "next_action": "confirm a replay gain live: text-mode replay overstated our-trip (12/24 replay, 0/3 live)"
+    },
+    {
+      "id": "JOURNEY-2026-10-31-NOTES",
+      "state": "known-defect",
+      "behavior": "small speech-quality slips seen in the 2026-10-31 journey, none blocking a demo",
+      "verification": "live_case transcripts, 1.36.3 and 1.36.7",
+      "evidence": "news answer named portals, not headlines (the search hits were portal pages); 「把電視打開」 with no preamble mid-session (1/1, ~8 s silence; 5/5 fresh on 1.31.3); greeting 「會動做」; a spoken 「（微笑）」; 「讓我想想」 in a story preamble; go_to_sleep logs `Stop request ... got no clean answer` 4/4 (the self-stop round trip; the app does stop)",
+      "next_action": "watch; fix only what recurs"
     }
   ]
 }

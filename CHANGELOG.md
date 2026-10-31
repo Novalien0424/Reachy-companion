@@ -9,6 +9,23 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.36.7] — 2026-10-31 · long replies finish, 「我們」 names the source, a quieter journal
+
+Deployed as the forty-fourth install (wheel sha `3dc93b1b…`). 1.36.4 (`a4cb5956…`),
+1.36.5 (`6370acfd…`) and 1.36.6 (`e1d16490…`) were the measuring steps of the
+same day. Decision D-045.
+
+- **The reply rail is 4096 tokens (about 160 s), up from 900.** A news rundown
+  and a requested story were cut mid-word; on 1.36.7 both finished live.
+- **「我們」 counts as naming the source.** 「放我們去波士頓旅行的影片」 is meant
+  for the family's own videos; a place alone still asks. Replay 12/24 from 0/4,
+  but live 0/3: recorded at mini's ceiling.
+- **The NAS index refresh no longer logs SMB handshakes** (the NAS address and
+  the SMB username were in every wake's journal).
+- **The dance description asks for the reply in the same turn.** Kept for a
+  measured side effect on the video source choice; the dance itself still
+  goes silent 3 times in 4.
+
 ## [1.36.3] — 2026-10-31 · a trip asked for by a slightly wrong name still plays
 
 Deployed as the fortieth install (wheel sha `6f821c41…`). Decision D-044.

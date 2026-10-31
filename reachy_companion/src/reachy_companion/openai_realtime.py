@@ -108,13 +108,19 @@ def _reasoning_effort() -> str | None:
     return raw
 
 
-_MAX_OUTPUT_TOKENS_DEFAULT = 900
+# 2026-10-31 (D-045): 900 cut a news rundown and a requested story mid-word in
+# one session (four trips in ten days, all in normal conversation), and 2400
+# still cut the story. Measured on the robot, text + audio run about 26 output
+# tokens per spoken second, so 4096 -- the largest finite value the Realtime
+# API accepts -- is about 160 s. A story asked to be long runs 3-4 minutes on
+# mini and can still reach it; `inf` (upstream's default) is the operator's call.
+_MAX_OUTPUT_TOKENS_DEFAULT = 4096
 
 
 def _max_output_tokens() -> int | None:
     """Per-reply token ceiling — a runaway-monologue rail, not a brevity knob.
 
-    ~20-25 output tokens per spoken second, so 900 ≈ 40 s of speech. Hitting
+    ~26 output tokens (text + audio) per spoken second, so 4096 ≈ 160 s. Hitting
     it cuts the reply MID-WORD with no wrap-up (`response.done` status
     `incomplete`/`max_output_tokens` — research doc §3), which is why the
     default is loose and the trip is logged as a warning. Brevity itself is

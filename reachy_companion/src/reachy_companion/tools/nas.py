@@ -35,10 +35,11 @@ class Nas(Tool):
     }
     description = (
         "The family's own videos (家裡的影片庫) on the NAS, played on the living-room TV. Use when: the user "
-        "names the NAS or the 影片庫, or means videos the family recorded, like 「放我們在花蓮拍的」. Ask first when: "
-        "the request gives only a place, a trip, a year or an event, like 「放花蓮的影片」 — ask 影片庫 or YouTube "
-        "and wait for the answer, then do what they asked. Do NOT use when: the user names YouTube or "
-        "wants something public, such as an MV — that is youtube; or wants music — that is music. `play` "
+        "names the NAS or the 影片庫, or means the family's own recordings, like 「放我們去花蓮玩的影片」"
+        ". Ask first when: the request gives only a place, a trip, a year or an event "
+        "and doesn't say whose, like 「放花蓮的影片」 — ask 影片庫 or YouTube and wait for the answer, then do "
+        "what they asked. Do NOT use when: the user names YouTube or wants something public, like an MV — "
+        "that is youtube; or music — that is music. `play` "
         "finds a clip or a trip and plays it, in one call; `list` tells what is there and plays nothing; "
         "`skip` plays the next clip when asked; to pause or stop it, use music. Search each new trip request "
         "afresh, in English words, as the archive is catalogued. If nothing "

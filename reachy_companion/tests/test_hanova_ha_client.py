@@ -342,6 +342,37 @@ async def test_httpcore_cannot_print_the_ha_host_either(restore_logging):
     assert tamed.messages == []
 
 
+def test_smbprotocol_handshake_logs_stay_out_of_the_journal(restore_logging):
+    """SMB handshake lines from smbprotocol never reach the journal (2026-10-31).
+
+    Every wake's NAS index refresh put ~33 SMB handshake lines in the journal
+    at INFO, naming the NAS address and the SMB username. They are logged on
+    child loggers (`smbprotocol.connection`, `.session`, `.tree`), so pinning
+    the parent must stop them, in DEBUG runs too.
+    """
+    from reachy_companion.utils import setup_logger
+
+    root = logging.getLogger()
+    child = logging.getLogger("smbprotocol.session")
+    leak = "Initialising session with username: SENTINEL_PRIVATE_x7"
+    saved = logging.getLogger("smbprotocol").level
+    try:
+        for debug in (False, True):
+            setup_logger(debug=debug)
+            assert logging.getLogger("smbprotocol").level == logging.WARNING
+            root.setLevel(logging.DEBUG)
+            tamed = _Capture()
+            root.addHandler(tamed)
+            try:
+                child.info(leak)
+                child.debug(leak)
+            finally:
+                root.removeHandler(tamed)
+            assert tamed.messages == []
+    finally:
+        logging.getLogger("smbprotocol").setLevel(saved)
+
+
 @pytest.mark.asyncio
 async def test_the_ha_client_logs_no_script_name_url_or_error_body(monkeypatch, caplog):
     """Round 3, finding 3: the HA seam needs a caplog sentinel like every other.

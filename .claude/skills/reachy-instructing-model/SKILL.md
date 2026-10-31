@@ -179,6 +179,9 @@ capitals-and-redundancy advice and its unqualified "try
 ## Verification
 
 Name the observed failure, the rung used and the journal signal that shows
-the fix. Then run it live (`reachy-deploy` § Live verification): fresh
+the fix. Measure candidate wordings first with `qa_replay.py --override`
+(text only, no deploy), then confirm on the shipped wheel and live: text
+replay overstated a live rate on 2026-10-31 (12/24 against 0/3), and one
+unrelated sentence moved a replay rate from 3/20 to 11/20 (D-045). Then run it live (`reachy-deploy` § Live verification): fresh
 sessions, mic muted, 3–4 runs per case, k/n against the previous build, and
 the new prefix size. Prompt-only changes still ride the persona sync ritual.

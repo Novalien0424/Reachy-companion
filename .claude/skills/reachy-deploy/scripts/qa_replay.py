@@ -1,6 +1,7 @@
 """Replay model-choice cases against the installed wheel, text only. Runs ON the robot.
 
     /venvs/apps_venv/bin/python -I /tmp/qa_replay.py /tmp/qa_cases.json [--runs N] [--only id,id]
+        [--override /tmp/candidate.json]
 
 Tier 3 of the 2026-10-31 QA plan. Each run opens a fresh realtime session built
 exactly as the app builds one: the installed handler's `_get_session_config`
@@ -21,6 +22,13 @@ Case file: a JSON list of
                 | {"call": "nas", "args": {...}, "result": {...}} ],
    "outputs": {"nas": {...}}}
 Prints one line per run and a k/n summary per case.
+
+`--override` measures a candidate wording before it ships (2026-10-31): a JSON
+object {"replace": [["old", "new"], ...]} applied, in order, to the session's
+instructions and every tool description and schema. Each "old" must occur
+exactly once in the session or the run stops, so a stale override never
+measures the installed text by accident. The wheel stays the baseline: run once
+without the override and once with it, same cases, same runs.
 """
 
 from __future__ import annotations
@@ -71,6 +79,20 @@ def _session() -> tuple[dict[str, Any], str]:
     cfg["audio"] = audio
     cfg["_mode"] = str(handler._current_mode().value)
     return cfg, realtime_model()
+
+
+def _apply_override(cfg: dict[str, Any], path: str) -> dict[str, Any]:
+    """Apply a candidate's text replacements to the whole session config."""
+    replace = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))["replace"]
+    text = json.dumps(cfg, ensure_ascii=False)
+    for old, new in replace:
+        old_j = json.dumps(old, ensure_ascii=False)[1:-1]
+        found = text.count(old_j)
+        if found != 1:
+            sys.exit(f"override: {old[:60]!r} occurs {found} times in the session, expected 1")
+        text = text.replace(old_j, json.dumps(new, ensure_ascii=False)[1:-1])
+    print(f"override: {len(replace)} replacement(s) from {path}")
+    return dict(json.loads(text))
 
 
 def _items(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -176,6 +198,7 @@ async def main() -> None:
     parser.add_argument("cases")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--only", default="")
+    parser.add_argument("--override", default="", help="candidate text replacements (see the module docstring)")
     opts = parser.parse_args()
     cases = json.loads(pathlib.Path(opts.cases).read_text(encoding="utf-8"))
     if opts.only:
@@ -183,6 +206,8 @@ async def main() -> None:
         cases = [c for c in cases if c["id"] in keep]
     cfg, model = _session()
     mode = cfg.pop("_mode")
+    if opts.override:
+        cfg = _apply_override(cfg, opts.override)
     from openai import AsyncOpenAI
     import os
 
@@ -206,7 +231,7 @@ async def main() -> None:
             said = (first["text"] + " | " + ((run["follow"] or {}).get("text") or "")).strip(" |")
             print(
                 f"{case['id']} #{n + 1} {'PASS' if ok else 'FAIL'} {time.monotonic() - started:.1f}s "
-                f"in={first['in']} cached={first['cached']} calls={calls[:160]} said={said[:160]!r}"
+                f"in={first['in']} cached={first['cached']} chars={len(said)} calls={calls[:160]} said={said[:160]!r}"
             )
             if n == 1 and passed == 2 and not case.get("targeted"):
                 break  # stop rule: 2/2 on a case the change was not aimed at

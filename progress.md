@@ -5,6 +5,24 @@ history of this file.
 
 ## Current state
 
+**v1.36.7 INSTALLED (2026-10-31 15:06 UTC, wheel `3dc93b1b`); Reachy asleep
+(go_to_sleep by voice, app stopped), TV off.** A journey check, then fixes (D-045).
+- **Journey on 1.36.3, one session:** wake, Chinese chat, dance, camera (dark
+  room, honest), web search with preamble, TV on (read back), NAS Boston on the
+  TV in about 2 s, pause, stop with bookmark, a story cut off by a song request
+  (text barge), music stop. All demo paths worked.
+- **Fixed:** the reply rail is 4096 (900 cut the news and the story mid-word;
+  on 1.36.7 both completed live); smbprotocol no longer logs the NAS address
+  and username (0 lines per wake, 33 before).
+- **Measured, at mini's ceiling:** 「放我們去波士頓旅行的影片」 still asks for the
+  source live 0/3 (replay 12/24 from 0/4); the dance for good news stays
+  silent 3/4. Both shape changes are the operator's call (feature_list
+  `VIDEO-OUR-TRIP-SOURCE`, `DANCE-SPEAKS-ON-GOOD-NEWS`).
+- **Harness:** `live_case.sh` shows `status=incomplete` and WARNING/ERROR
+  lines; `qa_replay.py --override` measures a wording before it ships.
+- **Records:** suite 2283 / 31; daemon v1.13.0, no wedge, no restart; NAS
+  transcode log clean (09:22 run, done 2737, failed 0); watchdog up, 0 actions.
+
 **v1.36.3 INSTALLED (2026-10-31, wheel `6f821c41`); app stopped (asleep), TV off.**
 The 1.36.x line (D-044); 1.36.0–1.36.3 were installed the same day.
 - **Playback control:** `music play | pause | resume | stop`. Stop ends the

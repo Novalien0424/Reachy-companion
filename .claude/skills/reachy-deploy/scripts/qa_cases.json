@@ -172,5 +172,38 @@
         "England"
       ]
     }
+  },
+  {
+    "id": "our-trip",
+    "targeted": true,
+    "say": "瑞奇，放我們去波士頓旅行的影片",
+    "expect": {
+      "tool": "nas"
+    }
+  },
+  {
+    "id": "place-only-asks",
+    "targeted": true,
+    "say": "瑞奇，放花蓮的影片",
+    "expect": {
+      "no_call": true,
+      "text_any": [
+        "影片庫",
+        "YouTube"
+      ]
+    }
+  },
+  {
+    "id": "dance-good-news",
+    "targeted": true,
+    "say": "瑞奇，我今天升職了！跳一段開心的舞慶祝一下吧",
+    "expect": {
+      "tool": "dance",
+      "text_any": [
+        "恭喜",
+        "太棒",
+        "太好了"
+      ]
+    }
   }
 ]

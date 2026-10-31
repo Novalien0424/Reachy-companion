@@ -299,11 +299,18 @@ def test_the_ask_first_rule_waits_for_the_answer_before_playing() -> None:
 
     D-038 case 6: a place alone fits both video sources, so Reachy asks which
     one, then does what was asked once the answer comes.
+
+    1.36.5 (D-045): 「直接放」 is allowed in one place only, the family-library
+    branch that a named source or 「我們」 reaches. Unscoped, it made mini skip the
+    question; scoped, the place-only case asked 8/8 and 「放我們去波士頓旅行的影片」
+    played 4/4 (without the phrase: 1/4).
     """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
-    assert "直接放" not in block
+    assert "要放就直接放" not in block
+    assert block.count("直接放") == 1
+    assert "就是家裡的影片庫，直接放" in block
     assert "不要再問使用者一次" not in block
     assert "先問一句" in block and "要找家裡的影片庫還是 YouTube" in block
     assert "等回答了再照原本的要求做" in block

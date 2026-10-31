@@ -3002,3 +3002,58 @@ works well with it.
   - request → picture about 4 s;
   - text in → first tool call about 2.6 s (the model);
   - 0 tracebacks, 0 errors, no robot-route fallback.
+
+## D-045 — Journey check fixes: the reply rail, 「我們」 names the source, a quiet NAS log (2026-10-31)
+
+Operator: "clock in do a concise but complete user journey check with Reachy
+then at the end put reachy to sleep and TV off", then "Fix problems and harness
+along the way". The journey on 1.36.3 (one session, mic muted, text over
+`/rpc`): wake, chat, dance, camera, web search, TV on, NAS video, pause, stop,
+story interrupted by a song request, music stop. Every demo path worked; the
+findings below were fixed or recorded. Installs 1.36.4–1.36.7.
+
+**Decisions:**
+
+- **The reply rail is 4096 (rung 3: a rail, not a behavior).** 900 cut a news
+  rundown and a requested story mid-word in the one session (four trips in ten
+  days, all normal conversation), which (7) of the 08-31 voice decision says
+  means the rail is too tight. 2400 still cut the story. 4096 is the largest
+  finite value the Realtime API accepts (about 160 s at the measured ~26
+  output tokens per spoken second). A story asked to be long runs 920–1180
+  characters in text mode (3–4 min), so it can still reach the rail; `inf`
+  (upstream sets no limit) is the operator's call and needs no redeploy.
+- **「我們」 names the source (rung 2, the hardening block).** The ask-first
+  rule now reads source-first: 影片庫/NAS or 「我們」 → the family library,
+  YouTube or public → YouTube, a place alone → ask. 「直接放」 is allowed in
+  that one branch only (the 1.28.4 guard test now checks the scope): without
+  it the replay fell from 4/4 to 1/4. The nas/youtube ask clauses add "and
+  doesn't say whose", and nas's anchor became 「放我們去花蓮玩的影片」.
+  - Replay our-trip: 0/4 (1.36.3), 1/4 (1.36.4), 12/24 (1.36.7);
+    place-only-asks 12/12.
+  - **Live: 0/3 fresh sessions on 1.36.7.** Text-mode replay overstates this
+    case. Two text revisions are spent: it is recorded at mini's ceiling. The
+    shape change — a trip request goes to the 影片庫 first, which already
+    offers YouTube when nothing fits — overturns D-038 and is the operator's.
+- **The dance keeps its description sentence; its silence is recorded.**
+  「升職了！跳一段開心的舞」 danced without a word 3/4 in every text variant
+  (the dance description, the hardening line scoped to narration). A spoken
+  follow-up after the dance gave 恭喜 4/4, but narrated the queue on plain
+  dances and chatted after 「停」 4/4, so `needs_response` stays False. The
+  description sentence ("With `play`, say your reply as usual in the same
+  turn…") stays because it measured our-trip 11/20 with it against 3/20
+  without (Fisher p ≈ 0.02), with dance unchanged. The mechanism is unknown;
+  remove it only with a fresh measurement.
+- **smbprotocol is silenced at the source** (the httpx rule): each wake wrote
+  about 33 handshake lines naming the NAS address and the SMB username.
+- **Harness:** `live_case.sh` prints a non-completed status and the app's
+  WARNING/ERROR lines (two cut replies had passed as normal turns);
+  `qa_replay.py --override` measures a candidate wording before it ships,
+  and prints `chars=`.
+
+**Not fixed, recorded** (feature_list `JOURNEY-2026-10-31-NOTES`): a vague news
+answer from portal-page hits; no preamble for 「把電視打開」 mid-session (1/1);
+greeting slips (「會動做」, a spoken 「（微笑）」); go_to_sleep's
+`Stop request … got no clean answer` (4/4, the self-stop round trip; the app
+stops). The music-resume "still waiting … 0.0Xs outstanding" line fires once
+on replies longer than 12 s and then drains: a misleading diagnostic, not a
+stall.

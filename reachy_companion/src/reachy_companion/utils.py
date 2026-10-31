@@ -74,6 +74,10 @@ def setup_logger(debug: bool) -> logging.Logger:
     # Same leak one layer down: httpcore logs `connect_tcp.started host='<ha
     # host>' port=8123` at DEBUG, so the address survives httpx being silenced.
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # 2026-10-31: smbprotocol logs every SMB handshake step at INFO, about 33
+    # lines per wake (the NAS index refresh), naming the NAS address and the
+    # SMB username. Same rule as httpx: silenced at the source, DEBUG included.
+    logging.getLogger("smbprotocol").setLevel(logging.WARNING)
 
     # Tame third-party noise (looser in DEBUG)
     if log_level == "DEBUG":

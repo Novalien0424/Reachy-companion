@@ -332,11 +332,18 @@ Every behavior change is judged on the robot, by mini, in fresh sessions.
     test-only `qa.tool` RPC, with zero model tokens.
   - `scripts/qa_replay.py`, run on the robot, replays model-choice cases text
     only, from the installed wheel; its docstring has the usage.
+    `--override cand.json` applies a candidate wording to the session, so a
+    revision is measured before it is built and deployed.
+  - Text replay can overstate a live rate: on 2026-10-31 a case measured
+    12/24 in replay and 0/3 live. Confirm a replay gain with fresh live
+    sessions before calling it fixed.
   - Use `live_case.sh` only for what needs a live session.
 - `bash scripts/live_case.sh 1 "<話>"` starts a fresh session (app stop and
   start), mutes the mic, and sends the text over the app's `/rpc`
   `conversation.say`. Then it prints the tool calls, the transcripts, the
-  `[usage in= in_cached=]` of each response, and the TV state.
+  `[usage in= in_cached=]` of each response, and the TV state. A usage line
+  ends in `status=…` when the reply was not completed (`incomplete` = cut by
+  the output-token rail), and the app's own WARNING/ERROR lines are shown.
   `bash scripts/live_case.sh 0 "<話>"` is the next turn in the same session.
 - **Muting the mic** keeps room speech out of a run. A fresh session per case
   keeps an earlier turn from steering the next one.

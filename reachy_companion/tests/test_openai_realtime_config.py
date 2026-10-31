@@ -413,12 +413,12 @@ def test_the_transcription_fallback_config_strips_reasoning(
 def test_session_config_ships_the_output_token_rail(
     monkeypatch: pytest.MonkeyPatch, handler: OpenAIRealtimeHandler
 ) -> None:
-    """~900 tokens is roughly 40 s of speech — loose enough to never fire in normal use."""
+    """4096 (the API's largest finite value) is roughly 160 s of speech."""
     monkeypatch.delenv("REALTIME_MAX_OUTPUT_TOKENS", raising=False)
 
     cfg = handler._get_session_config(tool_specs=[])
 
-    assert cfg["max_output_tokens"] == 900
+    assert cfg["max_output_tokens"] == 4096
 
 
 def test_max_output_tokens_inf_removes_the_rail(
@@ -472,7 +472,7 @@ def test_invalid_max_output_tokens_warns_and_uses_the_default(
     with caplog.at_level(logging.WARNING, logger="reachy_companion.openai_realtime"):
         cfg = handler._get_session_config(tool_specs=[])
 
-    assert cfg["max_output_tokens"] == 900
+    assert cfg["max_output_tokens"] == 4096
     assert "REALTIME_MAX_OUTPUT_TOKENS" in caplog.text
 
 

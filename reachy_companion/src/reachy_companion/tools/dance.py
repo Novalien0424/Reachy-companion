@@ -57,7 +57,9 @@ class Dance(Tool):
     description = (
         "Reachy's dance moves, and stopping any body motion. Use when: the user wants a dance — `play`; "
         "leave `move` out for a random one — or wants you to stop moving — `stop`, which ends any dance "
-        "or emotion motion; call it with no preamble, because they want it ended now. Do NOT use when: a "
+        "or emotion motion; call it with no preamble, because they want it ended now. With `play`, say your "
+        "reply as usual in the same turn, like congratulations on good news: nothing is said after the "
+        "dance starts. Do NOT use when: a "
         "short reaction to a feeling fits — that is play_emotion; or the music should stop — that is "
         "music with action=stop."
     )

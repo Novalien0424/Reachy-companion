@@ -55,7 +55,11 @@ sleep "${3:-30}"
 # The first "usage in=" of a fresh session is the fixed prefix (instructions +
 # tools). out_audio on the response that carries a tool call is its spoken
 # preamble (0 = silent until the result); "Preamble transcript" is its text.
+# A usage line names its status only when it is not `completed` (an `incomplete`
+# reply was cut by the output-token rail), and the app's own WARNING and ERROR
+# lines are shown with their level: on 2026-10-31 two cut replies passed as
+# normal turns because neither reached this output.
 "${R[@]}" "journalctl -u reachy-mini-daemon --since '$T0' --no-pager -o short-iso | grep reachy_companion \
-  | grep -E 'Tool call received|Tools in session|role=user|role=assistant content=|transcript|casting|NAS stream: serving|Response usage' \
-  | sed -E 's/^[0-9-]+T([0-9:]+)[^|]*\| /\1 /; s/^([0-9:]+) Response usage: id=[^ ]* status=[a-z]* (in=[0-9]+ in_cached=[0-9]+).* (out_audio=[0-9-]+).*/\1   [usage \2 \3]/' | cut -c1-420"
+  | grep -E 'Tool call received|Tools in session|role=user|role=assistant content=|transcript|casting|NAS stream: serving|Response usage| (WARNING|ERROR) reachy_companion' \
+  | sed -E 's/ (WARNING|ERROR) (reachy_companion[^|]*)\| / \2| \1: /; s/^[0-9-]+T([0-9:]+)[^|]*\| /\1 /; s/ status=completed / /; s/^([0-9:]+) Response usage: id=[^ ]*( status=[a-z_]+)? (in=[0-9]+ in_cached=[0-9]+).* (out_audio=[0-9-]+).*/\1   [usage \3 \4\2]/' | cut -c1-420"
 "${R[@]}" "$PY /tmp/tv_state.py"
