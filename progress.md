@@ -5,6 +5,12 @@ history of this file.
 
 ## Current state
 
+**v1.34.0 INSTALLED (2026-10-31 01:48 UTC); app stopped (asleep), TV off.**
+- 「停」 stops the video on the TV (D-042): `music stop` stops the speaker, else
+  the TV, by media_stop and then closing the cast app, and reads it back.
+- Live: music stop first 6/6; NAS and YouTube videos ended; nothing-playing
+  and 暫停 answers true. Suite 2101 / 31, prefix 5,984.
+
 **v1.33.0 INSTALLED (2026-10-31 00:32 UTC); app stopped (asleep), TV off.**
 - The NAS index keeps itself current (D-041): a nightly Mac pass (03:30, via an
   ssh-localhost route macOS lets reach the LAN) reindexes, transcodes new files

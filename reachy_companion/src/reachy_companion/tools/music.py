@@ -1,4 +1,7 @@
-"""Speaker music as one action-enum tool. Filename == Tool.name.
+"""Speaker music, and the stop for whatever Reachy plays, as one action-enum tool.
+
+Filename == Tool.name. Since 2026-10-31 `stop` also ends a video on the TV when
+the speaker is silent (`stop_music`), because mini reached for it there first.
 
 Façade over `play_music` / `stop_music`, which keep their modules, their names
 and their prerequisite rows -- including `stop_music`'s documented exemption
@@ -24,10 +27,11 @@ class Music(Tool):
         "stop": StopMusic(),
     }
     description = (
-        "Play or stop audio on your own speaker. Use when: the user wants a song, an artist or a mood "
-        "played, like 「放周杰倫的歌」 — `play` with `query`; or the speaker stopped — `stop`, which always "
-        "works, even when play failed. Do NOT use when: the user wants a video on the TV — that is "
-        "youtube or nas; or only wants you quiet — that is wait_for_user. Before `play`, say a short "
+        "Play music on your own speaker, or stop what you are playing. Use when: the user wants a song, "
+        "an artist or a mood played, like 「放周杰倫的歌」 — `play` with `query`; or wants playback stopped — "
+        "`stop`, which ends the music on your speaker or, when none is playing, the video on the TV, and "
+        "always works, even when play failed. Do NOT use when: the user wants a video played on the TV — "
+        "that is youtube or nas; or only wants you quiet — that is wait_for_user. Before `play`, say a short "
         "lead-in, because finding a track takes a moment (示範語氣，不是觸發條件：「我找一下來播」); `stop` needs none, "
         "because the person wants silence now."
     )
@@ -37,7 +41,7 @@ class Music(Tool):
             "action": {
                 "type": "string",
                 "enum": ["play", "stop"],
-                "description": "play 放音樂（要帶 query）；stop 停止播放。",
+                "description": "play 放音樂（要帶 query）；stop 停止播放：喇叭的音樂，或電視上的影片。",
             },
             **PlayMusic.parameters_schema["properties"],
             **StopMusic.parameters_schema["properties"],

@@ -9,6 +9,26 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.34.0] — 2026-10-31 · 「停」 really stops the video
+
+Deployed as the thirty-fifth install (wheel sha `bee8d2ee…`). Decision D-042.
+
+- **Telling Reachy to stop now stops the video on the TV.** `music stop` stops
+  the speaker music, or, when none is playing, the TV.
+  - It tries a normal stop first, then closes the casting app if the TV keeps
+    playing, as the YouTube app did.
+  - It reads the TV back before saying it stopped.
+  - Before, it only knew the speaker, and Reachy said 「停下來了」 while a home
+    video kept playing.
+- **Reachy says exactly what happened:**
+  - what it stopped;
+  - that nothing was playing;
+  - that the video did not stop and the remote can stop it;
+  - that a stopped video starts from the beginning when played again.
+- Live: 6 of 6 stop requests went to `music stop`, and every video ended (NAS
+  in ~2 s, YouTube in ~5 s). Nothing-playing and 「暫停」 answers were true.
+- The fixed prefix grew by 112 tokens (5,872 → 5,984).
+
 ## [1.33.0] — 2026-10-31 · new home videos arrive on their own
 
 Deployed as the thirty-fourth install (wheel sha `c0bd5d93…`). Decision D-041.

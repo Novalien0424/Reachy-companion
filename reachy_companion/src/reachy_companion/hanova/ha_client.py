@@ -144,6 +144,66 @@ async def confirm_cast_started(entity_id: str, *, timeout_s: float) -> Dict[str,
         await asyncio.sleep(_CAST_POLL_S)
 
 
+# States with something on screen that a stop can end. "on" and "casting" are not
+# here on purpose: an idle receiver has nothing to stop, and stopping it would
+# report a stop that ended nothing.
+_PLAYBACK_STATES = frozenset({"playing", "buffering", "paused"})
+_STOP_SETTLE_S = 3.0
+_STOP_POLL_S = 1.0
+
+
+def media_state_and_title(reply: Dict[str, Any]) -> tuple[str, str | None]:
+    """Return a state read's ``(state, media title)``; "unknown" when unreadable."""
+    payload = reply.get("result") if reply.get("ok") else None
+    if not isinstance(payload, dict):
+        return "unknown", None
+    attributes = payload.get("attributes")
+    title = attributes.get("media_title") if isinstance(attributes, dict) else None
+    return str(payload.get("state") or "unknown"), (str(title) if title else None)
+
+
+async def stop_tv_playback(entity_id: str) -> Dict[str, Any]:
+    """Stop what the TV is playing and read it back (2026-10-31). Never raises.
+
+    Returns ``{"result": ..., "title": <media title or None>, "state": <last seen>}``
+    where result is ``stopped``, ``not_playing``, ``still_playing`` or
+    ``unreachable``. HA answers 200 whether or not the receiver obeyed, so only
+    the state afterwards counts, and it is read back even when the call itself
+    failed or timed out (D-040's lesson).
+
+    Two steps, because receivers differ: `media_stop` ends a Default Media
+    Receiver clip, but the TV's YouTube app ignored both `media_stop` and
+    `media_pause` (it kept reading `buffering`). If playback has not ended
+    within `_STOP_SETTLE_S`, `turn_off` closes the casting app, which ended
+    YouTube within a second. On this TV that is the same command as
+    home_control's 「把電視關掉」.
+    """
+    if not entity_id:
+        return {"result": "unreachable", "title": None, "state": None}
+    before = await ha_get_state(entity_id, timeout_s=8.0)
+    if not before.get("ok"):
+        return {"result": "unreachable", "title": None, "state": None}
+    state, title = media_state_and_title(before)
+    if state not in _PLAYBACK_STATES:
+        return {"result": "not_playing", "title": None, "state": state}
+    last = state
+    for service in ("media_stop", "turn_off"):
+        reply = await ha_call_service("media_player", service, {"entity_id": entity_id}, timeout_s=15.0)
+        if not reply.get("ok"):
+            logger.info("TV stop: %s answered %s; reading the TV back anyway", service,
+                        reply.get("status_code") or "no reply")
+        deadline = time.monotonic() + _STOP_SETTLE_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_STOP_POLL_S)
+            now = await ha_get_state(entity_id, timeout_s=8.0)
+            if now.get("ok"):
+                last, _ = media_state_and_title(now)
+                if last not in _PLAYBACK_STATES:
+                    logger.info("TV stop: playback ended after %s", service)
+                    return {"result": "stopped", "title": title, "state": last}
+    return {"result": "still_playing", "title": title, "state": last}
+
+
 def tv_not_responding(state: str | None) -> Dict[str, Any]:
     """Return the honest tool result for a dispatched cast the TV never picked up."""
     return {

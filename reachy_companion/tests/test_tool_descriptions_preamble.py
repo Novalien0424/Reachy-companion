@@ -68,6 +68,10 @@ def test_music_description_stays_on_the_speaker_and_has_a_play_only_preamble() -
     `music` is the speaker; a video on the TV is youtube or nas. The conversation
     language of the lead-in now lives once, in the system rules' cross-channel
     language clause, so the description no longer repeats it.
+
+    2026-10-31: `stop` also ends a video on the TV when the speaker is silent,
+    because mini reached for `music stop` while a NAS clip played; *playing* a
+    video still belongs to youtube or nas.
     """
     description = Music.description
 
@@ -75,7 +79,8 @@ def test_music_description_stays_on_the_speaker_and_has_a_play_only_preamble() -
     assert "Do NOT use when:" in description
     assert "youtube" not in description.lower().replace("that is youtube or nas", "")
     assert "your own speaker" in description
-    assert "a video on the TV — that is youtube or nas" in description
+    assert "a video played on the TV — that is youtube or nas" in description
+    assert "when none is playing, the video on the TV" in description
     assert "`play` with `query`" in description
     assert "Before `play`, say a short lead-in, because finding a track takes a moment" in description
     assert "「我找一下來播」" in description

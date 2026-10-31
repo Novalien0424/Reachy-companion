@@ -2678,3 +2678,53 @@ on the robot. `HANOVA_NAS_INDEX_REFRESH=0` turns it off.
 Delay: a new file reaches the robot at the first wake after the next 03:30
 pass.
 
+## D-042 — 「停」 stops the video on the TV, and says what it stopped (2026-10-31)
+
+Operator: "if I tell Reachy to Stop the actual video play will STOP". In the
+morning session 「先暫停播放」 got "I have no stop command for the TV", and
+「停下你的播放」 reached `music stop`. That tool only knew the speaker, returned
+`nothing_playing`, and Reachy said 「停下來了」 while the NAS clip went on.
+
+Rung 1 (the tool), designed for mini's first call. `music stop` is where mini
+went, so that call now finishes the job, and no 20th tool or new action was
+added:
+
+- Music on the speaker is stopped first. If a video is also on the TV, the
+  result says so and names the fix: call stop again.
+- When the speaker is silent, the stop goes to the TV through
+  `ha_client.stop_tv_playback`, which reads the TV back.
+  - `media_stop` comes first. It ends a Default Media Receiver clip.
+  - If playback hasn't ended within 3 s, `turn_off` closes the casting app.
+    The TV's YouTube app ignored `media_stop` and `media_pause` (it stayed at
+    `buffering`), and `turn_off` ended it within a second. On this TV that is
+    the same command as home_control's 「把電視關掉」.
+  - The state is read back even after a refused or timed-out call.
+- What the result says:
+  - stopped: `stopped: "tv"`, the title, and "stopped, not paused: playing it
+    again starts it from the beginning";
+  - nothing anywhere: `nothing_playing`, with "nothing was stopped; say so";
+  - still playing: an error saying it did not stop, and that the remote can;
+  - Home Assistant silent: an error naming the remote.
+- A stopped trip clears the `nas` session, so `skip` cannot carry it on.
+- Text: `music` says `stop` "ends the music on your speaker or, when none is
+  playing, the video on the TV"; `nas` and `youtube` each point at music `stop`.
+
+Live, 1.34.0, mic muted, fresh sessions. Mini called `music stop` first in 6 of
+6 stop requests: 「停止播放」, 「Richie 停下你的播放」 and 「先暫停一下影片」.
+
+| Case | Result |
+|---|---|
+| NAS clip | ended in about 2 s |
+| YouTube MV, first build | stayed `buffering`; Reachy said so honestly |
+| YouTube MV, with the `turn_off` step | ended in about 5 s |
+| Nothing playing | 「沒什麼要停的」 |
+| 「暫停」 wording, after the note | 「實際上是停止播放，下次要再看時就從頭開始」 |
+
+The fixed prefix is 5,984 tokens (+112).
+
+Open:
+- **Pause and resume.** There is no real pause: the YouTube app ignores
+  `media_pause`, and a resume would need its own action.
+- **Speaker and TV at once.** If music plays on the speaker while a video plays
+  on the TV, 「停止影片」 stops the speaker first.
+

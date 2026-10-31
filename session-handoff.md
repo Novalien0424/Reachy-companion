@@ -1,6 +1,6 @@
 # Session handoff — 2026-10-31 (v1.32.0 installed; Reachy answers when called)
 
-State: **v1.33.0 installed 2026-10-31 00:32 UTC; Reachy asleep (app stopped),
+State: **v1.34.0 installed 2026-10-31 01:48 UTC; Reachy asleep (app stopped),
 TV off.** Boots into 多人聊天模式. The NAS index refreshes itself (D-041): nightly
 Mac pass at 03:30 (`~/HomeAssistant/bin/nas-video/install-nightly.sh`), robot
 swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
@@ -17,9 +17,7 @@ Open, not yet fixed:
    D-034 watchdog is on the robot but its crontab line was never installed
    (operator's step; line in `docs/plans/2026-10-28-wifi-recovery-plan.md`,
    line 75).
-3. **Stop requests reach the wrong tool.** 「先暫停播放」 got "no stop command"
-   (`nas` has list/play/skip only), then 「停下你的播放」 called `music stop`,
-   got `nothing_playing`, and Reachy said 「停下來了」 while the video played.
+3. ~~Stop requests reach the wrong tool~~ — fixed by D-042 (1.34.0): 「停」 stops the TV video.
 4. **「我看到二零二六 Boston 的嗎？」** made `nas play` replay `2025UK`; and
    「请问我们在哪里？」 made `nas skip` instead of answering from the title.
 5. Smaller: the sleep summary timed out twice (no 上次聊天 fact saved); the
