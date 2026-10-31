@@ -5,6 +5,17 @@ history of this file.
 
 ## Current state
 
+**v1.36.1 INSTALLED (2026-10-31, wheel `ddbcde53`); app stopped (asleep), TV idle.**
+- **Home videos outlive Reachy's sleep (W6, verified, D-044).** The operator's
+  QNAP virtual host serves the cast copies, and the instance `.env` has
+  `HANOVA_NAS_HTTP_BASE`.
+  - root 403 with no listing; clip range request 206;
+  - a clip kept playing 90 s after sleep;
+  - one paused before sleep resumed after the next wake.
+- **Fixed in 1.36.1:** a video resumed after a wake is recorded again, so the
+  quiet rule and the stop bookmark hold for it.
+- **Records:** suite 2277 / 31; 0 tracebacks; 3 wakes, no wedge.
+
 **v1.36.0 INSTALLED (2026-10-31, wheel `c712306b`); app stopped (asleep), TV idle.**
 - **Pause and resume; stop stops everything and keeps a bookmark** (D-044).
   Device tier on the real TV and speaker, zero model tokens:
@@ -20,8 +31,7 @@ history of this file.
 - **Replay** (`qa_replay.py`, text-only, about 50 turns, no audio):
   - stop 3/3, resume 3/3, mode 3/3;
   - 「暫停」 → pause 11/18, mini's ceiling, which the bookmark absorbs.
-- **NAS serves the clip** (`HANOVA_NAS_HTTP_BASE`): waiting on the operator's
-  QNAP virtual host.
+- **NAS serves the clip** (`HANOVA_NAS_HTTP_BASE`): verified in 1.36.1, above.
 - **Retracted:** a "stale persona" check had read the package directory's
   pre-v1.25.0 leftover. The instance persona is current.
 - **Records:** suite 2272 / 31; 0 tracebacks and 0 errors in the 1.36.0 journal;

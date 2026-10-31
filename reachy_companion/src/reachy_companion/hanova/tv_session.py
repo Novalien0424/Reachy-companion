@@ -50,7 +50,7 @@ _bookmark: Dict[str, Any] | None = None
 
 
 def mark_started(kind: str, *, title: str | None = None, place: str | None = None, recast: str | None = None) -> None:
-    """Record that a video of `kind` ("nas" or "youtube") is now on the TV, and what it is.
+    """Record that a video of `kind` ("nas", "youtube", or "tv" for one Reachy did not cast) is on the TV.
 
     `recast` is what plays it again: a NAS clip's URL, a YouTube video id. A new
     video ends any bookmark: 「繼續」 after it means this one.

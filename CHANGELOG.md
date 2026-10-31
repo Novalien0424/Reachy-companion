@@ -9,6 +9,28 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.36.1] — 2026-10-31 · home videos outlive Reachy's sleep
+
+Deployed as the thirty-eighth install (wheel sha `ddbcde53…`). Decision D-044.
+
+- **The NAS serves the clip (W6, live).** The operator set up a QNAP virtual
+  host on the cast-copy folder, and the instance `.env` has
+  `HANOVA_NAS_HTTP_BASE`. Its root answers 403 with no listing; a clip answers
+  a range request with 206.
+  - pause, resume, stop and the bookmark resume all ran over the NAS route;
+  - a clip kept playing 90 s after Reachy went to sleep (it used to die after
+    about 30 s);
+  - a clip paused before sleep stayed paused through 60 s of sleep and resumed
+    after the next wake.
+- **A video resumed after a wake is recorded again.** Waking had forgotten
+  the video, so the quiet-while-a-video-plays rule (W3) and the stop bookmark
+  were off for it. `resume` now records a video the app has no record of: a
+  NAS clip by our URL, a YouTube video by the app, anything else as a plain
+  `tv` video (quiet-gated, never bookmarked). Live: `recorded as nas`, and
+  the next stop kept its place.
+- `device_check.sh sleep | paused-sleep`, and `tv_state.py` prints the port
+  the TV fetches from.
+
 ## [1.36.0] — 2026-10-31 · pause, quiet while a video plays, group barge by name
 
 Deployed as the thirty-seventh install (wheel sha `c712306b…`). Decision D-044.

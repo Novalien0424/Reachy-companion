@@ -159,9 +159,32 @@ def _keep_place(tv: Dict[str, Any], playing: Dict[str, Any] | None) -> bool:
     return True
 
 
+def _adopt_resumed(tv: Dict[str, Any]) -> None:
+    """Record a resumed video the app had forgotten, so the quiet rule holds for it again (W3).
+
+    The app forgets the session when Reachy sleeps, and a clip the NAS serves
+    (W6) stays paused on the TV through that. Its kind comes from what the TV
+    shows: one of our cast URLs is a NAS clip, the YouTube app a YouTube video,
+    anything else a plain `tv` video, which is quiet-gated but never bookmarked
+    because it cannot be cast again.
+    """
+    content_id = str(tv.get("content_id") or "")
+    ours = [base for base in (settings.nas_http_base(), settings.media_http_base()) if base]
+    if content_id and any(content_id.startswith(base) for base in ours):
+        kind = "nas"
+    elif tv.get("app") == "YouTube":
+        kind = "youtube"
+    else:
+        kind = "tv"
+    logger.info("resume_playback: the TV resumed a video the app had no record of; recorded as %s", kind)
+    tv_session.mark_started(kind, title=tv.get("title"), recast=content_id if kind == "nas" else None)
+
+
 async def _resume_tv(entity: str) -> Dict[str, Any]:
     """Resume a paused TV video; with nothing paused, play a kept place on from where it stopped."""
     tv = await resume_tv_playback(entity)
+    if tv["result"] == "resumed" and not tv_session.active():
+        _adopt_resumed(tv)
     if tv["result"] != "not_paused":
         return tv
     mark = tv_session.bookmark()

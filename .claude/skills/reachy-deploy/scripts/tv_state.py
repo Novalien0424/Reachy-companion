@@ -6,6 +6,7 @@ The HA token and the entity ID stay on the robot: the output names neither.
 import json
 import pathlib
 import sys
+import urllib.parse
 import urllib.request
 
 env = {}
@@ -25,5 +26,7 @@ req = urllib.request.Request(f"{env['HA_URL']}/api/states/{entity}", headers=hea
 state = json.loads(urllib.request.urlopen(req, timeout=10).read())
 attrs = state.get("attributes", {})
 pos = attrs.get("media_position")
+# Which server the TV fetches from, by port only: the NAS's web server (W6) or the robot's.
+src = urllib.parse.urlsplit(str(attrs.get("media_content_id") or "")).port
 print("tv:", state["state"], "|", attrs.get("app_name"), "|", attrs.get("media_title"),
-      "|", f"pos {pos:.1f}s" if isinstance(pos, (int, float)) else "pos -")
+      "|", f"pos {pos:.1f}s" if isinstance(pos, (int, float)) else "pos -", "|", f"src :{src}" if src else "src -")

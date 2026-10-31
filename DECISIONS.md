@@ -2924,6 +2924,35 @@ chose `music` with four actions, NAS option (a), and accepted the W4 trade-off.
 - **Not yet live:**
   - the W3 gate and W4 barge with real speech, left to the operator in normal
     use; unit tests only;
-  - W6 waits for the operator's QNAP virtual host.
+  - W6 waited for the operator's QNAP virtual host (done the same day, below).
 - **Pre-existing, not changed:** a mood query for speaker music ("relaxing
   jazz") finds no playable track, and the error asks for a song title.
+
+**W6 live and 1.36.1 (2026-10-31, wheel `ddbcde53`).**
+
+- **The operator's step:** a QNAP virtual host, HTTP, rooted at the cast-copy
+  folder, on a free port (the first one suggested was taken). The instance
+  `.env` has `HANOVA_NAS_HTTP_BASE` pointing at it.
+- **NAS checks, from the robot, through the app's own `nas_http_url`:**
+  - the root answers 403, with no listing;
+  - clips answer HEAD 200 `video/mp4` with `Accept-Ranges: bytes`, and a range
+    request answers 206, including a percent-encoded non-ASCII path;
+  - `nas_serves` returned true.
+- **Device tier, two runs and three wakes:**
+  - pause, resume, stop and the bookmark resume all ran over the NAS route
+    (`tv_state.py` shows the port the TV fetches from);
+  - a clip stayed `playing` 90 s after Reachy went to sleep (on the robot
+    route it died after about 30 s);
+  - a clip paused before sleep stayed paused through 60 s of sleep and the next
+    wake, and `resume` played it on from 12.0 s.
+- **A bug the paused-sleep case exposed, fixed in 1.36.1.**
+  - The woken app had no record of the resumed video, so the W3 quiet rule and
+    the stop bookmark were off for it.
+  - `resume_tv_playback` now also returns the TV's `content_id` and `app`.
+  - When the app has no video on record, `resume` records one: `nas` when the
+    content is one of our cast URLs, `youtube` when the YouTube app shows it,
+    otherwise a plain `tv` video, which is quiet-gated but never bookmarked
+    (it can't be cast again).
+  - Live: `recorded as nas`, and the next stop kept its place.
+- **Journal:** 0 tracebacks and no fallback to the robot route. The one ERROR
+  line was the daemon's `ws_server` during app shutdown, not ours.

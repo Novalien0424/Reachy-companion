@@ -720,11 +720,11 @@
     },
     {
       "id": "NAS-HTTP-SERVE",
-      "state": "implemented-unverified",
+      "state": "verified",
       "behavior": "with HANOVA_NAS_HTTP_BASE set, the TV fetches a NAS clip from the NAS's own web server, so it survives Reachy's sleep and a long pause",
       "verification": "range request against the NAS URL; device tier: play, sleep, still playing after 60 s",
-      "evidence": "code and tests in 1.36.0; NAS checked read-only: QNAP, Web Server on, WebDAV off (D-044)",
-      "next": "blocked on the operator: QNAP virtual host (HTTP, a free port) rooted at the cast-copy folder; then set HANOVA_NAS_HTTP_BASE in the instance .env and run the sleep check"
+      "evidence": "1.36.1 live (D-044): QNAP virtual host, root 403 with no listing, clip range request 206; pause/resume/stop/bookmark resume over the NAS route; playing 90 s after Reachy slept; a clip paused before sleep stayed paused 60 s and resumed after the wake, recorded again as nas; 0 tracebacks, no fallback to the robot route",
+      "next_action": "-"
     },
     {
       "id": "QA-TIERS-LOW-TOKEN",

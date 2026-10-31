@@ -335,8 +335,23 @@ async def test_a_paused_tv_is_resumed_and_buffering_counts_as_playing(tv):
     """Probe 2026-10-31: the YouTube app answers `media_play` with `buffering`, its normal playing."""
     fake = tv("paused", title="MV", obeys=("media_play",), end_state="buffering")
     out = await ha_client.resume_tv_playback("SENTINEL_TV_ENTITY")
-    assert out == {"result": "resumed", "title": "MV", "state": "buffering"}
+    assert out == {"result": "resumed", "title": "MV", "state": "buffering", "content_id": None, "app": None}
     assert fake.calls == [PLAY]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_result_says_what_the_tv_shows(tv, monkeypatch):
+    """After Reachy slept the app has no record of the video; the TV's read says what it is."""
+    fake = tv("paused", title="Clip", obeys=("media_play",), end_state="playing")
+
+    async def get_state(entity_id: str, timeout_s: float = 15.0) -> Dict[str, Any]:
+        reply = _state(fake.state, fake.title)
+        reply["result"]["attributes"].update(media_content_id=_URL, app_name="Default Media Receiver")
+        return reply
+
+    monkeypatch.setattr(ha_client, "ha_get_state", get_state)
+    out = await ha_client.resume_tv_playback("SENTINEL_TV_ENTITY")
+    assert out["result"] == "resumed" and out["content_id"] == _URL and out["app"] == "Default Media Receiver"
 
 
 @pytest.mark.asyncio
@@ -798,6 +813,37 @@ async def test_a_real_pause_resumes_with_media_play_not_the_bookmark(tv, halves,
 
 async def _async(value: Dict[str, Any]) -> Dict[str, Any]:
     return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_id, app, kind, recast",
+    [
+        ("http://nas.example.invalid:8091/2025%20Trip/clip.mp4", "Default Media Receiver", "nas",
+         "http://nas.example.invalid:8091/2025%20Trip/clip.mp4"),
+        ("vid123", "YouTube", "youtube", None),
+        ("netflix-thing", "Netflix", "tv", None),
+    ],
+)
+async def test_a_video_resumed_after_reachy_slept_is_recorded_again(halves, monkeypatch, content_id, app, kind, recast):
+    """W6 keeps a paused NAS clip on the TV through Reachy's sleep; resuming it brings the quiet rule back."""
+    monkeypatch.setenv("HANOVA_NAS_HTTP_BASE", "http://nas.example.invalid:8091/")
+    _resume(halves, _SPEAKER_NOTHING,
+            {"result": "resumed", "title": "Clip", "state": "playing", "content_id": content_id, "app": app})
+    tv_session.reset_for_tests()  # the app woke with no record of the video
+    out = await ResumePlayback()(deps=None)
+    assert out["resumed"] == ["tv"] and out["tv_title"] == "Clip"
+    assert tv_session.now_playing() == {"kind": kind, "title": "Clip", "place": None, "recast": recast}
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_video_keeps_its_record_when_resumed(halves):
+    """A pause and resume inside one wake changes nothing about what the app knows."""
+    tv_session.mark_started("nas", title="Clip", place="Coast", recast=_URL)
+    _resume(halves, _SPEAKER_NOTHING,
+            {"result": "resumed", "title": "Clip", "state": "playing", "content_id": "other", "app": None})
+    await ResumePlayback()(deps=None)
+    assert tv_session.now_playing() == {"kind": "nas", "title": "Clip", "place": "Coast", "recast": _URL}
 
 
 @pytest.mark.asyncio

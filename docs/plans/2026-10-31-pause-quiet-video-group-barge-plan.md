@@ -300,6 +300,9 @@ W5.1 → W1 → W2 → W3 → W4 → W5.2-6 → W7 → (build 1.36.0, deploy onc
 - Records: D-044, CHANGELOG, feature_list, progress.
 - W6's app side ships in 1.36.0. It takes effect once the operator's NAS step
   is done and `HANOVA_NAS_HTTP_BASE` is set on the robot.
+- **W6 result (2026-10-31):** all three verification lines passed live. The
+  pause-sleep-resume line exposed a gap: the woken app had no record of the
+  video. 1.36.1 fixes it; D-044 has the run.
 
 ## Review log (self-review against PRD, research, `reference/`)
 

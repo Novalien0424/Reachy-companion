@@ -1,9 +1,19 @@
-# Session handoff — 2026-10-31 (v1.36.0 installed; pause, quiet video, group barge by name)
+# Session handoff — 2026-10-31 (v1.36.1 installed; home videos outlive Reachy's sleep)
 
-State: **v1.36.0 installed 2026-10-31 (wheel `c712306b`); Reachy asleep (app
+State: **v1.36.1 installed 2026-10-31 (wheel `ddbcde53`); Reachy asleep (app
 stopped), TV idle.** Boots into 多人聊天模式 (`Tools in session (group, startup,
 19)`). The NAS index refreshes itself (D-041): nightly Mac pass at 03:30, and the
 robot swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
+
+## What 1.36.1 did (D-044, "W6 live and 1.36.1")
+
+- The operator's QNAP virtual host serves the cast copies; the instance `.env`
+  has `HANOVA_NAS_HTTP_BASE`. A clip kept playing 90 s after Reachy slept, and
+  one paused before sleep resumed after the next wake.
+- A video resumed after a wake is recorded again (`nas`, `youtube`, or a plain
+  `tv` video), so the quiet rule and the stop bookmark hold for it.
+- `device_check.sh sleep | paused-sleep`; `tv_state.py` shows the port the TV
+  fetches from.
 
 ## What 1.36.0 did (D-044, plan `docs/plans/2026-10-31-pause-quiet-video-group-barge-plan.md`)
 
@@ -26,34 +36,24 @@ robot swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
 
 ## Open, in order
 
-1. **Operator: the QNAP virtual host (W6).**
-   - QTS → Control Panel → Applications → Web Server → Virtual Host → enable.
-   - Create a host: HTTP, a free port (8090 suggested), root at the cast-copy
-     folder in its share.
-   - If the picker offers only the `Web` share, move the cast-copy folder into
-     `Web` (same volume) and repoint the Mac pipeline's output share.
-   - Then the agent:
-     - checks the root answers 403 (no listing) and a clip answers a range
-       request with 206;
-     - sets `HANOVA_NAS_HTTP_BASE=http://<nas>:<port>/` in
-       `~/.config/reachy_companion/.env`;
-     - runs `device_check.sh nas`, plus a sleep check: play, sleep, still playing
-       after 60 s.
-2. **Operator, in normal use:** W3/W4 with real speech (feature_list
+1. **Operator, in normal use:** W3/W4 with real speech (feature_list
    VIDEO-QUIET-GATE, GROUP-BARGE-BY-NAME). Unit-tested only; the synthetic-audio
    tier was not built, to save tokens.
-3. **Tomorrow:** read `~/HomeAssistant/state/nas-transcode.log` (the 03:30 nightly
+2. **Tomorrow:** read `~/HomeAssistant/state/nas-transcode.log` (the 03:30 nightly
    run, the first with `place_zh`), and `watchdog_cron.sh status`.
-4. **Known, not fixed:**
+3. **Known, not fixed:**
    - a mood query for speaker music ("relaxing jazz") finds no playable track;
    - simplified characters in some replies (a model limit);
    - 「暫停」 → `stop` about 1 time in 3 (mini's ceiling, absorbed by the
      bookmark).
+   - The NAS web server is LAN-only and unauthenticated, like the robot stream
+     it replaces. Its port must stay unforwarded (no router rule, no
+     myQNAPcloud publishing).
 
 ## How to test cheaply (the operator asked for it, 2026-10-31)
 
 - **Device truth, zero model tokens:**
-  `bash .claude/skills/reachy-deploy/scripts/device_check.sh nas|youtube|speaker|both|all`.
+  `bash .claude/skills/reachy-deploy/scripts/device_check.sh nas|youtube|speaker|both|all|sleep|paused-sleep`.
   One wake, with the mic muted.
 - **Model choice:**
   - Copy `qa_replay.py` and `qa_cases.json` to the robot's `/tmp`, then run

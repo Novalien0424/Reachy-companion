@@ -202,6 +202,14 @@ def media_content_id(reply: Dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def media_app_name(reply: Dict[str, Any]) -> str | None:
+    """Return the cast app of one state read ("Default Media Receiver", "YouTube"), or None."""
+    payload = reply.get("result") if reply.get("ok") else None
+    attributes = payload.get("attributes") if isinstance(payload, dict) else None
+    value = attributes.get("app_name") if isinstance(attributes, dict) else None
+    return str(value) if value else None
+
+
 async def _settle(entity_id: str, done: Callable[[str], bool], last: str) -> tuple[bool, str]:
     """Poll the TV for up to `_STOP_SETTLE_S` until `done(state)`; return (done, last state seen).
 
@@ -310,7 +318,9 @@ async def resume_tv_playback(entity_id: str) -> Dict[str, Any]:
     screen), ``ended`` (it left playback instead), ``still_paused`` or
     ``unreachable``. `media_play` read back as `playing` from the Default Media
     Receiver and as `buffering` from the YouTube app, which is how that app
-    plays, so both count as resumed.
+    plays, so both count as resumed. A resumed result also carries what the TV
+    shows (`content_id`, `app`): a video paused before Reachy slept is still on
+    the TV after the app forgot it.
     """
     if not entity_id:
         return {"result": "unreachable", "title": None, "state": None}
@@ -328,7 +338,8 @@ async def resume_tv_playback(entity_id: str) -> Dict[str, Any]:
         return {"result": "still_paused", "title": title, "state": last}
     if last in _MOVING_STATES:
         logger.info("TV resume: the TV reads %s", last)
-        return {"result": "resumed", "title": title, "state": last}
+        return {"result": "resumed", "title": title, "state": last,
+                "content_id": media_content_id(before), "app": media_app_name(before)}
     return {"result": "ended", "title": title, "state": last}
 
 

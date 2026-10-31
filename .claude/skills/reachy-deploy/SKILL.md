@@ -326,6 +326,13 @@ read `windows.md` in this skill's directory first.
 Every behavior change is judged on the robot, by mini, in fresh sessions.
 `scripts/` in this skill holds the harness; run it with bash from the Mac:
 
+- **The cheaper tiers come first** (2026-10-31, D-044).
+  - `bash scripts/device_check.sh nas|youtube|speaker|both|all|sleep|paused-sleep`
+    drives the playback tools on the real TV and speaker through the
+    test-only `qa.tool` RPC, with zero model tokens.
+  - `scripts/qa_replay.py`, run on the robot, replays model-choice cases text
+    only, from the installed wheel; its docstring has the usage.
+  - Use `live_case.sh` only for what needs a live session.
 - `bash scripts/live_case.sh 1 "<話>"` starts a fresh session (app stop and
   start), mutes the mic, and sends the text over the app's `/rpc`
   `conversation.say`. Then it prints the tool calls, the transcripts, the
