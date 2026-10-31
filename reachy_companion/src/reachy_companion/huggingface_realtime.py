@@ -119,19 +119,19 @@ _PARTY_CONTROL_RE = re.compile(r"停|閉嘴|闭嘴|安靜|安静|睡覺|睡觉|�
 
 
 def _boot_conversation_mode() -> ConversationMode:
-    """Return the mode a fresh handler starts in (operator instruction, 2026-09-04).
+    """Return the mode a fresh handler starts in (operator instruction, 2026-10-31).
 
-    `ONE_ON_ONE` by default (D-029 decision 5, amended). The 2026-08-31
-    amendment booted into `GROUP` for the room posture; three days of live use
-    showed one person talking to the robot directly and opening every session
-    with the same spoken switch, so the boot posture follows the common case
-    and 多人聊天模式 is the one spoken sentence away.
+    `GROUP` by default (D-029 decision 5, amended twice). The 2026-09-04
+    amendment booted into `ONE_ON_ONE`; on 2026-10-31 a morning with several
+    people in the room showed Reachy answering every sentence it heard, so the
+    boot posture answers only when someone calls it, and 一對一聊天模式 is the
+    one spoken sentence away.
 
     `REALTIME_PARTY_DEFAULT` (the 2026-08-24 knob) is deliberately no longer
-    read. An instance `.env` still carrying `=0` lands where it asked (solo);
-    `=1` is the case that now stings — it used to mean "boot into the room
-    posture" and now selects nothing at all — so the warning below names
-    `REALTIME_DEFAULT_MODE=group` as its replacement.
+    read. An instance `.env` still carrying `=1` lands where it asked (group);
+    `=0` is the case that stings — it used to mean "boot one-on-one" and now
+    selects nothing at all — so the warning below names
+    `REALTIME_DEFAULT_MODE=one_on_one` as its replacement.
 
     Degrades with a warning rather than raising, like every other mode knob.
     """
@@ -140,14 +140,14 @@ def _boot_conversation_mode() -> ConversationMode:
         if os.getenv("REALTIME_PARTY_DEFAULT") is not None:
             # Deploy visibility: an operator reading their own `.env` would
             # otherwise believe the boot mode is still theirs to set with the old
-            # knob. `REALTIME_PARTY_DEFAULT=1` is the case that stings — it used
-            # to mean "boot into the room posture" and now selects nothing at all.
+            # knob. `REALTIME_PARTY_DEFAULT=0` is the case that stings — it used
+            # to mean "boot one-on-one" and now selects nothing at all.
             logger.warning(
                 "REALTIME_PARTY_DEFAULT is no longer read; the boot mode is REALTIME_DEFAULT_MODE, "
-                "now unset, so Reachy boots into %s. Set REALTIME_DEFAULT_MODE=%s for the old "
-                "group behaviour.",
+                "now unset, so Reachy boots into %s. Set REALTIME_DEFAULT_MODE=%s to boot "
+                "one-on-one.",
                 DEFAULT_MODE.value,
-                ConversationMode.GROUP.value,
+                ConversationMode.ONE_ON_ONE.value,
             )
         return DEFAULT_MODE
     mode = parse_mode(raw)
@@ -779,8 +779,14 @@ def _cancel_barge_task(task: "asyncio.Task[None] | None", current: "asyncio.Task
 
 # --- party gate: face-engagement signal (Task 7) ----------------------------
 def _party_face_gate_enabled() -> bool:
-    """Whether a centered, engaged face alone may pass the address gate."""
-    return env_bool("REALTIME_PARTY_FACE_GATE", True)
+    """Whether a centered, engaged face alone may pass the address gate.
+
+    **Default OFF since 2026-10-31** (operator: in 多人聊天模式 Reachy answers
+    only when someone calls it). The family sits facing the robot while talking
+    to each other, so an engaged face says nothing about who a sentence is for.
+    `=1` restores the Task 7 path.
+    """
+    return env_bool("REALTIME_PARTY_FACE_GATE", False)
 
 
 def _party_face_fresh_s() -> float:

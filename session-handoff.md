@@ -1,8 +1,35 @@
-# Session handoff — 2026-10-30 (v1.31.3 installed; home_control reads back)
+# Session handoff — 2026-10-31 (v1.32.0 installed; Reachy answers when called)
 
-State: **v1.31.3 installed 12:52 UTC; Reachy asleep (app stopped by its own
-`go_to_sleep` at 11:01 UTC), TV off, mic unmuted.** Daemon v1.13.0. `main` is
-pushed.
+State: **v1.32.0 installed 2026-10-31 00:07 UTC; Reachy asleep (app stopped),
+TV off.** Boots into 多人聊天模式 (instance `.env`
+`REALTIME_DEFAULT_MODE=group`). Daemon v1.13.0. `main` is pushed.
+
+## 2026-10-31 morning session (23:12–23:17 UTC on 10-30) — findings
+
+Fixed in 1.32.0: one-on-one answered the room's side conversation, and room
+speech cut replies off about a dozen times (D-029 amendment 2026-10-31).
+Open, not yet fixed:
+
+1. **2026 Boston trip missing** (`NAS-INDEX-BOSTON-2026`). The NAS has
+   `2026Boston DVD` (22 clips, the Canada leg too), but the robot's index dates
+   from 2026-06-15. The Mac index (`~/HomeAssistant/state`) is rebuilt with a
+   `folder_meta.json` entry; the TV copies (`transcode.py --folder 2026Boston`)
+   need the operator's OK to write to the NAS. Then reindex and push the
+   index to the robot (back up the old one).
+2. **Wi-Fi never came back.** At 23:23 UTC a failed handshake left
+   NetworkManager `need-auth → failed → inactive` until the power cycle. The
+   D-034 watchdog is on the robot but its crontab line was never installed
+   (operator's step; line in `docs/plans/2026-10-28-wifi-recovery-plan.md`,
+   line 75).
+3. **Stop requests reach the wrong tool.** 「先暫停播放」 got "no stop command"
+   (`nas` has list/play/skip only), then 「停下你的播放」 called `music stop`,
+   got `nothing_playing`, and Reachy said 「停下來了」 while the video played.
+4. **「我看到二零二六 Boston 的嗎？」** made `nas play` replay `2025UK`; and
+   「请问我们在哪里？」 made `nas skip` instead of answering from the title.
+5. Smaller: the sleep summary timed out twice (no 上次聊天 fact saved); the
+   farewell hit the 6 s drain cap; a `response_cancel_not_active` error reached
+   the transcript; some replies in simplified characters; asked its mode,
+   mini said 「我不確定」 (1 run).
 
 ## Shipped today
 

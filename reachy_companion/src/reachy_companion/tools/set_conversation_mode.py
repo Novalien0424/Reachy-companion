@@ -23,8 +23,8 @@ class SetConversationMode(Tool):
     name = "set_conversation_mode"
     description = (
         "Change how you take part in the conversation while staying awake. one_on_one: one person; "
-        "answer normally (the start mode). group: several people; answer only when someone says your "
-        "name. record: a meeting; listen silently, take notes, and speak only when named, mainly to give "
+        "answer normally. group: several people; answer only when someone says your name (the start "
+        "mode). record: a meeting; listen silently, take notes, and speak only when named, mainly to give "
         "a summary with summarize_conversation. Use when: the user asks to change how you listen or take "
         "part. Do NOT use when: they want you to stop or sleep — that is go_to_sleep; or quiet for a "
         "moment only — that is wait_for_user. After switching, confirm the new mode in one short "
@@ -36,7 +36,7 @@ class SetConversationMode(Tool):
             "mode": {
                 "type": "string",
                 "enum": list(MODE_VALUES),
-                "description": "one_on_one 一對一聊天模式（開機預設）；group 多人聊天模式；record 紀錄模式。",
+                "description": "one_on_one 一對一聊天模式；group 多人聊天模式（開機預設）；record 紀錄模式。",
             },
         },
         "required": ["mode"],

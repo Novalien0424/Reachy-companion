@@ -5,6 +5,14 @@ history of this file.
 
 ## Current state
 
+**v1.32.0 INSTALLED (2026-10-31 00:07 UTC); app stopped (asleep), TV off.**
+- Boots into 多人聊天模式: answers a call by name or 「停」, and for 20 s after
+  an answer; a face alone no longer passes (D-029 amendment 2026-10-31).
+- Instance `.env`: `REALTIME_DEFAULT_MODE=group` (one-line diff, mode 600).
+- Live: `Tools in session (group, startup, 19)`, prefix 5,872. Suite 2076 / 31.
+- Findings from the 10-31 morning session and the open items are in
+  `session-handoff.md` (Boston index, Wi-Fi watchdog cron, stop routing).
+
 **v1.31.3 INSTALLED (2026-10-30 12:52 UTC); app stopped (asleep), TV off, mic
 unmuted.**
 - 「把電視打開」 now gets a short line first: 5/5 live, against 1/4 before.

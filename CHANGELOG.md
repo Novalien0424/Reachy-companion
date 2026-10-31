@@ -9,6 +9,26 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.32.0] — 2026-10-31 · Reachy answers when it is called
+
+Deployed as the thirty-third install (wheel sha `5700c98a…`). Decision D-029,
+amendment 2026-10-31.
+
+- **Reachy starts in 多人聊天模式.** It answers when someone says its name
+  (Reachy, Richie, Ritchie, 瑞奇, 里奇, 小瑞, 瑞曲) or 「停」, and keeps
+  answering for 20 s after it last answered. Other speech in the room gets no
+  reply. 一對一聊天模式 is still one spoken request away. Before, a morning
+  with several people in the room had Reachy answering side conversation and
+  being cut off by it about a dozen times in five minutes.
+- **A face alone no longer counts as calling Reachy.** People face the robot
+  while talking to each other. `REALTIME_PARTY_FACE_GATE=1` restores it.
+- The instance `.env` now sets `REALTIME_DEFAULT_MODE=group`, and the
+  `set_conversation_mode` text names group as the start mode.
+- The fixed prefix grew by 14 tokens (5,858 → 5,872): the group rules block is
+  longer than the one-on-one block.
+- Live: a fresh session boots as `Tools in session (group, startup, 19)`. The
+  gate is unit-tested; real room speech is checked in the next conversation.
+
 ## [1.31.3] — 2026-10-30 · Reachy says something while the TV comes on
 
 Fix redeploy of the thirty-second install (wheel sha `f886ff8e…`). Decision

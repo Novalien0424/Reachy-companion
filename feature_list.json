@@ -645,6 +645,22 @@
       "state": "verified",
       "evidence": "2026-10-30 v1.31.1 (wheel 73ec8d60…): suite 2071 / 31. Live: TV on 3/3, off 3/3, already off 3/3, unknown device 3/3. The ignore case (HA 200, state unchanged) is covered by tests only: no device on hand that ignores commands. 1.31.2 (wheel bb955ab7…): a timed-out command is read back; an HTTP refusal is named. Suite 2074 / 31; on-robot direct call was_already off. 1.31.3 (wheel f886ff8e…): description marks turning on as slow work; live turn-on preamble 1/4 → 5/5, no early success claim 5/5, warm first sound ~3 s instead of ~9 s; suite 2076 / 31.",
       "next_action": "Open (D-040): (1) scene/script/cover/lock states aren't on/off, decide before configuring one; (2) stage the ignore case with a real light switched off at the wall."
+    },
+    {
+      "id": "VOICE-NAME-ONLY-DEFAULT",
+      "behavior": "Reachy boots into 多人聊天模式 and answers only a turn that names it (or 停), or one inside the 20 s follow-up window after an accepted turn; room speech and an engaged face alone get no reply",
+      "verification": "tests/test_conversation_modes.py (boot default, env reader, dead-knob warning, real handler) + tests/test_party_mode.py (face gate off by default, name still accepts); on-robot journal: `Tools in session (group, …)` and `party gate: denied ambient turn` lines during a real multi-person conversation",
+      "state": "implemented",
+      "evidence": "2026-10-31 v1.32.0 (wheel 5700c98a…): suite 2076 / 31; a fresh on-robot session boots as `Tools in session (group, startup, 19)`, prefix 5,872. Motivating session 2026-10-30 23:12 UTC (one_on_one): side conversation answered, ~12 replies cut off by room speech. Name list caught 19 of 20 calls in the journal since 10-27; the miss (里娜) is not added, being close to a family member's name.",
+      "next_action": "After the next real multi-person conversation, count from the journal: turns denied (`party gate: denied ambient turn`) vs turns answered without the name, and calls missed. Open: GROUP barge-in is by 1.6 s persistence, not by name; mini answered 「我不確定」 when asked its mode (1 run)."
+    },
+    {
+      "id": "NAS-INDEX-BOSTON-2026",
+      "behavior": "The 2026 Boston trip (NAS folder `2026Boston DVD`, 22 .mov clips incl. the Canada leg) can be found and played by `nas`",
+      "verification": "On the robot: `nas list` with keyword Boston or Canada returns the trip; `nas play` casts a clip",
+      "state": "blocked",
+      "evidence": "2026-10-31: the robot's index was built 2026-06-15 and has no Boston folder, so 2026 Boston and 2026 Canada both came back no_match. The Mac index (~/HomeAssistant/state) is rebuilt with folder_meta for the folder: 22 clips, cast_ready 0. Writing the TV copies to the NAS (`transcode.py --folder 2026Boston`) was blocked by the permission classifier pending the operator's OK.",
+      "next_action": "With the operator's OK: run transcode.py --folder 2026Boston, rerun index.py, back up and replace the robot's instance nas-video-index.json, then live: 「瑞奇，放我們 2026 年去波士頓的影片」."
     }
   ]
 }

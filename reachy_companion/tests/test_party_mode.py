@@ -187,8 +187,9 @@ def test_gate_control_phrase_beats_backchannel_filter():
     assert h._party_gate_accepts("停") is True
 
 
-def test_gate_accepts_substantive_speech_from_engaged_face():
-    """A centered, fresh face plus real content accepts without a name or window."""
+def test_gate_accepts_substantive_speech_from_engaged_face(monkeypatch: pytest.MonkeyPatch):
+    """With the face gate on, a centered fresh face plus real content accepts without a name."""
+    monkeypatch.setenv("REALTIME_PARTY_FACE_GATE", "1")
     h = _party_handler()
     face = SimpleNamespace(detected=True, x=0.1, y=0.0, roll=0.0, ts=time.monotonic())
     h.deps.reachy_mini.get_tracked_face = lambda wait: face
@@ -196,8 +197,9 @@ def test_gate_accepts_substantive_speech_from_engaged_face():
     assert h._party_gate_accepts("嗯嗯") is False  # backchannel still denied
 
 
-def test_gate_face_signal_ignores_stale_or_offcenter():
+def test_gate_face_signal_ignores_stale_or_offcenter(monkeypatch: pytest.MonkeyPatch):
     """A face reading must be both recent and centered to count as engaged."""
+    monkeypatch.setenv("REALTIME_PARTY_FACE_GATE", "1")
     h = _party_handler()
     stale = SimpleNamespace(detected=True, x=0.1, y=0.0, roll=0.0, ts=time.monotonic() - 60)
     h.deps.reachy_mini.get_tracked_face = lambda wait: stale
@@ -207,13 +209,22 @@ def test_gate_face_signal_ignores_stale_or_offcenter():
     assert h._party_gate_accepts("可以幫我開燈嗎") is False
 
 
-def test_gate_face_signal_env_off(monkeypatch: pytest.MonkeyPatch):
-    """REALTIME_PARTY_FACE_GATE=0 disables the face-engagement path entirely."""
-    monkeypatch.setenv("REALTIME_PARTY_FACE_GATE", "0")
+def test_gate_face_signal_is_off_by_default(monkeypatch: pytest.MonkeyPatch):
+    """Operator 2026-10-31: a face alone never passes; Reachy answers when called.
+
+    The family sits facing the robot while talking to each other, so an engaged
+    face says nothing about who a sentence is for. `=0` is the same as unset.
+    """
     h = _party_handler()
     face = SimpleNamespace(detected=True, x=0.0, y=0.0, roll=0.0, ts=time.monotonic())
     h.deps.reachy_mini.get_tracked_face = lambda wait: face
-    assert h._party_gate_accepts("可以幫我開燈嗎") is False
+    for value in (None, "0"):
+        if value is None:
+            monkeypatch.delenv("REALTIME_PARTY_FACE_GATE", raising=False)
+        else:
+            monkeypatch.setenv("REALTIME_PARTY_FACE_GATE", value)
+        assert h._party_gate_accepts("可以幫我開燈嗎") is False
+        assert h._party_gate_accepts("瑞奇，可以幫我開燈嗎") is True
 
 
 def test_face_query_failure_is_a_quiet_no():

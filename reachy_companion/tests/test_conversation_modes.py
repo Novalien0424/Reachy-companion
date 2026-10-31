@@ -91,14 +91,14 @@ def test_parse_mode_accepts_values_and_legacy_aliases() -> None:
     assert MODE_LABELS[ConversationMode.RECORD] == "紀錄模式"
 
 
-def test_the_boot_default_is_one_on_one() -> None:
-    """Operator instruction 2026-09-04: a fresh handler starts in 一對一聊天模式.
+def test_the_boot_default_is_group() -> None:
+    """Operator instruction 2026-10-31: a fresh handler starts in 多人聊天模式.
 
-    Three days of live use showed one person talking to the robot directly and
-    opening every session with the same spoken switch out of 多人聊天模式, so
-    the boot posture follows the common case (D-029 decision 5, amended).
+    Several people talk in the room the robot lives in, and in 一對一聊天模式 it
+    answered every sentence it heard, so the boot posture answers only when
+    someone calls it (D-029 decision 5, amended twice).
     """
-    assert DEFAULT_MODE is ConversationMode.ONE_ON_ONE
+    assert DEFAULT_MODE is ConversationMode.GROUP
 
 
 def test_the_boot_mode_env_selects_a_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,7 +106,7 @@ def test_the_boot_mode_env_selects_a_mode(monkeypatch: pytest.MonkeyPatch) -> No
     from reachy_companion.huggingface_realtime import _boot_conversation_mode
 
     monkeypatch.delenv("REALTIME_DEFAULT_MODE", raising=False)
-    assert _boot_conversation_mode() is ConversationMode.ONE_ON_ONE
+    assert _boot_conversation_mode() is ConversationMode.GROUP
     monkeypatch.setenv("REALTIME_DEFAULT_MODE", "group")
     assert _boot_conversation_mode() is ConversationMode.GROUP
     monkeypatch.setenv("REALTIME_DEFAULT_MODE", "one_on_one")
@@ -123,9 +123,9 @@ def test_a_malformed_boot_mode_degrades_to_the_default(monkeypatch: pytest.Monke
     from reachy_companion.huggingface_realtime import _boot_conversation_mode
 
     monkeypatch.setenv("REALTIME_DEFAULT_MODE", "karaoke")
-    assert _boot_conversation_mode() is ConversationMode.ONE_ON_ONE
+    assert _boot_conversation_mode() is ConversationMode.GROUP
     monkeypatch.setenv("REALTIME_DEFAULT_MODE", "   ")
-    assert _boot_conversation_mode() is ConversationMode.ONE_ON_ONE
+    assert _boot_conversation_mode() is ConversationMode.GROUP
 
 
 def test_booting_into_record_warns(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
@@ -145,22 +145,22 @@ def test_the_dead_party_knob_is_announced_when_it_is_the_only_one_set(
 ) -> None:
     """An operator whose `.env` still carries the old knob must hear that it is dead.
 
-    `REALTIME_PARTY_DEFAULT=1` used to mean "boot into the room posture" and now
-    selects nothing at all. Silently booting into 一對一聊天模式 against an
-    explicit `1` is the kind of thing that gets diagnosed as a broken robot, so
-    say it in the deploy log, naming the replacement knob value.
+    `REALTIME_PARTY_DEFAULT=0` used to mean "boot one-on-one" and now selects
+    nothing at all. Silently booting into 多人聊天模式 against an explicit `0`
+    is the kind of thing that gets diagnosed as a broken robot, so say it in
+    the deploy log, naming the replacement knob value.
     """
     import logging
 
     from reachy_companion.huggingface_realtime import _boot_conversation_mode
 
     monkeypatch.delenv("REALTIME_DEFAULT_MODE", raising=False)
-    monkeypatch.setenv("REALTIME_PARTY_DEFAULT", "1")
+    monkeypatch.setenv("REALTIME_PARTY_DEFAULT", "0")
     with caplog.at_level(logging.WARNING, logger="reachy_companion.huggingface_realtime"):
-        assert _boot_conversation_mode() is ConversationMode.ONE_ON_ONE
+        assert _boot_conversation_mode() is ConversationMode.GROUP
     assert "REALTIME_PARTY_DEFAULT" in caplog.text
-    assert "REALTIME_DEFAULT_MODE=group" in caplog.text, "the replacement has to be in the line"
-    assert "one_on_one" in caplog.text, "the resolved mode has to be in the line"
+    assert "REALTIME_DEFAULT_MODE=one_on_one" in caplog.text, "the replacement has to be in the line"
+    assert "into group" in caplog.text, "the resolved mode has to be in the line"
 
 
 def test_the_dead_party_knob_is_silent_once_the_new_one_is_set(
@@ -304,8 +304,8 @@ def test_mode_state_default_exists_on_the_base_handler() -> None:
     assert "_boot_conversation_mode()" in source
 
 
-def test_a_real_handler_boots_into_one_on_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """End to end: __init__ with no env set lands in 一對一聊天模式."""
+def test_a_real_handler_boots_into_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end: __init__ with no env set lands in 多人聊天模式."""
     from unittest.mock import MagicMock
 
     from reachy_companion.tools.core_tools import ToolDependencies
@@ -315,9 +315,9 @@ def test_a_real_handler_boots_into_one_on_one(monkeypatch: pytest.MonkeyPatch) -
     handler = HuggingFaceRealtimeHandler(
         ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
     )
-    assert handler._conversation_mode is ConversationMode.ONE_ON_ONE
-    assert handler._party_mode is False
-    assert handler._turn_mode is ConversationMode.ONE_ON_ONE
+    assert handler._conversation_mode is ConversationMode.GROUP
+    assert handler._party_mode is True
+    assert handler._turn_mode is ConversationMode.GROUP
 
 
 @pytest.mark.asyncio

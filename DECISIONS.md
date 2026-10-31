@@ -1234,6 +1234,27 @@ match how the robot is used. Related, not changed here: the interruption
 gate (`REALTIME_SOLO_NAME_GATE`) still applies in solo mode — see
 `docs/rca-solo-interrupt-2026-09-04.md`.
 
+**Amendment 2026-10-31 — the boot posture is 多人聊天模式 again, and a face
+alone no longer passes.** Operator instruction after a morning with several
+people in the room: Reachy should answer only when someone calls it, not
+everything it hears. The 07:12 local session that morning (一對一, five
+minutes) answered side conversation — 「你要自己注意時間喔」, 「不是別人設，
+是我設的」 — and room speech cut its replies off about a dozen times.
+`DEFAULT_MODE` is `GROUP` again, and the instance `.env` carries
+`REALTIME_DEFAULT_MODE=group`. The GROUP gate's face path
+(`REALTIME_PARTY_FACE_GATE`, Task 7) now defaults **off**: the family sits
+facing the robot while talking to each other, so an engaged face says nothing
+about who a sentence is for. What still passes in GROUP: a control phrase, an
+address name, and the 20 s follow-up window after an accepted turn, so a person
+who called Reachy can keep talking without repeating the name. The name list
+is unchanged: the journal since 10-27 has 20 turns calling Reachy and the list
+caught 19. The miss, 「里娜」, is deliberately not added because it is close to
+a family member's name. The dead-knob warning now names `one_on_one` as the
+replacement for `REALTIME_PARTY_DEFAULT=0`. Tool text: the start-mode label
+moved to `group` in `set_conversation_mode` (description and enum).
+Unchanged: GROUP barge-in is still by persistence
+(`REALTIME_PARTY_BARGE_CONFIRM_MS`, 1.6 s of speech over a reply), not by name.
+
 **(6) `record_log` at 2000 and `session_transcript` at 40 are different data,
 not two sizes of the same data.** The D-027 transcript is forty accepted turns
 feeding a per-person 「上次聊天」 callback. A meeting record is the opposite on

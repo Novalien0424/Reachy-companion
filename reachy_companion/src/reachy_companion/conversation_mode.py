@@ -23,12 +23,13 @@ class ConversationMode(str, Enum):
     RECORD = "record"
 
 
-# The mode a fresh handler boots into (operator instruction, 2026-09-04,
-# reversing the 2026-08-31 amendment). The robot is mostly used by one person
-# talking to it directly, and every session was opening with the same spoken
-# switch out of 多人聊天模式 — so boot into 一對一聊天模式 and let the room
-# posture be the one spoken sentence away. D-029 decision 5 (amended).
-DEFAULT_MODE: Final[ConversationMode] = ConversationMode.ONE_ON_ONE
+# The mode a fresh handler boots into (operator instruction, 2026-10-31,
+# reversing the 2026-09-04 amendment). Several people talk in the room the
+# robot lives in, and in 一對一聊天模式 it answered every sentence it heard —
+# so boot into 多人聊天模式, where it answers when someone calls it by name,
+# and let one-on-one be the one spoken sentence away. D-029 decision 5
+# (amended twice).
+DEFAULT_MODE: Final[ConversationMode] = ConversationMode.GROUP
 
 # Declaration order, used for the tool schema's enum. The boot default is
 # `DEFAULT_MODE` above, not the first entry here.
