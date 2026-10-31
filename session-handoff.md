@@ -1,8 +1,9 @@
 # Session handoff — 2026-10-31 (v1.32.0 installed; Reachy answers when called)
 
-State: **v1.32.0 installed 2026-10-31 00:07 UTC; Reachy asleep (app stopped),
-TV off.** Boots into 多人聊天模式 (instance `.env`
-`REALTIME_DEFAULT_MODE=group`). Daemon v1.13.0. `main` is pushed.
+State: **v1.33.0 installed 2026-10-31 00:32 UTC; Reachy asleep (app stopped),
+TV off.** Boots into 多人聊天模式. The NAS index refreshes itself (D-041): nightly
+Mac pass at 03:30 (`~/HomeAssistant/bin/nas-video/install-nightly.sh`), robot
+swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
 
 ## 2026-10-31 morning session (23:12–23:17 UTC on 10-30) — findings
 
@@ -10,12 +11,7 @@ Fixed in 1.32.0: one-on-one answered the room's side conversation, and room
 speech cut replies off about a dozen times (D-029 amendment 2026-10-31).
 Open, not yet fixed:
 
-1. **2026 Boston trip missing** (`NAS-INDEX-BOSTON-2026`). The NAS has
-   `2026Boston DVD` (22 clips, the Canada leg too), but the robot's index dates
-   from 2026-06-15. The Mac index (`~/HomeAssistant/state`) is rebuilt with a
-   `folder_meta.json` entry; the TV copies (`transcode.py --folder 2026Boston`)
-   need the operator's OK to write to the NAS. Then reindex and push the
-   index to the robot (back up the old one).
+1. ~~2026 Boston trip missing~~ — fixed by D-041 (1.33.0); Boston plays.
 2. **Wi-Fi never came back.** At 23:23 UTC a failed handshake left
    NetworkManager `need-auth → failed → inactive` until the power cycle. The
    D-034 watchdog is on the robot but its crontab line was never installed

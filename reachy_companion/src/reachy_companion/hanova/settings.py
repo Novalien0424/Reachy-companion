@@ -265,6 +265,16 @@ def nas_stream_enabled() -> bool:
     return env_str("HANOVA_NAS_STREAM", "1").lower() not in {"0", "false", "no"}
 
 
+def nas_index_refresh_enabled() -> bool:
+    """Return whether each app start refreshes the index from the NAS copy.
+
+    On by default (2026-10-31): the operator's nightly Mac pass rebuilds the index
+    and mirrors it into the share, so a new trip folder reaches Reachy at its next
+    wake. `HANOVA_NAS_INDEX_REFRESH=0` keeps the instance copy as the only source.
+    """
+    return env_str("HANOVA_NAS_INDEX_REFRESH", "1").lower() not in {"0", "false", "no"}
+
+
 # --- yt-dlp ----------------------------------------------------------------
 def ytdlp_search_n() -> int:
     """How many YouTube search results yt-dlp considers.

@@ -18,11 +18,13 @@ capability with no background task to own or leak.
 """
 
 from __future__ import annotations
+import io
 import os
 import re
 import json
 import time
 import uuid
+import shutil
 import asyncio
 import hashlib
 import logging
@@ -198,6 +200,121 @@ def load_index() -> Dict[str, Any] | None:
         logger.warning("Could not read the NAS index: %s", redact.error(exc))
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+# --- index refresh from the NAS copy (2026-10-31) ---------------------------
+# The operator's nightly Mac pass (`~/HomeAssistant/bin/nas-video/run-batch.sh`)
+# rebuilds the index, makes TV copies of new files, and mirrors the index to
+# `<HANOVA_NAS_SUBPATH>/.index.json`. Each app start reads that copy on a daemon
+# thread and, when it is newer and sane, swaps it in for the instance copy, so a
+# new trip folder reaches Reachy without anyone copying files to the robot. The
+# instance copy stays the source of truth whenever the NAS copy is missing,
+# unreachable, older, or looks like a broken listing.
+_MIRROR_NAME = ".index.json"
+_MIRROR_MAX_BYTES = 64 * 1024 * 1024
+_MIRROR_READ_BUDGET_S = 60.0
+# A copy listing fewer than half the clips the robot already knows is treated
+# as a listing that went wrong, not as half the archive being deleted overnight.
+_MIRROR_SHRINK_FLOOR = 0.5
+
+
+def _mirror_problem(candidate: Any, current: Dict[str, Any] | None) -> str | None:
+    """Return why *candidate* must not replace *current*, or None when it may."""
+    if not isinstance(candidate, dict):
+        return "it is not a JSON object"
+    videos = candidate.get("videos")
+    if not isinstance(videos, list) or not videos:
+        return "it lists no videos"
+    if not isinstance(candidate.get("folders"), dict):
+        return "it has no folders"
+    have = current.get("videos") if current else None
+    if isinstance(have, list) and len(videos) < len(have) * _MIRROR_SHRINK_FLOOR:
+        return f"it lists {len(videos)} videos against {len(have)} on the robot"
+    return None
+
+
+def _generated_at(index: Dict[str, Any] | None) -> float | None:
+    value = index.get("generated_at") if index else None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def refresh_index_from_nas() -> str:
+    """Swap in the NAS copy of the index when it is newer and sane. Synchronous.
+
+    Returns the outcome, also logged once: `updated`, `current`, `refused`,
+    `unavailable` or `not_configured`. Never raises; on every outcome but
+    `updated` the instance copy is left exactly as it was. The previous copy is
+    kept beside it as `<name>.prev`, and the new one is renamed into place, so a
+    reader never sees a half-written index.
+    """
+    path = settings.nas_index_path()
+    host, user, password = settings.nas_host(), settings.nas_user(), settings.nas_password()
+    share, subpath = settings.nas_share(), settings.nas_subpath().strip("/")
+    if path is None or not (host and user and password and share and subpath):
+        logger.info("NAS index refresh: not configured; using the robot's copy")
+        return "not_configured"
+    current = load_index()
+    remote = "\\\\" + host + "\\" + share + "\\" + subpath.replace("/", "\\") + "\\" + _MIRROR_NAME
+    try:
+        import smbclient
+
+        smbclient.register_session(
+            host, username=user, password=password, connection_timeout=_SMB_CONNECT_TIMEOUT_S
+        )
+        if smbclient.stat(remote).st_size > _MIRROR_MAX_BYTES:
+            logger.warning("NAS index refresh: the NAS copy is over %d MB; kept the robot's copy",
+                           _MIRROR_MAX_BYTES // (1024 * 1024))
+            return "refused"
+        buffer = io.BytesIO()
+        with smbclient.open_file(remote, mode="rb") as source:
+            _copy_within_budget(source, buffer, _MIRROR_READ_BUDGET_S)
+        raw = buffer.getvalue()
+    except Exception as exc:  # noqa: BLE001 - smbprotocol raises a wide family
+        # The SMB error text carries the share path (round 2, finding 6).
+        logger.info("NAS index refresh: the NAS copy is unavailable (%s); using the robot's copy",
+                    redact.error(exc))
+        return "unavailable"
+    try:
+        candidate = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # Not the exception text: it quotes the offending line, a video filename.
+        logger.warning("NAS index refresh: the NAS copy is not valid JSON; kept the robot's copy")
+        return "refused"
+    new_at, have_at = _generated_at(candidate if isinstance(candidate, dict) else None), _generated_at(current)
+    if new_at is not None and have_at is not None and new_at <= have_at:
+        logger.info("NAS index refresh: the robot's copy is current")
+        return "current"
+    problem = _mirror_problem(candidate, current)
+    if problem is not None:
+        logger.warning("NAS index refresh: kept the robot's copy; the NAS copy was refused (%s)", problem)
+        return "refused"
+    partial = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}{PART_SUFFIX}")
+    try:
+        with open(partial, "wb") as target:
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(partial, 0o600)
+        if path.is_file():
+            shutil.copy2(path, path.with_name(path.name + ".prev"))
+        os.replace(partial, path)
+    except OSError as exc:
+        partial.unlink(missing_ok=True)
+        logger.warning("NAS index refresh: could not write the new copy (%s); kept the robot's copy",
+                       redact.error(exc))
+        return "unavailable"
+    before = len(current.get("videos", [])) if current else 0
+    logger.info("NAS index refresh: updated from the NAS copy (%d -> %d videos)", before, len(candidate["videos"]))
+    return "updated"
+
+
+def start_index_refresh() -> threading.Thread | None:
+    """Run `refresh_index_from_nas` on a daemon thread; startup never waits on it."""
+    if not settings.nas_index_refresh_enabled():
+        return None
+    thread = threading.Thread(target=refresh_index_from_nas, name="nas-index-refresh", daemon=True)
+    thread.start()
+    return thread
 
 
 def _hay(value: Any) -> str:

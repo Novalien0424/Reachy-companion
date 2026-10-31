@@ -5,6 +5,13 @@ history of this file.
 
 ## Current state
 
+**v1.33.0 INSTALLED (2026-10-31 00:32 UTC); app stopped (asleep), TV off.**
+- The NAS index keeps itself current (D-041): a nightly Mac pass (03:30, via an
+  ssh-localhost route macOS lets reach the LAN) reindexes, transcodes new files
+  and mirrors the index; each wake swaps in the newer NAS copy.
+- First pass: 22/22 Boston copies; wake logged 2743 -> 2765; 「放影片庫裡我們
+  2026年去波士頓的影片」 played on the TV. Suite 2087 / 31.
+
 **v1.32.0 INSTALLED (2026-10-31 00:07 UTC); app stopped (asleep), TV off.**
 - Boots into 多人聊天模式: answers a call by name or 「停」, and for 20 s after
   an answer; a face alone no longer passes (D-029 amendment 2026-10-31).

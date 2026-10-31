@@ -658,9 +658,17 @@
       "id": "NAS-INDEX-BOSTON-2026",
       "behavior": "The 2026 Boston trip (NAS folder `2026Boston DVD`, 22 .mov clips incl. the Canada leg) can be found and played by `nas`",
       "verification": "On the robot: `nas list` with keyword Boston or Canada returns the trip; `nas play` casts a clip",
-      "state": "blocked",
-      "evidence": "2026-10-31: the robot's index was built 2026-06-15 and has no Boston folder, so 2026 Boston and 2026 Canada both came back no_match. The Mac index (~/HomeAssistant/state) is rebuilt with folder_meta for the folder: 22 clips, cast_ready 0. Writing the TV copies to the NAS (`transcode.py --folder 2026Boston`) was blocked by the permission classifier pending the operator's OK.",
-      "next_action": "With the operator's OK: run transcode.py --folder 2026Boston, rerun index.py, back up and replace the robot's instance nas-video-index.json, then live: 「瑞奇，放我們 2026 年去波士頓的影片」."
+      "state": "verified",
+      "evidence": "2026-10-31: the robot's index was built 2026-06-15 and has no Boston folder, so 2026 Boston and 2026 Canada both came back no_match. The Mac index (~/HomeAssistant/state) is rebuilt with folder_meta for the folder: 22 clips, cast_ready 0. Writing the TV copies to the NAS (`transcode.py --folder 2026Boston`) was blocked by the permission classifier pending the operator's OK. Fixed 2026-10-31 by D-041: the first nightly pass (09:20 local, via the SSH route) made 22/22 TV copies, cast_ready 2739 -> 2761, and mirrored the index; on the next wake the robot logged `NAS index refresh: updated from the NAS copy (2743 -> 2765 videos)`, and 「瑞奇，放影片庫裡我們2026年去波士頓的影片」 called nas play place=Boston year 2026 and the TV played `Boston opening` (HA playing, NAS stream 206). TV turned off after.",
+      "next_action": "None; new folders now arrive via NAS-INDEX-AUTO-REFRESH."
+    },
+    {
+      "id": "NAS-INDEX-AUTO-REFRESH",
+      "behavior": "A video or folder added to the NAS reaches Reachy without hand work: the nightly Mac pass reindexes, makes TV copies of new files and mirrors the index into the share, and each robot wake swaps in that copy when it is newer and sane",
+      "verification": "tests/test_hanova_nas_index_refresh.py (newer replaces + .prev, older/equal unchanged, broken/shrunk refused, unreachable keeps the copy and logs no path, first copy, daemon thread + switch); Mac: install-nightly.sh hop-check; robot journal `NAS index refresh:` line",
+      "state": "verified",
+      "evidence": "2026-10-31 v1.33.0 (wheel c0bd5d93…): suite 2087 / 31. The LaunchDaemon alone listed 0 videos (macOS local-network privacy); through the ssh-localhost route its first pass listed 2765, transcoded 22/22, mirrored. Robot wake: updated 2743 -> 2765; Boston played on the TV.",
+      "next_action": "Watch the 03:30 passes in ~/HomeAssistant/state/nas-transcode.log; the first unattended one is 2026-11-01."
     }
   ]
 }

@@ -9,6 +9,21 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.33.0] — 2026-10-31 · new home videos arrive on their own
+
+Deployed as the thirty-fourth install (wheel sha `c0bd5d93…`). Decision D-041.
+
+- **Each wake picks up the latest video index from the NAS.** The operator's
+  nightly Mac pass now rebuilds the index, makes TV copies of new files and
+  leaves the index in the share. Reachy reads it in the background at start.
+  - It swaps the copy in only when it is newer and sane.
+  - It keeps the old copy as `nas-video-index.json.prev`.
+  - It never delays the wake.
+  - `HANOVA_NAS_INDEX_REFRESH=0` turns it off.
+- New folders need no hand edits: the year and place come from the folder name.
+- Why: the 2026 Boston trip (with its Canada leg) was on the NAS, but the
+  robot's index dated from June, so Reachy said there was no such trip.
+
 ## [1.32.0] — 2026-10-31 · Reachy answers when it is called
 
 Deployed as the thirty-third install (wheel sha `5700c98a…`). Decision D-029,

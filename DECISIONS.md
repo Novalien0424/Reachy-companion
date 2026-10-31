@@ -2639,3 +2639,42 @@ device on hand ignores commands. The test entry was removed and the instance
   again before the poll. None is configured.
 - **The ignore case** is unit-tested only.
 
+## D-041 — The NAS video index keeps itself current (2026-10-31)
+
+Operator request after Reachy said there was no 2026 Boston trip: new videos
+and folders should reach Reachy without hand work ("allow some delay"). The
+trip was on the NAS (`2026Boston DVD`, 22 clips, the Canada leg too); the
+robot's index dated from 2026-06-15 and nothing had refreshed it since.
+
+**(1) A nightly Mac pass.** The operator's pipeline
+(`~/HomeAssistant/bin/nas-video`, outside this repo) already rebuilt the index
+and made TV copies resumably, but only when started by hand. `run-batch.sh` now
+reindexes first (new folders need no hand edits: year and place come from the
+folder name, clip titles from file names; `folder_meta.json` only adds country
+and place detail), skips the pass when the NAS listing comes back empty, holds
+one lock so only one pass uses the NAS, and ends with `index.py --mirror`, which
+writes `DVD_Backup/.index.json`. A LaunchDaemon
+(`com.houseassistant.nas-nightly`, 03:30, as the operator) starts it;
+`install-nightly.sh` installs it and `--uninstall` removes every part.
+
+**(2) The pass runs inside an SSH session.** macOS local-network privacy keeps
+launchd jobs off the LAN: the login agent's 2026-09-30 pass and the new
+daemon's first pass both listed 0 videos. Processes under sshd may reach it, so
+a pass started outside SSH relaunches itself with `ssh localhost`, using a key
+of its own (`~/.ssh/nas_nightly_ed25519`). Its single `authorized_keys` line is
+`restrict`, `from="127.0.0.1,::1"` and a forced command of `run-batch.sh`. The
+operator added the line by running the installer; the agent was blocked from
+doing it as persistence. `hop-check` is a read-only probe of that route.
+
+**(3) The robot reads the NAS copy on wake** (1.33.0).
+`hanova.nas.refresh_index_from_nas` runs on a daemon thread at app start. It
+reads `<HANOVA_NAS_SUBPATH>/.index.json` with the app's NAS login. It swaps the
+copy in only when it is newer (`generated_at`) and sane: an object with videos
+and folders, and not under half the clips the robot already knows. It writes a
+`.part` file, renames it into place and keeps the previous copy as
+`<name>.prev`. On every other outcome the instance copy stays. There is no cron
+on the robot. `HANOVA_NAS_INDEX_REFRESH=0` turns it off.
+
+Delay: a new file reaches the robot at the first wake after the next 03:30
+pass.
+

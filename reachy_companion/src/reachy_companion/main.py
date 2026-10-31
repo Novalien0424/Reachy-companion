@@ -237,6 +237,12 @@ def run(
 
     log_persona_source(instance_path)
 
+    # 2026-10-31: the nightly Mac pass mirrors the video index into the NAS share;
+    # pick up a newer one on a daemon thread, so a slow NAS never delays the wake.
+    from reachy_companion.hanova.nas import start_index_refresh
+
+    start_index_refresh()
+
     logger.info(
         "Configured OpenAI realtime backend, transcription language: %s",
         runtime_config.REALTIME_TRANSCRIPTION_LANGUAGE,

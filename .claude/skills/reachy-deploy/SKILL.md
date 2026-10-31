@@ -110,6 +110,10 @@ read `windows.md` in this skill's directory first.
    - `nas-video-index.json` — the operator-supplied home-video index (D-018).
      Not a credential, but personal data and not reproducible on the robot: it is
      built on the operator's own machine. Losing it disables the `nas` tool.
+     Since 1.33.0 each wake swaps in the NAS copy (`DVD_Backup/.index.json`,
+     written by the nightly Mac pass) when it is newer and sane, and keeps the
+     previous copy as `nas-video-index.json.prev` (D-041). Don't hand-copy an
+     index to the robot unless that pass is broken.
 
    Deliberately **not** backed up: `hanova_media/` (the downloaded music, staged
    NAS clips and generated images). It is a regenerable cache with keep-N caps,
