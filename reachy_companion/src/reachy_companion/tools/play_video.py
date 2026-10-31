@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
-from reachy_companion.hanova import nas, ytdlp, redact, settings
+from reachy_companion.hanova import nas, ytdlp, redact, settings, tv_session
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.hanova.ha_client import ha_run_script, tv_not_responding, confirm_cast_started
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
@@ -110,4 +110,7 @@ class PlayVideo(Tool):
         check = await confirm_cast_started(entity, timeout_s=settings.cast_confirm_timeout_s())
         if check["confirmed"] is False:
             return {**tv_not_responding(check["state"]), "title": found["title"], "video_id": found["id"]}
+        # A video is on the TV now: Reachy answers only when called (plan W3);
+        # the id plays it again from a kept place.
+        tv_session.mark_started("youtube", title=str(found["title"]), recast=str(found["id"]))
         return {"ok": True, "status": "casting", "title": found["title"], "video_id": found["id"]}

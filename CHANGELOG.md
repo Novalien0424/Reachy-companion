@@ -9,6 +9,54 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.36.0] — 2026-10-31 · pause, quiet while a video plays, group barge by name
+
+Deployed as the thirty-seventh install (wheel sha `c712306b…`). Decision D-044.
+
+- **Pause and resume.** `music` is now `play | pause | resume | stop`.
+  - Pause and resume act on the speaker and the TV alike, and each is read back.
+  - On the real TV a NAS clip paused at 12.5 s, held for 5 s, and resumed from
+    12.7 s. YouTube did the same.
+- **Stop stops everything.** One `music stop` ends the speaker and the TV
+  together (`stopped: ["speaker", "tv"]`, live).
+  - It keeps a bookmark of a video Reachy started, so 「繼續」 after a stop
+    re-casts it and seeks back ("where it stopped", live for NAS and YouTube).
+    This also makes mini's misread 「暫停」 (mini picks `stop` about 1 time in 3)
+    cost a moment rather than the place.
+- **Quiet while a video plays.** While a video Reachy started is on the TV
+  (paused counts), 一對一 and 多人 answer only a turn that names Reachy or says
+  a control phrase. A clip that ends on its own reopens the normal rules after
+  one TV read.
+- **Group barge by name.**
+  - In 多人, and in 一對一 during a video, unaddressed speech no longer cuts
+    Reachy off. Before, 1.6 s of any speech did, the TV soundtrack included.
+  - A name or 「停」 still does.
+  - While a video plays, soundtrack speech no longer delays the answer to a
+    named turn.
+  - `REALTIME_PARTY_BARGE=persistence` restores the old rule.
+- **The NAS can serve the clip** (`HANOVA_NAS_HTTP_BASE`), so a video survives
+  Reachy's sleep. It is off until the operator's QNAP virtual host is set up.
+- **Answers about the clip.** The `nas` results carry the trip's `place`. While
+  a video plays, `camera` and `look_around` also return `video_on_tv`, so
+  「我們在哪裡」 is answered from the trip even via the camera (replay 3/3,
+  against 1/3).
+- **Search.**
+  - camelCase labels match again (`OpeningNY` for "NY"; a 1.35.0 regression).
+  - Chinese place names (`place_zh`, from the operator's index) match Chinese
+    queries.
+- **Small fixes:**
+  - `response_cancel_not_active` no longer shows as a transcript error;
+  - the sleep goodbye drain cap is 10 s (was 6);
+  - a sleep summary that times out is kept and written at the next start;
+  - the transcript's tool-result copy is readable UTF-8.
+- **QA without voice sessions:**
+  - `qa.tool` (test-only RPC, only while `/tmp/reachy_qa` exists);
+  - `device_check.sh`, which ran every playback path on the real TV and speaker
+    with zero model tokens;
+  - `qa_replay.py`, which runs model-choice cases as text-only sessions built
+    from the installed wheel: about 50 short turns in all, no audio.
+- Suite 2272 / 31; ruff and mypy clean.
+
 ## [1.35.0] — 2026-10-31 · the right trip, found the first time
 
 Deployed as the thirty-sixth install (wheel sha `810050c2…`). Decision D-043.

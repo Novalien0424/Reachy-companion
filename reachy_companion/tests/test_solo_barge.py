@@ -1223,7 +1223,11 @@ async def test_a_partial_backchannel_never_commits() -> None:
 
 @pytest.mark.asyncio
 async def test_partial_commit_is_inert_in_party_mode() -> None:
-    """Party mode owns its own barge decision; the partial path must not touch it."""
+    """Party mode owns its own barge decision; the SOLO partial path must not touch it.
+
+    The room's own partial path (the W4 name rule, `test_party_mode.py`) runs
+    only when no solo pause is pending, so it leaves this stranded pause alone.
+    """
     h = _solo_handler()
     _make_audible()
     h._response_done_event.clear()

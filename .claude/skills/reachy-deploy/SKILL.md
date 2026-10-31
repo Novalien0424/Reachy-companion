@@ -80,10 +80,15 @@ read `windows.md` in this skill's directory first.
      profile` where it should read `persona: instance persona.md`.
      A git-tracked **local working copy lives at repo-root `persona.md`**;
      after editing it, sync it to the robot with
-     `scp persona.md ${REACHY_SSH_USER}@${REACHY_HOST}:$INST/persona.md` and antenna-wake
-     (or restart the app) to load it — no wheel rebuild. Keep the two copies in
-     step: whichever side was edited last wins, and this repo copy is the one
-     under version control.
+     `bash .claude/skills/reachy-deploy/scripts/persona_sync.sh push` and
+     antenna-wake (or restart the app) to load it — no wheel rebuild. Keep the
+     two copies in step: whichever side was edited last wins, and this repo copy
+     is the one under version control. `persona_sync.sh status` compares the
+     two and names the repo revision a stale robot copy matches. It reads
+     `~/.config/reachy_companion/persona.md`: the package directory still holds
+     a pre-v1.25.0 `persona.md` (and `.env`), which nothing reads. On
+     2026-10-31 a check against that leftover wrongly reported the robot two
+     months stale.
    - `memory.v1.json` — the long-term facts the `memory` tool (`save`/`forget`)
      wrote (`memory.py:19`, `MEMORY_FILENAME`). **Memory must survive a
      redeploy**; a user who told Reachy their name last week must not have to
@@ -115,6 +120,11 @@ read `windows.md` in this skill's directory first.
      previous copy as `nas-video-index.json.prev` (D-041). Don't hand-copy an
      index to the robot unless that pass is broken.
 
+   - `pending_sleep_summary.json` — present only when a sleep summary timed
+     out (D-044): the visit's bounded transcript, summarized and deleted at the
+     next start. Personal data, mode 600, in the instance directory, which a
+     reinstall doesn't touch.
+
    Deliberately **not** backed up: `hanova_media/` (the downloaded music, staged
    NAS clips and generated images). It is a regenerable cache with keep-N caps,
    and copying it would carry hundreds of megabytes through every deploy. Record
@@ -139,7 +149,7 @@ read `windows.md` in this skill's directory first.
    [ -z "$(ls -A "$BACKUP")" ] || { echo "FATAL: backup dir not empty"; exit 1; }
 
    : > "$BACKUP/manifest.txt"
-   for NAME in .env persona.md memory.v1.json faces.v1.json people.v1.json google-oauth.json nas-video-index.json; do
+   for NAME in .env persona.md memory.v1.json faces.v1.json people.v1.json google-oauth.json nas-video-index.json pending_sleep_summary.json; do
      if [ -e "$INST/$NAME" ]; then
        cp -a "$INST/$NAME" "$BACKUP/$NAME"
        echo "file $NAME $(stat -c '%a %s' "$INST/$NAME")" >> "$BACKUP/manifest.txt"

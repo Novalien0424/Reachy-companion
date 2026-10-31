@@ -531,6 +531,13 @@ def run(
     if timeout_minutes is not None:
         _start_inactivity_timeout_thread(timeout_minutes, stream_manager, logger, app_stop_event, run_lifecycle_sleep)
 
+    # 2026-10-31 plan, W5.4: a visit the last sleep could not summarize (the
+    # network failed at bedtime) is summarized now, on a daemon thread that
+    # first lets the wake greeting have the network.
+    from reachy_companion.sleep_summary import start_pending_summary
+
+    start_pending_summary(instance_path)
+
     def poll_stop_event() -> None:
         """Poll the stop event to allow graceful shutdown.
 

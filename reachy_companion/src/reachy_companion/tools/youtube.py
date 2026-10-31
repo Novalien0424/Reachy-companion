@@ -26,7 +26,7 @@ class Youtube(Tool):
         "「放周杰倫的 MV」. Ask first when: the request gives only a place, a trip, a year or an event, like "
         "「放花蓮的影片」 — ask 影片庫 or YouTube and wait for the answer, then do what they asked. Do NOT use "
         "when: the user names the NAS or the 影片庫, or means the family's own recordings — that is nas; or "
-        "wants sound only — that is music. To stop a video, use music `stop`."
+        "wants sound only — that is music. To pause or stop a video, use music."
     )
     parameters_schema: Dict[str, Any] = {
         "type": "object",

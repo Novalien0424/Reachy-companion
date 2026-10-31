@@ -343,12 +343,14 @@ async def test_wait_for_reply_finished_does_not_wait_on_a_dead_session() -> None
 
 
 def test_sleep_drain_cap_clamps(monkeypatch):
-    """The knob defaults to 6.0s and clamps into 0.0-15.0."""
+    """The knob defaults to 10.0s (W5.3, was 6.0) and clamps into 0.0-15.0."""
     from reachy_companion import app_lifecycle
 
     monkeypatch.delenv("SLEEP_GOODBYE_DRAIN_CAP_S", raising=False)
+    assert app_lifecycle.sleep_drain_cap_s() == 10.0
+    monkeypatch.setenv("SLEEP_GOODBYE_DRAIN_CAP_S", "6")
     assert app_lifecycle.sleep_drain_cap_s() == 6.0
     monkeypatch.setenv("SLEEP_GOODBYE_DRAIN_CAP_S", "999")
     assert app_lifecycle.sleep_drain_cap_s() == 15.0
     monkeypatch.setenv("SLEEP_GOODBYE_DRAIN_CAP_S", "nonsense")
-    assert app_lifecycle.sleep_drain_cap_s() == 6.0
+    assert app_lifecycle.sleep_drain_cap_s() == 10.0

@@ -244,6 +244,19 @@ def nas_cast_subpath() -> str:
     return env_str("HANOVA_NAS_CAST_SUBPATH")
 
 
+def nas_http_base() -> str:
+    """Return the NAS's own web address for the cast copies, without a trailing slash; "" when unset.
+
+    2026-10-31 plan, W6 (operator chose option a): the NAS's web server serves
+    the `HANOVA_NAS_CAST_SUBPATH` folder at this base, so the TV fetches a clip
+    from the NAS itself and the clip outlives Reachy going to sleep (the app's
+    own server stops with the app, and the clip died ~30 s later). Unset, a
+    clip is served by the robot exactly as before; set, the robot route is
+    still the fallback when the NAS does not answer.
+    """
+    return env_str("HANOVA_NAS_HTTP_BASE").rstrip("/")
+
+
 def nas_index_path() -> Path | None:
     """Path to the operator-supplied `nas-video-index.json`."""
     return env_path("HANOVA_NAS_INDEX_PATH")

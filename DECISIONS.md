@@ -2791,3 +2791,139 @@ stuck in `stopping` during case B. `sudo -n systemctl restart
 reachy-mini-daemon` ran at 02:56:30 UTC, and the daemon was back with the app
 null after about 15 s.
 
+
+## D-044 — Pause, quiet while a video plays, group barge by name, the NAS serves the clip (2026-10-31)
+
+Operator, after the morning's gaps review:
+1. "I need pause, study how to properly implement it".
+2. "For mid video clip playing reachy no need to answer unless he is
+   explicitly called".
+3. "How do you plan to fix group mode issue?"
+4. "stop need to stop everything".
+5. "identify which is model limitation which is prompt issue which is bug? Fix
+   prompt and bug".
+
+Also: QA "consumed WAY too many realtime token cost". Plan and classification:
+`docs/plans/2026-10-31-pause-quiet-video-group-barge-plan.md`. The operator
+chose `music` with four actions, NAS option (a), and accepted the W4 trade-off.
+
+**Measured first, through HA, no model:**
+- On the Default Media Receiver (NAS clips), pause held the position and resume
+  continued from it.
+- On the YouTube app, pause → `paused`, and `media_play` → `buffering` (this
+  TV's normal YouTube "playing"). D-042's "YouTube ignores `media_pause`" is
+  superseded.
+- Bug: Reachy's sleep stops the app that streams a NAS clip, and the clip died
+  about 30 s later.
+
+**Decisions:**
+
+- **Stop stops everything (rung 1).**
+  - `music stop` ends the speaker music and the TV video in one call, each read
+    back: `stopped: [...]`, with `speaker_title` / `tv_title`.
+  - A half that failed is reported after the half that worked.
+  - D-042's "stopped, not paused" note is gone: a pause is now a pause.
+- **Pause and resume (rung 1): `music` gets `pause | resume`.**
+  - That is four actions, one past the 2–3 family rule. It is recorded as an
+    exception, because mini's first call for 「停止」 and 「暫停」 was `music` 6/6.
+  - Both act on everything playing.
+  - Speaker: the existing speech-duck path, plus a user-paused hold, so a duck
+    never auto-resumes music the person paused.
+  - TV: `media_pause` / `media_play`, read back.
+  - `resume` with nothing paused says a stopped video is played again with
+    `nas` / `youtube`.
+- **Quiet while a video plays (code, at the gate).**
+  - `hanova/tv_session` starts on a confirmed `nas` / `youtube` cast. It ends on
+    stop, on `show_on_tv`, or when the TV reads out of playback. Paused counts as
+    playing, and a reconnect keeps it.
+  - While it is active, ONE_ON_ONE and GROUP answer only a name or a control
+    phrase: no follow-up window, no face, no "substantive".
+  - An unnamed turn after 20 s without a look triggers one HA read (1.5 s), so a
+    clip that ended on its own reopens the normal rules.
+  - RECORD is unchanged.
+- **Group barge by name (code).** `REALTIME_PARTY_BARGE=name|persistence`,
+  default `name`.
+  - In GROUP, and in ONE_ON_ONE while a video plays, unaddressed speech never
+    cancels or pauses Reachy's reply.
+  - A name or control phrase still cancels it, through the partial path or the
+    late path.
+  - While a video plays, a soundtrack `speech_started` no longer defers an
+    accepted turn's hold-off.
+  - In GROUP without a video, an unnamed follow-up inside the 20 s window is
+    answered after the reply instead of cutting it off.
+- **The NAS serves the clip (W6, option a).**
+  - `HANOVA_NAS_HTTP_BASE`: `nas play` casts the NAS web server's URL after a
+    HEAD probe, and otherwise falls back to the robot stream.
+  - The NAS is a QNAP whose Web Server was already on (read-only check). The
+    operator's step is a virtual host on the cast-copy folder.
+- **No persona drift, a retracted finding.**
+  - The app has read `~/.config/reachy_companion/persona.md` since v1.25.0, and
+    it is the current repo copy.
+  - A check against the package directory's pre-migration leftover reported it
+    two months stale, and was wrong.
+  - `reachy-deploy/scripts/persona_sync.sh status|push` reads the instance
+    directory.
+- **Small bugs:**
+  - camelCase search tokens (`OpeningNY`);
+  - `response_cancel_not_active` kept off the transcript;
+  - the sleep drain cap raised from 6 to 10 s;
+  - a sleep summary that times out is kept (0600, bounded) and summarized at
+    the next start;
+  - the transcript's tool-result copy is UTF-8.
+- **Model limits, recorded and absorbed by the tool where possible:**
+  - mini searches in Chinese first, so the operator's index carries `place_zh`
+    names, matched by `nas`;
+  - simplified characters in replies have no reliable prompt fix.
+- **QA (the token budget).**
+  - Tier 0: unit tests.
+  - Tier 1: the test-only `qa.tool` RPC, only while `/tmp/reachy_qa` exists, to
+    check device truth with zero model tokens.
+  - Tier 3: `reachy-deploy/scripts/qa_replay.py`, run on the robot. It builds the
+    app's own session from the installed wheel, text only, a fresh session per
+    run, seeded history, and the first tool call recorded. There is no app, no
+    greeting and no audio.
+
+**Shape changes after two text revisions (the skill's rule):**
+
+- **Pause chosen as stop.**
+  - Revision 1 (the enum glosses): 4/6.
+  - Revision 2 (the pause/stop contrast): 2/6, then 5/6.
+  - Over 18 replays mini picked `pause` for 「暫停」 11 times. That is recorded as
+    mini's ceiling.
+  - The shape change: `stop` keeps a bookmark of a video Reachy started (kind,
+    re-cast id, position, title; 6 h). `resume` with nothing paused re-casts it
+    and seeks, with a read-back that reports `from: "where it stopped" | "the
+    beginning"`.
+  - Replay: 「繼續播放」 after such a stop → `music resume` 3/3.
+- **「我們在哪裡」 → camera.**
+  - Revision 1 (1.35.0, the TV contrast in `camera`): 3/4.
+  - Revision 2 (`place` in the nas results, the contrast in `look_around`): 1/3.
+  - The shape change: while a video plays, `camera` and `look_around` return
+    `video_on_tv` (title and place).
+  - Replay: answered from the trip 3/3, twice via the camera.
+
+**Live, 1.36.0, wheel `c712306b`.**
+
+- **Device tier (`qa.tool`, mic muted, zero model tokens), three wakes, no
+  wedge:**
+
+  | Receiver | Result |
+  |---|---|
+  | NAS clip | pause held 12.5 s; resume continued from 12.7 s; stop → idle; resume from the bookmark → 26 s, "where it stopped" |
+  | YouTube | the same; stop closed the app (`off`); the bookmark re-cast and seeked → 26 s |
+  | Speaker | play, pause, resume and stop were each reported right |
+  | Speaker + TV | one stop → `stopped: ["speaker", "tv"]` |
+
+- **Journal:** 0 tracebacks and 0 errors in 3,912 lines. Each boot was
+  `Tools in session (group, startup, 19)`, with the instance persona.
+- **Model-choice replay:** 3 batches, about 50 short text turns, about 6,100
+  input tokens each and mostly cached, no audio.
+  - stop with both playing 3/3;
+  - resume 3/3;
+  - the mode question 3/3 「多人聊天模式」 in group.
+- **Not yet live:**
+  - the W3 gate and W4 barge with real speech, left to the operator in normal
+    use; unit tests only;
+  - W6 waits for the operator's QNAP virtual host.
+- **Pre-existing, not changed:** a mood query for speaker music ("relaxing
+  jazz") finds no playable track, and the error asks for a song title.

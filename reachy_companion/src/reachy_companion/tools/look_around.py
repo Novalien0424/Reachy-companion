@@ -18,6 +18,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Final
 
+from reachy_companion.hanova import tv_session
 from reachy_companion.tools.camera import Camera
 from reachy_companion.tools.move_head import MoveHead
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
@@ -44,7 +45,8 @@ class LookAround(Tool):
         "the user wants to know who or what is in a direction, like 「轉到右邊去看看有誰」. Do NOT use when: no "
         "direction is named — that is camera, which looks without moving; the user wants only the "
         "movement — that is head with action=turn; or asks who a person is — that is face with "
-        "action=identify. Say you turned only if `direction_requested` names that direction, and "
+        "action=identify; or asks about the video playing on the TV — answer from what the nas or youtube "
+        "call returned. Say you turned only if `direction_requested` names that direction, and "
         "describe only what the returned picture shows."
     )
     parameters_schema: Dict[str, Any] = {
@@ -135,4 +137,9 @@ class LookAround(Tool):
             result["error"] = shot["error"]
             return result
         result["b64_im"] = shot["b64_im"]
+        # Ours (2026-10-31), as in `camera`: what the TV plays travels by name
+        # next to the picture.
+        on_tv = tv_session.on_tv()
+        if on_tv is not None:
+            result["video_on_tv"] = on_tv
         return result

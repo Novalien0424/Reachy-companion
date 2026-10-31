@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from reachy_companion import home_net
-from reachy_companion.hanova import images, settings
+from reachy_companion.hanova import images, settings, tv_session
 from reachy_companion.tools.youtube import Youtube
 from reachy_companion.tools.play_video import PlayVideo
 from reachy_companion.tools.show_on_tv import ShowOnTv
@@ -95,6 +95,9 @@ def configured(monkeypatch):
     yield
     settings.set_media_mount_ready(False)
     home_net.reset_cache()
+    # A successful cast records a video on the TV (plan W3); it must not leak
+    # into another file's answer-gate tests.
+    tv_session.mark_ended("test teardown")
 
 
 def _home_state(monkeypatch, module: str, verdict: str) -> None:

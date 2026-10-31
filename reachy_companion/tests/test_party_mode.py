@@ -7,18 +7,22 @@ The realtime event loop stays thin; everything it calls is tested here.
 import time
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_solo_barge import _production_flush, _install_barge_state
+from test_solo_barge import _loop_handler, _quiet_session, _production_flush, _install_barge_state
+from test_huggingface_realtime import _FakeEvent
 
-from reachy_companion.hanova import audio_drain, music_hooks
+from reachy_companion import huggingface_realtime as hf_mod
+from reachy_companion.hanova import tv_session, audio_drain, music_hooks
 from reachy_companion.openai_realtime import OpenAIRealtimeHandler, _turn_detection
 from reachy_companion.conversation_mode import ConversationMode
 from reachy_companion.huggingface_realtime import (
     HuggingFaceRealtimeHandler,
     _party_confirm_s,
+    _party_barge_rule,
     _vad_silence_duration_ms,
 )
 
@@ -68,11 +72,23 @@ def _clean_party_env(monkeypatch: pytest.MonkeyPatch):
         "REALTIME_PARTY_ADDRESS_NAMES",
         "REALTIME_VAD_TYPE",
         "REALTIME_SOLO_CLIENT_BARGE",
+        "REALTIME_PARTY_BARGE",
+        "REALTIME_SOLO_NAME_GATE",
     ):
         monkeypatch.delenv(name, raising=False)
     audio_drain.reset()
+    # The video session is process-wide (2026-10-31, W3/W4): no test may start
+    # with one another test left behind.
+    tv_session.mark_ended("test setup")
     yield
+    tv_session.mark_ended("test teardown")
     audio_drain.reset()
+
+
+@pytest.fixture
+def _persistence_rule(monkeypatch: pytest.MonkeyPatch):
+    """Select the pre-W4 room rule: sustained speech cancels, no transcript consulted."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "persistence")
 
 
 # --------------------------------------------------------------------------
@@ -261,7 +277,7 @@ def test_session_start_resets_party_state():
 
 
 # --------------------------------------------------------------------------
-# Debounced barge-in
+# Debounced barge-in — `REALTIME_PARTY_BARGE=persistence` since 2026-10-31 (W4)
 # --------------------------------------------------------------------------
 
 
@@ -272,6 +288,7 @@ def _make_audible():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_a_blip_does_not_cancel_the_reply(monkeypatch: pytest.MonkeyPatch):
     """speech_stopped before the confirm delay: Reachy keeps talking."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
@@ -288,6 +305,7 @@ async def test_a_blip_does_not_cancel_the_reply(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_the_shipped_default_survives_a_real_vad_stop():
     """Sub-window noise must not cut the reply at the SHIPPED confirm default.
 
@@ -323,6 +341,7 @@ async def test_the_shipped_default_survives_a_real_vad_stop():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_sustained_speech_cancels_and_flushes(monkeypatch: pytest.MonkeyPatch):
     """Speech outlasting the debounce while audible is a real barge-in."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
@@ -340,6 +359,7 @@ async def test_sustained_speech_cancels_and_flushes(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_a_confirmed_party_barge_truncates_the_live_item(monkeypatch: pytest.MonkeyPatch):
     """WebSocket: the server keeps every unheard word unless we cut the item.
 
@@ -375,6 +395,7 @@ async def test_a_confirmed_party_barge_truncates_the_live_item(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_a_party_blip_never_truncates(monkeypatch: pytest.MonkeyPatch):
     """The reply was never cancelled, so nothing left the ear unheard."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
@@ -397,6 +418,7 @@ async def test_a_party_blip_never_truncates(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_a_stale_timer_never_fires(monkeypatch: pytest.MonkeyPatch):
     """A newer utterance owns the floor; the old timer must stand down."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
@@ -412,6 +434,7 @@ async def test_a_stale_timer_never_fires(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_persistence_rule")
 async def test_no_cancel_when_the_robot_is_silent(monkeypatch: pytest.MonkeyPatch):
     """Nothing to interrupt: silent robot means no cancel and no flush."""
     monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
@@ -431,6 +454,304 @@ async def test_cancel_without_an_active_response_is_a_no_op():
     h._active_response_id = None
     await h._cancel_active_response()
     h.connection.response.cancel.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------
+# Barge-in by name (2026-10-31 plan, W4): the default rule
+# --------------------------------------------------------------------------
+
+
+def test_the_party_barge_rule_defaults_to_name(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """`name` unless the operator asks for the old rule; a typo degrades to `name`."""
+    assert _party_barge_rule() == "name"
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "Persistence")
+    assert _party_barge_rule() == "persistence"
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "loudness")
+    with caplog.at_level("WARNING"):
+        assert _party_barge_rule() == "name"
+    assert "Ignoring invalid REALTIME_PARTY_BARGE" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sustained_unaddressed_speech_never_cancels_under_the_name_rule(monkeypatch: pytest.MonkeyPatch):
+    """Two people talking to each other over Reachy's story: Reachy keeps telling it."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
+    h = _party_handler()
+    _make_audible()
+    h._response_done_event.clear()
+    h._active_response_id = "resp_123"
+    h._party_speech_open = True
+    h._party_utterance_seq = 7
+    h._start_party_barge_timer()
+    assert h._party_barge_task is None
+    await asyncio.sleep(0.08)
+    h.connection.response.cancel.assert_not_awaited()
+    h._clear_queue_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_record_keeps_its_persistence_rule_under_the_name_rule(monkeypatch: pytest.MonkeyPatch):
+    """紀錄模式 keeps its own rule (plan review log, item 5)."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE_CONFIRM_MS", "30")
+    h = _party_handler()
+    h._conversation_mode = ConversationMode.RECORD
+    _make_audible()
+    h._response_done_event.clear()
+    h._active_response_id = "resp_123"
+    h._party_speech_open = True
+    h._party_utterance_seq = 7
+    h._start_party_barge_timer()
+    await asyncio.sleep(0.08)
+    h.connection.response.cancel.assert_awaited_once()
+    h._clear_queue_callback.assert_called_once()
+
+
+def _talking_room_handler() -> OpenAIRealtimeHandler:
+    """Return a GROUP handler mid-reply, with an utterance that began over it."""
+    h = _party_handler()
+    h._clear_queue = _production_flush(h)
+    h.connection = SimpleNamespace(
+        response=SimpleNamespace(cancel=AsyncMock()),
+        conversation=SimpleNamespace(item=SimpleNamespace(truncate=AsyncMock())),
+    )
+    generation = audio_drain.begin_response()
+    audio_drain.note_enqueued(generation, sample_count=12000, sample_rate=24000)  # 500 ms still to play
+    h._response_done_event.clear()
+    h._active_response_id = "resp_123"
+    h._audio_item_id = "item_reply"
+    h._audio_item_enqueued_ms = 2000.0
+    h._stamp_late_eligible("item_1", True)
+    return h
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("partial", "reason"), [("瑞奇等一下", "name"), ("停停", "control phrase")])
+async def test_a_partial_name_stops_a_room_reply(partial: str, reason: str, caplog: pytest.LogCaptureFixture):
+    """The name in a partial is the fastest way to take the floor back."""
+    h = _talking_room_handler()
+    with caplog.at_level("INFO"):
+        await h._maybe_commit_on_partial(partial, "item_1")
+    h.connection.response.cancel.assert_awaited_once()
+    h.connection.conversation.item.truncate.assert_awaited_once()
+    assert f"name barge-in by partial transcript ({reason})" in caplog.text
+    # Set after the flush that wipes barge markers, so the committed transcript
+    # of this same utterance does not interrupt its own answer.
+    assert h._barge_partial_committed_item == "item_1"
+    await h._maybe_commit_on_partial(partial + "我想問", "item_1")
+    h.connection.response.cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_unaddressed_partial_leaves_the_room_reply_alone():
+    """No name, no control phrase: Reachy talks through it."""
+    h = _talking_room_handler()
+    await h._maybe_commit_on_partial("我們晚餐吃什麼", "item_1")
+    h.connection.response.cancel.assert_not_awaited()
+    assert h._barge_partial_committed_item is None
+
+
+@pytest.mark.asyncio
+async def test_a_partial_from_an_utterance_begun_in_silence_never_cancels():
+    """From silence, the reply that started is this turn's own business, not a barge."""
+    h = _talking_room_handler()
+    h._stamp_late_eligible("item_1", False)
+    await h._maybe_commit_on_partial("瑞奇等一下", "item_1")
+    h.connection.response.cancel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_persistence_rule_keeps_partials_inert_in_the_room(monkeypatch: pytest.MonkeyPatch):
+    """`REALTIME_PARTY_BARGE=persistence` is the old room exactly: partials decide nothing."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "persistence")
+    h = _talking_room_handler()
+    await h._maybe_commit_on_partial("瑞奇等一下", "item_1")
+    h.connection.response.cancel.assert_not_awaited()
+
+
+# --- the same rule, driven through the real receive loop ---------------------
+
+
+async def _run_room_turns(
+    monkeypatch: pytest.MonkeyPatch,
+    transcripts: tuple[str, ...],
+    *,
+    mode: ConversationMode = ConversationMode.GROUP,
+) -> tuple[list[str], list[str], HuggingFaceRealtimeHandler]:
+    """Replay one speech-start → committed transcript per entry, over a talking Reachy.
+
+    Returns (room cancels, accepted items, handler). Reachy is held audible for
+    the whole replay, so every onset is one over a talking robot.
+    """
+    _quiet_session(monkeypatch)
+    cancels: list[str] = []
+    accepted: list[str] = []
+
+    async def record_cancel(self: HuggingFaceRealtimeHandler) -> None:
+        cancels.append("cancel")
+
+    async def record_request(self: Any, item_id: str | None, *, already_answered: bool = False) -> None:
+        accepted.append(str(item_id))
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_robot_audible", lambda self: True)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_cancel_room_reply", record_cancel)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_request_accepted_turn_response", record_request)
+    events = []
+    for index, transcript in enumerate(transcripts):
+        item = f"item_{index}"
+        events.append(_FakeEvent("input_audio_buffer.speech_started", item_id=item))
+        events.append(
+            _FakeEvent("conversation.item.input_audio_transcription.completed", transcript=transcript, item_id=item)
+        )
+    handler = _loop_handler(tuple(events))
+    handler._conversation_mode = mode
+    await handler._run_realtime_session()
+    return cancels, accepted, handler
+
+
+@pytest.mark.asyncio
+async def test_the_loop_talks_through_unaddressed_room_speech(monkeypatch: pytest.MonkeyPatch):
+    """Unaddressed speech over a reply: no cancel, no timer, and no answer."""
+    cancels, accepted, handler = await _run_room_turns(monkeypatch, ("我們晚餐要吃什麼呢",))
+    assert cancels == []
+    assert accepted == []
+    assert handler._party_barge_task is None, "the persistence timer never armed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transcript", ["瑞奇你等一下", "停"])
+async def test_the_loop_stops_a_room_reply_for_a_name_or_control_phrase(
+    monkeypatch: pytest.MonkeyPatch, transcript: str
+):
+    """The committed transcript takes the floor back, then the turn is answered."""
+    cancels, accepted, _ = await _run_room_turns(monkeypatch, (transcript,))
+    assert cancels == ["cancel"]
+    assert accepted == ["item_0"]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_answers_an_unnamed_follow_up_after_the_reply_not_over_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Inside the follow-up window the turn is accepted, but only the name cuts the reply."""
+    cancels, accepted, _ = await _run_room_turns(monkeypatch, ("瑞奇你好", "然後呢那個好好笑"))
+    assert cancels == ["cancel"], "only the named turn cut the reply"
+    assert accepted == ["item_0", "item_1"]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_keeps_the_persistence_timer_under_the_old_rule(monkeypatch: pytest.MonkeyPatch):
+    """`persistence`: the timer arms at onset and the transcript decides nothing about barging."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "persistence")
+    cancels, accepted, handler = await _run_room_turns(monkeypatch, ("瑞奇你等一下",))
+    assert cancels == []
+    assert accepted == ["item_0"]
+    assert handler._party_barge_task is not None
+    handler._party_barge_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_the_loop_never_name_barges_in_record_mode(monkeypatch: pytest.MonkeyPatch):
+    """紀錄模式 keeps its own rule: the persistence timer, no transcript barge."""
+    cancels, accepted, handler = await _run_room_turns(
+        monkeypatch, ("瑞奇你等一下",), mode=ConversationMode.RECORD
+    )
+    assert cancels == []
+    assert accepted == ["item_0"]
+    assert handler._party_barge_task is not None
+    handler._party_barge_task.cancel()
+
+
+# --- one-on-one while a video plays -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_on_one_does_not_pause_for_a_soundtrack_while_a_video_plays():
+    """The solo machine would stutter at every sentence of the clip; it stands down."""
+    h = _party_handler()
+    h._conversation_mode = ConversationMode.ONE_ON_ONE
+    h.deps.movement_manager = MagicMock()
+    _make_audible()
+    h._response_done_event.clear()
+    tv_session.mark_started("nas")
+    h._solo_speech_started("item_1")
+    assert h._barge_paused is False and h._barge_pending is False
+    assert h._barge_confirm_task is None
+    assert h._barge_late_eligibles == {"item_1": True}, "a name can still stop the reply"
+    tv_session.mark_ended("stop")
+    h._solo_speech_started("item_2")
+    assert h._barge_paused is True, "without a video the pause-then-decide machine is back"
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_one_on_one_pauses_for_a_soundtrack_under_the_persistence_rule(monkeypatch: pytest.MonkeyPatch):
+    """`persistence` restores the pre-W4 one-on-one machine, video or not."""
+    monkeypatch.setenv("REALTIME_PARTY_BARGE", "persistence")
+    h = _party_handler()
+    h._conversation_mode = ConversationMode.ONE_ON_ONE
+    _make_audible()
+    h._response_done_event.clear()
+    tv_session.mark_started("nas")
+    h._solo_speech_started("item_1")
+    assert h._barge_paused is True
+    h.on_external_interrupt()
+
+
+@pytest.mark.asyncio
+async def test_a_partial_name_stops_a_one_on_one_reply_while_a_video_plays():
+    """No pause to commit, so the partial takes the solo late path instead."""
+    h = _talking_room_handler()
+    h._conversation_mode = ConversationMode.ONE_ON_ONE
+    tv_session.mark_started("nas")
+    await h._maybe_commit_on_partial("瑞奇暫停一下", "item_1")
+    h.connection.response.cancel.assert_awaited_once()
+    assert h._barge_partial_committed_item == "item_1"
+    assert h._barge_watchdog_task is not None, "the turn is rescued if its transcript fails"
+    h.on_external_interrupt()
+
+
+async def _run_solo_video_turn(
+    monkeypatch: pytest.MonkeyPatch, transcript: str
+) -> tuple[list[str], list[str]]:
+    """Replay one solo turn over a talking Reachy with a video on the TV."""
+    _quiet_session(monkeypatch)
+    late: list[str] = []
+    accepted: list[str] = []
+
+    async def record_late(self: HuggingFaceRealtimeHandler) -> None:
+        late.append("late")
+
+    async def record_request(self: Any, item_id: str | None, *, already_answered: bool = False) -> None:
+        accepted.append(str(item_id))
+
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_robot_audible", lambda self: True)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_late_solo_interrupt", record_late)
+    monkeypatch.setattr(hf_mod.HuggingFaceRealtimeHandler, "_request_accepted_turn_response", record_request)
+    tv_session.mark_started("nas")
+    handler = _loop_handler(
+        (
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1"),
+            _FakeEvent("conversation.item.input_audio_transcription.completed", transcript=transcript, item_id="item_1"),
+        )
+    )
+    await handler._run_realtime_session()
+    assert handler._barge_pending is False, "nothing paused for the soundtrack"
+    return late, accepted
+
+
+@pytest.mark.asyncio
+async def test_the_loop_talks_through_a_soundtrack_in_one_on_one(monkeypatch: pytest.MonkeyPatch):
+    """A substantive line from the TV neither pauses, nor stops, nor gets an answer."""
+    late, accepted = await _run_solo_video_turn(monkeypatch, "我們晚餐要吃什麼呢這麼晚了")
+    assert late == [] and accepted == []
+
+
+@pytest.mark.asyncio
+async def test_the_loop_stops_a_one_on_one_reply_for_the_name_while_a_video_plays(monkeypatch: pytest.MonkeyPatch):
+    """「瑞奇」 over the clip still stops Reachy, then gets its answer."""
+    late, accepted = await _run_solo_video_turn(monkeypatch, "瑞奇")
+    assert late == ["late"]
+    assert accepted == ["item_1"]
 
 
 # --------------------------------------------------------------------------

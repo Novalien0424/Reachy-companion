@@ -13,7 +13,8 @@ from __future__ import annotations
 import time
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Callable
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
@@ -152,6 +153,11 @@ _STOP_SETTLE_S = 3.0
 _STOP_POLL_S = 1.0
 
 
+def is_playback_state(state: str) -> bool:
+    """Return whether a media_player state still shows a video (paused counts)."""
+    return state in _PLAYBACK_STATES
+
+
 def media_state_and_title(reply: Dict[str, Any]) -> tuple[str, str | None]:
     """Return a state read's ``(state, media title)``; "unknown" when unreadable."""
     payload = reply.get("result") if reply.get("ok") else None
@@ -162,21 +168,119 @@ def media_state_and_title(reply: Dict[str, Any]) -> tuple[str, str | None]:
     return str(payload.get("state") or "unknown"), (str(title) if title else None)
 
 
+def media_position_s(reply: Dict[str, Any], now: datetime | None = None) -> float | None:
+    """Return where the TV is in its video, in seconds, from one state read; None when it does not say.
+
+    HA reports `media_position` as of `media_position_updated_at`. Paused, that
+    is where it is; playing, the time since then is added.
+    """
+    payload = reply.get("result") if reply.get("ok") else None
+    if not isinstance(payload, dict) or not isinstance(payload.get("attributes"), dict):
+        return None
+    attributes = payload["attributes"]
+    position = attributes.get("media_position")
+    if not isinstance(position, (int, float)) or isinstance(position, bool):
+        return None
+    if payload.get("state") not in _MOVING_STATES:
+        return max(0.0, float(position))
+    updated = attributes.get("media_position_updated_at")
+    try:
+        stamp = datetime.fromisoformat(str(updated))
+    except ValueError:
+        return max(0.0, float(position))
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    elapsed = ((now or datetime.now(timezone.utc)) - stamp).total_seconds()
+    return max(0.0, float(position) + max(0.0, elapsed))
+
+
+def media_content_id(reply: Dict[str, Any]) -> str | None:
+    """Return the `media_content_id` of one state read (a cast URL, a YouTube id), or None."""
+    payload = reply.get("result") if reply.get("ok") else None
+    attributes = payload.get("attributes") if isinstance(payload, dict) else None
+    value = attributes.get("media_content_id") if isinstance(attributes, dict) else None
+    return str(value) if value else None
+
+
+async def _settle(entity_id: str, done: Callable[[str], bool], last: str) -> tuple[bool, str]:
+    """Poll the TV for up to `_STOP_SETTLE_S` until `done(state)`; return (done, last state seen).
+
+    An unreadable poll keeps the last state seen: only a state the TV reported
+    can end the wait.
+    """
+    deadline = time.monotonic() + _STOP_SETTLE_S
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_STOP_POLL_S)
+        now = await ha_get_state(entity_id, timeout_s=8.0)
+        if now.get("ok"):
+            last, _ = media_state_and_title(now)
+            if done(last):
+                return True, last
+    return False, last
+
+
+async def _call_and_log(service: str, entity_id: str, action: str) -> None:
+    """Call one media_player service; a failed call is logged, and the caller reads the TV back anyway."""
+    reply = await ha_call_service("media_player", service, {"entity_id": entity_id}, timeout_s=15.0)
+    if not reply.get("ok"):
+        logger.info("TV %s: %s answered %s; reading the TV back anyway", action, service,
+                    reply.get("status_code") or "no reply")
+
+
 async def stop_tv_playback(entity_id: str) -> Dict[str, Any]:
     """Stop what the TV is playing and read it back (2026-10-31). Never raises.
 
-    Returns ``{"result": ..., "title": <media title or None>, "state": <last seen>}``
-    where result is ``stopped``, ``not_playing``, ``still_playing`` or
-    ``unreachable``. HA answers 200 whether or not the receiver obeyed, so only
-    the state afterwards counts, and it is read back even when the call itself
-    failed or timed out (D-040's lesson).
+    Returns ``{"result": ..., "title": <media title or None>, "state": <last seen>,
+    "content_id": ..., "position_s": ...}`` where result is ``stopped``,
+    ``not_playing``, ``still_playing`` or ``unreachable``. HA answers 200 whether
+    or not the receiver obeyed, so only the state afterwards counts, and it is
+    read back even when the call itself failed or timed out (D-040's lesson).
+    `content_id` and `position_s` come from the read before the stop, so the
+    caller can keep the place (`tv_session.save_bookmark`); None when unknown.
 
     Two steps, because receivers differ: `media_stop` ends a Default Media
-    Receiver clip, but the TV's YouTube app ignored both `media_stop` and
-    `media_pause` (it kept reading `buffering`). If playback has not ended
-    within `_STOP_SETTLE_S`, `turn_off` closes the casting app, which ended
-    YouTube within a second. On this TV that is the same command as
-    home_control's 「把電視關掉」.
+    Receiver clip, but the TV's YouTube app ignores `media_stop` (it kept
+    reading `buffering`). If playback has not ended within `_STOP_SETTLE_S`,
+    `turn_off` closes the casting app, which ended YouTube within a second. On
+    this TV that is the same command as home_control's 「把電視關掉」. (A probe
+    on 2026-10-31 measured that the YouTube app does obey `media_pause`; see
+    `pause_tv_playback`.)
+    """
+    unknown: Dict[str, Any] = {"content_id": None, "position_s": None}
+    if not entity_id:
+        return {"result": "unreachable", "title": None, "state": None, **unknown}
+    before = await ha_get_state(entity_id, timeout_s=8.0)
+    if not before.get("ok"):
+        return {"result": "unreachable", "title": None, "state": None, **unknown}
+    state, title = media_state_and_title(before)
+    if state not in _PLAYBACK_STATES:
+        return {"result": "not_playing", "title": None, "state": state, **unknown}
+    place = {"content_id": media_content_id(before), "position_s": media_position_s(before)}
+    last = state
+    for service in ("media_stop", "turn_off"):
+        await _call_and_log(service, entity_id, "stop")
+        ended, last = await _settle(entity_id, lambda now: now not in _PLAYBACK_STATES, last)
+        if ended:
+            logger.info("TV stop: playback ended after %s", service)
+            return {"result": "stopped", "title": title, "state": last, **place}
+    return {"result": "still_playing", "title": title, "state": last, **place}
+
+
+# Playback with the picture moving. `buffering` is in it because this TV's
+# YouTube app reports `buffering` as its normal playing state (probe, 2026-10-31).
+_MOVING_STATES = frozenset({"playing", "buffering"})
+
+
+async def pause_tv_playback(entity_id: str) -> Dict[str, Any]:
+    """Pause what the TV is playing and read it back (2026-10-31 plan, W2). Never raises.
+
+    Returns ``{"result": ..., "title": ..., "state": <last seen>}`` where result
+    is ``paused``, ``already_paused``, ``not_playing`` (nothing on screen),
+    ``ended`` (it left playback instead of pausing), ``still_playing`` or
+    ``unreachable``. A probe on 2026-10-31 measured `media_pause` → `paused` on
+    both receivers this TV runs (the Default Media Receiver held its position),
+    but HA answers 200 either way, so a receiver that ignores the pause is
+    reported, not assumed.
     """
     if not entity_id:
         return {"result": "unreachable", "title": None, "state": None}
@@ -184,24 +288,117 @@ async def stop_tv_playback(entity_id: str) -> Dict[str, Any]:
     if not before.get("ok"):
         return {"result": "unreachable", "title": None, "state": None}
     state, title = media_state_and_title(before)
+    if state == "paused":
+        return {"result": "already_paused", "title": title, "state": state}
     if state not in _PLAYBACK_STATES:
         return {"result": "not_playing", "title": None, "state": state}
-    last = state
-    for service in ("media_stop", "turn_off"):
-        reply = await ha_call_service("media_player", service, {"entity_id": entity_id}, timeout_s=15.0)
-        if not reply.get("ok"):
-            logger.info("TV stop: %s answered %s; reading the TV back anyway", service,
-                        reply.get("status_code") or "no reply")
-        deadline = time.monotonic() + _STOP_SETTLE_S
-        while time.monotonic() < deadline:
-            await asyncio.sleep(_STOP_POLL_S)
-            now = await ha_get_state(entity_id, timeout_s=8.0)
-            if now.get("ok"):
-                last, _ = media_state_and_title(now)
-                if last not in _PLAYBACK_STATES:
-                    logger.info("TV stop: playback ended after %s", service)
-                    return {"result": "stopped", "title": title, "state": last}
-    return {"result": "still_playing", "title": title, "state": last}
+    await _call_and_log("media_pause", entity_id, "pause")
+    settled, last = await _settle(entity_id, lambda now: now not in _MOVING_STATES, state)
+    if not settled:
+        return {"result": "still_playing", "title": title, "state": last}
+    if last == "paused":
+        logger.info("TV pause: the TV reads paused")
+        return {"result": "paused", "title": title, "state": last}
+    return {"result": "ended", "title": title, "state": last}
+
+
+async def resume_tv_playback(entity_id: str) -> Dict[str, Any]:
+    """Resume a paused TV video and read it back (2026-10-31 plan, W2). Never raises.
+
+    Returns ``{"result": ..., "title": ..., "state": <last seen>}`` where result
+    is ``resumed``, ``already_playing``, ``not_paused`` (nothing paused on
+    screen), ``ended`` (it left playback instead), ``still_paused`` or
+    ``unreachable``. `media_play` read back as `playing` from the Default Media
+    Receiver and as `buffering` from the YouTube app, which is how that app
+    plays, so both count as resumed.
+    """
+    if not entity_id:
+        return {"result": "unreachable", "title": None, "state": None}
+    before = await ha_get_state(entity_id, timeout_s=8.0)
+    if not before.get("ok"):
+        return {"result": "unreachable", "title": None, "state": None}
+    state, title = media_state_and_title(before)
+    if state in _MOVING_STATES:
+        return {"result": "already_playing", "title": title, "state": state}
+    if state != "paused":
+        return {"result": "not_paused", "title": None, "state": state}
+    await _call_and_log("media_play", entity_id, "resume")
+    settled, last = await _settle(entity_id, lambda now: now != "paused", state)
+    if not settled:
+        return {"result": "still_paused", "title": title, "state": last}
+    if last in _MOVING_STATES:
+        logger.info("TV resume: the TV reads %s", last)
+        return {"result": "resumed", "title": title, "state": last}
+    return {"result": "ended", "title": title, "state": last}
+
+
+# A seek read back within this window of its target counts as landed: the
+# position moves on while the TV plays, and a restart reads near zero.
+_SEEK_EARLY_S = 10.0
+_SEEK_LATE_S = 30.0
+# Below this, playing from the start is playing from where it stopped.
+_SEEK_MIN_S = 2.0
+
+
+async def _seek_landed(entity_id: str, target_s: float) -> bool | None:
+    """Poll the TV's position until it is near *target_s*; None when it never reports one."""
+    deadline = time.monotonic() + _STOP_SETTLE_S
+    seen: float | None = None
+    while time.monotonic() < deadline:
+        await asyncio.sleep(_STOP_POLL_S)
+        position = media_position_s(await ha_get_state(entity_id, timeout_s=8.0))
+        if position is None:
+            continue
+        seen = position
+        if target_s - _SEEK_EARLY_S <= position <= target_s + _SEEK_LATE_S:
+            return True
+    return None if seen is None else False
+
+
+async def recast_from_bookmark(entity_id: str, mark: Dict[str, Any]) -> Dict[str, Any]:
+    """Play a stopped video again where it stopped (2026-10-31, follow-up). Never raises.
+
+    *mark* is a `tv_session` bookmark. A nas clip is re-cast through the
+    video-URL script with the fields `nas._cast_prepared_url` sends, a YouTube
+    video through the YouTube script with the fields `play_video` sends. The
+    cast is confirmed (dispatch is not display), then `media_seek` goes to the
+    kept position and the position is read back, with one more seek if the
+    first did not land (a receiver can drop a seek sent while it buffers).
+
+    Returns ``{"result": ..., "title": ..., "state": ..., "from": ...}``:
+    ``resumed`` (``from`` is ``where it stopped`` or ``the beginning``, or None
+    when the TV reports no position), ``recast_failed`` (HA refused the
+    script) or ``not_started`` (the TV shows no playback).
+    """
+    title = mark.get("title")
+    if mark.get("kind") == "youtube":
+        script, fields = settings.ha_script_youtube(), {"youtube_id": mark.get("recast")}
+    else:
+        script, fields = settings.ha_script_video_url(), {"url": mark.get("recast"), "title": title or ""}
+    if entity_id:
+        fields["entity_id"] = entity_id
+    cast = await ha_run_script(script, fields)
+    if not cast.get("ok"):
+        logger.info("TV resume from the kept place: the cast script answered %s", cast.get("status_code") or "no reply")
+        return {"result": "recast_failed", "title": title, "state": None, "from": None}
+    check = await confirm_cast_started(entity_id, timeout_s=settings.cast_confirm_timeout_s())
+    if check["confirmed"] is False:
+        return {"result": "not_started", "title": title, "state": check["state"], "from": None}
+    target = float(mark.get("position_s") or 0.0)
+    landed: bool | None = True
+    if target >= _SEEK_MIN_S:
+        for _attempt in range(2):
+            reply = await ha_call_service(
+                "media_player", "media_seek", {"entity_id": entity_id, "seek_position": target}, timeout_s=15.0
+            )
+            if not reply.get("ok"):
+                logger.info("TV seek answered %s; reading the position back anyway", reply.get("status_code") or "no reply")
+            landed = await _seek_landed(entity_id, target)
+            if landed is not False:
+                break
+    where = None if landed is None else ("where it stopped" if landed else "the beginning")
+    logger.info("TV resume from the kept place: %s", where or "position unknown")
+    return {"result": "resumed", "title": title, "state": check["state"], "from": where}
 
 
 def tv_not_responding(state: str | None) -> Dict[str, Any]:

@@ -248,9 +248,9 @@ below — never commit real values.
 | `FACE_MATCH_MARGIN`                | Lead the best match needs over the runner-up; inside it, the answer is `ambiguous`, never a guess. |
 | `MEMORY_LAST_CHAT_ENABLED`         | Master switch for the sleep-time last-chat summary. Off writes no `上次聊天` fact. |
 | `MEMORY_LAST_CHAT_MODEL`           | Model that writes the one-line summary per person. Defaults to `gpt-5-mini`. |
-| `MEMORY_LAST_CHAT_TIMEOUT_S`       | Time budget for that summarizer call, `1.0`–`30.0`. Default `8.0`; an overrun leaves no fact. |
+| `MEMORY_LAST_CHAT_TIMEOUT_S`       | Time budget for that summarizer call, `1.0`–`30.0`. Default `8.0`; after one retry an overrun keeps the visit in the instance dir and the next start summarizes it. |
 | `RECORD_SUMMARY_TIMEOUT_S`         | Time budget for the 紀錄模式 summarizer, `1.0`–`60.0`. Default `20.0` — longer than the last-chat one because the input is a whole meeting. An overrun is spoken, not silent. |
-| `SLEEP_GOODBYE_DRAIN_CAP_S`        | How long the sleep pose waits for the goodbye to finish playing, `0.0`–`15.0`. Default `6.0`; by then the mic is muted and the reply has finished generating, so the cap only stops a stuck drain estimate holding the robot awake. |
+| `SLEEP_GOODBYE_DRAIN_CAP_S`        | How long the sleep pose waits for the goodbye to finish playing, `0.0`–`15.0`. Default `10.0`; by then the mic is muted and the reply has finished generating, so the cap only stops a stuck drain estimate holding the robot awake. |
 | `NOTION_MCP_URL` / `NOTION_MCP_TOKEN` | Remote MCP endpoint and bearer token for the Notion integration. |
 | `HA_URL` / `HA_TOKEN`              | Home Assistant base URL and long-lived access token.            |
 | `HA_ENTITIES`                      | JSON map of spoken names to entity ids — the **only** devices the model may target. |

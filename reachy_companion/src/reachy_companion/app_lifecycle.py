@@ -99,7 +99,10 @@ def wake_up_if_sleeping(robot: ReachyMini, logger: logging.Logger) -> bool:
 # silence, then wait, then drain, then pose (Codex round 2, 2a-6). Silencing
 # last would leave the microphone live for the whole of the wait.
 SLEEP_DRAIN_POLL_S: Final[float] = 0.1
-SLEEP_DRAIN_CAP_DEFAULT_S: Final[float] = 6.0
+# 6.0 → 10.0 (2026-10-31 plan, W5.3): a real goodbye hit the 6 s cap while
+# still speaking, and the pose cut it off mid-sentence. The cap only bounds a
+# stuck drain estimate; a goodbye that finishes sooner releases the pose sooner.
+SLEEP_DRAIN_CAP_DEFAULT_S: Final[float] = 10.0
 
 
 def sleep_drain_cap_s() -> float:

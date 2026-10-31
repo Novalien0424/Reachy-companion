@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from reachy_companion.hanova import nas, images, redact, settings, media_store
+from reachy_companion.hanova import nas, images, redact, settings, tv_session, media_store
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.hanova.ha_client import ha_run_script, tv_not_responding, confirm_cast_started
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
@@ -90,4 +90,6 @@ class ShowOnTv(Tool):
         check = await confirm_cast_started(entity, timeout_s=settings.cast_confirm_timeout_s())
         if check["confirmed"] is False:
             return {**tv_not_responding(check["state"]), "url": url}
+        # The picture replaced whatever video was on the TV (plan W3).
+        tv_session.mark_ended("show_on_tv")
         return {"ok": True, "status": "casting", "url": url}

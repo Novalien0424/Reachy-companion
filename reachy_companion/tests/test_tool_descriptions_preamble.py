@@ -69,9 +69,10 @@ def test_music_description_stays_on_the_speaker_and_has_a_play_only_preamble() -
     language of the lead-in now lives once, in the system rules' cross-channel
     language clause, so the description no longer repeats it.
 
-    2026-10-31: `stop` also ends a video on the TV when the speaker is silent,
-    because mini reached for `music stop` while a NAS clip played; *playing* a
-    video still belongs to youtube or nas.
+    2026-10-31: `stop` also ends a video on the TV, because mini reached for
+    `music stop` while a NAS clip played; *playing* a video still belongs to
+    youtube or nas. The same day `pause` and `resume` joined, and all three act
+    on the speaker and the TV together (plan W1, W2).
     """
     description = Music.description
 
@@ -80,13 +81,14 @@ def test_music_description_stays_on_the_speaker_and_has_a_play_only_preamble() -
     assert "youtube" not in description.lower().replace("that is youtube or nas", "")
     assert "your own speaker" in description
     assert "a video played on the TV — that is youtube or nas" in description
-    assert "when none is playing, the video on the TV" in description
+    assert "`pause`, `resume` or `stop`, which act on everything playing" in description
+    assert "the music on your speaker and the video on the TV alike" in description
     assert "`play` with `query`" in description
     assert "Before `play`, say a short lead-in, because finding a track takes a moment" in description
     assert "「我找一下來播」" in description
     assert description.count("示範語氣，不是觸發條件") == 1
     assert description.count("lead-in") == 1
-    assert "`stop` needs none, because the person wants silence now" in description
+    assert "`pause`, `resume` and `stop` need none, because the person wants them done now" in description
     from reachy_companion.prompts import hardening_block
 
     assert "同一輪的旁白、工具訊息和回答都用同一種語言" in hardening_block()

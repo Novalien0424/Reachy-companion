@@ -1,0 +1,176 @@
+[
+  {
+    "id": "pause-video",
+    "targeted": true,
+    "history": [
+      {
+        "user": "瑞奇，放影片庫裡我們去英國的影片"
+      },
+      {
+        "call": "nas",
+        "args": {
+          "action": "play",
+          "place": "UK"
+        },
+        "result": {
+          "ok": true,
+          "status": "casting",
+          "title": "Trip clip 1",
+          "top_folder": "2025 UK trip",
+          "place": "England (London)",
+          "clips_left": 5
+        }
+      },
+      {
+        "assistant": "好，正在電視上播放英國之旅的第一段。"
+      }
+    ],
+    "say": "瑞奇，先暫停一下影片",
+    "expect": {
+      "tool": "music",
+      "args": {
+        "action": "pause"
+      }
+    }
+  },
+  {
+    "id": "pause-short",
+    "targeted": true,
+    "history": [
+      {
+        "user": "瑞奇，放影片庫裡我們去英國的影片"
+      },
+      {
+        "call": "nas",
+        "args": {
+          "action": "play",
+          "place": "UK"
+        },
+        "result": {
+          "ok": true,
+          "status": "casting",
+          "title": "Trip clip 1",
+          "top_folder": "2025 UK trip",
+          "place": "England (London)",
+          "clips_left": 5
+        }
+      },
+      {
+        "assistant": "好，正在電視上播放英國之旅的第一段。"
+      }
+    ],
+    "say": "瑞奇，暫停",
+    "expect": {
+      "tool": "music",
+      "args": {
+        "action": "pause"
+      }
+    }
+  },
+  {
+    "id": "resume-after-stop",
+    "targeted": true,
+    "history": [
+      {
+        "user": "瑞奇，放影片庫裡我們去英國的影片"
+      },
+      {
+        "call": "nas",
+        "args": {
+          "action": "play",
+          "place": "UK"
+        },
+        "result": {
+          "ok": true,
+          "status": "casting",
+          "title": "Old town walk",
+          "top_folder": "2025 UK trip",
+          "place": "England (London)",
+          "clips_left": 5
+        }
+      },
+      {
+        "assistant": "好，正在電視上播放英國之旅。"
+      },
+      {
+        "user": "瑞奇，暫停"
+      },
+      {
+        "call": "music",
+        "args": {
+          "action": "stop"
+        },
+        "result": {
+          "ok": true,
+          "status": "stopped",
+          "stopped": [
+            "tv"
+          ],
+          "tv_title": "Old town walk",
+          "note": "Its place is kept: if they say 「繼續」, music resume plays it on from there."
+        }
+      },
+      {
+        "assistant": "停下來了，要繼續看再跟我說。"
+      }
+    ],
+    "say": "瑞奇，繼續播放",
+    "expect": {
+      "tool": "music",
+      "args": {
+        "action": "resume"
+      }
+    }
+  },
+  {
+    "id": "where-during-clip",
+    "targeted": true,
+    "history": [
+      {
+        "user": "瑞奇，放影片庫裡我們去英國的影片"
+      },
+      {
+        "call": "nas",
+        "args": {
+          "action": "play",
+          "place": "UK"
+        },
+        "result": {
+          "ok": true,
+          "status": "casting",
+          "title": "Old town walk",
+          "top_folder": "2025 UK trip",
+          "place": "England (London)",
+          "clips_left": 5
+        }
+      },
+      {
+        "assistant": "好，正在電視上播放英國之旅。"
+      }
+    ],
+    "say": "瑞奇，我們在哪裡？",
+    "outputs": {
+      "camera": {
+        "video_on_tv": {
+          "title": "Old town walk",
+          "place": "England (London)"
+        }
+      },
+      "look_around": {
+        "video_on_tv": {
+          "title": "Old town walk",
+          "place": "England (London)"
+        }
+      }
+    },
+    "expect": {
+      "text_any": [
+        "倫敦",
+        "英國",
+        "英格蘭",
+        "London",
+        "England"
+      ]
+    }
+  }
+]

@@ -2,6 +2,7 @@ import base64
 import logging
 from typing import Any, Dict
 
+from reachy_companion.hanova import tv_session
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
 
@@ -51,4 +52,11 @@ class Camera(Tool):
             logger.error("No frame available from camera")
             return {"error": "No frame available"}
 
-        return {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8")}
+        result: Dict[str, Any] = {"b64_im": base64.b64encode(jpeg_bytes).decode("utf-8")}
+        # Ours (2026-10-31): asked 「我們在哪裡？」 during a clip, mini looked with the
+        # camera 2 of 3 times. The picture shows the room; what the TV plays is
+        # here, by name, next to it.
+        on_tv = tv_session.on_tv()
+        if on_tv is not None:
+            result["video_on_tv"] = on_tv
+        return result

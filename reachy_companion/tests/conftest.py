@@ -2,6 +2,7 @@
 
 import os
 import sys
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,13 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.nodeid.replace("\\", "/") in LOCKED_PROFILE_INCOMPATIBLE_TESTS:
             item.add_marker(skip_marker)
+
+
+@pytest.fixture(autouse=True)
+def _no_video_session_leaks() -> Any:
+    """Reset the video session, so one test's cast never leaves the next test's gate name-only (W3)."""
+    from reachy_companion.hanova import tv_session
+
+    tv_session.reset_for_tests()
+    yield
+    tv_session.reset_for_tests()

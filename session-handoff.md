@@ -1,110 +1,67 @@
-# Session handoff — 2026-10-31 (v1.32.0 installed; Reachy answers when called)
+# Session handoff — 2026-10-31 (v1.36.0 installed; pause, quiet video, group barge by name)
 
-State: **v1.35.0 installed 2026-10-31 03:04 UTC; Reachy asleep (app stopped),
-TV off.** Boots into 多人聊天模式. The NAS index refreshes itself (D-041): nightly
-Mac pass at 03:30 (`~/HomeAssistant/bin/nas-video/install-nightly.sh`), robot
-swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
+State: **v1.36.0 installed 2026-10-31 (wheel `c712306b`); Reachy asleep (app
+stopped), TV idle.** Boots into 多人聊天模式 (`Tools in session (group, startup,
+19)`). The NAS index refreshes itself (D-041): nightly Mac pass at 03:30, and the
+robot swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
 
-## 2026-10-31 morning session (23:12–23:17 UTC on 10-30) — findings
+## What 1.36.0 did (D-044, plan `docs/plans/2026-10-31-pause-quiet-video-group-barge-plan.md`)
 
-Fixed in 1.32.0: one-on-one answered the room's side conversation, and room
-speech cut replies off about a dozen times (D-029 amendment 2026-10-31).
-Open, not yet fixed:
+- `music play | pause | resume | stop`. Stop ends the speaker and the TV together
+  and keeps a bookmark, so 「繼續」 continues from it. Verified on the real TV and
+  speaker (device tier).
+- While a video Reachy started is on the TV, only a named turn or a control
+  phrase is answered (W3).
+- In 多人, unaddressed speech no longer cuts Reachy off; a name or 「停」 does
+  (W4). The knob is `REALTIME_PARTY_BARGE`.
+- `camera` / `look_around` return `video_on_tv` during a video, and the `nas`
+  results carry `place`.
+- Smaller bugs (W5):
+  - camelCase search tokens;
+  - `place_zh` matching;
+  - the cancel error kept off the transcript;
+  - the drain cap is 10 s;
+  - a pending sleep summary is kept and written at the next start;
+  - the transcript copy is UTF-8.
 
-1. ~~2026 Boston trip missing~~ — fixed by D-041 (1.33.0); Boston plays.
-2. ~~Wi-Fi never came back~~ — the D-034 watchdog cron is installed (operator, 2026-10-31
-   02:16 UTC, `scripts/watchdog_cron.sh`); first probe: link up.
-3. ~~Stop requests reach the wrong tool~~ — fixed by D-042 (1.34.0): 「停」 stops the TV video.
-4. ~~Boston follow-up replayed UK / 「我們在哪裡」 skipped~~ — D-043 (1.35.0): neither
-   reproduced; fixed UK findability and routing. Open: camera on 「我們在哪裡」 1/4.
-5. Smaller: the sleep summary timed out twice (no 上次聊天 fact saved); the
-   farewell hit the 6 s drain cap; a `response_cancel_not_active` error reached
-   the transcript; some replies in simplified characters; asked its mode,
-   mini said 「我不確定」 (1 run).
+## Open, in order
 
-## Shipped today
+1. **Operator: the QNAP virtual host (W6).**
+   - QTS → Control Panel → Applications → Web Server → Virtual Host → enable.
+   - Create a host: HTTP, a free port (8090 suggested), root at the cast-copy
+     folder in its share.
+   - If the picker offers only the `Web` share, move the cast-copy folder into
+     `Web` (same volume) and repoint the Mac pipeline's output share.
+   - Then the agent:
+     - checks the root answers 403 (no listing) and a clip answers a range
+       request with 206;
+     - sets `HANOVA_NAS_HTTP_BASE=http://<nas>:<port>/` in
+       `~/.config/reachy_companion/.env`;
+     - runs `device_check.sh nas`, plus a sleep check: play, sleep, still playing
+       after 60 s.
+2. **Operator, in normal use:** W3/W4 with real speech (feature_list
+   VIDEO-QUIET-GATE, GROUP-BARGE-BY-NAME). Unit-tested only; the synthetic-audio
+   tier was not built, to save tokens.
+3. **Tomorrow:** read `~/HomeAssistant/state/nas-transcode.log` (the 03:30 nightly
+   run, the first with `place_zh`), and `watchdog_cron.sh status`.
+4. **Known, not fixed:**
+   - a mood query for speaker music ("relaxing jazz") finds no playable track;
+   - simplified characters in some replies (a model limit);
+   - 「暫停」 → `stop` about 1 time in 3 (mini's ceiling, absorbed by the
+     bookmark).
 
-- Contract tightened for Opus 5.5 (Codex review → self-review, skills 4 → 3).
-- Upstream refresh + wave-1 ports (v1.24.0); daemon v1.10.0rc5 → v1.13.0.
-- v1.25.0: instance-dir migration, local-VAD listening, usage telemetry +
-  plain-UTF-8 tool outputs + opt-in truncation/image-detail knobs, backend
-  retry backoff, Wi-Fi watchdog module.
-- v1.26.0 (2026-10-29): MCP v2 client (upstream port, certifi-verified),
-  trimmed MCP results (live search 1,700 → 729 chars).
-- v1.27.0–.2 (2026-10-29): NAS search for loose Chinese requests (verified
-  live), `/rpc` say on the conversation loop, tv/nas descriptions mirrored;
-  robot `.env` HA address + TV entity repointed after HA's 10-25 move.
-- v1.27.3 (2026-10-29): `tv play_video` refuses a NAS clip and points at
-  `nas play`; `open_toolbox` says loose descriptions find home videos. Home
-  video cast verified live (NAS stream 206, HA `playing`).
-- v1.28.0 (2026-10-29): media tools named by source — `youtube`, `nas`
-  (影片庫) and `draw_picture`; `tv` retired; ask when no source is named.
-  Live 5/6 passed (D-038).
-- v1.28.1–.5 (2026-10-29/30): ask-first and follow-through fixes. Asked
-  3/3 before any video tool, follow-through 4/5 (D-038).
-- v1.29.0 (2026-10-30): `nas` fitted to the mini model: `play` finds and
-  plays in one call, `list` browses, Chinese misses say to search in English,
-  and the descriptions are about half as long (D-038). Live: V1 3/3, V2, V3.
-- v1.29.1 (2026-10-30): error results reach the model whole (`candidates`
-  and similar fields were dropped in transport, for every tool), and
-  `remaining` is now `clips_left`. Live: V4 2/2, V3 in one call (D-038).
-- v1.30.0 and 1.31.0 (2026-10-30): the mini context diet (D-039).
-  - 19 tools are always loaded; there are no toolboxes; calendar, tasks and
-    Notion are gone.
-  - Families: `dance`, `head`, `memory`, `face`.
-  - The TV is a home device.
-  - Each rule is written once.
-  - The fixed prefix went from 9,866 to about 5,820 tokens.
-- Project skills updated from this session's failures (`4531ee4`). The live
-  harness is `.claude/skills/reachy-deploy/scripts/live_case.sh`.
-- v1.31.1/1.31.2 (D-040): `home_control` reads the device back.
-  - It reported success on HA's 200 alone.
-  - Its 8 s limit timed out the TV's turn-on, which takes 4–9 s.
-  - A timeout now still reads the device back, and a refusal is named as one.
-  - The LAN URL no longer reaches the model.
-  - Live: TV on, off and already-off each 3/3; an unknown device 3/3.
-- v1.31.3: turning a device on counts as slow work, so Reachy speaks
-  first. Live preamble 1/4 → 5/5; the journal now logs preamble text.
+## How to test cheaply (the operator asked for it, 2026-10-31)
 
-## Next session
-
-0a. **home_control gaps** (D-040 § Open):
-   - A scene, script, cover or lock entry would be judged wrongly: their
-     states aren't on/off. Decide before adding one.
-   - The case where a device ignores the command is unit-tested only. Stage
-     it with a real light switched off at the wall.
-0. **Follow-ups from the diet** (D-039, none blocking):
-   - **EMOTION-WITHOUT-SPEECH:** `play_emotion` moves silently. The candidate
-     fix is `needs_response=True`, behind a live A/B.
-   - **V1 ask-first is about 3/4 on mini.** The misses go straight to
-     YouTube.
-   - **Leftovers:**
-     - the locked profile's fallback prose still has the old conventions;
-     - the `tzdata` dev dependency is unused;
-     - `REALTIME_PROMPT_HARDENING=0` leaves the verbatim flag undefined.
-   - **Live tests:** `reachy-deploy` § Live verification;
-     - one fresh session per case, mic muted over `/rpc` `conversation.mic`;
-     - with a family member in view, skip `memory` tests, because they
-       write to that person's record;
-     - unmute when done.
-   - **A stop can wedge the daemon.** Clear it with `sudo -n systemctl restart
-     reachy-mini-daemon` (standing authorization) and record the time.
-1. **Operator:** install the Wi-Fi watchdog cron line (blocked for agents):
-   `ssh <user>@<host> '( crontab -l 2>/dev/null | grep -v "# reachy-wifi-watchdog$"; echo "*/2 * * * * /usr/bin/python3 -I $HOME/.local/lib/reachy-wifi-watchdog/wifi_watchdog.py >/dev/null 2>&1 # reachy-wifi-watchdog" ) | crontab -'`
-   then `journalctl -t reachy-wifi-watchdog` → `monitoring started`.
-2. In-room: `docs/five-demo-checklist.md` (all five demos on v1.13 /
-   v1.26.0), the local-VAD lead line, antennas quiet while Reachy talks;
-   demo 4 is also the in-conversation check of the trimmed search result
-   (`MCP-RESULT-TRIM`).
-3. Latency: one ~20-minute session for the `Response usage` curve, then the
-   reasoning-effort / truncation A/B (`docs/plans/2026-10-28-latency-observability-plan.md`).
-4. Pull the Mac backend checkout before its next push (new robot path).
-5. Consider: change the robot's `pollen` password if it is still the
-   documented default; report runtime Wi-Fi recovery to Pollen upstream.
-
-## Notes
-
-- Robot credentials must not be copied off the robot (classifier); backups
-  stay in `~/reachy_companion_backups/` on the robot.
-- The sandbox intermittently hides the home directory from shell commands;
-  relative paths from the repo root work.
+- **Device truth, zero model tokens:**
+  `bash .claude/skills/reachy-deploy/scripts/device_check.sh nas|youtube|speaker|both|all`.
+  One wake, with the mic muted.
+- **Model choice:**
+  - Copy `qa_replay.py` and `qa_cases.json` to the robot's `/tmp`, then run
+    `/venvs/apps_venv/bin/python -I /tmp/qa_replay.py /tmp/qa_cases.json --runs 3`.
+  - It uses a text-only session built from the installed wheel and the instance
+    directory: no app, no greeting.
+  - Seed the case history with the real result shapes.
+- **Persona:** `persona_sync.sh status` (`~/.config/reachy_companion/persona.md`).
+  The package directory's `persona.md` / `.env` are pre-v1.25.0 leftovers that
+  nothing reads.
+- **Live voice sessions** only for what needs real audio (W3/W4).

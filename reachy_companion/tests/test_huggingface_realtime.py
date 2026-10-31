@@ -1593,9 +1593,10 @@ async def test_function_call_output_carries_chinese_as_plain_utf8(monkeypatch: A
     assert output["output"] == '{"city": "台北", "summary": "晴時多雲，氣溫 28°C", "ok": true}'
     assert "\\u" not in output["output"]
     assert json.loads(output["output"]) == result
-    # Only the model-bound dump changed: the operator UI copy is today's string.
+    # 2026-10-31 plan, W5.5: the operator's transcript copy reads the glyphs too.
     (ui_copy,) = _queued_messages(_drain_queue(handler))
-    assert ui_copy["content"] == json.dumps(result)
+    assert ui_copy["content"] == output["output"]
+    assert json.loads(ui_copy["content"]) == result
 
 
 @pytest.mark.asyncio

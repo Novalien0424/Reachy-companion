@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from reachy_companion.hanova import nas, redact, settings
+from reachy_companion.hanova import nas, redact, settings, tv_session
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
@@ -112,6 +112,9 @@ class PlayNasVideo(Tool):
             nas.start_session(playlist, position)
         else:
             nas.clear_session()
+        # A video is on the TV now: Reachy answers only when called (plan W3),
+        # and camera / look_around say what it is; the URL plays it again.
+        tv_session.mark_started("nas", title=result["title"], place=video.get("place"), recast=result.get("url"))
 
         return {
             "ok": True,
@@ -120,5 +123,9 @@ class PlayNasVideo(Tool):
             # The trip it belongs to, so the one Reachy names comes from here (live
             # 2026-10-29: a Taiwan clip was announced as the trip asked for).
             "top_folder": video.get("top_folder"),
+            # Where the trip went, from the operator's index (2026-10-31): asked
+            # 「我們在哪裡」 during a clip, mini reached for the camera 2 of 3 times
+            # while the answer was nowhere in its context.
+            "place": video.get("place"),
             "clips_left": nas.remaining(),
         }

@@ -5,6 +5,28 @@ history of this file.
 
 ## Current state
 
+**v1.36.0 INSTALLED (2026-10-31, wheel `c712306b`); app stopped (asleep), TV idle.**
+- **Pause and resume; stop stops everything and keeps a bookmark** (D-044).
+  Device tier on the real TV and speaker, zero model tokens:
+  - NAS pause held 12.5 s, and resume continued from 12.7 s;
+  - a bookmark resume landed at 26 s ("where it stopped");
+  - YouTube did the same;
+  - the speaker reported each step right;
+  - speaker + TV: one stop ended both.
+- **Built:** the video quiet gate (W3) and group barge by name (W4). Unit-tested;
+  live with real speech is the operator's check.
+- **`video_on_tv` / `place` in results:** 「我們在哪裡」 was answered from the trip
+  3/3 in replay, against 1/3.
+- **Replay** (`qa_replay.py`, text-only, about 50 turns, no audio):
+  - stop 3/3, resume 3/3, mode 3/3;
+  - 「暫停」 → pause 11/18, mini's ceiling, which the bookmark absorbs.
+- **NAS serves the clip** (`HANOVA_NAS_HTTP_BASE`): waiting on the operator's
+  QNAP virtual host.
+- **Retracted:** a "stale persona" check had read the package directory's
+  pre-v1.25.0 leftover. The instance persona is current.
+- **Records:** suite 2272 / 31; 0 tracebacks and 0 errors in the 1.36.0 journal;
+  3 wakes, no wedge.
+
 **v1.35.0 INSTALLED (2026-10-31 03:04 UTC); app stopped (asleep), TV off.**
 - The morning's two video slips were replayed before any fix (D-043): neither
   reproduced on 1.34.0 (UK replay 0/4, skip 0/4).

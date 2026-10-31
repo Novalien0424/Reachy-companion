@@ -24,4 +24,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "off":
 req = urllib.request.Request(f"{env['HA_URL']}/api/states/{entity}", headers=headers)
 state = json.loads(urllib.request.urlopen(req, timeout=10).read())
 attrs = state.get("attributes", {})
-print("tv:", state["state"], "|", attrs.get("app_name"), "|", attrs.get("media_title"))
+pos = attrs.get("media_position")
+print("tv:", state["state"], "|", attrs.get("app_name"), "|", attrs.get("media_title"),
+      "|", f"pos {pos:.1f}s" if isinstance(pos, (int, float)) else "pos -")

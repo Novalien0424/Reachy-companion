@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from reachy_companion.hanova import nas, redact, settings
+from reachy_companion.hanova import nas, redact, settings, tv_session
 from reachy_companion.home_net import AWAY, HOME, home_state, home_unknown, away_from_home
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 
@@ -54,10 +54,12 @@ class NasSkip(Tool):
         result = await nas.stage_and_cast(video, deps.instance_path, confirm_cast=False)
         if not result["ok"]:
             return {"ok": False, "error": result["error"]}
+        # The next clip is on the TV either way (plan W3).
+        tv_session.mark_started("nas", title=result["title"], place=video.get("place"), recast=result.get("url"))
         if not nas.commit_next(token):
             # Another skip won, or the trip was superseded while this clip was
             # staging. The clip is on the TV either way; the playlist position
             # belongs to whoever won, so this call does not claim it.
             logger.info("nas_skip: the cursor moved under this cast; not advancing again")
-            return {"ok": True, "status": "casting", "title": result["title"], "clips_left": nas.remaining()}
-        return {"ok": True, "status": "casting", "title": result["title"], "clips_left": nas.remaining()}
+            return {"ok": True, "status": "casting", "title": result["title"], "place": video.get("place"), "clips_left": nas.remaining()}
+        return {"ok": True, "status": "casting", "title": result["title"], "place": video.get("place"), "clips_left": nas.remaining()}

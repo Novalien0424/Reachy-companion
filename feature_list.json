@@ -685,6 +685,54 @@
       "state": "verified",
       "evidence": "2026-10-31 v1.35.0 (wheel 810050c2…), suite 2103 / 31. A: UK found 2/4 -> 4/4; Boston follow-up 4/4. B: skip 0/4 (original slip did not reproduce on 1.34.0 either), title answer 2/4 -> 3/4, camera 1/4 -> 1/4; 下一段 skips 4/4. Prefix 5,961-6,014.",
       "next_action": "Open (D-043): camera on 「我們在哪裡」 1/4; the profile's camera line is the remaining text rung."
+    },
+    {
+      "id": "PAUSE-RESUME-PLAYBACK",
+      "state": "verified",
+      "behavior": "music pause/resume act on the speaker music and the TV video; stop keeps a bookmark of a video Reachy started so resume continues from it",
+      "verification": "device_check.sh on the real TV and speaker; qa_replay.py model choice",
+      "evidence": "1.36.0 device tier: NAS pause held 12.5 s, resume 12.7 s, bookmark resume to 26 s; YouTube same; speaker pause/resume/stop. Replay: 「暫停」 -> pause 11/18 across three batches (mini ceiling; the bookmark absorbs the misses), 「繼續播放」 after a stop -> resume 3/3 (D-044)",
+      "next": "none; watch real use for pause misread as stop"
+    },
+    {
+      "id": "STOP-EVERYTHING",
+      "state": "verified",
+      "behavior": "one music stop ends the speaker music and the TV video together, each read back",
+      "verification": "device_check.sh both; replay stop-both",
+      "evidence": "1.36.0: stopped [speaker, tv] live; replay 3/3 one music stop (D-044)",
+      "next": "none"
+    },
+    {
+      "id": "VIDEO-QUIET-GATE",
+      "state": "implemented-unverified",
+      "behavior": "while a video Reachy started is on the TV, 一對一 and 多人 answer only a named turn or a control phrase; a clip that ended on its own reopens the normal rules after one TV read",
+      "verification": "tests/test_video_gate.py, tests/test_video_holdoff.py; live with real speech in the room",
+      "evidence": "unit only (D-044). The device tier logged video session start/end on every cast and stop",
+      "next": "operator: during a video, check that room talk gets no reply and 「瑞奇，…」 does"
+    },
+    {
+      "id": "GROUP-BARGE-BY-NAME",
+      "state": "implemented-unverified",
+      "behavior": "in 多人 (and 一對一 during a video) unaddressed speech never cuts Reachy off; a name or control phrase does (REALTIME_PARTY_BARGE=name, default)",
+      "verification": "tests/test_party_mode.py name-rule tests; live with real speech",
+      "evidence": "unit only (D-044)",
+      "next": "operator: talk over Reachy without its name (it keeps talking), then with 「瑞奇」 (it stops)"
+    },
+    {
+      "id": "NAS-HTTP-SERVE",
+      "state": "implemented-unverified",
+      "behavior": "with HANOVA_NAS_HTTP_BASE set, the TV fetches a NAS clip from the NAS's own web server, so it survives Reachy's sleep and a long pause",
+      "verification": "range request against the NAS URL; device tier: play, sleep, still playing after 60 s",
+      "evidence": "code and tests in 1.36.0; NAS checked read-only: QNAP, Web Server on, WebDAV off (D-044)",
+      "next": "blocked on the operator: QNAP virtual host (HTTP, a free port) rooted at the cast-copy folder; then set HANOVA_NAS_HTTP_BASE in the instance .env and run the sleep check"
+    },
+    {
+      "id": "QA-TIERS-LOW-TOKEN",
+      "state": "verified",
+      "behavior": "device truth via qa.tool (zero model tokens) and model choice via qa_replay.py (text-only sessions from the installed wheel, no app, no greeting)",
+      "verification": "device_check.sh and qa_replay.py runs on 1.36.0",
+      "evidence": "about 50 text turns plus 3 wakes covered what about 40 voice sessions had covered (D-044)",
+      "next": "use them first for every playback or tool-choice change"
     }
   ]
 }

@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from reachy_companion import home_net
-from reachy_companion.hanova import nas, settings
+from reachy_companion.hanova import nas, settings, tv_session
 from reachy_companion.hanova.confirm import GATE
 from reachy_companion.tools.nas_skip import NasSkip
 from reachy_companion.hanova.music_player import PLAYER
@@ -138,11 +138,15 @@ def configured(monkeypatch, tmp_path):
 
     for module in _TOOL_MODULES:
         monkeypatch.setattr(f"{module}.home_state", always_home)
+    tv_session.mark_ended("test setup")
     yield
     nas.clear_session()
     GATE.reset()
     settings.set_media_mount_ready(False)
     home_net.reset_cache()
+    # A successful cast records a video on the TV (plan W3); it must not leak
+    # into another file's answer-gate tests.
+    tv_session.mark_ended("test teardown")
 
 
 def _stub_transfer(monkeypatch) -> dict:
@@ -777,6 +781,8 @@ async def test_play_by_place_plays_the_one_matching_trip_in_one_call(monkeypatch
     assert out["ok"] is True and out["status"] == "casting"
     assert out["top_folder"] == "2021 Cape Town" and out["clips_left"] == 2
     assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/2021 Cape Town/clip01.mp4"]
+    # 2026-10-31: where the trip went rides in the result, so 「我們在哪裡」 has its answer.
+    assert out["place"] == "Cape Town"
 
 
 @pytest.mark.asyncio
@@ -1707,3 +1713,68 @@ def test_nas_and_camera_route_a_question_about_the_clip_to_its_title():
     assert "`skip` plays the next clip when asked" in Nas.description
     assert "Search each new trip request afresh, in English words" in Nas.description
     assert "asks about the video playing on the TV — answer from the title" in Camera.description
+
+
+# --- the video session (2026-10-31 plan, W3) --------------------------------
+@pytest.mark.asyncio
+async def test_a_played_clip_and_a_skip_record_a_nas_video_on_the_tv(monkeypatch, tmp_path):
+    """Confirmed casts start the session the answer gate reads."""
+    _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    assert out["ok"] is True and tv_session.kind() == "nas"
+    playing = tv_session.now_playing()
+    assert playing["title"] == out["title"] and playing["place"] == "SENTINEL_PLACE_q4"
+    assert playing["recast"].startswith("http://robot.example.invalid:7860/hanova-media/nas/")
+    tv_session.mark_ended("between calls")
+    skipped = await NasSkip()(deps=_deps(tmp_path))
+    assert skipped["ok"] is True and tv_session.kind() == "nas"
+    assert tv_session.now_playing()["title"] == skipped["title"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_play_records_no_video(monkeypatch, tmp_path):
+    """Nothing reached the TV, so nothing keeps Reachy quiet."""
+    _stub_transfer(monkeypatch)
+
+    async def refused(script_name, data, timeout_s=60.0):
+        return {"ok": False, "error": "Home Assistant returned HTTP 500"}
+
+    monkeypatch.setattr(nas, "ha_run_script", refused)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="SENTINEL_TRIP_q4")
+    assert out["ok"] is False and not tv_session.active()
+
+
+@pytest.mark.asyncio
+async def test_a_youtube_video_records_its_kind_and_a_refused_one_does_not(monkeypatch, tmp_path):
+    """`play_video` success starts a youtube session; a refused cast starts none."""
+    module = _stub_play_video(monkeypatch, cast_ok=False)
+    assert (await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary"))["ok"] is False
+    assert not tv_session.active()
+    module = _stub_play_video(monkeypatch, cast_ok=True)
+    assert (await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary"))["ok"] is True
+    assert tv_session.now_playing() == {"kind": "youtube", "title": "A Film", "place": None, "recast": "vid123"}
+
+
+@pytest.mark.asyncio
+async def test_a_youtube_cast_the_tv_never_showed_records_no_video(monkeypatch, tmp_path):
+    """`tv_not_responding` is not a video on screen."""
+    module = _stub_play_video(monkeypatch, cast_ok=True)
+
+    async def unconfirmed(entity_id, *, timeout_s):
+        return {"confirmed": False, "state": "off"}
+
+    monkeypatch.setattr(module, "confirm_cast_started", unconfirmed)
+    out = await module.PlayVideo()(deps=_deps(tmp_path), query="a documentary")
+    assert out["status"] == "tv_not_responding" and not tv_session.active()
+
+
+@pytest.mark.asyncio
+async def test_a_picture_on_the_tv_ends_the_video_session(monkeypatch, tmp_path):
+    """`show_on_tv` replaces the video; a refused picture leaves it on screen."""
+    tv_session.mark_started("nas")
+    module = _stub_show_on_tv(monkeypatch, cast_ok=False)
+    assert (await module.ShowOnTv()(deps=_deps(tmp_path), request="a red bicycle"))["ok"] is False
+    assert tv_session.active()
+    module = _stub_show_on_tv(monkeypatch, cast_ok=True)
+    assert (await module.ShowOnTv()(deps=_deps(tmp_path), request="a red bicycle"))["ok"] is True
+    assert not tv_session.active()

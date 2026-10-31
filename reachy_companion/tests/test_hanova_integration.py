@@ -654,7 +654,8 @@ _REDACT_EXEMPT = {
     "audio_drain.py": "logs durations and timeouts only",
     "music_hooks.py": "logs turn-phase transitions only",
     "music_player.py": "logs generation numbers, fixed daemon API paths and HTTP statuses only",
-    "stop_music.py": "logs the fixed string 'Tool call: stop_music' and takes no arguments",
+    "stop_music.py": "logs its own tool names and each half's status word (speaker, TV) -- never a title",
+    "tv_session.py": "logs the video kind, a fixed end reason and a media_player state word only",
     "nas_video_query.py": "one line, a COUNT of how many filters were supplied -- never a filter's value",
 }
 

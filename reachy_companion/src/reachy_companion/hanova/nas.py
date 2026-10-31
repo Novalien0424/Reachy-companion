@@ -33,6 +33,9 @@ import threading
 from typing import IO, Any, Dict, List
 from pathlib import Path
 from dataclasses import dataclass
+from urllib.parse import quote
+
+import httpx
 
 from reachy_companion.hanova import redact, settings, media_store
 from reachy_companion.hanova.confirm import GATE
@@ -342,24 +345,67 @@ def _squash(value: Any) -> str:
 # holds "uk". Longer words and CJK keep the squashed-substring rule above.
 _SHORT_WORD_MAX = 3
 _TOKEN = re.compile(r"[a-z]+|\d+")
+# 2026-10-31 (1.35.0 regression): a camelCase label is also split at its case
+# seams before lowering, so "OpeningNY" holds "opening" and "ny", and "NYTrip"
+# holds "ny" and "trip"; an all-caps run ("USA") stays one token. These are
+# added to the lowered tokens above, never instead of them.
+_CASE_TOKEN = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+# Chinese place names (plan W5.6): the operator's index builder may carry
+# `place_zh`, a space-separated list of Chinese names for a trip's places, in
+# traditional and simplified forms where they differ, on each video and in the
+# `folders` map. Mini sometimes searches in Chinese first, and in phrases, so a
+# term counts when it occurs anywhere in the query text (「英國旅行」 holds 「英國」).
+_PLACE_ZH_MIN = 2
+_HAN_RUN = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+")
+_ALNUM = re.compile(r"[0-9a-z]")
 
 
-def _words_match(needle: str, video: Dict[str, Any], fields: tuple[str, ...]) -> bool:
+def _tokens(video: Dict[str, Any], fields: tuple[str, ...]) -> set[str]:
+    """Return the record's whole Latin and digit tokens, split at case seams too."""
+    tokens: set[str] = set()
+    for field in fields:
+        value = video.get(field)
+        if value is None:
+            continue
+        tokens.update(_TOKEN.findall(_hay(value)))
+        tokens.update(token.lower() for token in _CASE_TOKEN.findall(str(value)))
+    return tokens
+
+
+def _place_zh_terms(value: Any) -> List[str]:
+    """Return the `place_zh` names long enough to count (shorter ones match too much)."""
+    if not isinstance(value, str):
+        return []
+    return [term for term in value.split() if len(term) >= _PLACE_ZH_MIN]
+
+
+def _words_match(
+    needle: str, video: Dict[str, Any], fields: tuple[str, ...], place_zh: Any = None
+) -> bool:
     """Whether every word of `needle` occurs in the record, in any order (ours, 2026-10-29).
 
     Case, spacing and punctuation are ignored on both sides, so a single word
     matches wherever the old plain substring did, and "tokyo okinawa" or
     "chiang mai" no longer depend on how the folder happened to be typed. A
     short Latin word must be a whole token (2026-10-31, see `_SHORT_WORD_MAX`).
+
+    When one of the record's `place_zh` names occurs in the needle, that name
+    answers the needle's Chinese text, and only its Latin and digit words
+    still have to match: 「2025 英國」 asks for the year as well.
     """
+    hay = _hay(needle)
+    named_in_chinese = any(_squash(term) in _squash(hay) for term in _place_zh_terms(place_zh))
+    if named_in_chinese:
+        hay = _HAN_RUN.sub(" ", hay)
     record = "".join(_squash(video.get(field)) for field in fields)
     tokens: set[str] | None = None
-    for word in (_squash(word) for word in _SEPARATORS.split(_hay(needle))):
-        if not word:
+    for word in (_squash(word) for word in _SEPARATORS.split(hay)):
+        if not word or (named_in_chinese and not _ALNUM.search(word)):
             continue
         if len(word) <= _SHORT_WORD_MAX and word.isascii() and word.isalpha():
             if tokens is None:
-                tokens = {token for field in fields for token in _TOKEN.findall(_hay(video.get(field)))}
+                tokens = _tokens(video, fields)
             if word not in tokens:
                 return False
         elif word not in record:
@@ -378,6 +424,8 @@ def filter_index(
 ) -> List[Dict[str, Any]]:
     """Filter the index in memory. Ground truth only -- never fabricate a record."""
     out: List[Dict[str, Any]] = []
+    folders = index.get("folders")
+    folders = folders if isinstance(folders, dict) else {}
     for video in index.get("videos", []):
         if year is not None and video.get("year") != year:
             continue
@@ -385,9 +433,12 @@ def filter_index(
             continue
         if year_to is not None and (video.get("year") or 9999) > year_to:
             continue
-        if place is not None and not _words_match(place, video, _PLACE_FIELDS):
+        # The builder writes `place_zh` on the video and in its folder; either serves.
+        folder = folders.get(str(video.get("top_folder") or ""))
+        place_zh = video.get("place_zh") or (folder.get("place_zh") if isinstance(folder, dict) else None)
+        if place is not None and not _words_match(place, video, _PLACE_FIELDS, place_zh):
             continue
-        if keyword is not None and not _words_match(keyword, video, _KEYWORD_FIELDS):
+        if keyword is not None and not _words_match(keyword, video, _KEYWORD_FIELDS, place_zh):
             continue
         out.append(video)
     out.sort(
@@ -727,6 +778,62 @@ def fetch_cast_file(cast_path: str, destination: Path) -> None:
         lock.release()
 
 
+# --- the NAS's own web server (2026-10-31 plan, W6) ------------------------
+# The robot-served routes below die with the app: when Reachy sleeps, the app
+# stops, and a clip on the TV played ~30 s from its buffer and then went idle.
+# With `HANOVA_NAS_HTTP_BASE` set, the TV is handed the NAS's own URL for the
+# cast copy instead, so the clip no longer depends on Reachy being awake. A
+# quick probe first, so a NAS whose web share is off or unreachable still plays
+# through the robot route rather than casting a dead URL.
+_NAS_HTTP_PROBE_S = 2.0
+_NAS_HTTP_OK = frozenset({200, 206})
+
+
+def nas_http_url(cast_path: str) -> str | None:
+    """Return the NAS web URL for a cast copy, or None when `HANOVA_NAS_HTTP_BASE` is unset. Raises NasError.
+
+    The path is validated exactly as every other route validates it, then
+    taken relative to `HANOVA_NAS_CAST_SUBPATH` -- the folder the NAS's web
+    share serves at the base -- with each segment percent-encoded, because
+    folder names carry spaces, `&`, `+` and Chinese.
+    """
+    base = settings.nas_http_base()
+    if not base:
+        return None
+    validated = validate_cast_path(cast_path)
+    relative = validated[len(posixpath.normpath(settings.nas_cast_subpath())) + 1 :]
+    return base + "/" + "/".join(quote(segment, safe="") for segment in relative.split("/"))
+
+
+async def _probe_nas_http(url: str) -> int:
+    """Ask the NAS for the clip without fetching it; return the HTTP status."""
+    async with httpx.AsyncClient(timeout=_NAS_HTTP_PROBE_S) as client:
+        response = await client.head(url)
+        if response.status_code != 405:
+            return response.status_code
+        # Some servers refuse HEAD; one byte of a GET answers the same question,
+        # and the body is never read past it.
+        async with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as streamed:
+            return streamed.status_code
+
+
+async def nas_serves(url: str) -> bool:
+    """Return whether the NAS's web server answers for *url* (200 or 206) within the probe budget.
+
+    Never raises, and never logs the URL: it names the house's NAS and a trip
+    folder. A failure is logged in shape only and the caller falls back.
+    """
+    try:
+        status = await asyncio.wait_for(_probe_nas_http(url), timeout=_NAS_HTTP_PROBE_S)
+    except Exception as exc:  # noqa: BLE001 - any failure means "use the robot route"
+        logger.warning("NAS web server did not answer (%s); the robot serves the clip instead", redact.error(exc))
+        return False
+    if status in _NAS_HTTP_OK:
+        return True
+    logger.warning("NAS web server answered HTTP %d; the robot serves the clip instead", status)
+    return False
+
+
 # --- staging + casting -----------------------------------------------------
 async def _cast_prepared_url(url: str | None, title: str, *, confirm_cast: bool = True) -> Dict[str, Any]:
     """Hand one LAN URL to the TV script and shape the tool result.
@@ -772,6 +879,10 @@ async def stage_and_cast(
     TV is handed a Range-capable URL and pulls the clip off the share as it
     plays, instead of waiting out a full copy at the ~7 MB/s the link measures.
     Turning the switch off restores the copy-then-serve path below unchanged.
+
+    2026-10-31 (W6): with `HANOVA_NAS_HTTP_BASE` set and the NAS answering for
+    the clip, the TV is handed the NAS's own URL first; both robot routes are
+    then only the fallback.
     """
     # Imported here rather than at module scope: `nas_stream` imports this module
     # for path validation, so a module-level import in both directions is a cycle.
@@ -789,6 +900,8 @@ async def stage_and_cast(
         # entry's original path may name -- the same guarantee `cast_path` has
         # had since finding 15, applied to the field that had none.
         validate_source_path(str(video.get("path") or ""))
+        # W6: None unless `HANOVA_NAS_HTTP_BASE` is set.
+        nas_url = nas_http_url(cast_path)
         # `register` validates the cast path and derives the served name exactly
         # as `cast_filename` does -- it only also records the mapping the stream
         # endpoint resolves the name back through.
@@ -800,6 +913,10 @@ async def stage_and_cast(
         # enforced. `nas_message` allow-lists the fixed sentences instead.
         logger.warning("NAS index entry rejected: %s", redact.error(exc))
         return {"ok": False, "url": None, "title": title, "error": nas_message(exc)}
+
+    if nas_url is not None and await nas_serves(nas_url):
+        # W6: the TV fetches the clip from the NAS itself, so it survives Reachy's sleep.
+        return await _cast_prepared_url(nas_url, title, confirm_cast=confirm_cast)
 
     if streaming:
         # Nothing is copied and nothing is pruned: the served URL resolves back

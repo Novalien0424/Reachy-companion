@@ -25,6 +25,15 @@ acquire itself**, which is where a queued transition spends most of its life --
 and a superseded transition undoes what it started (it stops the sound it just
 began) rather than leaving the speaker running or overwriting newer state.
 `stop()` is the one documented exemption: see its docstring.
+
+**A pause the person asked for is held** (2026-10-31 plan, W2). `music pause`
+reuses the speech duck -- a voiced 「暫停」 has normally ducked the track already
+-- and marks it user-paused, so the drain-then-resume at the end of the turn
+(`resume_after_speech`) leaves it silent. Only `resume_by_user` plays it again;
+`play`, `stop` and `invalidate` drop the hold. The hold is set in the same
+critical section that takes the pause's generation, so a speech duck that
+overtakes the pause (the person talks on while it runs) still ends paused and
+held, never auto-resumed.
 """
 
 from __future__ import annotations
@@ -127,6 +136,11 @@ class MusicPlayer:
         self._state_lock = threading.Lock()  # guards the snapshot itself
         self._state: MusicState | None = None
         self._generation = 0
+        # The person paused the music (`pause_by_user`): no speech duck may resume it.
+        self._user_paused = False
+        # The generation of the `pause_by_user` that set the hold, so a failed
+        # pause clears only its own hold and never a newer pause's.
+        self._hold_owner = 0
 
     def _transition_lock(self) -> asyncio.Lock:
         """Return the transition lock belonging to the running event loop."""
@@ -149,6 +163,11 @@ class MusicPlayer:
         with self._state_lock:
             return self._generation
 
+    def user_paused(self) -> bool:
+        """Return whether the music on the speaker is paused because the person asked."""
+        with self._state_lock:
+            return self._user_paused and self._state is not None and self._state.paused
+
     def reset(self) -> None:
         """Forget the session without touching the speaker (**tests only**).
 
@@ -159,6 +178,7 @@ class MusicPlayer:
         """
         with self._state_lock:
             self._state = None
+            self._user_paused = False
 
     def invalidate(self) -> int:
         """Supersede every in-flight transition and drop the state (finding 8).
@@ -174,11 +194,17 @@ class MusicPlayer:
         with self._state_lock:
             self._generation += 1
             self._state = None
+            self._user_paused = False
             return self._generation
 
-    def _next_generation(self) -> int:
+    def _next_generation(self, *, user_paused: bool | None = None) -> int:
+        """Take a new generation; *user_paused*, when given, sets the hold in the same step."""
         with self._state_lock:
             self._generation += 1
+            if user_paused is not None:
+                self._user_paused = user_paused
+                if user_paused:
+                    self._hold_owner = self._generation
             return self._generation
 
     def _is_current(self, generation: int) -> bool:
@@ -192,7 +218,7 @@ class MusicPlayer:
     # --- transitions -------------------------------------------------------
     async def play(self, deps: Any, *, video_id: str, title: str, source_path: Path) -> Dict[str, Any]:
         """Start *source_path* on the robot's speaker, superseding anything playing."""
-        generation = self._next_generation()
+        generation = self._next_generation(user_paused=False)
         async with self._transition_lock():
             if not self._is_current(generation):
                 return _superseded()
@@ -249,9 +275,9 @@ class MusicPlayer:
 
         This is the safety lane: it never checks the generation after its await,
         because a stop must win against anything queued behind it. Whatever runs
-        next re-establishes its own state.
+        next re-establishes its own state. It also drops a user pause.
         """
-        self._next_generation()
+        self._next_generation(user_paused=False)
         async with self._transition_lock():
             state = self.current()
             acknowledged = await daemon_stop_sound(deps)
@@ -286,7 +312,13 @@ class MusicPlayer:
                 # elapsed offset spanning the silence, so the resume after it
                 # would jump forward. The transition that superseded us
                 # establishes its own state.
-                self._store(None)
+                if acknowledged and self._hold_set():
+                    # 2026-10-31: the one that overtook this is the person's own
+                    # `music pause`, which must stay resumable, so the silenced
+                    # track is banked as paused rather than dropped.
+                    self._bank_pause(state)
+                else:
+                    self._store(None)
                 return _superseded()
             if not acknowledged:
                 # Finding 2: do NOT mark it paused. The music is still playing,
@@ -307,7 +339,11 @@ class MusicPlayer:
             return {"ok": True, "status": "paused"}
 
     async def resume_after_speech(self, deps: Any) -> Dict[str, Any]:
-        """Resume ducked music once the turn's audio has fully drained. No-op when idle."""
+        """Resume ducked music once the turn's audio has fully drained. No-op when idle.
+
+        Music the person paused stays paused (`user_paused`): the drain after
+        their 「暫停」 must not put it back on.
+        """
         generation = self._next_generation()
         async with self._transition_lock():
             if not self._is_current(generation):
@@ -315,39 +351,133 @@ class MusicPlayer:
             state = self.current()
             if state is None or not state.paused:
                 return {"ok": True, "status": "nothing_to_resume"}
-            source = state.source_path
-            offset = state.offset_s
+            if self.user_paused():
+                logger.debug("Music left paused: the person paused it (generation %d)", generation)
+                return {"ok": True, "status": "user_paused"}
+            return await self._play_from_offset(deps, generation, state)
 
-            if offset <= _MIN_RESUME_OFFSET_S:
-                playback_path = source
-            else:
-                # The cut inherits the source container: ffmpeg stream-copies
-                # (`-c copy`), and an AAC stream cannot live in an mp3 shell.
-                playback_path = source.with_suffix(f".resume{source.suffix}")
-                trimmed = await asyncio.to_thread(ytdlp.cut_from, source, offset, playback_path)
-                if not self._is_current(generation):
-                    return _superseded()
-                if not trimmed:
-                    logger.warning("Could not resume music; leaving it stopped.")
-                    self._store(None)
-                    return {"ok": False, "status": "resume_failed"}
+    async def pause_by_user(self, deps: Any) -> Dict[str, Any]:
+        """Pause the music because the person asked (`music pause`), and hold it paused.
 
-            started = await daemon_play_sound(deps, str(playback_path))
-            if not self._is_current(generation):
-                await daemon_stop_sound(deps)
-                self._store(None)
+        The silencing is the speech duck's own: stop the sound and bank the
+        offset. A voiced request has usually ducked the track already, and then
+        only the hold is added. Returns ``paused`` with the title,
+        ``nothing_playing``, ``pause_failed`` (the daemon refused; the music
+        still plays) or ``superseded`` (a newer play or stop took over).
+
+        A newer speech duck or drain-resume does not supersede this: neither
+        drops the hold, and both leave held music paused, so the pause goes
+        ahead. Only `play`, `stop` and `invalidate` drop the hold, and they win.
+        """
+        generation = self._next_generation(user_paused=True)
+        async with self._transition_lock():
+            if not self._is_current(generation) and not self._hold_set():
                 return _superseded()
-            if not started:
+            state = self.current()
+            if state is None:
+                self._drop_hold(generation)
+                return {"ok": True, "status": "nothing_playing"}
+            if state.paused:
+                logger.info("Music paused by the person (already ducked; generation %d)", generation)
+                return {"ok": True, "status": "paused", "title": state.title}
+
+            acknowledged = await daemon_stop_sound(deps)
+            if not acknowledged:
+                self._drop_hold(generation)
+                logger.warning("Music pause: the daemon refused the stop; state left playing.")
+                return {
+                    "ok": False,
+                    "status": "pause_failed",
+                    "error": "the robot's speaker did not acknowledge the stop",
+                }
+            # The track is silent now whoever runs next, so the snapshot says
+            # paused with the offset banked even if a play or stop overtook this
+            # during the stop; that transition then replaces or clears it.
+            self._bank_pause(state)
+            if not self._is_current(generation) and not self._hold_set():
+                return _superseded()
+            logger.info("Music paused by the person (generation %d)", generation)
+            return {"ok": True, "status": "paused", "title": state.title}
+
+    async def resume_by_user(self, deps: Any) -> Dict[str, Any]:
+        """Play the music the person paused from where it stopped (`music resume`).
+
+        Only a user pause is resumed. Returns ``resumed`` with the title,
+        ``already_playing`` (music is on and not paused by the person -- a duck
+        resumes by itself after the reply), ``nothing_to_resume``,
+        ``resume_failed`` (the music is stopped now) or ``superseded``.
+        """
+        generation = self._next_generation()
+        async with self._transition_lock():
+            if not self._is_current(generation):
+                return _superseded()
+            state = self.current()
+            if state is None:
+                return {"ok": True, "status": "nothing_to_resume"}
+            if not self.user_paused():
+                return {"ok": True, "status": "already_playing", "title": state.title}
+            with self._state_lock:
+                self._user_paused = False
+            result = await self._play_from_offset(deps, generation, state)
+            if result.get("status") == "resumed":
+                logger.info("Music resumed by the person (generation %d)", generation)
+                return {**result, "title": state.title}
+            return result
+
+    def _hold_set(self) -> bool:
+        """Return whether a user pause is requested and no play or stop has dropped it since."""
+        with self._state_lock:
+            return self._user_paused
+
+    def _bank_pause(self, expected: MusicState) -> None:
+        """Mark *expected* paused at its elapsed offset, if it is still the live, playing session."""
+        with self._state_lock:
+            live = self._state
+            if live is expected and not live.paused:
+                live.offset_s += max(0.0, time.monotonic() - live.started_at)
+                live.paused = True
+
+    def _drop_hold(self, generation: int) -> None:
+        """Clear the hold the pause of *generation* set, unless a newer pause set it again."""
+        with self._state_lock:
+            if self._hold_owner == generation:
+                self._user_paused = False
+
+    async def _play_from_offset(self, deps: Any, generation: int, state: MusicState) -> Dict[str, Any]:
+        """Re-cut the paused track at its banked offset and play the tail. Lock held by the caller."""
+        source = state.source_path
+        offset = state.offset_s
+
+        if offset <= _MIN_RESUME_OFFSET_S:
+            playback_path = source
+        else:
+            # The cut inherits the source container: ffmpeg stream-copies
+            # (`-c copy`), and an AAC stream cannot live in an mp3 shell.
+            playback_path = source.with_suffix(f".resume{source.suffix}")
+            trimmed = await asyncio.to_thread(ytdlp.cut_from, source, offset, playback_path)
+            if not self._is_current(generation):
+                return _superseded()
+            if not trimmed:
+                logger.warning("Could not resume music; leaving it stopped.")
                 self._store(None)
                 return {"ok": False, "status": "resume_failed"}
 
-            with self._state_lock:
-                live = self._state
-                if live is not None:
-                    live.paused = False
-                    live.started_at = time.monotonic()
-            logger.debug("Music resumed (generation %d)", generation)
-            return {"ok": True, "status": "resumed"}
+        started = await daemon_play_sound(deps, str(playback_path))
+        if not self._is_current(generation):
+            await daemon_stop_sound(deps)
+            self._store(None)
+            return _superseded()
+        if not started:
+            self._store(None)
+            return {"ok": False, "status": "resume_failed"}
+
+        with self._state_lock:
+            live = self._state
+            if live is not None:
+                live.paused = False
+                live.started_at = time.monotonic()
+        logger.debug("Music resumed (generation %d)", generation)
+        return {"ok": True, "status": "resumed"}
 
 
 PLAYER = MusicPlayer()

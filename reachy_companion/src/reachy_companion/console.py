@@ -5,6 +5,7 @@ served via the Reachy Mini Apps settings server so users can configure it.
 """
 
 import os
+import json
 import time
 import asyncio
 import logging
@@ -43,7 +44,7 @@ from reachy_companion.prompts import get_session_voice, get_session_instructions
 from reachy_companion.streaming import AdditionalOutputs, audio_to_float32
 from reachy_companion.audio.envparse import env_bool
 from reachy_companion.startup_settings import read_startup_settings, write_startup_settings
-from reachy_companion.tools.core_tools import initialize_tools
+from reachy_companion.tools.core_tools import initialize_tools, dispatch_tool_call
 from reachy_companion.tool_space_routes import register_tool_space_methods
 from reachy_companion.personality_routes import (
     build_personality_ops,
@@ -71,6 +72,11 @@ except Exception:  # pragma: no cover - only loaded when settings_app is used
     BaseModel = object  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+# The operator's QA flag (2026-10-31): while it exists, /rpc carries the test-only
+# `qa.tool`. In /tmp on purpose, so nothing persistent can leave it on.
+QA_FLAG_PATH = "/tmp/reachy_qa"
+_QA_TOOL_TIMEOUT_S = 90.0
 
 
 def _detach_framework_root_routes(app: "FastAPI") -> None:
@@ -723,6 +729,31 @@ class LocalStream:
                 self._mic_muted = bool(params["muted"])
                 logger.info("Microphone %s via /rpc", "muted" if self._mic_muted else "unmuted")
             return {"muted": self._mic_muted}
+
+        # Test-only (2026-10-31 QA plan, tier 1): call a tool exactly as the model
+        # would, to check what the TV, the NAS and the speaker really do without
+        # spending model tokens. Registered only while the QA flag file exists and
+        # re-checked on every call; the flag lives in /tmp, so a reboot removes it.
+        if os.path.exists(QA_FLAG_PATH):
+            logger.warning("QA flag %s present: qa.tool is registered on /rpc", QA_FLAG_PATH)
+
+            @rpc.method("qa.tool")  # type: ignore[untyped-decorator]
+            async def _rpc_qa_tool(params: dict[str, object]) -> dict[str, object]:
+                if not os.path.exists(QA_FLAG_PATH):
+                    raise JsonRpcError("qa hooks are off", reason="qa_off")
+                name = str(params.get("name") or "").strip()
+                args = params.get("args") or {}
+                if not name or not isinstance(args, dict):
+                    raise JsonRpcError("qa.tool requires 'name' and an 'args' object", reason="invalid_params", code=-32602)
+                loop = self._asyncio_loop
+                if loop is None:
+                    raise JsonRpcError("no active session", reason="not_running")
+                future = asyncio.run_coroutine_threadsafe(
+                    dispatch_tool_call(name, json.dumps(args), self.handler.deps), loop
+                )
+                result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=_QA_TOOL_TIMEOUT_S)
+                logger.info("qa.tool %s %s", name, sorted(args))
+                return {"result": result}
 
         @rpc.method("backend.config")  # type: ignore[untyped-decorator]
         def _rpc_backend_config(params: dict[str, object]) -> dict[str, object]:

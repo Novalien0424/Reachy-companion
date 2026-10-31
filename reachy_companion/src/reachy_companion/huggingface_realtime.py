@@ -46,7 +46,7 @@ from reachy_companion.config import (
     parse_hf_realtime_url,
     get_hf_connection_selection,
 )
-from reachy_companion.hanova import audio_drain
+from reachy_companion.hanova import tv_session, audio_drain
 from reachy_companion.people import PERSON_FACTS_DEFAULT, facts_for_person
 from reachy_companion.prompts import (
     mode_rules_block,
@@ -264,8 +264,13 @@ def _solo_interrupt_verdict(text: str) -> tuple[bool, str]:
     is worse than any false positive — then any substantive sentence. A
     backchannel or an empty transcript is never an interruption under either
     gate.
+
+    While a video Reachy started is on the TV, the name rule applies whatever
+    the gate says (W4, `REALTIME_PARTY_BARGE=name`): the soundtrack is full of
+    substantive sentences, and none of them is the person on the sofa asking
+    Reachy to stop.
     """
-    if _solo_name_gate():
+    if _solo_name_gate() or (_party_barge_rule() == "name" and tv_session.active()):
         return _gate_text_accepts(text)
     if _PARTY_CONTROL_RE.search(text.casefold()):
         return True, "control phrase"
@@ -311,6 +316,53 @@ _ANSWER_DENY_LOG: Final[dict[ConversationMode, str]] = {
     ConversationMode.GROUP: "party gate: denied ambient turn",
     ConversationMode.RECORD: "record gate: transcribed without answering",
 }
+# The line a turn denied by the video gate prints instead (2026-10-31 plan, W3).
+_VIDEO_DENY_LOG: Final[str] = "video gate: no answer while a video plays"
+# Outer bound on the stale-session TV read the video gate makes before refusing
+# an unnamed turn. `tv_session.confirm_still_playing` has its own 1.5 s HA
+# timeout; this is the belt, and it holds the receive loop for at most this long.
+_VIDEO_RECHECK_BELT_S: Final[float] = 2.0
+
+
+def _video_gate_applies(mode: ConversationMode) -> bool:
+    """Whether the video gate decides answering for a turn of *mode* (W3).
+
+    While a video Reachy started is on the TV, 一對一 and 多人 answer only a
+    turn that names Reachy or says a control phrase: the room is watching, and
+    the soundtrack and the people watching are not talking to Reachy (operator,
+    2026-10-31). 紀錄模式 is untouched — its rule is already name-or-control.
+    """
+    return mode is not ConversationMode.RECORD and tv_session.active()
+
+
+_PARTY_BARGE_RULES: Final[tuple[str, ...]] = ("name", "persistence")
+
+
+def _party_barge_rule() -> str:
+    """How a room takes the floor from a talking Reachy: `name` (default) or `persistence`.
+
+    2026-10-31 plan, W4. `persistence` is the rule up to 1.35.0: in 多人聊天模式
+    any speech that outlasts `REALTIME_PARTY_BARGE_CONFIRM_MS` while Reachy is
+    audible cancels the reply, and no transcript is consulted — so a TV
+    soundtrack, or two people talking to each other, cut Reachy off after 1.6 s.
+
+    `name`: in 多人聊天模式, and in 一對一聊天模式 while a video Reachy started is
+    on the TV, unaddressed speech never cancels or pauses the reply. Reachy talks
+    through it, like a person telling a story (D-028 decision 2). A name or a
+    control phrase still stops it — from a partial transcript, or from the
+    committed one. The accepted cost: a sentence without the name, spoken over
+    the reply, does not stop it; the fix is the name. 紀錄模式 keeps its own
+    persistence rule under either value.
+
+    Degrades with a warning rather than raising, like every other mode knob.
+    """
+    raw = (os.getenv("REALTIME_PARTY_BARGE") or "").strip().lower()
+    if not raw:
+        return "name"
+    if raw not in _PARTY_BARGE_RULES:
+        logger.warning("Ignoring invalid REALTIME_PARTY_BARGE=%r; using name.", raw)
+        return "name"
+    return raw
 
 
 def _vad_silence_duration_ms() -> int:
@@ -1765,7 +1817,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
           `REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only` tightens it to RECORD's
           rule — a separate variable from the interruption gate, on purpose
           (Open question 1).
+        * While a video Reachy started is on the TV (2026-10-31 plan, W3),
+          ONE_ON_ONE and GROUP take RECORD's rule too: an address name or a
+          control phrase, and nothing else. GROUP's follow-up window and face,
+          and ONE_ON_ONE's substantive acceptance, are off until the video
+          ends. RECORD is unchanged — that rule is already its own. A stale
+          session is re-read by the async caller before this runs
+          (`_recheck_stale_video`), so a clip that ended on its own does not
+          keep Reachy quiet.
         """
+        if _video_gate_applies(mode):
+            return _gate_text_accepts(transcript)[0]
         if mode is ConversationMode.GROUP:
             return self._party_gate_accepts(transcript)
         accepted, _reason = _gate_text_accepts(transcript)
@@ -1834,6 +1896,61 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if self._party_mode or not _solo_client_barge() or pause_committed:
             return False
         return self._take_late_eligible(item_id)
+
+    def _talks_through_unaddressed(self, mode: ConversationMode) -> bool:
+        """Whether unaddressed speech leaves a reply alone under *mode* (W4, the name rule).
+
+        GROUP always, and ONE_ON_ONE while a video Reachy started is on the
+        TV: a soundtrack must neither cut Reachy off nor make the solo machine
+        pause at every sentence of it. Never RECORD, and never under
+        `REALTIME_PARTY_BARGE=persistence`.
+        """
+        if _party_barge_rule() != "name":
+            return False
+        if mode is ConversationMode.GROUP:
+            return True
+        return mode is ConversationMode.ONE_ON_ONE and tv_session.active()
+
+    def _room_name_barge_was_possible(
+        self, item_id: str | None, pause_committed: bool, mode: ConversationMode
+    ) -> bool:
+        """Room twin of `_late_interrupt_was_possible`, under the W4 name rule.
+
+        A GROUP turn, no partial transcript already interrupted for it, and an
+        onset over a talking robot (stamped at `speech_started`). Consumes the
+        item's eligibility stamp, as the solo check does.
+        """
+        if mode is not ConversationMode.GROUP or not self._talks_through_unaddressed(mode):
+            return False
+        eligible = self._take_late_eligible(item_id)
+        return eligible and not pause_committed
+
+    async def _recheck_stale_video(self, transcript: str, mode: ConversationMode) -> None:
+        """Read the TV once before the video gate refuses an unnamed turn (W3 staleness).
+
+        A clip that ends on its own leaves the session recorded, and would keep
+        Reachy quiet for good. So an unnamed turn arriving while the session's
+        last look is older than `tv_session.STALE_AFTER_S` pays one HA read;
+        `idle` or `off` ends the session and the mode's normal rules decide the
+        turn. A named turn or a control phrase never pays for it — the gate
+        accepts those either way. An unreadable TV keeps the session, as
+        `confirm_still_playing` itself does: staying quiet unless called is the
+        safer error while the room may still be watching.
+        """
+        if not _video_gate_applies(mode) or not tv_session.is_stale():
+            return
+        if _gate_text_accepts(transcript)[0]:
+            return
+        try:
+            still_playing = await asyncio.wait_for(tv_session.confirm_still_playing(), timeout=_VIDEO_RECHECK_BELT_S)
+        except TimeoutError:
+            logger.info("video gate: the TV read-back overran %.1f s; keeping the session", _VIDEO_RECHECK_BELT_S)
+            return
+        except Exception as exc:  # noqa: BLE001 - an HA failure must not drop the turn
+            logger.warning("video gate: the TV read-back failed (%s); keeping the session", type(exc).__name__)
+            return
+        if not still_playing:
+            logger.info("video gate: the video has ended; %s rules apply again", mode.value)
 
     def _log_declined_late_interrupt(self, audible: bool, verdict: str) -> None:
         """Name why a turn that began over a talking robot did NOT interrupt it.
@@ -1973,6 +2090,18 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         _cancel_barge_task(task, current)
         return True
 
+    def _video_keeps_holdoff(self) -> bool:
+        """Whether a new `speech_started` leaves an accepted turn's hold-off alone (W3).
+
+        While a video Reachy started is on the TV, the next onset is the
+        soundtrack as often as the speaker going on, and treating it as a
+        continuation would let the TV defer 「瑞奇，暫停」 for as long as it
+        keeps talking. So the hold-off runs its 700 ms and answers. The
+        accepted cost: a named sentence is answered before an unnamed
+        continuation of it. With no video, nothing changes.
+        """
+        return _video_gate_applies(self._current_mode())
+
     async def _request_accepted_turn_response(self, item_id: str | None, *, already_answered: bool = False) -> None:
         """Request an accepted turn's answer, with the plan rev 3 A1 hold-off seam.
 
@@ -1999,7 +2128,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             return
 
         cancelled_older = self._cancel_holdoff_task(_current_task())
-        if started_seq is not None and self._speech_started_seq > started_seq:
+        if started_seq is not None and self._speech_started_seq > started_seq and not self._video_keeps_holdoff():
             # The continuation's `speech_started` event reached this receive
             # loop before the previous transcript completed. No transcript text
             # heuristic is needed; event order is the whole signal.
@@ -2041,7 +2170,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 drop_reason = "task no longer current"
             elif current.cancelled() or current.cancelling():
                 drop_reason = "task cancelled"
-            elif self._speech_started_seq != armed_seq:
+            elif self._speech_started_seq != armed_seq and not self._video_keeps_holdoff():
                 drop_reason = "speech started"
             elif self.connection is not bound_connection:
                 drop_reason = "connection changed"
@@ -2097,7 +2226,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         return bool(abs(face.x) <= _party_face_center())
 
     def _start_party_barge_timer(self) -> None:
-        """Arm the debounce: sustained speech while audible = real interruption."""
+        """Arm the debounce: sustained speech while audible = real interruption.
+
+        Inert under the W4 name rule (`REALTIME_PARTY_BARGE=name`, the default):
+        in 多人聊天模式 how long somebody talks proves nothing about whom they are
+        talking to, so only a name or a control phrase may stop the reply — the
+        partial-transcript and committed-transcript paths. 紀錄模式 still arms it.
+        """
+        if self._talks_through_unaddressed(self._current_mode()):
+            return
         if self._party_barge_task is not None and not self._party_barge_task.done():
             self._party_barge_task.cancel()
         self._party_barge_task = asyncio.create_task(
@@ -2118,6 +2255,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         if not self._party_speech_open or not self._robot_audible():
             return
         logger.info("party barge-in confirmed; cancelling the active reply")
+        await self._cancel_room_reply()
+
+    async def _cancel_room_reply(self) -> None:
+        """Stop the reply a room barge-in took the floor from: cancel, flush, truncate.
+
+        Shared by the persistence timer above and the W4 name paths (partial
+        and committed transcript).
+        """
         # Task 5: party mode never pauses, so the heard position is measured
         # live — and before the cancel/flush, which zeroes the drain counters.
         truncate_item, truncate_ms = self._audio_item_id, self._heard_audio_ms()
@@ -2320,6 +2465,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         # server is producing for it.
         self._stamp_late_eligible(item_id, self._robot_audible())
         on_user_speech_candidate(self.deps)
+        if self._talks_through_unaddressed(self._current_mode()):
+            # W4: a video Reachy started is on the TV. Its soundtrack would
+            # pause the reply at every sentence, so nothing pauses; the onset
+            # stamp above is what lets a name or 「停」 still stop the reply, on
+            # the partial path or the late path.
+            logger.debug("solo barge-in not armed: a video is playing (name rule)")
+            return
         if time.monotonic() < self._barge_cooldown_until:
             # The tail of the reply we just cancelled (or its echo) is the most
             # likely thing to trigger VAD right now, and pausing on it would
@@ -2683,7 +2835,14 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         the completed transcript may later correct; the cost of a false
         positive is a cut reply with its heard part preserved by the truncate,
         never lost context.
+
+        Under the W4 name rule there is no pause to commit — GROUP never
+        pauses, and neither does ONE_ON_ONE while a video plays — so the same
+        partial stops the live reply instead (`_name_barge_on_partial`).
         """
+        if not self._barge_pending and self._talks_through_unaddressed(self._current_mode()):
+            await self._name_barge_on_partial(partial, item_id)
+            return
         if self._party_mode or not self._barge_pending:
             return
         accepted, reason = _gate_text_accepts(partial)
@@ -2693,6 +2852,33 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         await self._commit_solo_barge()
         # The completed transcript for this item must not re-interrupt the
         # answer this commit is about to produce (Codex round 2, finding 2).
+        self._barge_partial_committed_item = item_id
+
+    async def _name_barge_on_partial(self, partial: str, item_id: str) -> None:
+        """Stop a talking Reachy the moment a partial transcript names it (W4).
+
+        Only for an utterance that began over a talking robot (its onset
+        stamp), only while Reachy is still audible, and once per utterance.
+        The room cancels live (`_cancel_room_reply`); one-on-one takes the solo
+        late path, which also arms the watchdog that rescues the turn should
+        its transcript fail. Marked as committed after the flush — which in
+        production clears every barge marker — so the completed transcript
+        does not interrupt the answer a second time.
+        """
+        if item_id == self._barge_partial_committed_item:
+            return
+        stamped = self._barge_late_eligibles.get(item_id)
+        eligible = self._barge_late_eligible if stamped is None else stamped
+        if not eligible or not self._robot_audible():
+            return
+        accepted, reason = _gate_text_accepts(partial)
+        if not accepted:
+            return
+        logger.info("name barge-in by partial transcript (%s); cancelling the active reply", reason)
+        if self._party_mode:
+            await self._cancel_room_reply()
+        else:
+            await self._late_solo_interrupt()
         self._barge_partial_committed_item = item_id
 
     async def _resolve_solo_barge(self, transcript: str, item_id: str | None = None) -> bool:
@@ -3888,7 +4074,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                 AdditionalOutputs(
                     {
                         "role": "assistant",
-                        "content": json.dumps(tool_result_for_model),
+                        # W5.5: the operator's transcript reads 「周杰倫」, not
+                        # `\u5468…` — the same UTF-8 dump the model already gets.
+                        "content": _model_bound_json(tool_result_for_model),
                     },
                 ),
             )
@@ -4181,7 +4369,9 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self._pair_local_vad_lead(server_at=speech_started_at)
                         self._log_late_holdoff_continuation(speech_started_at)
                         self._stamp_turn_mode(item_id)
-                        if self._cancel_holdoff_task(_current_task()):
+                        # W3: while a video plays, an onset does not defer the
+                        # accepted turn's answer (`_video_keeps_holdoff`).
+                        if not self._video_keeps_holdoff() and self._cancel_holdoff_task(_current_task()):
                             self._holdoff_owed = True
                             held_ms = _gap_ms(self._holdoff_armed_at, speech_started_at)
                             self._holdoff_armed_at = None
@@ -4206,7 +4396,15 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             self._party_speech_open = True
                             self._party_utterance_seq += 1
                             on_user_speech_candidate(self.deps)
+                            if self._talks_through_unaddressed(self._current_mode()):
+                                # W4 name rule: whether this utterance began
+                                # over a talking robot is decided here, at its
+                                # onset, exactly as `_solo_speech_started` does;
+                                # the partial and late name paths read it.
+                                self._stamp_late_eligible(item_id, self._robot_audible())
                             if self._robot_audible():
+                                # Inert under the name rule; 紀錄模式 and
+                                # `REALTIME_PARTY_BARGE=persistence` arm it.
                                 self._start_party_barge_timer()
                         else:
                             # Solo (Task 8): pause the reply and decide, rather
@@ -4433,10 +4631,17 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # will not interrupt it. Say so, with the reason.
                             if self._late_interrupt_was_possible(event_item_id, pause_committed):
                                 self._log_declined_late_interrupt(self._robot_audible(), "empty")
+                            if self._party_mode:
+                                # W4: the room's onset stamp has no reader left.
+                                self._clear_late_eligible(event_item_id)
                             logger.debug("Ignoring empty user transcript")
                             await self._answer_owed_holdoff("empty transcript")
                             continue
 
+                        # W3: a stale video session is re-read before the
+                        # video gate may refuse an unnamed turn; one that ended
+                        # on its own hands the turn back to the mode's rules.
+                        await self._recheck_stale_video(transcript, turn_mode)
                         if not self._answer_gate_accepts(transcript, turn_mode):
                             self._take_speech_started_seq(event_item_id)
                             self._take_speech_stopped_at(event_item_id)
@@ -4445,7 +4650,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             # for the music hooks (party plan, finding 4) and
                             # touch nothing else — the tool-batch state belongs
                             # to an accepted turn that may still be running.
-                            logger.info("%s (%d chars)", _ANSWER_DENY_LOG[turn_mode], len(transcript))
+                            deny_line = _VIDEO_DENY_LOG if _video_gate_applies(turn_mode) else _ANSWER_DENY_LOG[turn_mode]
+                            logger.info("%s (%d chars)", deny_line, len(transcript))
                             if not self._party_mode:
                                 # This utterance is decided — denied — so the
                                 # solo barge lifecycle it owned closes here as
@@ -4475,6 +4681,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                 # where sustained speech confirms the barge and
                                 # name-only answering then denies it.
                                 self._stand_down_barge_watchdog()
+                            else:
+                                # W4: a denied room turn never stops the reply,
+                                # so its onset stamp is spent here.
+                                self._clear_late_eligible(event_item_id)
                             owed_answer = self._holdoff_owed
                             if not owed_answer:
                                 on_turn_without_response(self.deps)
@@ -4518,6 +4728,16 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             else:
                                 logger.info("late solo interrupt (%s) on committed turn", reason)
                                 await self._late_solo_interrupt()
+                        elif self._room_name_barge_was_possible(event_item_id, pause_committed, turn_mode):
+                            # W4, the room's name rule: this accepted turn
+                            # began over a talking Reachy and no partial
+                            # stopped it. Only a name or a control phrase takes
+                            # the floor — an accepted follow-up without the name
+                            # is answered after the reply, not over it.
+                            accepted, reason = _gate_text_accepts(transcript)
+                            if self._robot_audible() and accepted:
+                                logger.info("party barge-in (%s) on committed turn; cancelling the active reply", reason)
+                                await self._cancel_room_reply()
                         if not self._party_mode:
                             # The rollback's utterance is now decided either way;
                             # a lingering resumed-id would suppress a future real
@@ -4596,8 +4816,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if self._party_mode:
                             # No transcript will ever arrive for this turn, so no
                             # gate decision and no response: close it for the
-                            # music hooks (finding 4).
+                            # music hooks (finding 4). The W4 onset stamp goes
+                            # with it.
                             on_turn_without_response(self.deps)
+                            self._clear_late_eligible(event_item_id)
                         else:
                             # Task 8: same reasoning for a pending solo pause —
                             # nothing is coming that could confirm it. The
@@ -4807,6 +5029,13 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                                     "Ignoring stale response.create rejection for event_id=%s",
                                     getattr(err, "event_id", None),
                                 )
+                        elif code == "response_cancel_not_active":
+                            # 2026-10-31 plan, W5.2: our `response.cancel` raced
+                            # the reply's own end (`_cancel_active_response`
+                            # checks `response.done`, but the server can finish
+                            # between that read and the cancel arriving). Benign:
+                            # there was nothing left to stop.
+                            logger.debug("response.cancel found no active response (benign race): %s", msg)
                         else:
                             logger.error("Realtime error [%s]: %s (raw=%s)", code, msg, err)
 
@@ -4817,6 +5046,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         if code not in (
                             "input_audio_buffer_commit_empty",
                             "conversation_already_has_active_response",
+                            "response_cancel_not_active",
                         ):
                             await self.output_queue.put(
                                 AdditionalOutputs({"role": "assistant", "content": f"[error] {msg}"})

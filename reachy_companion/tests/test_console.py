@@ -1490,3 +1490,48 @@ async def test_restart_request_cuts_the_backoff_wait_short_and_restarts_the_back
             await startup_task
         except asyncio.CancelledError:
             pass
+
+
+def test_qa_tool_is_absent_without_the_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Without the operator's QA flag file, /rpc has no qa.tool method at all."""
+    monkeypatch.setattr(console_mod, "QA_FLAG_PATH", str(tmp_path / "absent"))
+    app = FastAPI()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    LocalStream(MagicMock(), robot, settings_app=app)._init_settings_ui_if_needed()
+
+    assert "error" in _rpc_call(app, "qa.tool", {"name": "music", "args": {"action": "stop"}})
+
+
+def test_qa_tool_calls_the_tool_on_the_conversation_loop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """With the flag, qa.tool dispatches like the model would and returns the tool's result."""
+    flag = tmp_path / "reachy_qa"
+    flag.write_text("")
+    monkeypatch.setattr(console_mod, "QA_FLAG_PATH", str(flag))
+    calls: list[tuple[str, str]] = []
+
+    async def fake_dispatch(name: str, args_json: str, deps: Any) -> dict[str, Any]:
+        calls.append((name, args_json))
+        return {"stopped": ["tv"]}
+
+    monkeypatch.setattr(console_mod, "dispatch_tool_call", fake_dispatch)
+    loop = asyncio.new_event_loop()
+    worker = threading.Thread(target=loop.run_forever, daemon=True)
+    worker.start()
+    try:
+        app = FastAPI()
+        robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+        stream = LocalStream(MagicMock(), robot, settings_app=app)
+        stream._asyncio_loop = loop
+        stream._init_settings_ui_if_needed()
+
+        reply = _rpc_call(app, "qa.tool", {"name": "music", "args": {"action": "stop"}})
+        assert reply["result"] == {"result": {"stopped": ["tv"]}}
+        assert calls == [("music", '{"action": "stop"}')]
+
+        flag.unlink()
+        assert "error" in _rpc_call(app, "qa.tool", {"name": "music", "args": {}})
+        assert "error" in _rpc_call(app, "qa.tool", {"name": "", "args": {}})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        worker.join(timeout=2)
+        loop.close()
