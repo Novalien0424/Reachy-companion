@@ -1,9 +1,17 @@
-# Session handoff — 2026-10-31 (v1.36.1 installed; home videos outlive Reachy's sleep)
+# Session handoff — 2026-10-31 (v1.36.3 installed; NAS route, latency, forgiving trip names)
 
-State: **v1.36.1 installed 2026-10-31 (wheel `ddbcde53`); Reachy asleep (app
-stopped), TV idle.** Boots into 多人聊天模式 (`Tools in session (group, startup,
+State: **v1.36.3 installed 2026-10-31 (wheel `6f821c41`); Reachy asleep (app
+stopped), TV off.** Boots into 多人聊天模式 (`Tools in session (group, startup,
 19)`). The NAS index refreshes itself (D-041): nightly Mac pass at 03:30, and the
 robot swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
+
+## What 1.36.2 and 1.36.3 did (D-044, "Play latency and two live misses")
+
+- 1.36.2: the cast read-back polls every 0.5 s (it was 2 s), so Reachy's
+  "it's on" comes right after the picture. Warm play: picture at 1.1 s, tool
+  at 1.2 s; cold: about 6 s, mostly the cast app launching.
+- 1.36.3: `nas play` resolves a re-spaced `top_folder` and searches one that
+  names no folder. Both live misses play now.
 
 ## What 1.36.1 did (D-044, "W6 live and 1.36.1")
 

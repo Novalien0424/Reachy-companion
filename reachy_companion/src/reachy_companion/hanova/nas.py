@@ -508,6 +508,23 @@ def trip_summary(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(trips.values(), key=lambda row: (row["year"] or 0, str(row["top_folder"])))
 
 
+def resolve_top_folder(index: Dict[str, Any], top_folder: str) -> str | None:
+    """Return the index's own name for a model-supplied `top_folder`, or None (2026-10-31, live).
+
+    Mini copies a folder name out of a result and edits it on the way: a trip
+    whose folder runs the year into the place came back with a space after the
+    year, twice, and the exact match answered no_match both times. Case, spacing and punctuation are
+    ignored, as the place search ignores them; a name that folds onto two
+    folders resolves to neither.
+    """
+    names = {str(video["top_folder"]) for video in index.get("videos", []) if video.get("top_folder")}
+    if top_folder in names:
+        return top_folder
+    wanted = _squash(top_folder)
+    hits = [name for name in names if wanted and _squash(name) == wanted]
+    return hits[0] if len(hits) == 1 else None
+
+
 def folder_playlist(index: Dict[str, Any], top_folder: str) -> List[Dict[str, Any]]:
     """Return the cast-ready clips of one folder, in recorded order."""
     videos = [

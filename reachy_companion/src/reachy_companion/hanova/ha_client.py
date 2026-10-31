@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 # States a media_player reports once a cast has actually landed. "on" covers
 # androidtv-style entities that never report "playing" for an app launch.
 _CAST_ACTIVE_STATES = frozenset({"playing", "buffering", "paused", "on", "casting"})
-_CAST_POLL_S = 2.0
+# 2026-10-31 timing: a NAS clip on an idle receiver played 1.1 s after the call,
+# but a 2 s poll held the tool (and Reachy's "it's on") until 2.8 s. Each poll
+# is one local HA read, so 0.5 s costs at most 24 reads over the 12 s budget.
+_CAST_POLL_S = 0.5
 
 
 def _segment(value: str) -> str:

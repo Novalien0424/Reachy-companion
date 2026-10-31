@@ -5,6 +5,18 @@ history of this file.
 
 ## Current state
 
+**v1.36.3 INSTALLED (2026-10-31, wheel `6f821c41`); app stopped (asleep), TV off.**
+- **Play latency (D-044):** a NAS clip is on the TV 1.1 s after `nas play` on
+  an idle receiver, and 5.7–5.9 s from a TV that is off. Live, from request to
+  picture, about 4 s. The NAS URL starts faster than the robot stream (0.6–0.85
+  against 1.5 s, and one robot cast never started).
+- **1.36.2:** the cast read-back polls every 0.5 s, so the tool (and Reachy's
+  "it's on") comes 0.1–0.3 s after the picture instead of about 1.7 s.
+- **1.36.3:** a `top_folder` mini re-spaced (a space added after the year) or
+  invented (`England`) now plays. The failed live session (England → Boston → stop)
+  passed on the rerun.
+- Suite 2282 / 31; 0 tracebacks; 4 wakes for the session's checks, no wedge.
+
 **v1.36.1 INSTALLED (2026-10-31, wheel `ddbcde53`); app stopped (asleep), TV idle.**
 - **Home videos outlive Reachy's sleep (W6, verified, D-044).** The operator's
   QNAP virtual host serves the cast copies, and the instance `.env` has

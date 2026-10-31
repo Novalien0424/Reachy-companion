@@ -9,6 +9,29 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.36.3] — 2026-10-31 · a trip asked for by a slightly wrong name still plays
+
+Deployed as the fortieth install (wheel sha `6f821c41…`). Decision D-044.
+
+- **`top_folder` is matched loosely.** Case, spacing and punctuation are
+  ignored, and a name that fits two folders matches neither. Live on 1.36.2,
+  「換成我們去波士頓的影片」 failed twice: mini copied a folder name that runs the
+  year into the place with a space added between them.
+- **A `top_folder` that names no folder is searched.** The search uses the
+  place or keyword beside it, or the name itself; the several-trips guard
+  still applies. Live, `top_folder="England"` had hidden `place="England"`.
+- Live rerun of the failed session: England played, the switch to Boston played
+  in one call, and 「停」 stopped it.
+
+## [1.36.2] — 2026-10-31 · Reachy says "it's on" sooner
+
+Deployed as the thirty-ninth install (wheel sha `fe5341f2…`). Decision D-044.
+
+- **The cast read-back polls every 0.5 s instead of 2 s.** On an idle
+  receiver a NAS clip played 1.1 s after the call, but the 2 s poll held the
+  tool until 2.8 s, and with it Reachy's confirmation. Now the tool returns
+  within about 0.3 s of the picture. YouTube and picture casts share the poll.
+
 ## [1.36.1] — 2026-10-31 · home videos outlive Reachy's sleep
 
 Deployed as the thirty-eighth install (wheel sha `ddbcde53…`). Decision D-044.

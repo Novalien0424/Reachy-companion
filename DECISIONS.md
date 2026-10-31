@@ -2956,3 +2956,49 @@ chose `music` with four actions, NAS option (a), and accepted the W4 trade-off.
   - Live: `recorded as nas`, and the next stop kept its place.
 - **Journal:** 0 tracebacks and no fallback to the robot route. The one ERROR
   line was the daemon's `ws_server` during app shutdown, not ours.
+
+**Play latency and two live misses: 1.36.2 and 1.36.3 (2026-10-31).**
+
+The operator asked for the play latency with the NAS route, and whether Reachy
+works well with it.
+
+- **Measured, device tier, zero model tokens.** HA was polled every 0.25 s
+  around `qa.tool nas play`, after the greeting had finished.
+
+  | Start | Picture moving | Tool returned (1.36.1) | Tool returned (1.36.3) |
+  |---|---|---|---|
+  | Receiver idle | 1.1 s (3/3), 1.2 s | 2.7–2.9 s | 1.1–1.2 s |
+  | TV off (the receiver launches) | 5.6–5.9 s | 6.9–7.1 s | 5.9 s |
+
+- **The same clip, cast by the HA script alone.**
+  - NAS URL: 0.6 and 0.85 s warm, 4.6 s cold.
+  - Robot stream URL: 1.5 s warm, and one cast that never started within
+    30 s; 5.2 s cold.
+  - The NAS probe costs about 160 ms per play.
+- **1.36.2, code (timing): the cast read-back polls every 0.5 s instead of
+  2 s.** The poll had held the tool, and Reachy's "it's on", about 1.7 s past
+  the picture.
+- **Live, two fresh sessions (TV off at each start):**
+  - England played (one call in session 1; two in session 2, below);
+  - 「下一段」 skipped in one call, and the next clip played under a second
+    after it;
+  - 「停」 stopped it.
+- **The live misses: model edits, absorbed by the tool (rung 1).**
+  - 「換成我們去波士頓的影片」 failed. Mini copied the trip's folder name from
+    `all_trips` with a space added after the year, twice, and the exact
+    match answered `no_match`.
+  - It also sent `top_folder="England"` beside `place="England"`, and the
+    folder lookup ignored the place.
+  - 1.36.3: `nas.resolve_top_folder` ignores case, spacing and punctuation
+    (`_squash`, as the place search does), and two folders that fold together
+    resolve to neither.
+  - An unresolved `top_folder` is searched with the place and keyword beside
+    it, or alone as the keyword, through the same several-trips guard.
+  - Folder names stay out of the "search again in English" advice.
+- **1.36.3 live:**
+  - both miss calls, replayed through `qa.tool`, cast;
+  - the failed session, rerun in one wake, played England (`place="United
+    Kingdom"`), switched to Boston in one call (`place="Boston"`), and stopped;
+  - request → picture about 4 s;
+  - text in → first tool call about 2.6 s (the model);
+  - 0 tracebacks, 0 errors, no robot-route fallback.

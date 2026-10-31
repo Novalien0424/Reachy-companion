@@ -64,11 +64,20 @@ class PlayNasVideo(Tool):
         filters = {key: kwargs.get(key) for key in ("year", "year_from", "year_to", "place", "keyword")}
         if not path and not top_folder and all(value in (None, "") for value in filters.values()):
             return {"ok": False, "error": "say what to play: a place, year or keyword, or a path or top_folder"}
+        folder = nas.resolve_top_folder(index, top_folder) if top_folder and not path else None
+        # Only the free-text words can be a translation miss: real folder names
+        # and paths contain Chinese.
+        words = [] if path or folder is not None else [filters["place"], filters["keyword"]]
         if path:
             matches = [video for video in index.get("videos", []) if video.get("path") == path]
-        elif top_folder:
-            matches = nas.folder_playlist(index, top_folder)
+        elif folder is not None:
+            matches = nas.folder_playlist(index, folder)
         else:
+            # A top_folder that names no folder is a search phrase. Live
+            # 2026-10-31, mini sent top_folder="England" beside place="England",
+            # and the folder lookup hid the place that would have found the trip.
+            if top_folder and filters["place"] in (None, "") and filters["keyword"] in (None, ""):
+                filters["keyword"] = top_folder
             matches = nas.filter_index(
                 index,
                 year=filters["year"],
@@ -78,9 +87,6 @@ class PlayNasVideo(Tool):
                 keyword=str(filters["keyword"]) if filters["keyword"] else None,
             )
         if not matches:
-            # Only the free-text words can be a translation miss: real folder
-            # names and paths contain Chinese.
-            words = [] if path or top_folder else [filters["place"], filters["keyword"]]
             return nas.search_miss(index, words)
 
         ready = [video for video in matches if video.get("cast_ready")]

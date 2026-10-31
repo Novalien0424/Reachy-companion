@@ -785,6 +785,50 @@ async def test_play_by_place_plays_the_one_matching_trip_in_one_call(monkeypatch
     assert out["place"] == "Cape Town"
 
 
+def test_a_top_folder_matches_whatever_the_spacing_case_and_punctuation():
+    """Live 2026-10-31: mini copied a `<year><Place>` folder name back with a space after the year."""
+    assert nas.resolve_top_folder(CATALOGUE, "2021 Cape Town") == "2021 Cape Town"
+    assert nas.resolve_top_folder(CATALOGUE, "2022 New Zealand") == "2022NewZealand"
+    assert nas.resolve_top_folder(CATALOGUE, "2021 rio lisbon") == "2021_Rio+Lisbon"
+    assert nas.resolve_top_folder(CATALOGUE, "Kids MV") == "kid's MV"
+    assert nas.resolve_top_folder(CATALOGUE, "2021") is None, "a piece of a name is not the name"
+    twins = {"videos": [{"top_folder": "2021 Cape Town"}, {"top_folder": "2021_Cape-Town"}]}
+    assert nas.resolve_top_folder(twins, "2021capetown") is None, "two folders fold together: neither"
+
+
+@pytest.mark.asyncio
+async def test_play_by_a_respaced_top_folder_plays_that_trip(monkeypatch, tmp_path, catalogue):
+    """The Boston miss, replayed: one call, the right trip, other fields ignored as before."""
+    recorded = _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="2022 New Zealand", keyword="new zealand")
+    assert out["ok"] is True and out["top_folder"] == "2022NewZealand"
+    assert recorded["fetched"] == ["SENTINEL_CAST_DIR_q4/2022NewZealand/clip01.mp4"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"top_folder": "Cape Town", "place": "cape town"},  # live: top_folder="England" beside place="England"
+        {"top_folder": "cape town"},  # no other field: the name itself is the search
+    ],
+)
+async def test_a_top_folder_that_names_no_folder_is_searched(monkeypatch, tmp_path, catalogue, fields):
+    """An unknown top_folder no longer hides the place beside it, and is never a dead end alone."""
+    _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), **fields)
+    assert out["ok"] is True and out["top_folder"] == "2021 Cape Town"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_top_folder_still_asks_when_its_words_fit_several_trips(monkeypatch, tmp_path, catalogue):
+    """Searched, the name goes through the same guard: two 2021 trips, nothing cast on a guess."""
+    recorded = _stub_transfer(monkeypatch)
+    out = await PlayNasVideo()(deps=_deps(tmp_path), top_folder="2021 trips")
+    assert out["ok"] is False
+    assert recorded == {"fetched": [], "cast": []}
+
+
 @pytest.mark.asyncio
 async def test_play_asks_back_when_several_trips_match(monkeypatch, tmp_path, catalogue):
     """Several trips match: nothing is cast on a guess, and each trip is offered by name."""

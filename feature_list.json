@@ -727,6 +727,22 @@
       "next_action": "-"
     },
     {
+      "id": "NAS-PLAY-LATENCY",
+      "state": "verified",
+      "behavior": "a NAS clip is on the TV about 1 s after the nas play call when the receiver is idle (about 6 s from a TV that is off), and the tool returns within 0.5 s of the picture",
+      "verification": "device tier: HA polled every 0.25 s around qa.tool nas play; the same clip cast from the NAS URL and from the robot stream URL; live turns timed from the journal",
+      "evidence": "1.36.2/1.36.3 live (D-044): warm picture 1.1 s (3/3), cold 5.7-5.9 s; NAS URL 0.6-0.85 s vs robot URL 1.5 s and one robot cast that never started; the tool's return went from 2.8 s to 1.2 s (cast poll 2 s -> 0.5 s); live request -> picture about 4 s, model to first call about 2.6 s",
+      "next_action": "-"
+    },
+    {
+      "id": "NAS-TOP-FOLDER-FORGIVING",
+      "state": "verified",
+      "behavior": "nas play takes a top_folder whatever its spacing, case or punctuation, and a top_folder that names no folder is searched with the place/keyword beside it",
+      "verification": "unit tests; the two live misses replayed through qa.tool; the failed live session rerun",
+      "evidence": "live 1.36.2: 「換成我們去波士頓的影片」 failed twice (mini added a space after the year in the folder name it copied), and top_folder=\"England\" hid place=\"England\". 1.36.3: both replayed calls cast; the rerun session played England, switched to Boston in one call and stopped (D-044)",
+      "next_action": "-"
+    },
+    {
       "id": "QA-TIERS-LOW-TOKEN",
       "state": "verified",
       "behavior": "device truth via qa.tool (zero model tokens) and model choice via qa_replay.py (text-only sessions from the installed wheel, no app, no greeting)",
