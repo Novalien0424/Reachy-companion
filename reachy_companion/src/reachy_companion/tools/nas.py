@@ -40,7 +40,8 @@ class Nas(Tool):
         "and wait for the answer, then do what they asked. Do NOT use when: the user names YouTube or "
         "wants something public, such as an MV — that is youtube; or wants music — that is music. `play` "
         "finds a clip or a trip and plays it, in one call; `list` tells what is there and plays nothing; "
-        "`skip` plays the next clip; to stop it, use music `stop`. Search words are English, as the archive is catalogued. If nothing "
+        "`skip` plays the next clip when asked; to stop it, use music `stop`. Search each new trip request "
+        "afresh, in English words, as the archive is catalogued. If nothing "
         "in the 影片庫 fits, say so and offer YouTube."
     )
     parameters_schema: Dict[str, Any] = {

@@ -335,16 +335,36 @@ def _squash(value: Any) -> str:
     return _SEPARATORS.sub("", _hay(value))
 
 
+# A short Latin word ("UK", "NY", "USA") is matched as a whole token, because as
+# a substring it is everywhere: on 2026-10-31 "UK" matched inside three other
+# trips' place and clip names, so `nas list` answered four trips and `nas play` asked
+# instead of playing. Tokens also split at letter/digit seams, so "2025UK" still
+# holds "uk". Longer words and CJK keep the squashed-substring rule above.
+_SHORT_WORD_MAX = 3
+_TOKEN = re.compile(r"[a-z]+|\d+")
+
+
 def _words_match(needle: str, video: Dict[str, Any], fields: tuple[str, ...]) -> bool:
     """Whether every word of `needle` occurs in the record, in any order (ours, 2026-10-29).
 
     Case, spacing and punctuation are ignored on both sides, so a single word
     matches wherever the old plain substring did, and "tokyo okinawa" or
-    "chiang mai" no longer depend on how the folder happened to be typed.
+    "chiang mai" no longer depend on how the folder happened to be typed. A
+    short Latin word must be a whole token (2026-10-31, see `_SHORT_WORD_MAX`).
     """
     record = "".join(_squash(video.get(field)) for field in fields)
-    words = [_squash(word) for word in _SEPARATORS.split(_hay(needle))]
-    return all(word in record for word in words if word)
+    tokens: set[str] | None = None
+    for word in (_squash(word) for word in _SEPARATORS.split(_hay(needle))):
+        if not word:
+            continue
+        if len(word) <= _SHORT_WORD_MAX and word.isascii() and word.isalpha():
+            if tokens is None:
+                tokens = {token for field in fields for token in _TOKEN.findall(_hay(video.get(field)))}
+            if word not in tokens:
+                return False
+        elif word not in record:
+            return False
+    return True
 
 
 def filter_index(

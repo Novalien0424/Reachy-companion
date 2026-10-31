@@ -2732,3 +2732,62 @@ Open:
 - **Speaker and TV at once.** If music plays on the speaker while a video plays
   on the TV, 「停止影片」 stops the speaker first.
 
+## D-043 — The morning's two video slips, measured before fixing (2026-10-31)
+
+The morning session had two slips, and both followed a reply that ended with an
+offer:
+
+- **(A)** 「我看到二零二六 Boston 的嗎？」 made `nas play 2025UK`.
+- **(B)** 「请问我们在哪里？」, said during a clip, made `nas skip`.
+
+The operator asked for planning that follows the realtime guide before acting.
+So each case was replayed first: the same two turns sent with `say` in 4 fresh
+sessions, mic muted, harness `offer_trap.sh` (scratchpad).
+
+**The originals did not reproduce on 1.34.0.** A replayed UK 0/4 times, now that
+Boston is in the index (D-041). B skipped 0/4 times. The planned rung-1 text for
+the offer trap was therefore dropped before it was written. The replays exposed
+other failures, and those were fixed instead.
+
+1. **Finding the UK trip** (data). Its index text said only "UK" and "United
+   Kingdom", while the Boston text said "New England".
+   - An 「England」 search found only Boston, and in 2 of 4 runs Reachy said
+     there was no UK trip.
+   - Fix, in `folder_meta.json` (the operator's pipeline): the UK trip's text
+     now names the countries it covers and its main places, and Boston's no
+     longer contains "New England". The index was rebuilt and mirrored to the
+     NAS.
+2. **Matching** (rung 1, tool behaviour). "UK" matched as a substring inside
+   three other trips' place and clip names, so a `play` asked instead of
+   playing. A short Latin word (3 letters or fewer: UK, NY, USA) now has to
+   match a whole token. Tokens also split at letter/digit seams, so `2025UK`
+   still matches.
+3. **Text** (rung 1).
+   - `nas`: "`skip` plays the next clip when asked", and "Search each new trip
+     request afresh, in English words", merged with the existing
+     English-search sentence. It stays under the 800-character guard (777).
+   - `camera`: a new "do not use" case. A question about the video playing on
+     the TV is answered from the title the nas or youtube call returned. This
+     sits beside the profile's 「被問到眼前的東西時，先用 camera 看再回答」,
+     which mini had applied to the TV.
+
+| 4 fresh runs each | 1.34.0 | + data and matching | + text (1.35.0) |
+|---|---|---|---|
+| A: UK found in the first turn | 2/4 | 4/4 | 4/4 |
+| A: Boston question answered right | 4/4 | 3/4 | 4/4 (3 fresh searches) |
+| B: skip on 「我們在哪裡」 | 0/4 | 0/4 | 0/4 |
+| B: answered from the clip title | 2/4 | 2/4 | 3/4 |
+| B: camera instead | 1/4 | 1/4 | 1/4 |
+| B: 「下一段」 still skips | | | 4/4 |
+
+The fixed prefix stayed at 5,961–6,014 (it was 5,984).
+
+Open: camera on 「我們在哪裡」 is 1/4 after one text revision. It is an
+ambiguous question, and the profile's camera line is the next rung to try (one
+revision left by the house rule).
+
+Wedge, recorded under the standing authorization (D-038): at 02:54 UTC the app
+stuck in `stopping` during case B. `sudo -n systemctl restart
+reachy-mini-daemon` ran at 02:56:30 UTC, and the daemon was back with the app
+null after about 15 s.
+

@@ -677,6 +677,14 @@
       "state": "verified",
       "evidence": "2026-10-31 v1.34.0 (wheel bee8d2ee…): suite 2101 / 31. Live, fresh sessions, mic muted: first call music stop 6/6; NAS clip ended ~2 s (3/3); YouTube MV ended ~5 s via turn_off after media_stop was ignored (1/1 on the final build; the first build reported it honestly as still buffering); nothing playing -> 「沒什麼要停的」; 暫停 wording -> 「實際上是停止播放，下次要再看時就從頭開始」. Prefix 5,984.",
       "next_action": "Open (D-042): real pause/resume is not offered; speaker music plus a TV video at once stops the speaker first."
+    },
+    {
+      "id": "NAS-FOLLOWUP-QUESTIONS",
+      "behavior": "After a trip is listed or playing, a new trip question gets its own search, a question about the clip on screen is answered from its title, and only a request for the next clip skips; a UK/England/United Kingdom search finds the UK trip",
+      "verification": "tests/test_hanova_nas.py (short words match whole tokens; nas/camera routing text) + live replays of the two morning turns (scratchpad offer_trap.sh A|B), 4 fresh runs each",
+      "state": "verified",
+      "evidence": "2026-10-31 v1.35.0 (wheel 810050c2…), suite 2103 / 31. A: UK found 2/4 -> 4/4; Boston follow-up 4/4. B: skip 0/4 (original slip did not reproduce on 1.34.0 either), title answer 2/4 -> 3/4, camera 1/4 -> 1/4; 下一段 skips 4/4. Prefix 5,961-6,014.",
+      "next_action": "Open (D-043): camera on 「我們在哪裡」 1/4; the profile's camera line is the remaining text rung."
     }
   ]
 }

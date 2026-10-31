@@ -1,6 +1,6 @@
 # Session handoff — 2026-10-31 (v1.32.0 installed; Reachy answers when called)
 
-State: **v1.34.0 installed 2026-10-31 01:48 UTC; Reachy asleep (app stopped),
+State: **v1.35.0 installed 2026-10-31 03:04 UTC; Reachy asleep (app stopped),
 TV off.** Boots into 多人聊天模式. The NAS index refreshes itself (D-041): nightly
 Mac pass at 03:30 (`~/HomeAssistant/bin/nas-video/install-nightly.sh`), robot
 swaps in the NAS copy on wake. Daemon v1.13.0. `main` is pushed.
@@ -15,8 +15,8 @@ Open, not yet fixed:
 2. ~~Wi-Fi never came back~~ — the D-034 watchdog cron is installed (operator, 2026-10-31
    02:16 UTC, `scripts/watchdog_cron.sh`); first probe: link up.
 3. ~~Stop requests reach the wrong tool~~ — fixed by D-042 (1.34.0): 「停」 stops the TV video.
-4. **「我看到二零二六 Boston 的嗎？」** made `nas play` replay `2025UK`; and
-   「请问我们在哪里？」 made `nas skip` instead of answering from the title.
+4. ~~Boston follow-up replayed UK / 「我們在哪裡」 skipped~~ — D-043 (1.35.0): neither
+   reproduced; fixed UK findability and routing. Open: camera on 「我們在哪裡」 1/4.
 5. Smaller: the sleep summary timed out twice (no 上次聊天 fact saved); the
    farewell hit the 6 s drain cap; a `response_cancel_not_active` error reached
    the transcript; some replies in simplified characters; asked its mode,

@@ -1658,7 +1658,7 @@ def test_identity_routing_clauses_pin_camera_vs_face_tools() -> None:
     # example-phrase list is down to the one observed anchor, 「你認得我嗎」.
     # The verbatim-flag rule is no longer restated here: it lives once in the
     # system rules, checked below, and `face` must not duplicate it.
-    identity = "or asks who someone is or whether you know them — that is face with action=identify."
+    identity = "or asks who someone is or whether you know them — that is face with action=identify;"
     assert identity in camera
     assert camera.index("Do NOT use when:") < camera.index(identity), "the identity clause must be a Do NOT"
     assert "it is the tool for any question about who someone is, like 「你認得我嗎」, since camera only describes" in face

@@ -5,6 +5,14 @@ history of this file.
 
 ## Current state
 
+**v1.35.0 INSTALLED (2026-10-31 03:04 UTC); app stopped (asleep), TV off.**
+- The morning's two video slips were replayed before any fix (D-043): neither
+  reproduced on 1.34.0 (UK replay 0/4, skip 0/4).
+- Fixed what the replays exposed: UK trip findability (folder text + whole-token
+  short words), fresh search per trip request, camera not for the TV clip.
+  A: UK 2/4 -> 4/4, Boston 4/4; B: title answers 3/4, camera 1/4, 下一段 4/4.
+- Daemon wedge at 02:54 UTC, restarted 02:56:30 UTC (D-038). Suite 2103 / 31.
+
 **2026-10-31 02:16 UTC: Wi-Fi watchdog running (D-034).** The operator installed
 the crontab line with `.claude/skills/reachy-deploy/scripts/watchdog_cron.sh
 install`; `status`: line 1, `monitoring started: Wi-Fi link up`, 0 actions.

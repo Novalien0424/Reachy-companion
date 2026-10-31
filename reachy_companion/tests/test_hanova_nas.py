@@ -1545,6 +1545,31 @@ def test_words_match_in_any_order_whatever_the_spacing_and_punctuation():
     assert nas.filter_index(CATALOGUE, place="lisbon tokyo") == []
 
 
+def test_a_short_word_matches_a_whole_token_not_a_piece_of_a_longer_one():
+    """2026-10-31: "UK" matched inside three other trips' place and clip names."""
+    index = {
+        "videos": [
+            {"top_folder": "2004UK", "place": "England + Scotland", "label": "Flight UK", "year": 2004},
+            {"top_folder": "2001_Bukhara", "place": "Bukhara", "label": "Old town", "year": 2001},
+            {"top_folder": "2002_Kyushu", "place": "Kyushu", "label": "Fukuoka tower", "year": 2002},
+            {"top_folder": "2003_Bangkok", "place": "Bangkok", "label": "Tuktuk", "year": 2003},
+            {"top_folder": "2005 Florida", "place": "Florida + New York", "label": "To NY", "country": "USA"},
+        ]
+    }
+
+    def folders(**filters):
+        return [video["top_folder"] for video in nas.filter_index(index, **filters)]
+
+    assert folders(keyword="UK") == ["2004UK"], "a seam between digits and letters still splits"
+    assert folders(place="uk") == ["2004UK"]
+    assert folders(keyword="NY") == ["2005 Florida"]
+    assert folders(keyword="usa") == ["2005 Florida"]
+    # Longer words keep the squashed substring rule.
+    assert folders(keyword="bukhara") == ["2001_Bukhara"]
+    assert folders(place="new york") == ["2005 Florida"]
+    assert folders(keyword="england") == ["2004UK"]
+
+
 def test_keyword_reaches_the_category_and_the_year():
     """A subject word ("family") and a year typed as text both count as record words."""
     assert [video["top_folder"] for video in nas.filter_index(CATALOGUE, keyword="family")] == ["kid's MV"]
@@ -1667,3 +1692,18 @@ def test_clips_by_file_ignores_a_file_name_that_is_only_a_number():
     index = {"videos": [{"path": "SENTINEL_SRC_DIR_q4/SENTINEL_TRIP_q4/123.mpg", "name": "123"}]}
     assert nas.clips_by_file(index, "how to convert an mpg file") == []
     assert nas.clips_by_file(index, "SENTINEL_TRIP_q4 第2段 123.mpg") == index["videos"]
+
+
+def test_nas_and_camera_route_a_question_about_the_clip_to_its_title():
+    """2026-10-31: 「我們在哪裡？」 during a clip got `skip`, and in replays `camera`.
+
+    The answer is in the title the last nas call returned; the camera shows the
+    room, and its description says so (the fact lives there once). A new trip
+    request searches again rather than leaning on the last list.
+    """
+    from reachy_companion.tools.nas import Nas
+    from reachy_companion.tools.camera import Camera
+
+    assert "`skip` plays the next clip when asked" in Nas.description
+    assert "Search each new trip request afresh, in English words" in Nas.description
+    assert "asks about the video playing on the TV — answer from the title" in Camera.description

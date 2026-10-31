@@ -9,6 +9,26 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.35.0] — 2026-10-31 · the right trip, found the first time
+
+Deployed as the thirty-sixth install (wheel sha `810050c2…`). Decision D-043.
+
+- **A UK search finds the UK trip.** Its index text now names the countries it
+  covers and its main places. Boston's text no longer says "New England",
+  which had made an 「England」 search find only Boston. Live: the UK trip was
+  found in 4 of 4 runs, against 2 of 4.
+- **Short search words match whole words.** "UK", "NY" and "USA" no longer
+  match inside longer place and clip names.
+- **Text for mini:**
+  - `nas` searches each new trip request afresh, and skips only when asked.
+  - `camera` is not for the video on the TV: that answer is the clip's title.
+- **Live, 4 fresh runs per case:**
+  - The Boston follow-up was answered right 4/4.
+  - 「我們在哪裡？」 during a clip never skipped (0/4), and was answered from
+    the title 3/4 (camera 1/4).
+  - 「下一段」 still skipped 4/4.
+- The fixed prefix is unchanged (about 5,960–6,010).
+
 ## [1.34.0] — 2026-10-31 · 「停」 really stops the video
 
 Deployed as the thirty-fifth install (wheel sha `bee8d2ee…`). Decision D-042.

@@ -17,7 +17,8 @@ class Camera(Tool):
         "nothing. Use when: the user asks what you see, what they are holding or wearing, or how they "
         "look, or asks you to look with no direction — call it rather than asking which way. Do NOT use "
         "when: the user names a direction (左邊、右邊、上面、下面、轉過去) — that is look_around, which turns first; or "
-        "asks who someone is or whether you know them — that is face with action=identify."
+        "asks who someone is or whether you know them — that is face with action=identify; or asks about the "
+        "video playing on the TV — answer from the title the nas or youtube call returned."
     )
     parameters_schema = {
         "type": "object",
