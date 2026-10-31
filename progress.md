@@ -6,48 +6,28 @@ history of this file.
 ## Current state
 
 **v1.36.3 INSTALLED (2026-10-31, wheel `6f821c41`); app stopped (asleep), TV off.**
-- **Play latency (D-044):** a NAS clip is on the TV 1.1 s after `nas play` on
-  an idle receiver, and 5.7–5.9 s from a TV that is off. Live, from request to
-  picture, about 4 s. The NAS URL starts faster than the robot stream (0.6–0.85
-  against 1.5 s, and one robot cast never started).
-- **1.36.2:** the cast read-back polls every 0.5 s, so the tool (and Reachy's
-  "it's on") comes 0.1–0.3 s after the picture instead of about 1.7 s.
-- **1.36.3:** a `top_folder` mini re-spaced (a space added after the year) or
-  invented (`England`) now plays. The failed live session (England → Boston → stop)
-  passed on the rerun.
-- Suite 2282 / 31; 0 tracebacks; 4 wakes for the session's checks, no wedge.
-
-**v1.36.1 INSTALLED (2026-10-31, wheel `ddbcde53`); app stopped (asleep), TV idle.**
-- **Home videos outlive Reachy's sleep (W6, verified, D-044).** The operator's
-  QNAP virtual host serves the cast copies, and the instance `.env` has
+The 1.36.x line (D-044); 1.36.0–1.36.3 were installed the same day.
+- **Playback control:** `music play | pause | resume | stop`. Stop ends the
+  speaker and the TV together and keeps a bookmark for 「繼續」. Verified on
+  the real TV and speaker. 「暫停」 → pause 11/18 is mini's ceiling, which the
+  bookmark absorbs.
+- **The NAS serves the clips (W6):** a QNAP virtual host, set in
   `HANOVA_NAS_HTTP_BASE`.
-  - root 403 with no listing; clip range request 206;
-  - a clip kept playing 90 s after sleep;
-  - one paused before sleep resumed after the next wake.
-- **Fixed in 1.36.1:** a video resumed after a wake is recorded again, so the
-  quiet rule and the stop bookmark hold for it.
-- **Records:** suite 2277 / 31; 0 tracebacks; 3 wakes, no wedge.
-
-**v1.36.0 INSTALLED (2026-10-31, wheel `c712306b`); app stopped (asleep), TV idle.**
-- **Pause and resume; stop stops everything and keeps a bookmark** (D-044).
-  Device tier on the real TV and speaker, zero model tokens:
-  - NAS pause held 12.5 s, and resume continued from 12.7 s;
-  - a bookmark resume landed at 26 s ("where it stopped");
-  - YouTube did the same;
-  - the speaker reported each step right;
-  - speaker + TV: one stop ended both.
-- **Built:** the video quiet gate (W3) and group barge by name (W4). Unit-tested;
-  live with real speech is the operator's check.
-- **`video_on_tv` / `place` in results:** 「我們在哪裡」 was answered from the trip
-  3/3 in replay, against 1/3.
-- **Replay** (`qa_replay.py`, text-only, about 50 turns, no audio):
-  - stop 3/3, resume 3/3, mode 3/3;
-  - 「暫停」 → pause 11/18, mini's ceiling, which the bookmark absorbs.
-- **NAS serves the clip** (`HANOVA_NAS_HTTP_BASE`): verified in 1.36.1, above.
-- **Retracted:** a "stale persona" check had read the package directory's
-  pre-v1.25.0 leftover. The instance persona is current.
-- **Records:** suite 2272 / 31; 0 tracebacks and 0 errors in the 1.36.0 journal;
-  3 wakes, no wedge.
+  - A clip kept playing 90 s after Reachy slept.
+  - One paused before sleep resumed after the next wake, and is recorded
+    again (1.36.1).
+- **Play latency:** the picture is up 1.1 s after `nas play` on an idle
+  receiver, 5.7–5.9 s from a TV that is off; live, request → picture is
+  about 4 s.
+  - The NAS URL starts faster than the robot stream.
+  - The cast read-back polls every 0.5 s (1.36.2), so Reachy's "it's on"
+    comes right after the picture.
+- **Forgiving trip names (1.36.3):** a re-spaced or invented `top_folder`
+  plays. The failed live session (England → Boston → stop) passed on the rerun.
+- **Built, unit-tested only:** the quiet-while-a-video-plays gate (W3) and
+  group barge by name (W4). The operator checks them with real speech.
+- **Retracted:** the "stale persona" finding; the instance persona is current.
+- **Records:** suite 2282 / 31; 0 tracebacks over the day's wakes, no wedge.
 
 **v1.35.0 INSTALLED (2026-10-31 03:04 UTC); app stopped (asleep), TV off.**
 - The morning's two video slips were replayed before any fix (D-043): neither
