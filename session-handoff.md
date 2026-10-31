@@ -12,11 +12,8 @@ speech cut replies off about a dozen times (D-029 amendment 2026-10-31).
 Open, not yet fixed:
 
 1. ~~2026 Boston trip missing~~ — fixed by D-041 (1.33.0); Boston plays.
-2. **Wi-Fi never came back.** At 23:23 UTC a failed handshake left
-   NetworkManager `need-auth → failed → inactive` until the power cycle. The
-   D-034 watchdog is on the robot but its crontab line was never installed
-   (operator's step; line in `docs/plans/2026-10-28-wifi-recovery-plan.md`,
-   line 75).
+2. ~~Wi-Fi never came back~~ — the D-034 watchdog cron is installed (operator, 2026-10-31
+   02:16 UTC, `scripts/watchdog_cron.sh`); first probe: link up.
 3. ~~Stop requests reach the wrong tool~~ — fixed by D-042 (1.34.0): 「停」 stops the TV video.
 4. **「我看到二零二六 Boston 的嗎？」** made `nas play` replay `2025UK`; and
    「请问我们在哪里？」 made `nas skip` instead of answering from the title.

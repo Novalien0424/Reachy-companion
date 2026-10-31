@@ -305,9 +305,11 @@ read `windows.md` in this skill's directory first.
    `scp reachy_companion/src/reachy_companion/wifi_watchdog.py
    ${REACHY_SSH_USER}@${REACHY_HOST}:.local/lib/reachy-wifi-watchdog/` and run
    it once with `--dry-run`. It runs from the operator-installed crontab line
-   tagged `# reachy-wifi-watchdog` (installing or changing that line is the
-   operator's step); `journalctl -t reachy-wifi-watchdog` shows its
-   transitions, `--status` its state.
+   tagged `# reachy-wifi-watchdog`. Installing or removing that line is the
+   operator's step: `bash .claude/skills/reachy-deploy/scripts/watchdog_cron.sh
+   install|remove` (installed 2026-10-31). `watchdog_cron.sh status` (read-only,
+   fine for an agent) shows the line count, the saved state and recent
+   `journalctl -t reachy-wifi-watchdog` transitions.
 
 ## Live verification
 

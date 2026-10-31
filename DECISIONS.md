@@ -1980,6 +1980,10 @@ cannot. This steps outside D-009's app-only scope on the operator's request.
 The crontab line itself is installed by the operator: the auto-mode
 classifier blocks an agent from adding persistence on the robot.
 Plan: `docs/plans/2026-10-28-wifi-recovery-plan.md`.
+**Installed 2026-10-31** by the operator, after the robot spent 07:23–07:51 local
+offline (a failed handshake left NetworkManager `need-auth → failed → inactive`)
+with the script present but no crontab line:
+`.claude/skills/reachy-deploy/scripts/watchdog_cron.sh install|remove|status`.
 
 ## D-035 — Instance data moves to ~/.config/reachy_companion (2026-10-28)
 

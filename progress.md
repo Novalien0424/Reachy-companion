@@ -5,6 +5,12 @@ history of this file.
 
 ## Current state
 
+**2026-10-31 02:16 UTC: Wi-Fi watchdog running (D-034).** The operator installed
+the crontab line with `.claude/skills/reachy-deploy/scripts/watchdog_cron.sh
+install`; `status`: line 1, `monitoring started: Wi-Fi link up`, 0 actions.
+This morning's 07:23 drop (NetworkManager `need-auth → failed`) would now get a
+reconnect after 2 failed probes and a radio cycle after 4.
+
 **v1.34.0 INSTALLED (2026-10-31 01:48 UTC); app stopped (asleep), TV off.**
 - 「停」 stops the video on the TV (D-042): `music stop` stops the speaker, else
   the TV, by media_stop and then closing the cast app, and reads it back.
