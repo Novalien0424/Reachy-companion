@@ -9,6 +9,29 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.37.0] — 2026-11-01 · a trip video plays from the 影片庫 first
+
+Deployed as the forty-fifth install (wheel sha `11fca7fc…`), with the new
+`deploy.sh`. Decision D-046 (operator rulings on D-045's open questions).
+
+- **A video of a place, a trip, a year or an event looks in the family's
+  影片庫 first and plays what it finds.** There's no "影片庫 or YouTube?"
+  question any more. Live: 「放我們去波士頓旅行的影片」 3/3 (0/3 on 1.36.7);
+  「放波士頓的影片」 3/4. A named YouTube or an MV still goes to YouTube.
+- **When the 影片庫 has nothing**, the error tells Reachy to say so and ask
+  about YouTube. Live, it asked 1/3, played YouTube unasked 1/3, and gave no
+  offer 1/3 (`VIDEO-MISS-FOLLOWUP`).
+- **Kept as they are, by the operator:** the 4096-token reply rail, and the
+  silent dance for good news.
+- **Harness:**
+  - `deploy.sh` runs the whole app-only install: build, gate, stop, backup,
+    two-step install, verify and discovery;
+  - `live_case.sh` redacts addresses itself;
+  - `device_check.sh` is shorter;
+  - `rpc.py` reports an asleep app in one line;
+  - `qa_replay.py`'s `no_tool` also checks the follow-up reply;
+  - the deploy skill is half its length.
+
 ## [1.36.7] — 2026-10-31 · long replies finish, 「我們」 names the source, a quieter journal
 
 Deployed as the forty-fourth install (wheel sha `3dc93b1b…`). 1.36.4 (`a4cb5956…`),

@@ -1,9 +1,25 @@
 # Progress
 
-History compressed 2026-08-29 (previously 2026-08-27); full narrative in git
-history of this file.
+History compressed 2026-11-01 (previously 2026-08-29). The full earlier text is
+in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
+
+**v1.37.0 INSTALLED (2026-11-01 00:52 UTC, wheel `11fca7fc`); Reachy asleep
+(go_to_sleep by voice, app stopped), TV off.** Operator rulings on D-045 (D-046).
+- **A trip or place video plays from the 影片庫 first.** Live: our-trip 3/3
+  (1.36.7: 0/3), 「放波士頓的影片」 3/4 (1 went to YouTube), MV → youtube 1/1.
+  After a miss, the YouTube offer is uneven: asked 1/3, played unasked 1/3,
+  no offer 1/3 (`VIDEO-MISS-FOLLOWUP`).
+- **Kept by the operator:** reply rail 4096; the silent dance for good news.
+- **Harness:** `deploy.sh` (one-command install, used for this deploy);
+  `live_case.sh` redacts its output; the deploy skill went from 431 to 216
+  lines.
+- **Records:** progress.md and feature_list.json dropped verified, retired and
+  superseded rows (41 removed; full text at `0f67ce8`). `VOICE-SLEEP-QUIESCE`
+  verified live from this session's sleep.
+- **Robot:** two app-stop wedges, each cleared by one daemon restart (00:56:17Z,
+  01:03:11Z; `DAEMON-STOP-WEDGE`). Power clean (throttled=0x0). Suite 2283 / 31.
 
 **v1.36.7 INSTALLED (2026-10-31 15:06 UTC, wheel `3dc93b1b`); Reachy asleep
 (go_to_sleep by voice, app stopped), TV off.** A journey check, then fixes (D-045).
@@ -23,1124 +39,144 @@ history of this file.
 - **Records:** suite 2283 / 31; daemon v1.13.0, no wedge, no restart; NAS
   transcode log clean (09:22 run, done 2737, failed 0); watchdog up, 0 actions.
 
-**v1.36.3 INSTALLED (2026-10-31, wheel `6f821c41`); app stopped (asleep), TV off.**
-The 1.36.x line (D-044); 1.36.0–1.36.3 were installed the same day.
-- **Playback control:** `music play | pause | resume | stop`. Stop ends the
-  speaker and the TV together and keeps a bookmark for 「繼續」. Verified on
-  the real TV and speaker. 「暫停」 → pause 11/18 is mini's ceiling, which the
-  bookmark absorbs.
-- **The NAS serves the clips (W6):** a QNAP virtual host, set in
-  `HANOVA_NAS_HTTP_BASE`.
-  - A clip kept playing 90 s after Reachy slept.
-  - One paused before sleep resumed after the next wake, and is recorded
-    again (1.36.1).
-- **Play latency:** the picture is up 1.1 s after `nas play` on an idle
-  receiver, 5.7–5.9 s from a TV that is off; live, request → picture is
-  about 4 s.
-  - The NAS URL starts faster than the robot stream.
-  - The cast read-back polls every 0.5 s (1.36.2), so Reachy's "it's on"
-    comes right after the picture.
-- **Forgiving trip names (1.36.3):** a re-spaced or invented `top_folder`
-  plays. The failed live session (England → Boston → stop) passed on the rerun.
-- **Built, unit-tested only:** the quiet-while-a-video-plays gate (W3) and
-  group barge by name (W4). The operator checks them with real speech.
-- **Retracted:** the "stale persona" finding; the instance persona is current.
-- **Records:** suite 2282 / 31; 0 tracebacks over the day's wakes, no wedge.
-
-**v1.35.0 INSTALLED (2026-10-31 03:04 UTC); app stopped (asleep), TV off.**
-- The morning's two video slips were replayed before any fix (D-043): neither
-  reproduced on 1.34.0 (UK replay 0/4, skip 0/4).
-- Fixed what the replays exposed: UK trip findability (folder text + whole-token
-  short words), fresh search per trip request, camera not for the TV clip.
-  A: UK 2/4 -> 4/4, Boston 4/4; B: title answers 3/4, camera 1/4, 下一段 4/4.
-- Daemon wedge at 02:54 UTC, restarted 02:56:30 UTC (D-038). Suite 2103 / 31.
-
-**2026-10-31 02:16 UTC: Wi-Fi watchdog running (D-034).** The operator installed
-the crontab line with `.claude/skills/reachy-deploy/scripts/watchdog_cron.sh
-install`; `status`: line 1, `monitoring started: Wi-Fi link up`, 0 actions.
-This morning's 07:23 drop (NetworkManager `need-auth → failed`) would now get a
-reconnect after 2 failed probes and a radio cycle after 4.
-
-**v1.34.0 INSTALLED (2026-10-31 01:48 UTC); app stopped (asleep), TV off.**
-- 「停」 stops the video on the TV (D-042): `music stop` stops the speaker, else
-  the TV, by media_stop and then closing the cast app, and reads it back.
-- Live: music stop first 6/6; NAS and YouTube videos ended; nothing-playing
-  and 暫停 answers true. Suite 2101 / 31, prefix 5,984.
-
-**v1.33.0 INSTALLED (2026-10-31 00:32 UTC); app stopped (asleep), TV off.**
-- The NAS index keeps itself current (D-041): a nightly Mac pass (03:30, via an
-  ssh-localhost route macOS lets reach the LAN) reindexes, transcodes new files
-  and mirrors the index; each wake swaps in the newer NAS copy.
-- First pass: 22/22 Boston copies; wake logged 2743 -> 2765; 「放影片庫裡我們
-  2026年去波士頓的影片」 played on the TV. Suite 2087 / 31.
-
-**v1.32.0 INSTALLED (2026-10-31 00:07 UTC); app stopped (asleep), TV off.**
-- Boots into 多人聊天模式: answers a call by name or 「停」, and for 20 s after
-  an answer; a face alone no longer passes (D-029 amendment 2026-10-31).
-- Instance `.env`: `REALTIME_DEFAULT_MODE=group` (one-line diff, mode 600).
-- Live: `Tools in session (group, startup, 19)`, prefix 5,872. Suite 2076 / 31.
-- Findings from the 10-31 morning session and the open items are in
-  `session-handoff.md` (Boston index, Wi-Fi watchdog cron, stop routing).
-
-**v1.31.3 INSTALLED (2026-10-30 12:52 UTC); app stopped (asleep), TV off, mic
-unmuted.**
-- 「把電視打開」 now gets a short line first: 5/5 live, against 1/4 before.
-  None of those lines claimed success early.
-- First sound about 3 s after the request instead of about 9 s.
-- The journal logs the preamble text.
-- Suite 2076 / 31 (D-040).
-
-**v1.31.2 (12:38 UTC).**
-- 1.31.2: a timed-out command is still read back, and a refusal is named.
-- Suite 2074 / 31.
-- A direct on-robot call returned `was_already: off`.
-- Open (D-040): no preamble for the 6–9 s TV turn-on; non-on/off domains.
-
-**v1.31.1 (12:14 UTC).** `home_control` reads the device back (D-040):
-- TV on 3/3 and off 3/3, already off 3/3 truthful;
-- a device HA doesn't have 3/3 reported, not claimed;
-- the old 8 s limit timed out the TV's 9 s turn-on;
-- HA's LAN URL no longer reaches the model.
-
-Suite 2071 / 31. The instance `.env` is byte-identical to the pre-test backup.
-
-**2026-10-30 ~12:00 UTC: project skills updated from this session's failures.**
-- `reachy-instructing-model`:
-  - check what mini got before rewording;
-  - stop after two text tries that don't move a live rate (no full-tier step);
-  - 19 tools, all loaded, families of 2–3 actions;
-  - each fact once, errors name their fix and who acts;
-  - a red-flags table.
-- `reachy-deploy`:
-  - § Live verification, with the harness in `scripts/` (`live_case.sh`,
-    `rpc.py`, `tv_state.py`);
-  - `sudo -n` for the wedge restart; no persistence on the robot;
-  - stale tool names fixed.
-- `docs/adding-a-skill.md` now names the `CORE_TOOL_NAMES` step that 1.30.0
-  added.
-- Tested on a fresh agent with three unhinted scenarios (a light that stays
-  off, timers, a stop wedge): it followed the rules. Its gap notes were fixed.
-- `live_case.sh` ran on the robot for ssh, copy, TV state and cleanup. The
-  `/rpc` mic path wasn't run: Reachy has been asleep since 11:01 UTC
-  (`go_to_sleep`).
-
-**v1.31.0 INSTALLED (2026-10-30 10:17 UTC); asleep since 11:01 UTC, TV off.**
-The mini context diet is done (D-039):
-- **The fixed prefix shrank** from 9,866 to about 5,820 tokens, with all 19
-  tools always loaded and no toolboxes.
-- **Removed:** calendar, tasks and Notion.
-- **Merged into families:** `dance` (stop ends any motion), `head`, `memory`,
-  `face`.
-- **The TV is a home device:** 「把電視關掉」 → `home_control`.
-- **Each rule lives in one place:**
-  - the persona is who Reachy is;
-  - status advice comes in each error;
-  - the email and Drive confirmation rules are in those tools' descriptions;
-  - the email read-back is a Chinese `response_text` read verbatim.
-
-Live, final build:
-- V1 3/4: one run went straight to YouTube.
-- V2 and V4 4/4 pass; YouTube passes.
-- TV off works.
-- face, look and head routing pass.
-- dance and stop pass.
-- play_emotion 3/4, always silent (EMOTION-WITHOUT-SPEECH).
-- News search passes.
-- memory, email read-back, record mode and music retry pass.
-
-Two stop wedges were cleared by daemon restarts at 10:08 and 10:17 UTC, under
-the standing authorization.
-
-Suite 2064 / 31.
-
-Earlier (2026-10-30 06:08–07:39 UTC): v1.29.0 and v1.29.1 (NAS one-call play,
-error results delivered whole).
-
-
-**(superseded by v1.31.0 above) v1.29.1 installed 2026-10-30 07:39 UTC. The daemon was restarted at 07:23 UTC under the operator's standing
-authorization ("I auth all daemon restart", D-038). No wedge since.**
-
-The 1.29.0 checks are done (D-038 has every run):
-- **V1 3/3:** asked the source, then played the Okinawa trip.
-- **V2:** listed only, and found the trip.
-- **V3:** playing.
-
-The model mostly sends 「沖繩」 first. The search-in-English error corrects
-it every time, at the cost of one extra call.
-
-1.29.1 fixes the two defects the checks found:
-- **Error results now reach the model whole.** Before, the transport kept
-  only the error string, so `candidates`, `all_trips`, `known_devices` and
-  similar fields were lost. V4 offered trips that don't exist (花蓮 for Japan).
-  This applied to every tool and upstream has the same code
-  (TOOL-ERROR-RESULT-FACTS).
-- **`remaining` is now `clips_left`.** Reachy had read "15 left" as seconds.
-
-Suite 2105 / 31. Live on 1.29.1:
-- **V4 ×2:** offered only real trips and cast nothing.
-- **V3:** played in one call.
-
-Earlier (2026-10-30 06:08–07:23 UTC): v1.29.0 installed, V1 run 1 passed, then
-the 06:11 stop wedged the daemon.
-
-Earlier (2026-10-30 01:41–02:05 UTC): 1.28.4 and 1.28.5 live checks, 8 clean
-stops, follow-through 4/5 and always search-first (D-038).
-
-**v1.28.5 INSTALLED (2026-10-30); THE ROBOT IS ASLEEP AGAIN (app stopped after the
-live checks), TV off. The next wake loads 1.28.5.**
-
-Live checks 01:41–02:05 UTC, a fresh session per run, 8 app stops, none wedged
-(D-038 has every run):
-- **1.28.4:**
-  - V1 asked the source 2 of 3 times. Run 2 played a YouTube guide without
-    asking.
-  - After the answer it played the Okinawa trip 2 of 2.
-  - V2 stayed browse-only, but the untranslated 「沖繩」 missed and Reachy said
-    the trip isn't there (NAS-FUZZY-SEARCH, now a known defect).
-  - V3 passed.
-- **1.28.5** (prompt and `persona.md` wording only; suite 2101 / 31):
-  - The ask rule waits for the answer before calling `youtube` or `nas`, and
-    「要放就直接放」 is gone.
-  - No video tool before the answer 3 of 3; the source question proper
-    2 of 3.
-  - Follow-through 2 of 3. Run 3 stopped after `query`, saying it would play.
-
-The answer turn always runs `query` first (6 of 6), so the one-call recipe
-went unused. The next step needs the operator's OK: a diagnostic on full
-`gpt-realtime-2.1` (MEDIA-SOURCE-ROUTING next_action).
-
-Earlier (2026-10-30, before the checks): v1.28.4 installed, robot asleep.
-
-Earlier (2026-10-29):
-
-**v1.28.3 (twenty-eighth install + three fix redeploys — D-038) IS RUNNING ON
-THE ROBOT (daemon v1.13.0), mic unmuted, TV off.**
-
-The source rule works live. A request naming no source got a question first
-in 3 of 3 fresh sessions, and the answer led to the right NAS trip.
-
-- **1.28.1:** a mirrored ask-first clause in the media descriptions. Not
-  enough on its own.
-- **1.28.2:** the real cause was the toolbox rule 「不要再問使用者一次」 /
-  "without asking the user again". It now forbids only a second go-ahead, and
-  the prompt asks 影片庫 or YouTube first.
-- **1.28.3:** `nas play` with no path or filter refuses instead of casting
-  the archive's first clip. That old bug was found live: a Taiwan clip was
-  presented as Okinawa.
-
-Regression checks passed on 1.28.3:
-- case 1 (NAS → play with a path → 206 → `playing`);
-- case 3 (explicit YouTube);
-- a calendar question (open → list in one turn, no stall).
-
-Daemon:
-- 7 of 7 stops since the authorized 12:02 restart returned 200, with each
-  response body kept. Today's totals: 19 stops, 3 failures, 2 wedges.
-- The forum check found no report anywhere (Pollen forum, HF forum, the
-  official app's HF Space discussions, GitHub Discussions), so the wedge
-  looks unreported.
-
-Suite 2099 / 31; ruff and mypy clean.
-
-Residual: after the source answer, one run listed the trip without playing
-it.
-
-Earlier (2026-10-29):
-
-**v1.28.0 RUNNING ON THE ROBOT AGAIN (daemon v1.13.0); 1.28.1 BUILT, NOT
-DEPLOYED.**
-
-The operator authorized one daemon restart. It ran at 12:02 UTC:
-- State came back `null`; `wake_up` auto-started the app with the instance
-  persona, gpt-realtime-2.1-mini and 22 tools.
-- The mic was unmuted after the test.
-
-Case 6 (「電視上放沖繩的影片」, no source named) **failed**: it went to
-`youtube` without asking. 1.28.1 mirrors an "Ask first when: only a place,
-trip, year or event" clause into `youtube` and `nas`, and drops the
-`youtube` example framed by 電視. Tests pin both. Suite green.
-
-Wedge root cause (D-038, `DAEMON-STOP-WEDGE`):
-- The Rust control loop stores a failed 50 Hz read as the last position.
-  `get_last_position()` then raises immediately.
-- `enable_motors()`, called by the daemon's `stop_current_app` after the app
-  exits, calls it first and nothing catches the error. The resulting 400
-  skips `current_app = None`.
-- If the stop also cancelled the monitor, the state sticks. Only a service
-  restart clears it; `POST /api/daemon/restart` does not.
-- Today: 3 of 12 API stops failed this way, and 2 wedged. Idle read errors
-  were 0 in 60 s.
-
-Deploying 1.28.1 needs an app stop, which carries that risk, so the operator
-decides when.
-
-Earlier (2026-10-29):
-
-**v1.28.0 (twenty-eighth install — D-038) IS INSTALLED ON THE ROBOT (daemon
-v1.13.0), BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` AGAIN (11:42
-UTC), SO NO APP IS RUNNING.** Operator ruling: Reachy must tell 「從NAS／影片庫找」
-from 「從YouTube找」. The media tools are now named for their source: `youtube`
-and `nas` (the family's 影片庫), both playing on the same TV, plus
-`draw_picture`. `tv` is retired. Reachy asks when no source is named, and
-offers the other source only when the named one has nothing. The 1.27.3 guard
-now refuses only NAS paths and file names.
-
-Live, a fresh session per request with the mic muted:
-- 5 of 6 cases passed. NAS ×2, YouTube ×2 (zh/en), and a NAS miss that
-  offered YouTube without switching.
-- No refused calls. Casts were confirmed by HA, and the TV was turned off
-  after each one.
-- Case 6 (no source named) was not run, because the stop before it wedged.
-
-Deploy record:
-- Wheel `52dd3f1a…`; backup `20261029T113321Z-25088`.
-- `persona.md` synced; the startup log shows the instance persona and 22
-  tools (25 with media open).
-- Suite 2095 / 31; ruff and mypy clean.
-
-The shared apps venv was force-reinstalled at 11:10 by an update of the
-official `reachy_mini_conversation_app`, started from the LAN (dashboard or
-desktop app). Our pins survived it; `pip check` reports only the mediapipe
-line.
-
-Daemon wedge (`DAEMON-STOP-WEDGE`):
-- It happened with motors enabled, which disproves this morning's theory.
-- Mechanism, read from `apps/manager.py`: a `RuntimeError` after the process
-  exits skips `current_app = None`.
-- Clearing it needs the operator's daemon restart.
-
-Voice model: the operator asked for gpt-realtime-2.1-mini or its latest
-alias. No change was needed:
-- The robot already runs `gpt-realtime-2.1-mini`. All 6 sessions from 11:34
-  to 11:43 logged it, and cases 1–5 made their tool calls on it.
-- The account's `/v1/models` (read on the robot) lists no dated 2.1-mini
-  snapshot, so the undated id is the newest.
-- `gpt-realtime-mini` is the 2025 generation (snapshot
-  `gpt-realtime-mini-2025-12-15`), so it would be a downgrade.
-
-Next, blocked on the restart: case 6.
-
-Earlier (2026-10-29):
-
-**v1.27.3 (twenty-seventh install, third fix redeploy — D-037) IS ON THE
-ROBOT (daemon v1.13.0), APP RUNNING (2026-10-29 08:45 UTC robot time); A
-HOME VIDEO PLAYED FROM THE NAS ON THE TV.** The wedged app manager was
-cleared by one daemon restart at 08:29 UTC on the operator's explicit
-instruction (state `null`, backend ready in ~3 s); a daemon wake then
-auto-started the app (boot path re-confirmed). The 1.27.2 retest failed (the
-model passed a found clip's NAS path to `tv play_video`; TV stayed off), so
-1.27.3 makes `tv play_video` refuse a query naming a NAS clip with an error
-pointing at `nas play`, and the `open_toolbox` `media` line says loose
-descriptions find home videos. Live, fresh session: 「把我們在沖繩拍的家庭影片
-播一段到電視上」 → `open_toolbox media` → `nas query` 沖繩 (0) → Okinawa (16)
-→ `tv` refused → `nas play` → NAS stream 206 → HA `playing` with the clip's
-title. TV turned off afterwards (was off). Wheel `394994fa…`; backup
-`20261029T084828Z-22875` (persistent copy, sha match); `pip check` only the
-mediapipe line. Suite 2093 / 31, ruff, mypy clean. Open: the model still
-tries `tv` first (one refused call); TV audio was taken as a user turn
-(「一次。」, new row `TV-AUDIO-PHANTOM-TURNS`); no tool can stop the TV; one
-`tv show` image generation failed with a 400 (cause not looked at).
-
-Earlier (2026-10-29):
-
-**v1.27.2 (twenty-seventh install + two fix redeploys — D-037) IS INSTALLED ON
-THE ROBOT, BUT THE DAEMON'S APP MANAGER IS WEDGED IN `stopping` (2026-10-29
-06:01:56 UTC robot time): NO APP RUNS UNTIL THE OPERATOR RESTARTS THE
-DAEMON.** An official `stop-current-app` stopped the app cleanly, then the
-daemon's post-exit pose/motor step raised (HTTP 400) before clearing
-`current_app`; every start (API, dashboard, antenna) is refused. Daemon
-backend healthy (ready, ~50 Hz loop, no errors, motors disabled).
-Verified today before the wedge: **boot into the app** (startup app
-`reachy_companion`; on v1.13 a daemon wake started it 3 s later);
-**NAS fuzzy search live** (日本→Japan 9 trips, 女兒→daughter, 去年→2025 with
-all four places, 企鵝→penguin, 沖繩→miss→`all_trips`→Okinawa);
-**`/rpc` say fix** (150 `invalid_json` before, 0 after). Robot instance
-`.env`: `HA_URL` and `HANOVA_CAST_ENTITY` repointed after HA's 2026-10-25
-move/rebuild (backups `.env.bak-20261029T053127Z-ha-url`,
-`…-cast-entity` beside the file); home verdict `home`, all families enabled.
-Not yet verified: a home video cast through `nas` (v1.27.1 played YouTube
-instead; the 1.27.2 description fix awaits the daemon restart). TV left
-`off` as found (two YouTube test casts stopped). Suite 2086 / 31, ruff, mypy
-clean. Wheels: 1.27.0 `4a874796…`, 1.27.1 `20d9ad6f…`, 1.27.2 `cecd7f1a…`;
-backups `20261029T054130Z-15564`, `…055723Z-18085`, `…060143Z-18616`.
-
-Earlier (2026-10-29):
-
-**THE TWENTY-SIXTH INSTALL (v1.26.0 — D-036: MCP v2 client, trimmed MCP
-results) IS ON THE ROBOT (daemon v1.13.0) WITH A CLEAN BOOT, APP RUNNING
-(2026-10-29 04:46 UTC robot time).** Wheel sha `69b0b60b…`, backup
-`20261029T044542Z-12819` of `~/.config/reachy_companion` (persistent copy in
-`~/reachy_companion_backups/`, sha match; no restore step since v1.25.0).
-Robot venv: mcp 1.29.0 → 2.3.0, mcp-types 2.0.0 → 2.3.0, httpx2 2.10.0 kept;
-`pip check` only the pre-existing mediapipe/protobuf line. From the robot,
-v2 discovery returns the search schema `{query, max_results}` and a live
-台北天氣 search trims 1,700 → 729 chars to `{status, text}`; step 6b search
-True. Boot: `(already migrated)`, `persona: instance persona.md`, search
-tool registered, `Tools in session (one_on_one, boxes=none, startup, 22)`,
-`Local VAD ready`, `boot gate released (greeting played)`, 0 tracebacks, no
-app warnings. Suite 2079 / 31, ruff, mypy clean; 95 MCP tests incl. the
-integration suite (it had been silently skipping under v2 upstream). Not yet
-seen in a conversation: demo 4 with the trimmed result (in-room). Wi-Fi
-watchdog still inactive until the operator adds the crontab line.
-
-Earlier (2026-10-28):
-
-**THE TWENTY-FIFTH INSTALL (v1.25.0 — D-034, D-035) IS ON THE ROBOT (daemon
-v1.13.0) WITH A CLEAN BOOT, APP RUNNING (2026-10-28 14:29 robot time).** Wheel
-sha `091137c8…`, backup `20261028T142759Z-5241` (persistent copy in
-`~/reachy_companion_backups/`). First start: `instance:
-~/.config/reachy_companion (migrated 7 items)`, `Repointed 3 legacy path(s)`
-in the migrated `.env` (0 site-packages refs left), dir 700 / credentials 600,
-`.migrated` present, 4 faces + 4 people; `persona: instance persona.md` from
-the new dir; `Local VAD ready`; `Tools in session (one_on_one, boxes=none,
-startup, 22)`; `Realtime session updated successfully`; first `Response
-usage:` line in=9642 cached=9088 out=444 (text 121 / audio 323)
-`reasoning_tokens` 16 — the server does report reasoning tokens; `boot gate
-released`; 0 tracebacks / app errors / app warnings in 133 lines. Second start
-(official stop/start): `(already migrated)`, clean; step 6b search True.
-Silero model preloaded and sha256-verified on the robot. Suite 2070 / 31,
-backend 286. **Wi-Fi watchdog:** file installed at
-`~/.local/lib/reachy-wifi-watchdog/` and dry-run verified (real gateway: no
-action; TEST-NET gateway: down → would reconnect at 2 → would cycle radio at 4)
-— **inactive until the operator adds the crontab line** (the auto-mode
-classifier blocks an agent from adding persistence). Camera JPEG colour:
-fixed by the SDK 1.13 upgrade (YCbCr ids [1,2,3] on the robot). In-room
-five-demo check: `docs/five-demo-checklist.md`, not yet run.
-
-Earlier today (2026-10-28):
-
-**THE TWENTY-FOURTH INSTALL (v1.24.0, upstream refresh — D-033) IS ON THE ROBOT,
-NOW ON DAEMON v1.13.0, WITH A CLEAN BOOT (2026-10-28 13:07 robot time); robot
-left asleep.** The robot had been unreachable since ~2026-10-21: the
-previous boot (10-21 → 10-28) ended with the app retrying `Temporary failure in
-name resolution` (Wi-Fi/DNS lost; no NetworkManager lines retained) and an
-operator power-button shutdown at 12:54:01. Daemon upgrade v1.10.0rc5 →
-v1.13.0 (`9d5d5e5d`) via the official `POST /update/start-from-ref`, job
-21:00:35 → restart → up 21:03:15 (Mac time); telemetry PUT `enabled:false` 1 s
-after the new daemon answered, 0 `Telemetry sent` lines; startup app kept;
-instance state untouched by the updater. apps_venv now reachy-mini 1.13.0,
-starlette 1.10.0, fastapi 0.162.0, certifi 2026.10.23, pip 26.2.2. App deploy:
-wheel sha `1d1c98aa…`, floor `reachy-mini>=1.13.0`, backup
-`20261028T130625Z-2812` (persistent copy in `~/reachy_companion_backups/` on
-the robot, with pre-upgrade venv freezes and `daemon_config.json` in
-`…/20261028T125722Z-1216`), restore 4 faces + 4 people (memory and
-face_snapshots absent as before), step 6b search True, preload done. Boot:
-`persona: instance persona.md`, `Tools in session (one_on_one, boxes=none,
-startup, 22)`, `Realtime session updated successfully` (certifi-pinned wss),
-`boot gate released (greeting played)` +18 s, 0 tracebacks / app errors / app
-warnings in 122 lines, 0 speech/barge events before the greeting. Suite 1941 /
-31 on dev venv reachy-mini 1.13.0 and on the robot's exact stack.
-The v1.13 startup check could not refresh `/bluetooth/` or the gpio-shutdown
-unit (`sudo cp` is not in the image's NOPASSWD list); on operator
-authorization the same two Pollen functions
-(`check_and_update_bluetooth_service`, `check_and_update_gpio_shutdown_service`)
-were run once as root at 13:13:52 — both report success, installed copies now
-match v1.13 (BLE PIN-bypass fix GHSA-993g-hgjh-whmf live; gpio unit gains
-`RestartSec=3s`), both services active, BLE `GATT app registered`. At 13:10
-the app went to sleep on its own `go_to_sleep` call after a user turn
-(`user_asked_to_end_the_interaction`; reply 1066 ms / first audio 2512 ms
-after the transcript) and stopped cleanly — **robot left ASLEEP**, antenna
-touch wakes it. Rollback: the updater cannot return to rc5;
-`git_ref=v1.12.0` is the official fallback.
-
-Previous state (2026-09-05):
-
-**THE TWENTY-THIRD INSTALL (v1.23.0, solo interruption — D-032) IS ON THE
-ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's
-probe (2026-09-05 05:30 robot time).** Operator approved RCA candidate fix 1
-with the added requirement "preserve the transcript for context, continue
-from the latest human speech". Plan `docs/plans/2026-09-05-solo-interrupt-plan.md`
-rev 3 (Codex 2 rounds, 15/15 accepted); Opus subagent implemented under
-session review (9 commits + 1 review fix `0f5264b`: a sustained-speech commit
-now marks its item as committed, so the new declined-line telemetry cannot
-misreport a successful interruption). Shipped: `REALTIME_SOLO_NAME_GATE`
-default 1 → 0 (any real sentence stops a solo reply; 「嗯」/cough still roll
-back; `=1` restores D-028), one `_solo_interrupt_verdict` for pause and late
-path, cancel-whatever-speaks with double truncate, per-item watchdog-answered
-and late-eligibility markers, stale-tool drop for cancelled responses, name
-in a partial commits in every mode, `late solo interrupt declined (audible=,
-verdict=)` telemetry, truncate refusals at INFO. Suite 1873 → 1918 / 30,
-ruff + mypy --strict clean. Deploy: wheel sha `70516de8…`, backup
-`20260905T042941Z-70561` (memory + face_snapshots absent as before), restore
-4 faces + 4 people, persona sha `4fe06ac4` unchanged, step 6b search True,
-instance `.env` carries `REALTIME_DEFAULT_MODE=one_on_one` and no barge knob.
-Boot: `Tools in session (one_on_one, boxes=none, startup, 22)` (first live
-evidence for MODE-BOOT-DEFAULT), `Realtime session updated successfully`,
-`boot gate released (greeting played)` +30 s, 0 tracebacks / errors / app
-warnings in 123 lines (one SDK-side `Failed to fetch TURN credentials`
-warning, not ours). **Operator probes pending (plan T7):** plain-sentence
-interrupt (no name) → `confirmed by transcript (substantive…)` or `confirmed
-by sustained speech` + `flushing player queue` + answer to the new sentence;
-「嗯」 → `rolled back (backchannel)`; a >2 s sentence → no `hit its cap`;
-「你剛剛講到哪」 after an interrupt → heard part only, no `truncate refused`.
-Headline risk: false cuts from non-speech (`confirmed by sustained speech`
-with no transcript following) — knob `REALTIME_BARGE_CONFIRM_MS`.
-
-**2026-09-04 — boot posture flipped to 一對一聊天模式 (operator instruction);
-solo-interrupt RCA written, no behaviour fix applied.** Code default
-`DEFAULT_MODE=ONE_ON_ONE`, `set_conversation_mode` description and dead-knob
-warning follow (D-029 decision 5 amended; suite 1873/30, ruff + mypy clean).
-Robot instance `.env` now carries `REALTIME_DEFAULT_MODE=one_on_one` (written
-12:32 robot time while the app was stopped; backup `.env.bak-20260904-mode`),
-so the installed v1.22.0 wheel boots solo before the next install. **Not yet
-booted — first antenna wake must show `Tools in session (one_on_one, …)`.**
-RCA (`docs/rca-solo-interrupt-2026-09-04.md`, from the 11:47–12:10 journal):
-in solo mode 19 of 22 speech onsets over a talking robot were rolled back —
-the name gate (`REALTIME_SOLO_NAME_GATE`, D-029 decision 1) only lets a name
-or 停 stop the reply, and the 4 s pause cap runs from onset while the
-transcript can only exist after the turn commits, so anything longer than
-~2 s of speech resumes over the user before its transcript lands. A rollback
-puts the fully-buffered old reply back in front of the new answer, which is
-the "finishes the previous reply first" symptom. Aggravating: first-audio
-latency grew 2 s → 10.6 s over the session (`reasoning.effort=medium`, no
-token telemetry). Six candidate fixes are listed in ladder order; fix 1
-(mode-aware interruption gate) needs an operator decision because it reverses
-D-029 decision 1 for solo mode.
-
-**2026-09-03 — speaker volume 90 → 95 (operator ask), set via `/api/volume/set` and persisted with `alsactl store`; D-021 amendment has the reasoning and the upstream low-volume complaints.**
-
-**THE TWENTY-SECOND INSTALL (v1.22.0, calibration + tool-surface symmetry)
-IS ON THE ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING
-(2026-09-02 15:56 robot time).** Same-day follow-up to v1.21.0 after the
-operator asked whether the 700 ms hold-off has a research basis. It does
-not (`docs/research-holdoff-calibration-2026-09.md`: "700" appears in no
-research doc; midpoint of an INFERRED 600–900 band; external evidence —
-LiveKit endpointing 0.5/3.0 s, pause clusters ~150/500/1500 ms, Mandarin
-boundary pauses 0.33/0.49 s — says 700 covers the common cluster and misses
-thinking pauses). Shipped (`d68d55e`, `8771afb`, `5d0e9e2`; D-031 addendum):
-hold-off calibration telemetry (`gap=`/`held=` on skip lines, one-shot
-`late continuation` line within 2 s of an expired window; row
-`HOLDOFF-CALIBRATION`), symmetric use-when/do-NOT-use pairs on 11 core
-tools, a `### 變化` variety rule, and the C1 stop guard now WARNING with
-honest wording. Suite 1873/30, ruff + mypy --strict clean. Deploy: wheel
-sha `4ba4e698…`, backup `20260902T145544Z-41493` (memory + face_snapshots
-absent as before), restore 4 faces + 4 people, persona untouched (sha
-`4fe06ac4` both sides), step 6b search 示範語氣 True. Boot: instance
-persona, tools in session, `Realtime session updated successfully`,
-`boot gate released (greeting played)` +27 s, 0 tracebacks / errors /
-app warnings in 100 lines.
-
-**First live evidence from v1.21.0 (operator probe 14:36–14:37):**
-`SLEEP-CLEAN-STOP` VERIFIED on the voice path — goodbye finished before the
-pose, the daemon logged `Stopping app` at 14:37:05 and the 2 s stop request
-timed out at 14:37:07, the new guard caught it, `Shutdown complete`, and NO
-`microphone unmuted` line. `VOICE-TURN-FRAGMENTS`: a 3-char fragment
-accepted via engaged face hit `turn hold-off: awaiting continuation (later
-speech already started)` and was not answered alone; every turn shows
-`response.created ≈ 990 ms after user transcript` — the measured cost of
-the 700 ms window. Watchpoints seen: two `party gate: denied ambient turn`
-lines (RCA-2, still open by design) and `drain cap reached after 6.0s with
-audio still playing` on the goodbye (SLEEP_GOODBYE_DRAIN_CAP_S, operator
-knob). No sleep summary (nobody recognised).
-
-**THE TWENTY-FIRST INSTALL (v1.21.0, the field-test fix wave) IS ON THE ROBOT
-WITH A CLEAN BOOT — ROBOT LEFT AWAKE AND RUNNING for the operator's probes
-(2026-09-02 14:02 robot time).** Wave `5715829..c3e46cf` (8 commits, D-031,
-plan rev 3 executed): Item A accepted-turn answer hold-off
-(`REALTIME_COMMIT_HOLDOFF_MS`, default 700, 0 = old path; event-ordered
-skip; connection-bound task; owed-answer rule), Item B audible commentary
-preambles with transcripts withheld from persistence + prompt/description
-instructing of *when* a lead-in belongs + RCA-4 routing rider + 聽不清楚
-rule moved last + bundled-spec override for manifested robots, Item C
-broadened stop-request guard / C6 unmute only for pre-pose failures /
-guarded movement stops / sleep-summary retry. Codex implemented under
-session review (6 dispatches, 5–15 min each); suite 1819/30 → 1859/30,
-ruff + mypy --strict clean at every commit. Deploy: wheel
-`reachy_companion-1.21.0` sha `a96e06ed…`, backup
-`20260902T130104Z-39909` (memory + face_snapshots absent as before),
-two-step install, restore verified (4 faces + 4 people), **persona pushed
-post-restore** (sha `4fe06ac4`, one-line lead-in harmonisation), step 6b:
-no manifest on this robot, bundled search description carries 示範語氣.
-Boot gates: `persona: instance persona.md`, `Tools in session (group,
-boxes=none, startup, 22)`, `Realtime session updated successfully`, `boot
-gate released (greeting played)` at +28 s, 0 tracebacks / 0 errors / 0
-app warnings in 131 lines. Instance `.env` unchanged (semantic_vad / low /
-effort high), so the new knob runs at its 700 ms default.
-**Voice probes pending (operator):** the three new rows —
-`VOICE-TURN-FRAGMENTS` (a mid-sentence pause → ONE answer; journal
-`turn hold-off: awaiting continuation (…)`; fragment + cough → still
-answered via `continuation produced no turn`), `VOICE-SLOW-PREAMBLE`
-(search turn → audible lead-in, no dead air; 「看右邊」 → no narration;
-lead-in absent from the sleep summary), `SLEEP-CLEAN-STOP` (「睡覺吧」 →
-goodbye → pose → `Requested current app stop via …` or the typed guard
-error, NEVER `microphone unmuted`). Also still pending from v1.20.0: the
-D-030 probes listed below.
-
-**2026-09-02 — field-test fix-wave plan rev 3, review CLOSED, no code
-touched.** Codex round 2 (`docs/plans/2026-09-01-field-test-fixes-review-r2.md`)
-returned 3 Important findings, all accepted: the Item A hold-off must be a
-non-blocking per-turn task (an inline sleep would stall the receive loop), it
-needs a session-bound lifecycle (cancel via `on_external_interrupt()` /
-`_barge_shutdown()`, re-check the connection at fire time — `_pending_responses`
-outlives sessions), and B1's "one short sentence" was a numeric prompt cap.
-Review cap lowered to 2 rounds in CLAUDE.md; 14 findings over 2 rounds, 0
-rejected. `reachy_companion/uv.lock` is now gitignored (nothing consumes it;
-it was already stale). Robot untouched since 09-01. **Next: Codex implements
-rev 3 task-by-task under Claude review** (suite baseline 1819/30).
-
-**THE TWENTIETH INSTALL (v1.20.0, the LLM-first instructing wave) IS ON THE
-ROBOT WITH A CLEAN BOOT — ROBOT LEFT AWAKE for the operator's voice test
-(2026-09-01 ~09:01 robot time).** Wave `1687a03..f81086b` (13 tasks, D-030):
-goodbye-then-sleep inversion (tool returns `sleeping_soon`, dispatcher owns
-one `tool_choice:none` farewell response, pose waits for its `response.done`),
-owner-gated head-tracking windows for `look_around`/`move_head`, runtime
-validation + honest returns across robot tools, profile/persona/system-prompt
-restructure (2.x blocks, semantic Tool Availability, no caps/trigger lists),
-off-by-default `finish_session` alias. Codex implemented under controller
-review (operator steering); plan review 2 rounds (5/5 + 4/4), final
-whole-branch review adjudicated. Suite 1819/30. Deploy: wheel sha
-`e8f0cd86…`, backup `20260901T075934Z-25343` (memory + face_snapshots
-absent as before), restore verified (4 faces + 4 people), persona pushed
-post-restore (sha `a50a4a95` — Task 8 rewrite). Boot gates: instance
-persona, `Tools in session (group, boxes=none, startup, 22)`, session
-acked, greeting played, zero tracebacks. Robot `.env` still pins
-semantic_vad/low + reasoning medium from the 2026-09-01 tuning.
-**Voice probes pending (operator):** 「睡覺吧」→ goodbye THEN pose (journal:
-`farewell response finished` before the pose); 「看右邊」→ head physically
-turns (journal: `Head tracking suspended for the look_around window`);
-「抬頭」→ up, hold, tracking resumes; cold 「幫我加個行程」→ toolbox
-continuation without re-asking; the restructured prompt's feel.
-
-
-**2026-09-01 accuracy tuning (no code change, robot-side `.env` only): the
-instance `.env` now pins `REALTIME_VAD_TYPE=semantic_vad`,
-`REALTIME_VAD_EAGERNESS=low`, `REALTIME_REASONING_EFFORT=high`** (operator
-ask: slower, more deliberate, more accurate answers; an intermediate
-`medium` step booted clean at 00:07 before the operator raised it). All
-three are shipped v1.19.0 knobs — no wheel rebuild. Verification boot
-00:09 robot time: `Realtime session updated successfully` (a rejected
-config would have logged the fallback that strips `reasoning`), boot gate
-released, zero tracebacks. The stale `REALTIME_VAD_SILENCE_DURATION_MS=800`
-line remains but semantic_vad ignores it (it re-applies if the operator
-reverts to server_vad). **ROBOT LEFT AWAKE AND RUNNING for the operator's
-live test.** Watchpoints for this config: barge-in confirm timing was tuned
-against server_vad — check interruption feel; `high` reasoning adds
-pre-speech latency by design and may emit more commentary-phase preambles
-(already suppressed).
-
-**THE NINETEENTH INSTALL (v1.19.0, the conversation-modes wave) IS ON THE
-ROBOT WITH A CLEAN FIRST BOOT — ROBOT LEFT ASLEEP (2026-08-31 ~21:08 robot
-time).** Merged to `main` (fast-forward to `5a92832`, 22 commits, pushed)
-after the final whole-branch review (READY WITH FIXES → C1-C6 applied in
-`a162d7c`, re-review clean) plus the pre-merge chores commit (`5a92832`:
-persona.md re-synced to the shipped tool surface — 18 line changes audited —
-and version 1.17.0 → 1.19.0).
-
-Deploy evidence (nineteenth install): wheel `reachy_companion-1.19.0` sha
-`41e5e15e…`, backup manifest `20260831T200225Z-17699` (7 files + 1 dir;
-`memory.v1.json`/`face_snapshots` explicitly absent), two-step install, restore
-verified (4 faces + 4 people), **persona pushed post-restore** (sha `0c1af73f`,
-zero stale tool names). Boot gates all green: `persona: instance persona.md`;
-wake-up movement ran; model `gpt-realtime-2.1-mini`; **`Realtime session
-updated successfully`** (the live endpoint acknowledges the new ordered
-session-update mechanism — no `never acknowledged within 5.0s`, no
-`session.update rejected`); startup surface exactly **22 tools**; wake greeting
-spoken (one concise sentence; `boot gate released (greeting played)`); zero
-tracebacks. Instance `.env` pins none of the four new knobs, so all shipped
-defaults apply (GROUP boot, 1600 ms party confirm, `open` answer gate). App
-stopped via the sanctioned API after verification; robot posed to sleep via the
-SDK. Antenna touch restarts the app (startup-app unchanged).
-
-**Discovered during verification (pre-existing, NOT a wave regression):** the
-console JSON-RPC `conversation.say` surface corrupts websocket frames — 15
-`invalid_json`/`invalid_value` realtime errors in one burst, `event_id=None`
-(unparseable frames). Isolation: `conversation.interrupt` (same flush, no say)
-is clean; the startup greeting (same `item.create`+`response.create` events,
-executed on the handler loop) works — so the defect is the RPC handler awaiting
-SDK sends from the console's own loop, racing the mic's audio appends
-(cross-loop websocket writes). Voice turns never use this path. Session
-recovered by itself; zero errors after the burst. Row `RPC-SAY-CROSS-LOOP` in
-`feature_list.json`; fix candidate: marshal `handler.say` onto the handler loop
-via `run_coroutine_threadsafe` (the Task 9 `wait_for_reply_finished` pattern).
-
-**Pending: the human-voice probes.** The five VOICE-* / MODE-* / TOOLBOX-*
-rows need a person in the room — the probe scripts are in each
-`feature_list.json` row (boot posture answers-only-when-addressed; 「切到一對一
-聊天模式」 then unaddressed answering; 紀錄模式 silence + 「瑞奇幫我總結」;
-「轉到右邊去看看有誰」 → look_around; 「睡覺吧」 goodbye-then-pose; cold
-「幫我加個行程」 open_toolbox chain; 「放首歌」/「音樂關掉」 with no box).
-Watchpoints while probing: `drain cap reached … with audio still playing`
-(raise `SLEEP_GOODBYE_DRAIN_CAP_S`), `suppressing commentary-phase item`
-(absence over a visit = phase may arrive too late, not a pass), RECORD idle
-`No idle tools are available` WARNING each interval (noise only, known).
-
-Previous wave state (for the record):
-**The conversation-modes wave was implemented and reviewed on branch
-`conversation-modes`, 2026-08-31.** Twelve tasks off
-`docs/plans/2026-08-31-conversation-modes-plan.md` (three Codex review rounds,
-**45 findings — 3 Critical / 27 Important / 15 Minor, 45 accepted, 0
-rejected**, plus one post-review operator amendment making `GROUP` the boot
-default). Design record: **D-029**.
-
-What it changes, in three groups.
-**(1) Conversation modes.** `ConversationMode` (`ONE_ON_ONE` / `GROUP` /
-`RECORD`) replaces the party-mode boolean, switched by voice through
-`set_conversation_mode`. **Reachy now boots into 多人聊天模式**
-(`REALTIME_DEFAULT_MODE`, operator amendment) — a robot in a shared room must
-not wake up answering every overheard sentence. `REALTIME_PARTY_DEFAULT` is
-dead and warns if set. 紀錄模式 keeps an in-memory-only room log (2000 lines,
-distinct from D-027's 40-line `session_transcript`) with a spoken Chinese
-summary via `summarize_conversation`. A new `REALTIME_ONE_ON_ONE_ANSWER_GATE`
-(default `open`) decides what gets *answered*, deliberately separate from
-`REALTIME_SOLO_NAME_GATE`, which still decides only what may *interrupt*.
-`create_response=false` in every mode, which kills the double answer.
-**(2) The tool diet: 41 → 22 at the start of a turn.** 18 CRUD tools became 6
-action-enum families (`calendar`, `tasks`, `drive`, `nas`, `music`, `tv`)
-delegating to the untouched originals; `sweep_look`, `self_destruct` and
-`mad_laugh` were deleted; the productivity and TV/NAS families load on demand
-via `open_toolbox` (22 / 27 / 24 / 29, plus any MCP extras, boxes accumulating
-within a mode). All live `session.update`s now run through one ordered,
-acknowledged, single-flight mechanism with an unmatched-ack debt counter.
-**(3) Three on-robot fixes.** `look_around` is one composite tool that moves
-then looks and reports `direction_requested` (never claiming a move it cannot
-attest); the sleep path is silence → bounded reply wait → drain → pose, so the
-goodbye finishes before the body lies down; and 2.x commentary-phase preambles
-are dropped before they reach the speaker.
-
-Gates on the branch: robot suite **1746 passed / 30 skipped**, `ruff check .`
-and `mypy --strict src` clean. Ten new live rows own the acceptance:
-`MODE-BOOT-DEFAULT`, `MODE-ONE-ON-ONE`, `MODE-GROUP-SWITCH`, `MODE-RECORD`,
-`VOICE-LOOK-AROUND`, `VOICE-SLEEP-QUIESCE`, `VOICE-NO-DOUBLE-ANSWER`,
-`VOICE-COMMENTARY-SUPPRESS`, `TOOLS-CONSOLIDATED`, `TOOLBOX-DYNAMIC`. Nothing
-here is on the device: the **nineteenth install** is what puts it there.
-
-**EIGHTEENTH INSTALL (metadata-only redeploy, 2026-08-31 07:39 robot time):**
-the same code re-shipped as wheel **v1.17.0** (sha `3ddae98d…`) so the robot's
-installed metadata matches the new install-mapped versioning scheme
-(CHANGELOG.md; tag `v1.17.0`; GitHub release published). Full ritual again —
-backup/restore manifest `20260831T063823Z-11114`, 4 faces + 4 people read
-back, persona sha `3a2be561` intact — clean boot, zero tracebacks, app left
-RUNNING. `importlib.metadata.version("reachy_companion")` on the robot now
-answers `1.17.0`.
-
-**SEVENTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-31 07:13 robot time).**
-`name-gate-patience` was merged to `main` (fast-forward to `26573f0`, pushed;
-merged-tree suite re-run green **1571 / 30**) and deployed via the full
-ritual: wheel sha `c5cccfa0…` verified end to end, version gate passed
-(daemon 1.10.0rc5), app already stopped at deploy time, two-step `--no-deps`
-install, manifest backup/restore at
-`/tmp/reachy_companion_backup/20260831T061202Z-10185` (faces **4** + people
-**4** read back, `memory.v1.json` + `face_snapshots/` recorded absent,
-google-oauth + nas index + google-workspace-mcp restored, modes reasserted).
-**The persona re-sync is DONE**: the Task 8 persona (no-preamble line) was
-scp'd over the restored copy and sha-verified at **`3a2be561`** (replacing
-`1ce532f3`), and the installed `prompts.py` carries the new 回答長度 block.
-Assets preloaded, app discovered. First boot clean: `persona: instance
-persona.md`, **41 tools**, `Face memory ready … 4 people enrolled` (1324 ms),
-wake check 5 rounds / 2173 ms (empty room), `Queued startup greeting prompt`,
-`session turn_detection updated: party=False`, `boot gate released (greeting
-played)`, **zero tracebacks**, and — decisive for D-028's two config risks —
-**no `session.update rejected` line**: the live API accepted
-`reasoning.effort=low` and `max_output_tokens=900`. **App left RUNNING.** The
-wave now awaits its five live rows: `VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`,
-`VOICE-TRUNCATE` (raise the module log level to DEBUG for that run — the
-refused line is DEBUG), `VOICE-PATIENCE`, `VOICE-BREVITY`.
-
-**Wave record (merged): the human-like-conversation wave (2026-08-31).**
-Nine tasks off
-`docs/plans/2026-08-30-name-gate-patience-plan.md` (three Codex review rounds,
-26 findings, 23 accepted outright, 3 in part; plus two implementation-review
-rulings that went *against* plan text — the late-interrupt eligibility flag and
-the dropped `response.created` reset of the audio-item tracker). Design record:
-**D-028**. What it changes: solo barge-in is **name-gated** by default
-(`REALTIME_SOLO_NAME_GATE=1` — only the robot's name or a control phrase takes
-the floor away mid-reply, interruption only, answers are unaffected), an
-unaddressed pause is capped at `REALTIME_BARGE_MAX_PAUSE_MS=4000` and the reply
-resumes *through* the side conversation, a late name/control phrase on a
-committed turn still stops it (`late solo interrupt (...) on committed turn`),
-every **committed** interruption now sends `conversation.item.truncate` so the
-model stops believing it finished replies nobody heard, patience defaults move
-(VAD silence 800 → **1000**, barge confirm 1400 → **1600** and now gate-off-only,
-`reasoning.effort` pinned **low**), `REALTIME_MAX_OUTPUT_TOKENS=900` is a loudly
-logged runaway rail, and brevity is taught by prompt calibration rather than a
-sentence cap. Gates at merge: robot suite **1571 passed / 30 skipped** (final
-fix wave added two tests over the plan's 1569 pin), `ruff check .` and
-`mypy --strict src` clean. All of it is **on the robot as of the seventeenth
-install above**, persona included. Five new live rows own the acceptance:
-`VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`, `VOICE-TRUNCATE`, `VOICE-PATIENCE`,
-`VOICE-BREVITY`.
-
-**SIXTEENTH INSTALL DEPLOYED AND BOOTED (2026-08-30 00:03 robot time).**
-`engagement-memory` was merged to `main` (fast-forward to `e4a40b1`, pushed)
-and deployed via the full ritual: wheel sha `0f95e9ff…` verified end to end,
-version gate passed (daemon 1.10.0rc5), two-step `--no-deps` install,
-manifest backup/restore at `/tmp/reachy_companion_backup/20260829T230203Z-12174`
-(faces 4 + people 4 read back, persona sha `1ce532f3` intact,
-`memory.v1.json` + `face_snapshots/` recorded absent, google-oauth + nas
-index + google-workspace-mcp restored, modes reasserted), `sleep_summary.py`
-confirmed in site-packages, assets preloaded, app discovered. First boot
-clean: `persona: instance persona.md`, 41 tools with the NEW fact-fidelity
-`who_is_this` description visible in the registration log, `Face memory
-ready … 4 people enrolled` (777 ms), wake check 5 rounds / 2083 ms
-(empty room), `boot gate released (greeting played)`, extended window
-closed after 7 rounds, zero tracebacks. **App left RUNNING.** The
-engagement-memory features now await their live rows (`MEMORY-LAST-CHAT`
-needs a recognized session ending in a voice 「進入睡眠模式」).
-
-Branch history (merged): Nine tasks off
-`docs/plans/2026-08-29-engagement-memory-plan.md` (three Codex review rounds,
-23 findings, 22 accepted): the last-chat callback written at sleep, open-loop
-prompt guidance, and a Mac-side consolidation CLI. Design record: **D-027**.
-Gates on the branch: robot suite **1468 passed / 30 skipped**, backend **267
-passed**, `ruff check` and `mypy --strict` clean on both sides (`mypy tests/`
-on the backend runs against a known baseline — 12 errors on `main`, 17 here,
-the five new ones the same `attr-defined` monkeypatch-target class
-`test_robot_sync.py` already carries). What is live TODAY: only the persona
-half of Task 1 — `persona.md` was scp'd to the robot instance 2026-08-29 and
-sha256-verified (`1ce532f3…`), loading at the next app start. **Everything
-else needs the sixteenth install**: `sleep_summary.py`, the ToolDependencies
-containers, the shutdown hook, and the `remember`/`who_is_this` description
-edits all ride the next wheel. The backend half (`store.replace_facts`,
-`backend/consolidate.py`, `scripts/consolidate.py`) is Mac-side and works the
-moment the backend is restarted from this branch.
-
-**Fifteenth install BOOTED AND VERIFIED on the robot (2026-08-29 00:41, after
-the operator's reboot).** The reboot cleared the daemon app-state wedge
-(`current-app-status` back to `null`), the app started via the sanctioned
-start API and reached `running`, and the boot journal shows every expected
-line: `persona: instance persona.md`, 41 tools registered, `Face memory
-ready: … 4 people enrolled` (1337 ms), wake check 5 rounds / 2107 ms (≤ the
-4000 ms budget) ending in the empty-room branch (`Queued startup greeting
-prompt`), `boot gate released (greeting played)` at +6.6 s, extended wake
-window closed at its bound after 6 rounds, zero tracebacks. One benign
-warning: TURN credential fetch failed (`turn.fastrtc.org` DNS) — WebRTC
-console path only, greeting and audio unaffected. **The app was left
-RUNNING.** All remaining verification is live/human (see Pending
-verification).
-
-Deploy record: deployed 2026-08-28 ~22:35–22:45 local (Mac), commit `ad5fe3e`
-(main: the person-memory wave + the merge/snapshots addendum together), wheel
-sha `068e6b81…` verified end to end, two-step `--no-deps` install,
-manifest-driven backup/restore at
-`/tmp/reachy_companion_backup/20260828T143611Z-22788` with the **extended
-manifest** (now `people.v1.json` + `face_snapshots/`): `faces.v1.json` **4
-records** and `people.v1.json` **4 records** read back after restore (the
-operator's merged "Linna" push), persona sha `4c87d2ec` preserved,
-`memory.v1.json` and `face_snapshots/` recorded absent, google-oauth + nas
-index + google-workspace-mcp restored, `people.py` + `face_snapshot.py`
-confirmed present in site-packages, assets preloaded, app discovered.
-
-Daemon app-state wedge history: after the fifteenth install (2026-08-28) the
-tracker was stuck at `state: "stopping"` with no app process — start/stop/
-restart all refused, daemon otherwise healthy. The operator's ssh reboot
-(2026-08-29) cleared it, consistent with Pollen's OFF → 5 s → ON
-prescription. Watch whether it recurs after clean stops (it followed the
-fourteenth install's `Motor communication error` stop).
-
-What this build ships (first time on the device): the three-way boot greeting
-with per-person facts, `people.v1.json` person-scoped `remember`/`forget` and
-`known_facts` on `who_is_this`, still-pose enrollment with the deferred-
-application hold, and enrollment snapshots (`face_snapshots/<record_id>.jpg`
-— written only on a **fresh** enrollment; nothing backfills earlier people).
-Design records: **D-025** (wave) and **D-026** (merge + snapshots, the D-013
-amendment). Gates at deploy: robot suite **1449 passed / 30 skipped**, backend
-**215 passed**, ruff + mypy strict clean on both.
-
-**Mac backend:** `companion_backend/` (FastAPI + vanilla-JS UI) owns
-people/photos/facts and pushes projections over the guarded scp promote;
-merge + aliases are live Mac-side and already used (Linna/Lena merged and
-pushed — that data is what the restore preserved). Operator-authorized bind:
-`COMPANION_BACKEND_HOST="$(tailscale ip -4)" ./run.sh` serves the tailnet at
-port 8710. **The process is currently stopped** (operator stopped the session
-background task); restart with that one-liner from `companion_backend/`. New
-on the `engagement-memory` branch: `scripts/consolidate.py`, an operator-run
-LLM tidy-up of the store's facts — dry run by default, `--apply` to write,
-`--import-first --apply --push-after` for the whole round trip. It **refuses
-to run while the backend answers** (the store lock is process-local), probing
-loopback, `COMPANION_BACKEND_HOST` and the live `tailscale ip -4` and failing
-closed on anything but a refused connection. Usage and exit codes are in
-`companion_backend/README.md` §Consolidation.
 
 ## Wake-up / power diagnosis (2026-08-27)
 
-**"Hard to wake up" = the robot is sometimes OFF — undervoltage hard
-power-loss, two days running.** Journal: the boots of Aug 25 and Aug 26 both
-end with `hwmon: Undervoltage detected!` as their final line, then nothing
-until a human powers the robot back on. No `Shutdown button released` lines,
-so this is the 5 V rail sagging, not the GPIO23 EMI path. Software cannot fix
-it; `startup_app` is set and the wake path works whenever there is power.
-
-Cause is ambiguous (the kernel line is identical for all three): weak
-PSU/cable, battery ran out, or charging path under-delivering. Operator
-observation 2026-08-27: it died while plugged into the ORIGINAL adapter —
-narrowing to a marginal adapter/cable, a charging-path fault, or a battery↔DC
-switchover glitch at plug-in. No matching public issue upstream (searched
-2026-08-27); report upstream once one more occurrence pins the pattern.
-Triage next occurrence: death AT plug-in (switchover → plug in while off) vs
-later while plugged (swap in a known-good 5 V/5 A USB-C PSU + short cable).
-Live check: `vcgencmd get_throttled` (0x0 at idle 2026-08-27; re-read after a
-loud motors+speaker session). Habit: robot "hard to wake" → look at the power
-LED first; dark = power event, not software.
+- "Hard to wake" was the robot being off: the 08-25 and 08-26 boots ended on
+  `hwmon: Undervoltage detected!` (5 V rail sag, not the GPIO23 path).
+- Habit: look at the power LED first. Dark means a power event, not software.
+- Live check: `vcgencmd get_throttled` (0x0 at idle; re-read after a loud
+  motors + speaker session).
+- Next time, tell a death at plug-in (battery/DC switchover) from a later death
+  while plugged in (then swap in a known-good 5 V / 5 A USB-C PSU and a short
+  cable). Report upstream once the pattern repeats.
 
 ## Next action
 
-1. Merge `conversation-modes` into `main`.
-2. **Re-sync `persona.md` FIRST — this is a hard pre-deploy gate, not a
-   chore.** The instance copy still names all eighteen retired CRUD sub-tools,
-   `party_mode`, and the `### self_destruct` ritual section, and it reaches the
-   robot only by the operator's scp + sha256 ritual (D-016), never by the
-   wheel. Installing the wheel without it puts a prompt describing a tool belt
-   that no longer exists in front of the model — the worst possible pairing
-   with a wave whose whole point is tool-selection quality. The same change
-   must edit `reachy_companion/tests/test_hanova_integration.py`'s
-   `PERSONA_TOOL_TOKENS`, which currently pins `("play_music", "nas_skip")` —
-   i.e. the *stale* state, deliberately, so the test says which copy is which.
-3. Deploy the **nineteenth install** via the `reachy-deploy` ritual — that is
-   what puts the whole D-029 wave (the three modes and the GROUP boot default,
-   the separate answer gate, the 22-tool surface with on-demand toolboxes, the
-   `look_around` composite, the sleep quiesce, commentary suppression, the
-   verbatim envelopes) on the robot. Manifest must still cover
-   `people.v1.json` + `face_snapshots/`.
-   Deploy-time chores, both cheap:
-   (a) **No `.env` surgery is owed.** The instance's
-   `REALTIME_SOLO_NAME_GATE=1` keeps meaning exactly what it always meant, and
-   the new answer gate has its own variable precisely so the ritual's
-   restore-from-backup cannot change conversation behavior (D-029, Open
-   question 1). If the instance still carries `REALTIME_PARTY_DEFAULT`, expect
-   one startup warning naming the mode actually booted; the fix is to delete
-   the line or say it as `REALTIME_DEFAULT_MODE=…`.
-   (b) Drop `HANOVA_SELF_DESTRUCT_YT_ID` / `HANOVA_MAD_LAUGH_YT_ID` from the
-   instance `.env` when convenient — they configure nothing now, and leaving
-   them costs nothing either.
-4. **Live-endpoint watchpoints on the first boot** — four things the unit
-   suite structurally cannot answer, all readable from the journal:
-   - `was never acknowledged within 5.0s` on a healthy connection would mean
-     this endpoint does not send `session.updated` for every `session.update`
-     it applies. The fallback is to send without the wait, not to leave every
-     flip failing.
-   - `suppressing commentary-phase item …` never appearing *while preambles
-     are still audible* would mean `phase` arrives only on
-     `response.output_item.done`, after the audio has streamed — a follow-up,
-     not a fix.
-   - `sleep quiesce: drain cap reached … with audio still playing` would mean
-     6.0 s is too tight for a long Chinese goodbye; raise
-     `SLEEP_GOODBYE_DRAIN_CAP_S` rather than treating it as a failed fix.
-   - The **cold** 「幫我加個行程」 probe: if the model asks the user again
-     instead of continuing to `calendar` in the same turn, the router pattern
-     is not safe on this tier and the family must be promoted into the static
-     core (22 → 27) rather than prompted harder — record which, and why.
-5. Then the ten new live rows: `MODE-BOOT-DEFAULT`, `MODE-ONE-ON-ONE`,
-   `MODE-GROUP-SWITCH`, `MODE-RECORD`, `VOICE-LOOK-AROUND`,
-   `VOICE-SLEEP-QUIESCE`, `VOICE-NO-DOUBLE-ANSWER`,
-   `VOICE-COMMENTARY-SUPPRESS`, `TOOLS-CONSOLIDATED`, `TOOLBOX-DYNAMIC` — plus
-   the still-owed D-028 five (`VOICE-NAME-GATE`, `VOICE-LATE-INTERRUPT`,
-   `VOICE-TRUNCATE`, `VOICE-PATIENCE`, `VOICE-BREVITY`) and the
-   `MEMORY-LAST-CHAT`, `MEMORY-OPEN-LOOPS`, `BACKEND-CONSOLIDATE` rows from
-   the sixteenth install.
+1. **Operator:** `TIME-OF-DAY-ANSWER`: add `get_time` as a 20th tool, or put the
+   time in the session.
+1b. **Operator:** after a miss in the 影片庫, keep asking about YouTube or play
+   YouTube directly (`VIDEO-MISS-FOLLOWUP`, live 1/3 asked).
+2. **Operator, in normal use:** the W3/W4 checks with real speech
+   (`VIDEO-QUIET-GATE`, `GROUP-BARGE-BY-NAME`); both are unit-tested only.
+3. **Next session:** read `~/HomeAssistant/state/nas-transcode.log` for the
+   2026-11-01 03:30 run, the first with `place_zh`, then run
+   `watchdog_cron.sh status`.
+4. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see
+   Known defects).
 
 ## Pending verification (operator)
 
-Thirty-six `implemented-unverified` rows in `feature_list.json` still need live
-use. **Everything through the engagement-memory wave is DEPLOYED and BOOTED
-(sixteenth install, first boot verified 2026-08-30) and needs only a human in
-front of the camera / a listener in the room; the five D-028 voice rows and the
-ten D-029 rows below additionally need their installs.**
+Everything below is on the robot (v1.36.7). Each row's probe is in its
+`verification` field in `feature_list.json`; what is missing is a person in the
+room or real speech.
 
-**Conversation modes and the tool diet (ten, D-029 — need the nineteenth
-install and the `persona.md` re-sync):** `MODE-BOOT-DEFAULT` (restart with no
-`REALTIME_DEFAULT_MODE` set → one unaddressed ambient sentence denied
-(`party gate: denied ambient turn`), 「瑞奇你好」 answered, and the startup tool
-line lists 22 names); `MODE-ONE-ON-ONE` (voice-switch in first, then three
-unaddressed questions each answered exactly once and one 「嗯」 denied; plus the
-`REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only` negative control);
-`MODE-GROUP-SWITCH` (`conversation mode: one_on_one -> group` then
-`session updated (conversation mode group)` **before** the spoken
-confirmation); `MODE-RECORD` (silent capture, `Record summary written from N
-logged lines.`, `record log cleared (N lines)` on exit, and a
-`Tools in session (record): [...]` line carrying six local names plus any MCP
-extras); `VOICE-LOOK-AROUND` (head moves before the description, and a failed
-move is never described as a completed turn); `VOICE-SLEEP-QUIESCE` (the
-six-line journal order, goodbye audible before the body moves,
-`already_requested` on an immediate repeat); `VOICE-NO-DOUBLE-ANSWER` (three
-unaddressed talk-overs, no second answer after any of them — and record the
-turn-latency delta from the extra queue hop); `VOICE-COMMENTARY-SUPPRESS` (the
-two DEBUG lines, judged against whether preambles were actually heard);
-`TOOLS-CONSOLIDATED` (one action per family plus one gated destructive one, the
-read-back confirmation unchanged); `TOOLBOX-DYNAMIC` (the **cold-start** probe
-for productivity and media, the 「放首歌」/「音樂關掉」 stop-lane negative
-control, boxes closing on a mode switch, and the 22-name startup line).
-
-**Engagement memory (three, D-027 — on the robot since the sixteenth install,
-awaiting live use):**
-`MEMORY-LAST-CHAT` (recognized session about an ongoing thing → 「請進入睡眠
-模式」 → journal shows `Sleep summary: wrote last-chat fact for 1 person(s).`
-*after* the session-shutdown lines, `people.v1.json` holds exactly one
-`上次聊天（M月D日）：…` fact, and the next recognized boot calls back to it;
-negative control: a dashboard stop writes no summary. **Watch on that run:** a
-daemon force-kill during sleep can race the ≤8 s summarizer call, and the
-failure is silent by design — judge it by the missing journal line, not by an
-error); `MEMORY-OPEN-LOOPS` (live listening: does `remember` favour the open
-loop over the static trait, does a cross-person fact land, and does Reachy ask
-a follow-up rather than reciting the list — the persona half is testable now,
-the tool descriptions after the deploy); `BACKEND-CONSOLIDATE` (backend
-stopped, seed a duplicate + a contradiction on a real person, read the dry-run
-diff, `--apply`, confirm `updated_at` and store position unchanged, restart the
-backend and confirm the guard exits 3 on the **tailnet** bind, then the
-one-shot `--import-first --apply --push-after` — that whole flow is
-monkeypatch-verified only and has never driven the real robot).
-
-**Person memory + backend (eight):** `PERSON-GREET-KNOWN` (enrolled person in
-frame at boot → `Wake face check: recognized …` then `Startup greeting
-personalized for <name> with K remembered fact(s).`, a named fact-referencing
-greeting, no self-introduction — and listen for the accepted edge: a
-`multiple_faces`/`too_far` boot speaks the *stranger* line even with an
-enrolled person among the faces, corrected late by the extended window);
-`PERSON-GREET-STRANGER` (unenrolled person → self-introduction, not the
-empty-room greeting); `PERSON-GREET-EMPTY` (empty room → profile greeting
-verbatim, wake line ≤ ~4000 ms — judge whether the ~4 s pause feels right);
-`PERSON-MEMORY-AUTO` (say a fact while recognized → `Tool call: remember
-person=<name> …` + `scope: person:<name>`; hear it come back next recognized
-boot; global control in an unrecognized session); `ENROLL-STILL` (「記住我」 →
-head visibly stops, `remember_face saved name=… samples=N` with N ≥ 2, no
-`hold_still: could not …` warning, motion restored — the 0.35 s settle has
-never met the real head); `BACKEND-PUSH-LIVE` (two real photos →
-`scripts/selftest.py` PASS ≥ 0.363 → push → recognized without an app
-restart; also the owed Mac-embed vs voice-enrollment comparability check);
-`BACKEND-IMPORT` (voice-enroll → blocked push → import preview/apply →
-byte-identical re-push; a voice-forgotten fact on a person under the 20-fact
-cap; the merge cycle end-to-end); `ENROLL-SNAPSHOT` (a fresh 「記住我」 →
-exactly one `face_snapshots/<record_id>.jpg` over ssh → import shows the
-picture once, labelled display-only).
-
-**Face (four):** `FACE-ROUTING` (「你記得我嗎」/「我是誰」 → journal shows
-`who_is_this`, never `camera`; a genuinely visual question still picks
-`camera`); `FACE-WAKE-EXTENDED` (nobody at boot, lean in within 8 s → late
-named greeting; empty room → `window closed`); `FACE-CROSS-SESSION` (Louis,
-enrolled 2026-08-26, fresh session → `recognized name=Louis score ≥ 0.363` —
-the threshold's first cross-day test); `FACE-MULTI-SAMPLE` (samples ≥ 2, then
-stable repeated `who_is_this`).
-
-**Voice (eleven):** `VOICE-MINI-MODEL` (tool spread on `gpt-realtime-2.1-mini`;
-revert `REALTIME_MODEL=gpt-realtime-2.1`); `VOICE-SOLO-BARGE` (cough/「嗯」
-mid-reply → `barge-in rolled back; resuming reply` + `solo barge rolled back
-(backchannel)`; 「停」 confirms; real interruption < ~1 s — rollback reasons
-renamed by D-028); `VOICE-WAIT-FOR-USER` (TV/side talk → suppressed turns);
-`VOICE-PARTY-FACE-GATE` (≥2 people: engaged-face accept, turned-away deny);
-`VOICE-NOISE-REDUCTION-AB`; `VOICE-SEMANTIC-VAD-AB` (now also the
-eagerness=low **patience** trial). **Five new, D-028, needing the seventeenth
-install:** `VOICE-NAME-GATE` (unaddressed talk-over → `solo barge rolled back
-(unaddressed)` and the reply resumes; 「瑞奇」 mid-reply → stops < ~1 s; 「停」
-alone → stops); `VOICE-LATE-INTERRUPT` (a >4 s addressed sentence → the reply
-resumes at the cap, then `late solo interrupt (name) on committed turn` when
-the transcript lands; negative control: an idle-start addressed turn must NOT
-cancel its own answer); `VOICE-TRUNCATE` (interrupt, then 「你剛剛說到哪」 — the
-model must not believe it finished; journal free of `conversation.item.truncate
-refused` and of `session.update rejected; retrying with legacy transcription
-shape`, whose mitigation is `REALTIME_REASONING_EFFORT=off`); `VOICE-PATIENCE`
-(~1 s Mandarin mid-sentence pauses no longer commit, without the robot feeling
-sluggish); `VOICE-BREVITY` (subjective — length tracks content, no preambles,
-no padding, and the `max_output_tokens` warning absent in normal use).
-
-Older human rows still owed: music duck→resume with a real voice; the gated
-email send with a dictated address; the five **PRD §8** demo gates; the
-`move_head` body-yaw fix (`a5f682d`, unit-covered only).
+- **PRD §8 demos:** `DEMO-1`–`DEMO-5` in one in-room run of
+  `docs/five-demo-checklist.md`. `US-02` (head follows a face from boot),
+  `US-09`, `DAEMON-UPGRADE-LATEST`, `UPSTREAM-REFRESH-2026-10` and
+  `MCP-RESULT-TRIM` ride the same run.
+- **Group mode and video:** `VOICE-NAME-ONLY-DEFAULT`, `VIDEO-QUIET-GATE`,
+  `GROUP-BARGE-BY-NAME`: room talk gets no reply and does not cut Reachy off,
+  「瑞奇，…」 does; count denied vs answered turns after a real multi-person
+  conversation.
+- **Modes:** `MODE-ONE-ON-ONE`, `MODE-GROUP-SWITCH`, `MODE-RECORD`,
+  `VOICE-NO-DOUBLE-ANSWER`: voice switches both ways, unaddressed answering in
+  一對一, the 紀錄模式 summary, no second answer after a talk-over.
+- **Interruption in 一對一:** `VOICE-SOLO-BARGE`, `VOICE-LATE-INTERRUPT`,
+  `VOICE-INTERRUPT-CONTEXT`, `VOICE-TRUNCATE`: a plain-sentence cut, a 「嗯」
+  rollback, then 「你剛剛講到哪」 answered from the heard part only.
+- **Turn timing and speech:** `VOICE-PATIENCE`, `VOICE-TURN-FRAGMENTS`,
+  `VOICE-BREVITY`, `VOICE-SLOW-PREAMBLE`, `VOICE-WAIT-FOR-USER`,
+  `LOCAL-VAD-LISTENING`, `LATENCY-TELEMETRY`: mid-sentence pauses, fragments,
+  reply length, lead-ins only before slow work, silence for TV or side talk,
+  antennas on the first syllable, one long session for the latency curve.
+- **A/B trials:** `VOICE-SEMANTIC-VAD-AB`, `VOICE-NOISE-REDUCTION-AB`.
+  `VOICE-MINI-MODEL` is open for tool choice on mini; its full-tier A/B is off
+  the table (operator, 2026-10-30: mini only).
+- **Faces and greetings:** `FACE-ROUTING`, `FACE-WAKE-EXTENDED`,
+  `FACE-CROSS-SESSION`, `FACE-MULTI-SAMPLE`, `PERSON-GREET-KNOWN`,
+  `PERSON-GREET-STRANGER`, `PERSON-GREET-EMPTY`, `ENROLL-STILL`,
+  `ENROLL-SNAPSHOT`.
+- **Person memory and the Mac backend:** `PERSON-MEMORY-AUTO`,
+  `MEMORY-LAST-CHAT`, `MEMORY-OPEN-LOOPS`; `BACKEND-PUSH-LIVE` (needs two real
+  photos), `BACKEND-IMPORT`, `BACKEND-CONSOLIDATE`.
+- **Sleep:** `SLEEP-CLEAN-STOP`. The voice path already ran clean once
+  (2026-09-02 14:37 robot time); the row's state was not updated.
+- **Blocked:** `HANOVA-EMAIL` (needs a dictated real address and a
+  two-paragraph body read back verbatim).
+- **Probes left:** `VOICE-LOOK-AROUND` (「看右邊」, 「抬頭」 with the journal
+  open); `WIFI-WATCHDOG` (running since 2026-10-31; waits for a real drop).
+  `VOICE-SLEEP-QUIESCE` was verified live on 2026-11-01.
+- **Other:** `NAS-PLAY-REQUIRES-SELECTOR` (confirm a live refusal when one
+  happens; the actions its error names were renamed in 1.29.0); `US-07`
+  (Notion over MCP, planned).
+- **Optional leftovers on rows removed as verified (see `0f67ce8`):** music
+  duck/resume under real speech; the off-LAN and broken-token wake rows for the
+  cast family.
 
 ## Known defects / open edges
 
-- Live session 2026-08-29 06:00 (first family session on the fifteenth
-  install): the realtime model SPOKE person facts wrong while the tool data
-  was right — `who_is_this` returned 雲霓 / 「女外科醫師…興趣是自己創作歌曲」
-  (score 0.679, correct), but Reachy said 「雲玲…有趣的舞蹈老師」 (wrong name
-  rendering + invented "dance teacher"), then falsely blamed "先前系統給的資
-  料". Storage, recognition and retrieval all correct; this is generation
-  infidelity on `gpt-realtime-2.1`. FIXED 2026-08-29 (prompt): one
-  grounding principle in persona.md (person info has one source — the tool
-  result; say the name as written, add nothing, re-verify when corrected)
-  plus the who_is_this description ending rewritten ("state as returned",
-  replacing "use them naturally"). Persona synced to the robot (sha
-  94d87bb0, then re-synced 2026-08-29 at **1ce532f3** with the D-027
-  guidance on top — that is what the robot holds; loads at next wake); the
-  description edit rides the sixteenth install. Live re-test owed.
-- Same session: 「請進入睡眠模式」 misrouted to `party_mode` instead of
-  `go_to_sleep` (06:01:25); a later retry slow-walked; a still-later plain
-  retry worked (06:07). FIXED 2026-08-29 (prompt): both tool descriptions
-  and persona sections rewritten as an intent contrast — go_to_sleep = end
-  the interaction entirely; party_mode = stay awake, change participation;
-  each names the other as the wrong choice. Deliberately no keyword/phrase
-  lists (operator direction: the model judges intent; enumeration is
-  brittle). Persona half live at next wake; descriptions ride the sixteenth
-  install. Live re-test owed. **Now load-bearing beyond routing:** the
-  last-chat summary (D-027) is written only when `go_to_sleep` runs, so a
-  misroute also costs that visit its memory. Since D-029 the contrast is
-  `go_to_sleep` (end the interaction) versus `set_conversation_mode` (stay
-  awake, participate differently); `party_mode` no longer exists, and both tool
-  descriptions were rewritten onto the new pair.
-- Conversation mode does NOT persist across a settings or backend restart
-  (D-029 §6, accepted): the record log survives such a restart deliberately,
-  but the mode drops back to the boot default, so 紀錄模式 stops recording
-  silently and a later re-entry appends to the abandoned log with an unmarked
-  gap. Mode persistence is the obvious follow-up and is out of this wave.
-- Same night 06:06 boot: the documented too_far edge played out live —
-  wake check rounds ended `too_far` (face visible, person seated across the
-  room), stranger intro spoken, extended window then recognized 小諾 (0.454)
-  on round 4 and delivered the late named greeting ~5 s later. Works as
-  designed (D-025 accepted edge); operator flagged the
-  generic-greeting-first feel as undesirable — design judgement pending.
-  Note: the 5-attempt cap ends the wake check at ~2.1 s, well inside
-  FACE_WAKE_BUDGET_MS=4000 — attempts, not the budget, are the binding
-  limit.
-
-- Solo barge-in, two residual edges (recorded, not fixed): a barge starting
-  during the tail drain of a done response captures no paused-response id (a
-  follow-up response is treated as "the answer" and not cancelled); the
-  keep-the-answer path can clip the new answer's first queued chunk.
-- ~~The confirm-vs-silence startup warning compares against the `server_vad`
-  silence value even under `semantic_vad`.~~ **FIXED 2026-08-30 (D-028 §8,
-  commit `c8a384c`)**: the warning is now suppressed under `semantic_vad` (the
-  server ignores that value entirely) and with the name gate on (the confirm
-  timer commits nothing there).
-- Truncate accounting (D-028 §4), accepted biases, not defects: the global
-  outstanding-audio figure can only *under*-truncate; the pause path's
-  device-buffer term double-counts and can over-cut up to ~1.3 s per barge; a
-  multi-item reply truncates only its last item — all in the safe direction. A
-  fully drained audio item keeps its id until the next item's first delta, so a
-  barge in that window sends a harmless truncate at ~`duration − 300 ms`.
-- Late-interrupt eligibility (D-028 §3) deliberately survives `response.done`,
-  so that 「停」 over a still-draining reply is honoured; the cost is a rare
-  self-cancel in an exotic ordering, healed by the response watchdog.
-- Boot-gate release ceiling is `response.done` + the 3 s drain cap — can
-  exceed `REALTIME_BOOT_GATE_TIMEOUT_S` by design.
-- BUG (old, DEMO-1): the RPC/UI stop button clears the queue but never sends
-  `response.cancel`, so playback resumes. Voice barge-in is separate.
-- T11 latency: 16.8 s to spoken answer, 4.5 s of it per-call MCP session
-  setup (session-reuse opportunity, deferred).
-- Instance state (`.env`, `persona.md`, `memory.v1.json`, `faces.v1.json`,
-  `people.v1.json`, `face_snapshots/`, credentials) lives inside
-  site-packages and is wiped by every reinstall — survives only via the
-  `reachy-deploy` backup/restore ritual. **The manifest now covers all of it**
-  (extended this session; first exercised in the fifteenth install).
-- Engagement memory (D-027), accepted limitations: a stop issued from the
-  dashboard or the mobile app writes **no** last-chat summary — only the voice
-  `go_to_sleep` sets `sleep_requested`, because `shutdown()` also runs for
-  settings/backend restarts mid-visit; a multi-person visit gets **topic-level**
-  summaries only (the transcript carries no speaker identity, and the prompt
-  forbids attributing an utterance to anyone it does not name); cross-person
-  links written into facts surface **one-sided**, retrieval being per-person by
-  design; and `consolidate.run` assumes **exclusive** store access — the CLI's
-  probe guard is the only thing providing it, so nothing else may call it while
-  the server serves.
-- Import-time boundary that bit twice (D-027): `reachy_companion.config` runs
-  `load_dotenv(override=True)` at **import** time, so backend and CLI code must
-  never import a robot module that reaches it — it would rewrite the process's
-  own `OPENAI_API_KEY` as a side effect of a constant lookup. `LAST_CHAT_PREFIX`
-  is restated in `backend/consolidate.py` and pinned to the robot's by a test.
-- Backend sync, deliberate holes: a Mac person with ≥ 20 facts always
-  projects at exactly 20, so their robot-side voice-forgets are never
-  imported back; face removals are not modelled at all; re-enrollment adds a
-  second display-only snapshot tile (no auto-delete).
-- Daemon app-state wedge (2026-08-28): `stopping` phantom with no process —
-  start/stop/restart all refuse; only a daemon restart or the OFF→ON cycle
-  clears it. Watch whether it recurs after clean stops (it followed the
-  fourteenth install's `Motor communication error` stop).
-- Accepted, not defects (D-014): unauthenticated console + `/rpc` on
-  `0.0.0.0:7860`; idle policy moves after 180 s. The Mac backend (8710) is
-  the same trusted-network posture, tailnet-bound by operator authorization.
-- GPIO23 EMI spurious-shutdown risk (upstream `reachy_mini#1109`): heavy
-  restart cycles are the risk window; masking the service is recommended
-  against.
-- Deploy lessons: never wrap bulk `scp` in `expect`; macOS dev env must be
-  Python 3.12.
-- `reachy_companion/uv.lock` untracked and does not re-resolve; left as-is.
+- `VIDEO-MISS-FOLLOWUP`: after a miss in the 影片庫, Reachy asked about
+  YouTube 1/3, played it unasked 1/3, gave no offer 1/3 (1.37.0). Operator's
+  call: keep the ask or play YouTube directly.
+- `DANCE-SPEAKS-ON-GOOD-NEWS`: the good-news dance is silent 3/4. Left as is
+  (operator, 2026-11-01).
+- `TIME-OF-DAY-ANSWER`: 「現在幾點？」 has no clock to answer from (no time tool in
+  the 19, no time in the prompt); it web-searched and gave no time. Operator's call.
+- `EMOTION-WITHOUT-SPEECH`: `play_emotion` plays with no words (3/4 on
+  1.30.0/1.31.0). Candidate: `needs_response=True`, A/B on the robot, watching
+  for double speech.
+- `TV-AUDIO-PHANTOM-TURNS`: TV sound was taken as a user turn twice on
+  2026-10-29. Diagnose the VAD/echo path first; `VIDEO-QUIET-GATE` (unit only)
+  covers videos Reachy started.
+- `DAEMON-STOP-WEDGE`: an official app stop can leave the daemon's app manager
+  in `stopping` until a service restart. Standing authorization to restart and
+  record it (D-038); not reported upstream.
+- `JOURNEY-2026-10-31-NOTES`: small speech slips from the 10-31 journey (news
+  named portals, a mid-session TV-on with no lead-in, greeting slips, a spoken
+  「（微笑）」, a benign sleep stop-timeout warning). Fix only what recurs.
+- 1.36.x, no row: a mood request for speaker music finds no track (the error
+  asks for a title); occasional simplified characters (no reliable prompt fix,
+  D-044); 「暫停」 taken as `stop` about 1 in 3 (the bookmark absorbs it).
+- Left open on rows removed as verified: `home_control` has no rule for states
+  that are not on/off (scene, script, cover, lock), and the ignore case with a
+  light switched off at the wall is unstaged (D-040); 「我們在哪裡」 during a
+  home clip picked the camera 1/4 (D-043).
+- `DEMO-1`: the `/rpc` interrupt (UI stop button) flushes playback but sends no
+  `response.cancel`; voice barge-in is separate. `console.py` still only
+  flushes (read 2026-11-01).
+- `DEMO-4`: in the 2026-08 T11 run, 4.5 s of 16.8 s to the spoken answer was
+  per-call MCP session setup. Session reuse is deferred; not re-measured since
+  the MCP v2 client (D-036).
+- Conversation mode does not survive a settings or backend restart (D-029 §6):
+  it falls back to the boot mode, so 紀錄模式 stops recording silently.
+- Boot greeting (D-025 accepted edge): a `too_far` or `multiple_faces` boot
+  speaks the stranger line, then the named greeting late. The operator dislikes
+  the generic-first feel; design judgement pending.
+- Solo interruption residuals (D-032): a cough held past 1600 ms commits as
+  speech (`confirmed by sustained speech` with no transcript; knob
+  `REALTIME_BARGE_CONFIRM_MS`); a transcript later than the 2 s rollback gives
+  a short resume-then-cut.
+- Accepted by design (D-028): truncate positions are approximate (up to ~1.3 s
+  over-cut per barge); late-interrupt eligibility outlives `response.done`; the
+  boot-gate release can exceed `REALTIME_BOOT_GATE_TIMEOUT_S` by the drain cap.
+- Engagement memory (D-027): only a voice `go_to_sleep` writes the last-chat
+  fact; multi-person visits get topic-level summaries; cross-person facts
+  surface one-sided; `consolidate.run` relies on the CLI's probe guard for
+  exclusive store access.
+- `reachy_companion.config` runs `load_dotenv(override=True)` at import, so
+  backend and CLI code must never import a robot module that reaches it.
+- Backend sync holes: a Mac person with ≥ 20 facts always projects 20, so their
+  robot-side forgets never import back; face removals are not modelled;
+  re-enrollment adds a second snapshot tile.
+- The official conversation app installed beside ours needs a dashboard update
+  before its own MCP tools work under mcp 2 (D-036).
+- Accepted (D-014): unauthenticated console and `/rpc` on port 7860; the Mac
+  backend (8710) is tailnet-bound by operator authorization.
+- GPIO23 EMI spurious-shutdown risk (upstream `reachy_mini#1109`) in heavy
+  restart cycles; do not mask the service.
+- Upstream report candidates, none filed: the daemon stop wedge, `/rpc` say off
+  the conversation loop (D-037), error results cut to the error string (1.29.1).
 
 ## History digest
 
@@ -1171,36 +207,20 @@ email send with a dictated address; the five **PRD §8** demo gates; the
   install** deployed (`ad5fe3e`, extended manifest, 4 faces + 4 people
   survived) — first boot blocked by the daemon app-state wedge, operator
   rebooting; boot verification owed next session.
-- **2026-08-29** — operator reboot cleared the wedge; **fifteenth install's
-  first boot verified** (persona, 41 tools, 4 people, 2107 ms wake check,
-  empty-room greeting branch, boot gate released, 0 tracebacks); app left
-  running; PERSON-GREET-EMPTY journal half recorded as passed. First family
-  session found two prompt defects (fact infidelity, sleep/party misroute),
-  both fixed in prompt and the persona re-synced. Then the **engagement-memory
-  wave**, 9 tasks on branch `engagement-memory`, **D-027** (1468/30 + 267):
-  last-chat callback written at sleep, open-loop prompt guidance, and the
-  operator-run backend consolidation CLI — implemented and reviewed, **not
-  merged and not deployed**; the sixteenth install is what puts the robot half
-  on the device.
-- **2026-08-30/31** — `engagement-memory` merged and the **sixteenth install**
-  deployed and booted clean; then the **human-like-conversation wave**, 9 tasks
-  on branch `name-gate-patience`, **D-028** (1468/30 → **1569/30**): name-gated
-  solo barge-in, a bounded unaddressed pause with a late-interrupt catch,
-  `conversation.item.truncate` on every committed interruption, patience
-  defaults (VAD silence 1000, confirm 1600 gate-off-only, `reasoning.effort`
-  pinned low), a 900-token runaway rail, and prompt-taught verbosity
-  calibration — implemented and reviewed, **not deployed**; the seventeenth
-  install plus a persona re-sync is what puts it on the device.
-- **2026-08-31** — the seventeenth install (D-028 live) and the eighteenth
-  (metadata-only redeploy of the same wheel as `v1.17.0`, so no `1.18.0`
-  release exists); then the **conversation-modes wave**, 12 tasks on branch
-  `conversation-modes`, **D-029** (1571/30 → **1746/30**, net of the deleted
-  `tests/test_hanova_gags.py`): three voice-switched
-  conversation modes with 多人聊天模式 as the boot default, an answer gate
-  separate from the interruption gate, client-driven responses in every mode,
-  the 紀錄模式 room log and its spoken summary, the 41 → 22 tool diet (six
-  action-enum families, three deletions, `open_toolbox`), one ordered and
-  acknowledged session-update mechanism, the `look_around` composite, the sleep
-  quiesce, and commentary-phase suppression — implemented and reviewed, **not
-  merged and not deployed**; the nineteenth install plus a mandatory
-  `persona.md` re-sync is what puts it on the device.
+- **2026-08-29/31** — fifteenth install verified; installs 16–19 (v1.17.0,
+  v1.19.0) ship **D-027** engagement memory, **D-028** name-gated barge-in,
+  truncate and patience, **D-029** three modes, an answer gate, 41 → 22 tools.
+- **2026-09-01/05** — **D-030** LLM-first instructing (v1.20.0); **D-031**
+  hold-off, lead-ins, clean sleep stop (v1.21.0, v1.22.0); boot to 一對一;
+  **D-032** any real sentence stops a solo reply (v1.23.0).
+- **2026-09-06 → 10-27** — no sessions; the robot lost Wi-Fi around 10-21.
+- **2026-10-28** — **D-033** upstream refresh (v1.24.0) and daemon v1.13.0 via
+  the official updater; **D-034** Wi-Fi watchdog, **D-035** instance dir (1.25.0).
+- **2026-10-29** — **D-036** MCP v2 (v1.26.0); **D-037** NAS search for loose
+  Chinese, `/rpc` fix (1.27.x); **D-038** media tools by source (1.28.x).
+- **2026-10-30** — `nas` one-call play (1.29.x); **D-039** mini diet: 19 tools,
+  no toolboxes, prefix 9.9k → 5.8k (1.30.0, 1.31.0); **D-040** read-back (1.31.x).
+- **2026-10-31** — boot to 多人 (1.32.0); **D-041** NAS index self-refresh
+  (1.33.0); **D-042** 「停」 stops the TV (1.34.0); **D-043** slips replayed
+  (1.35.0); **D-044** pause, video gate, barge by name (1.36.0–1.36.3);
+  **D-045** reply rail 4096, quiet SMB log (1.36.4–1.36.7).

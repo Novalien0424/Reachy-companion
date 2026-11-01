@@ -2107,6 +2107,9 @@ search in conversation. Plan: `docs/plans/2026-10-29-nas-fuzzy-search-plan.md`.
 
 ## D-038 — Media tools split by source; the source the user names decides (2026-10-29)
 
+> **Amended by D-046 (2026-11-01):** a request with no source now looks in the 影片庫
+> first and plays what it finds; the ask-first rule below no longer applies.
+
 **Operator ruling (2026-10-29):** Reachy must tell 「幫我從 NAS 找」「幫我從影片庫找」
 from 「幫我從 YouTube 找」 / "search YouTube for me" on its own. The 1.27.3 guard
 (`tv play_video` refusing a NAS clip) was "not the right behavior": it caught
@@ -3057,3 +3060,57 @@ greeting slips (「會動做」, a spoken 「（微笑）」); go_to_sleep's
 stops). The music-resume "still waiting … 0.0Xs outstanding" line fires once
 on replies longer than 12 s and then drains: a misleading diagnostic, not a
 stall.
+
+## D-046 — Operator rulings on D-045's open questions; a trip video plays from the 影片庫 first (2026-11-01)
+
+**Operator rulings (2026-11-01):** "keep limit, trip video should play directly
+if found, silent dance if no way to fix leave it".
+
+- **The reply rail stays 4096** (D-045). `inf` stays an instance `.env` option
+  only.
+- **A video request looks in the 影片庫 first.** This overturns D-038's
+  ask-first rule for a place alone. A place, a trip, a year, an event or
+  「我們」's video goes to `nas play`, and what it finds, it plays. YouTube is for
+  a named YouTube or something public (an MV), or after a miss once the user
+  agrees. D-038's source split and its symmetric contrast stay; only the
+  question goes. The rule lives in three places that now agree:
+  - the hardening block's one video line;
+  - `nas` (Use when: … "look here first even when no source is named");
+  - `youtube` (Do NOT use when: … "that is nas, looked at first").
+
+  The `Ask first when:` clauses are gone from both descriptions.
+- **A miss names its fix.** `search_miss` answered a bare `no_match`. Now that a
+  place alone comes here first, a miss is common, so the error says: "nothing
+  in the 影片庫 fits: if no trip in all_trips is the one meant, tell the user and
+  ask whether to look on YouTube" (rung 1: the tool's error).
+- **The silent dance is left as is.** Text is exhausted (D-045), and the only
+  shape tried, a follow-up response, regressed plain dances and 「停」.
+
+**Evidence** (1.37.0, wheel `11fca7fc`).
+
+Replay on the robot, same cases, with and without the override:
+
+| Case | 1.36.7 | Candidate |
+|---|---|---|
+| our-trip | 1/4 | 4/4 |
+| place only (花蓮) | 0/4 | 4/4 |
+| missing place → nas, then offer YouTube | 1/4 | 4/4 |
+| MV → youtube | 2/2 | 2/2 |
+
+Live, fresh sessions, mic muted:
+- **our-trip** nas play: 3/3 (1.36.7: 0/3).
+- **「放波士頓的影片」** nas play: 3/4. One run went to youtube "Boston travel
+  video".
+- **A missing place** (「放冰島的影片」): nas first 3/3. After the miss, it asked
+  1/3, played YouTube unasked 1/3, and said 「找不到」 with no offer 1/3
+  (`VIDEO-MISS-FOLLOWUP`, open to the operator).
+- **MV:** youtube 1/1.
+- **Prefix:** 6092.
+
+**Same session.** Two daemon wedges, each cleared under the standing
+authorization: 00:56:17Z, and 01:03:11Z (stop body "Motor communication
+error!"; throttled=0x0). The deploy procedure became one script, `deploy.sh`,
+with `backup_instance.sh` and `verify_install.py`; the pre-v1.25.0 restore
+block left the skill. `progress.md` and `feature_list.json` dropped their
+verified, retired and superseded rows (git keeps them; the last full versions
+are at `0f67ce8`).

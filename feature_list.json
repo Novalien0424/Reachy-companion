@@ -66,60 +66,6 @@
       "next": "final: confirm during Task 15 demos"
     },
     {
-      "id": "HANOVA-MUSIC",
-      "behavior": "play_music searches and plays a track on the robot's own speaker; stop_music always stops it; user speech ducks it and it resumes only once the turn's audio has drained",
-      "verification": "On-robot: ask for a song, interrupt mid-track, confirm the music ducks and resumes near where it stopped (not from zero, and not over Reachy's reply), then say stop",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (rounds 1,6,7,8; artifacts/deploy-2026-08-22/): play_music verified audible end to end -- command 14:05:03 -> spoken ack ~1 s -> 'Music playing on the robot speaker' 14:05:28 (~24.8 s incl. search+download+mp3), robot announced the track; stop verified twice -- a stop DURING an in-flight search correctly preempted it (round 1), and a stop during playback silenced in ~2.0 s (tool 270 ms). yt-dlp JS-runtime challenge found and fixed via HANOVA_YTDLP_EXTRACTOR_ARGS (commit c4e1951). Duck/resume row still needs a human voice. LATENCY WORK 2026-08-22: native-container downloads (no mp3 re-encode) + SEARCH_N=2 + SABR muxed-stream fallback; measured command->audible 15.8 s cold (worst case, was ~25-29 s), ~9 s cached replay, stop->silence 0.16 s; playback and stop verified audible on the new build.",
-      "next_action": "operator voice pass: duck/resume row (real mic speech over playing music)"
-    },
-    {
-      "id": "HANOVA-GAGS",
-      "behavior": "RETIRED 2026-08-31 (D-029, the tool diet). mad_laugh and self_destruct were deleted along with sweep_look — three tools nobody called, whose only cost was tool-selection quality. HANOVA_SELF_DESTRUCT_YT_ID and HANOVA_MAD_LAUGH_YT_ID configure nothing now. Historical behavior, for the record: mad_laugh played its clip on the robot speaker; self_destruct ran an in-character arm/confirm ritual with a 90 s TTL and a working abort word, and played nothing until authorised.",
-      "verification": "None owed — the tools are gone. A regression here would be a retired name reappearing, which is pinned by the _RETIRED_TOOL_NAMES tripwire over every bundled profiles/*/profile.md and over hardening_block().",
-      "state": "retired",
-      "evidence": "2026-08-22 on-robot (round 3), before retirement: mad_laugh clip audibly played 7.9 s after the command; self_destruct full ritual -- cold confirm refused by the gate, armed with in-character countdown, abort verified, re-armed, authorised, clip audible 11.7 s after authorization; both clip ids configured from the operator's project.",
-      "next_action": "deploy chore only: drop HANOVA_SELF_DESTRUCT_YT_ID / HANOVA_MAD_LAUGH_YT_ID from the instance .env when convenient — they configure nothing, and leaving them costs nothing either"
-    },
-    {
-      "id": "HANOVA-CAST",
-      "behavior": "play_video casts a YouTube result to the TV; show_on_tv generates an image and casts its LAN URL; both answer away_from_home only on positive off-home evidence (the robot outside every HANOVA_HOME_NETWORKS entry) and home_status_unknown -- doing no work at all -- for a VPN, a 401, a 5xx, a timeout, a DNS failure or a refused connection",
-      "verification": "On-robot at home: one cast of each; then with HANOVA_HOME_NETWORKS set and the robot off the LAN confirm away_from_home; then with it blank confirm home_status_unknown instead; then with HA returning 401 confirm home_status_unknown and that no HA script ran",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (rounds 3,6): play_video cast a real result to the TV via the configured HA script twice (~20 s command->dispatch, search-dominated); show_on_tv generated an image and cast it (~42 s, generation-dominated); media route probe HEAD 200/GET 200/RANGE 206 from a LAN peer. Home-verdict rows (away_from_home / home_status_unknown) remain untested -- they need the robot physically off the home LAN and a deliberately broken HA token.",
-      "next_action": "operator: run wake-test rows 31/31b/33 (robot off-LAN, then HA_TOKEN broken) to exercise the tri-state home verdict live"
-    },
-    {
-      "id": "HANOVA-NAS",
-      "behavior": "nas_video_query searches the index with no SMB credentials needed; play_nas_video and nas_play_folder stage a clip over SMB atomically and cast its LAN URL; nas_skip advances the trip only after a successful cast",
-      "verification": "On-robot at home with the index and NAS credentials present: query, play, skip; then force one cast failure and confirm the trip position did not move",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (rounds 6,7): first live pass found the port gating the ORIGINAL path's extension, refusing every DVD-era trip (992/2743 entries) -- fixed in dd591f2 (containment-only source bound; 3 new tests). After redeploy: single clip staged over SMB and cast in ~17 s cold; nas_skip staged and cast the next clip in ~44 s; whole-trip nas_play_folder started a 30-clip ordered session in 0.7 s warm; nas_video_query listed real trips instantly. Minor friction logged: the model once passed the dir field as top_folder (no_match, self-recovered via direct clip play). LATENCY WORK 2026-08-22: /hanova-media/nas-stream Range-capable SMB proxy (HANOVA_NAS_STREAM=1 default); whole-trip start 0.32 s and skips 0.27-0.30 s (was 17-44 s); endpoint verified from a LAN peer with Chromecast request shapes (HEAD 200, 206 with Content-Range, 61 ms TTFB, 80 ms mid-file seek, 4.9 MB/s sustained). TV was off (cast entity unavailable) during these rounds, so no Chromecast fetch was observed yet.",
-      "next_action": "Done 2026-10-29: the Chromecast fetched the NAS stream (206, whole 266 MB file) and HA reported `playing` (NAS-PLAY-VIA-NAS). Open: an in-room look at picture and sound."
-    },
-    {
-      "id": "HANOVA-GOOGLE",
-      "behavior": "calendar_add/list/delete and task_add/list/complete/delete work against the real Google account; the three destructive ones require a read-back confirmation that survives a transient failure",
-      "verification": "On-robot: add and list one event; add and list one task; then run each of the three gated calls and confirm nothing happens before the second confirmed call",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): family verdict 'google-workspace: enabled'; all 7 tools exercised — calendar_add/calendar_list, calendar_delete gate both directions ('resolving match' -> needs_confirmation read-back -> 'confirmed for <id:35bef0f6>' only after 對，刪掉), task_add/task_list, task_complete and task_delete gates both directions ('confirmed for <id:8f59ae3a>'); test data self-cleaned (event and task created then deleted)."
-    },
-    {
-      "id": "HANOVA-NOTION",
-      "behavior": "notion_add writes one row into the configured notes data source, distinct from the NOTION_MCP_* remote lane",
-      "verification": "On-robot: dictate a note and confirm the row appears in Notion",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): family verdict 'notion: enabled'; 'Tool call: notion_add title=<text:8 chars>' dispatched, model confirmed the note was written; distinct from the NOTION_MCP_* remote lane.",
-      "next_action": "operator may spot-check the test row in Notion and delete it"
-    },
-    {
-      "id": "HANOVA-DRIVE",
-      "behavior": "drive_list reads the configured folder; drive_trash and drive_upload (a camera frame captured at confirm time) both require a read-back confirmation and execute the parked action; nothing is ever made anyone-with-link readable and nothing can be untrashed",
-      "verification": "On-robot: list the folder, then run drive_trash and drive_upload and confirm neither acts before its second confirmed call",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): family verdict 'drive: enabled'; drive_list returned real folder contents; drive_upload gate both directions — camera frame captured at confirm time and uploaded (filename read back before and after); drive_trash gate both directions ('resolving <id:e2748644>' -> needs_confirmation -> 'confirmed'); restore request refused with no tool call, pointing at the Drive trash (~30 days) per the declared non-goal; test photo self-cleaned (uploaded then trashed)."
-    },
-    {
       "id": "HANOVA-EMAIL",
       "behavior": "email_send reads back every recipient (To and CC), the subject and the ENTIRE message body verbatim, refuses a body over 500 characters and an address it cannot parse, supports no BCC at all, sends only the parked envelope, and spends the authorisation on a terminal SMTP failure rather than offering a bare retry",
       "verification": "On-robot: attempt a send with no address and confirm it asks for one; dictate a two-paragraph body and confirm Reachy reads BOTH paragraphs back before sending; then send one real mail to the operator and confirm the read-back named every recipient before it went",
@@ -128,27 +74,12 @@
       "next_action": "operator voice pass: full gated send (rows 18/18b/19) needs a dictated real address and a two-paragraph body read back verbatim"
     },
     {
-      "id": "HANOVA-DISABLED-BOOT",
-      "behavior": "With zero HANOVA_* configuration the app boots normally and logs one tri-state line per family. Six families report disabled with the missing key named. The music family is the documented exception: it depends on installed wheels rather than on configuration, so play_music and stop_music are available while self_destruct and mad_laugh are not (no clip ids) -- i.e. music reports partial, not enabled",
-      "verification": "On-robot: start with the new keys blank and read the seven hanova family lines in the startup log; then ask for a calendar event and confirm the tool answered unavailable with the missing key as the reason",
-      "state": "verified",
-      "evidence": "2026-08-22 on-robot (Mac-mini deploy, scripted RPC wake test; raw evidence in artifacts/deploy-2026-08-22/): all seven family verdict lines read within one startup boundary — 4x enabled (google-workspace, drive, notion, email), nas partial 1/4 (HANOVA_MEDIA_HTTP_BASE), media-cast disabled (HANOVA_HA_SCRIPT_YOUTUBE), music partial 2/4 (HANOVA_SELF_DESTRUCT_YT_ID); every disabled/partial tool answered unavailable with its missing key as the reason (R5); app booted green with six keys blank; 22/22 ported tools registered, secondary count 39; zero tracebacks."
-    },
-    {
       "id": "VOICE-MINI-MODEL",
       "behavior": "REALTIME_MODEL defaults to gpt-realtime-2.1-mini ($10/$20 vs $32/$64 per 1M audio tokens for gpt-realtime-2.1); tool-calling selection quality across all 39 tools must hold up on the smaller model, since a large tool array is exactly the axis D-019 flagged as the real risk of tool-array growth",
       "verification": "On-robot: run a session covering a spread of the tool surface (home control, memory, face, the consolidated HANOVA families, set_conversation_mode, wait_for_user) and confirm the mini model selects the correct tool as reliably as gpt-realtime-2.1 did before this round, with no malformed/wrong tool_call args in the log. Since 2026-08-31 (D-029) the start-of-turn surface is 22 tools rather than 39, which is the tool-array axis this row was written to watch — so a re-run after the tool diet is the interesting one. Fallback if selection degrades: set REALTIME_MODEL=gpt-realtime-2.1 in the instance .env, no code change.",
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot A/B: mini vs full model tool-selection accuracy across a representative tool sample"
-    },
-    {
-      "id": "VOICE-BOOT-GATE",
-      "behavior": "The first session of a handler opens with turn_detection=None; VAD is switched back on only after the greeting's audio has fully drained (audio_drain.is_audible() clears, 100 ms poll / 3 s cap) following the first response.done, or after the REALTIME_BOOT_GATE_TIMEOUT_S=8s backstop — so the robot cannot commit a turn against hearing its own greeting",
-      "verification": "On-robot: wake the robot into a noisy/talking room and read the journal for `boot gate released (greeting played)` (or `(no greeting configured)` / `(timeout)` on the backstop path), with zero committed user turns logged before that line appears.",
-      "state": "verified",
-      "evidence": "Thirteenth install 2026-08-27: live start on-robot — journal shows greeting queued 00:11:19, spoken 00:11:22, 'session turn_detection updated: party=False' then 'boot gate released (greeting played)' 00:11:24, zero tracebacks. Noisy-room variant still owed (this pass was a quiet room).",
-      "next_action": "Optional: repeat the wake in a noisy room and confirm no committed turn precedes the release line."
     },
     {
       "id": "VOICE-SOLO-BARGE",
@@ -167,14 +98,6 @@
       "next_action": "operator on-robot: TV/side-talk session, count wait_for_user journal lines against turns that should have been suppressed"
     },
     {
-      "id": "VOICE-PARTY-FACE-GATE",
-      "behavior": "Party mode's address gate accepts an unaddressed but substantive turn when reachy_mini.get_tracked_face(wait=False) reports a face that is detected, fresh (REALTIME_PARTY_FACE_FRESH_S, default 3.0s) and centered (REALTIME_PARTY_FACE_CENTER, default 0.4 normalized x); a stale or off-center reading does not pass the gate, and presence/centering is only an orientation proxy (YuNet's near-frontal bias), not true gaze",
-      "verification": "On-robot in party mode: (1) face the robot directly and speak a substantive unaddressed sentence — expect `party gate: accepted via engaged face (<n> chars)`; (2) turn away or step out of frame and repeat — expect `party gate: denied ambient turn (<n> chars)`; (3) let the cached face reading go stale (>3.0 s) and confirm denial too.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot party-mode session with faces: engaged-face accept vs. stale/off-center deny"
-    },
-    {
       "id": "VOICE-NOISE-REDUCTION-AB",
       "behavior": "REALTIME_NOISE_REDUCTION selects OpenAI's server-side pre-VAD noise-reduction mode (off / near_field / far_field, default far_field), stacked downstream of the robot's own XVF3800 hardware DSP — an interaction no source has measured",
       "verification": "On-robot A/B in the same noisy room across REALTIME_NOISE_REDUCTION=off, near_field, far_field: measure false speech_started rate and Mandarin transcription WER for each. They can move in opposite directions per docs/research-realtime-voice-best-practices.md §6 item 6, so both must be checked, not just one.",
@@ -183,28 +106,12 @@
       "next_action": "operator on-robot A/B: off vs. near_field vs. far_field — false-VAD rate and WER downstream of the XVF3800"
     },
     {
-      "id": "VOICE-TRANSCRIBE-MODEL",
-      "behavior": "Input transcription defaults to REALTIME_TRANSCRIPTION_MODEL=gpt-transcribe with keyword biasing (defaults to the party address names) and a style prompt; a one-shot fallback to the legacy gpt-4o-transcribe shape fires if the API rejects the upgraded session config mid-startup",
-      "verification": "On-robot: read the startup log for whether the gpt-transcribe session.update was accepted. If it was rejected, the journal shows `session.update rejected; retrying with legacy transcription shape` and the session proceeds on gpt-4o-transcribe with no keywords/prompt sent. Absence of that warning line across a full session is the positive-accept signal.",
-      "state": "verified",
-      "evidence": "Thirteenth install 2026-08-27: 'Realtime session initialized/updated successfully' with NO 'retrying with legacy transcription shape' warning — the live API accepted gpt-transcribe + keywords + prompt. Mandarin accuracy delta vs old model still an operator listening judgement.",
-      "next_action": "Operator: listen for name-recognition improvement (瑞奇/Richie) in normal use."
-    },
-    {
       "id": "VOICE-SEMANTIC-VAD-AB",
       "behavior": "REALTIME_VAD_TYPE=semantic_vad with REALTIME_VAD_EAGERNESS=low (env already existed pre-round, D-003) is an alternative turn-detection mode to the default server_vad, intended to reduce fragment/backchannel commits at the cost of end-of-turn latency; semantic_vad reportedly misses 「對」/「好」 per the research doc. Since 2026-08-30 (D-028) this row ALSO covers the patience trial: eagerness sets a MAXIMUM wait (low ~8s, medium ~4s, high ~2s), not a fixed delay, so it is the better 'wait until I have finished' mechanism on paper — it is not documented as Mandarin-tuned, which is why the shipped default stayed server_vad with REALTIME_VAD_SILENCE_DURATION_MS raised 800 -> 1000. Under semantic_vad the server ignores that silence value entirely.",
       "verification": "On-robot A/B, same room and script: REALTIME_VAD_TYPE=server_vad + REALTIME_VAD_SILENCE_DURATION_MS=1000 (current default) vs. REALTIME_VAD_TYPE=semantic_vad + REALTIME_VAD_EAGERNESS=low. Measure (a) false-commit rate on backchannel utterances (嗯/對/好), (b) how often a deliberate ~1s Mandarin mid-sentence pause still cuts the speaker off, and (c) end-of-turn response latency, for each. Both directions matter: semantic_vad can win on patience and lose on backchannels.",
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot A/B: server_vad(1000ms) vs. semantic_vad(eagerness=low) on Mandarin backchannel handling, mid-sentence-pause patience, and end-of-turn latency"
-    },
-    {
-      "id": "VOICE-NAME-GATE",
-      "behavior": "REALTIME_SOLO_NAME_GATE (default 1, D-028): while Reachy is speaking, only being addressed takes the floor away from it — an address name (REALTIME_PARTY_ADDRESS_NAMES: 瑞奇/reachy/...) or a control phrase (停/閉嘴/stop, which always win, gate on or off). Speech aimed at someone else pauses the reply for at most REALTIME_BARGE_MAX_PAUSE_MS=4000ms and then resumes it. Since 2026-08-31 (D-029) this knob is INTERRUPTION-ONLY BY CONSTRUCTION: which turns get ANSWERED is a separate knob, REALTIME_ONE_ON_ONE_ANSWER_GATE (default `open`), covered by MODE-ONE-ON-ONE. An unaddressed turn is still transcribed, committed and answered when the robot is not already talking.",
-      "verification": "On-robot, solo mode, three probes while Reachy is mid-reply: (1) talk over it WITHOUT the name (a full substantive sentence to another person) — the reply must go briefly silent, then resume, and the journal must show `solo barge rolled back (unaddressed)`; keep talking past 4 s and expect `solo barge pause hit its cap with no address; resuming reply` with the reply audibly continuing over the side conversation. (2) Say 「瑞奇」 mid-reply — it must stop in well under ~1 s, journal `solo barge-in confirmed by transcript (name, N chars)` (or `by partial transcript (name)` if the transcriber emits usable partials). (3) Say 「停」 alone — one character, below REALTIME_MIN_TURN_CHARS — it must still stop, reason `control phrase`. Negative control: REALTIME_SOLO_NAME_GATE=0 in the instance .env restores interrupt-on-any-substantive-speech.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot: the three probes above in one solo session; judge whether 'talks through the room but stops for its name' actually feels human"
     },
     {
       "id": "VOICE-LATE-INTERRUPT",
@@ -247,14 +154,6 @@
       "next_action": "operator on-robot: listen across a normal session for content-calibrated length, absent preambles and absent padding; confirm the max_output_tokens warning does not appear"
     },
     {
-      "id": "MODE-BOOT-DEFAULT",
-      "behavior": "A fresh boot comes up in 一對一聊天模式 (operator instruction 2026-09-04, D-029 decision 5 amended; 2026-08-31 to 09-04 it was 多人聊天模式). REALTIME_DEFAULT_MODE is the knob (`group` restores the room posture); REALTIME_PARTY_DEFAULT is no longer read and warns if set while REALTIME_DEFAULT_MODE is unset, naming REALTIME_DEFAULT_MODE=group as the replacement for `=1`.",
-      "verification": "Restart the app. The startup journal must show `Tools in session (one_on_one, boxes=none, startup, 22)` and the greeting; the first sentence spoken near the robot WITHOUT its name must be answered (no `party gate: denied ambient turn`). Say 「切到多人聊天模式」 and the next unaddressed sentence must be denied. Robot instance .env carries REALTIME_DEFAULT_MODE=one_on_one explicitly (set 2026-09-04, backup .env.bak-20260904-mode) so the posture holds on the still-installed v1.22.0 wheel; the code default matches from the next install.",
-      "state": "implemented-unverified",
-      "evidence": "2026-09-04: suite 1873/30 green on the flipped default; robot instance .env line 103 REALTIME_DEFAULT_MODE=one_on_one written while the app was stopped (12:32 robot time). Not yet booted. | 2026-09-05 05:30 robot time, v1.23.0 first boot: `Tools in session (one_on_one, boxes=none, startup, 22)`, no REALTIME_PARTY_DEFAULT warning, boot gate released +30 s. Voice half (unaddressed sentence answered) still pending.",
-      "next_action": "operator: one unaddressed sentence after wake must be answered (no `one-on-one gate` denial for a real sentence)"
-    },
-    {
       "id": "MODE-ONE-ON-ONE",
       "behavior": "After switching into 一對一聊天模式 by voice, a single person is answered without saying the robot's name; a backchannel 「嗯嗯」 gets no reply. REALTIME_ONE_ON_ONE_ANSWER_GATE=open is the default rule.",
       "verification": "On-robot. FIRST say 「切到一對一聊天模式」 (a fresh boot is in 多人聊天模式 — operator amendment 2026-08-31) and confirm the journal shows `conversation mode: group -> one_on_one` followed by `session updated (conversation mode one_on_one)`. Then ask three ordinary questions WITHOUT saying 瑞奇: each must be answered once, exactly once, with no `one-on-one gate: no answer for a non-substantive turn` line for any of them — and exactly that line for an 「嗯」. Negative control: put REALTIME_ONE_ON_ONE_ANSWER_GATE=name_only in the instance .env, restart, switch into 一對一聊天模式 by voice again (the boot mode is 多人聊天模式), and confirm an unaddressed SUBSTANTIVE question is transcribed with `one-on-one gate: no answer for a non-substantive turn` and gets no reply; then remove the line again.",
@@ -282,17 +181,17 @@
       "id": "VOICE-LOOK-AROUND",
       "behavior": "「轉到右邊去看看有誰」 physically turns the head, then describes what the camera saw — one composite tool instead of a prompted move_head-then-camera chain.",
       "verification": "On-robot after deploy through reachy-deploy: **「看右邊」** → the head visibly turns and the description matches what is actually to the right. Journal must show `Head tracking suspended for the look_around window` before the capture and `Head window look_around closed; head tracking restored to True` after it. **「抬頭」** → the head goes up, holds, and face-following resumes on its own. Same two log lines with owner `move_head`.",
-      "state": "blocked",
+      "state": "implemented-unverified",
       "evidence": "Verified by SDK-simulated tests only: `tests/tools/test_look_around.py`, `tests/tools/test_move_head.py`, `tests/test_moves.py`, and `tests/test_huggingface_realtime.py` pin move-before-capture, the owner-gated head window, prior tracking restoration, image attachment/sanitization, and the honest `direction_requested` return. BLOCKED: no on-robot evidence yet; outstanding probes are exactly: **「看右邊」** → the head visibly turns and the description matches what is actually to the right; journal must show `Head tracking suspended for the look_around window` before the capture and `Head window look_around closed; head tracking restored to True` after it. **「抬頭」** → the head goes up, holds, and face-following resumes on its own; same two log lines with owner `move_head`.",
-      "next_action": "deploy through reachy-deploy (app only, persona sync ritual and antenna-wake check), then run the 「看右邊」 and 「抬頭」 probes with the journal open"
+      "next_action": "Deployed since v1.19.0: run the 「看右邊」 and 「抬頭」 probes with the journal open."
     },
     {
       "id": "VOICE-SLEEP-QUIESCE",
       "behavior": "「睡覺吧」 lets the goodbye finish, then the body lies down; no speech after the pose, and no `barge-in rolled back; resuming reply` afterwards.",
       "verification": "On-robot after deploy through reachy-deploy: **「睡覺吧」** → goodbye audio, then the pose. Journal order must read: `Tool call: go_to_sleep` → `sleep quiesce: microphone muted` → `sleep: farewell response finished (id=resp_…)` → `sleep quiesce: speaker quiet after N.Ns` → the sleep pose. A `drain cap reached … with audio still playing` line means the goodbye was cut off — raise `SLEEP_GOODBYE_DRAIN_CAP_S` before touching anything else.",
-      "state": "blocked",
-      "evidence": "Verified by SDK-simulated tests only: `tests/test_sleep_farewell.py`, `tests/tools/test_go_to_sleep.py`, and `tests/test_app_lifecycle.py` pin the farewell `function_call_output`, exactly one follow-up `response.create` with `response={\"tool_choice\": \"none\"}`, pose/stop waiting for the farewell's own `response.done` plus drain, and lifecycle sleep paths still posing directly. BLOCKED: no on-robot evidence yet; outstanding probe is exactly: **「睡覺吧」** → goodbye audio, then the pose. Journal order must read: `Tool call: go_to_sleep` → `sleep quiesce: microphone muted` → `sleep: farewell response finished (id=resp_…)` → `sleep quiesce: speaker quiet after N.Ns` → the sleep pose. A `drain cap reached … with audio still playing` line means the goodbye was cut off — raise `SLEEP_GOODBYE_DRAIN_CAP_S` before touching anything else.",
-      "next_action": "deploy through reachy-deploy (app only, persona sync ritual and antenna-wake check), then run the 「睡覺吧」 journal probe before closing this field bug"
+      "state": "verified",
+      "evidence": "Verified by SDK-simulated tests only: `tests/test_sleep_farewell.py`, `tests/tools/test_go_to_sleep.py`, and `tests/test_app_lifecycle.py` pin the farewell `function_call_output`, exactly one follow-up `response.create` with `response={\"tool_choice\": \"none\"}`, pose/stop waiting for the farewell's own `response.done` plus drain, and lifecycle sleep paths still posing directly. BLOCKED: no on-robot evidence yet; outstanding probe is exactly: **「睡覺吧」** → goodbye audio, then the pose. Journal order must read: `Tool call: go_to_sleep` → `sleep quiesce: microphone muted` → `sleep: farewell response finished (id=resp_…)` → `sleep quiesce: speaker quiet after N.Ns` → the sleep pose. A `drain cap reached … with audio still playing` line means the goodbye was cut off — raise `SLEEP_GOODBYE_DRAIN_CAP_S` before touching anything else. Live 2026-11-01 01:05:44 UTC on 1.37.0, 「晚安瑞奇，你去睡覺吧」: Tool call: go_to_sleep → sleep quiesce: microphone muted → farewell response finished (01:05:46) → speaker quiet after 7.1s → sleep pose (Robot is asleep; leaving it limp). The daemon's own stop request timed out (benign, D-045).",
+      "next_action": "none"
     },
     {
       "id": "VOICE-NO-DOUBLE-ANSWER",
@@ -301,30 +200,6 @@
       "state": "implemented-unverified",
       "evidence": null,
       "next_action": "operator on-robot: three unaddressed talk-overs mid-reply; confirm no second answer follows any of them, and record the turn-latency delta"
-    },
-    {
-      "id": "VOICE-COMMENTARY-SUPPRESS",
-      "behavior": "SUPERSEDED by VOICE-SLOW-PREAMBLE (plan rev 3 B1, 2026-09-02): commentary-phase audio is audible again by design; only the transcript is withheld from persistence. The old contract (drop both) held from D-029/D-030 through v1.20.0.",
-      "verification": "Replaced by VOICE-SLOW-PREAMBLE's checks; the old journal lines `suppressing commentary-phase item …` / `dropping commentary-phase audio …` no longer exist.",
-      "state": "retired",
-      "evidence": null,
-      "next_action": "none — see VOICE-SLOW-PREAMBLE"
-    },
-    {
-      "id": "TOOLS-CONSOLIDATED",
-      "behavior": "The calendar / to-do / drive / NAS / music / TV families are single action-enum tools (calendar, tasks, drive, nas, music, tv) delegating to the untouched originals, and every old behavior — including the spoken confirmation before a delete, a trash or an upload — is unchanged. sweep_look, self_destruct and mad_laugh are retired.",
-      "verification": "On-robot: run one action per family (「幫我加個行程」、「加到待辦」、「雲端有什麼檔案」、「放首歌」、「電視上放那個」、「找一下那年的影片」) plus one destructive one (「把星期五那個會取消」) and confirm the spoken confirmation still gates it. Journal shows `Tool call: calendar action=add`-style lines with the delegate's own log line right after — the façade validates the action NAME only, so each delegate's own error strings and its prereq-before-args check order must be visibly unchanged.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot: one action per family plus one gated destructive action; confirm the action= journal lines and the unchanged confirmation read-back"
-    },
-    {
-      "id": "TOOLBOX-DYNAMIC",
-      "behavior": "22 tools are loaded at rest; a productivity or media request opens its box with open_toolbox and completes in the SAME turn. Boxes accumulate within a mode (22 / 27 / 24 / 29, plus any MCP extras) and close together at a mode switch, at sleep and at session start.",
-      "verification": "On-robot, and the COLD-START case is mandatory: with no box open and nothing else said first, say 「幫我加個行程，明天下午三點看牙醫」. Reachy must call open_toolbox and then calendar in the same turn, with no second prompt to the user and no silent skip (the [COMMUNITY]-reported 2.1-mini failure this row exists to catch). Journal: `Tool call: open_toolbox category=productivity` -> `Tools in session (one_on_one): [...]` listing 27 names -> `session updated (conversation mode one_on_one)` -> `toolbox opened: productivity (...)` -> `Tool call: calendar action=add`. Repeat cold for media (「電視上放那個」). NEGATIVE CONTROL for the always-core stop lane: 「放首歌」 then 「音樂關掉」 must both work with NO open_toolbox call in between (Codex round 1, P2-7). Then switch modes and confirm `toolboxes closed (mode -> group): productivity`. Also confirm the startup line `Tools to be used in conversation:` lists 22 names. A `toolbox … was not applied by the server; rolled back` line means the update failed or a mode switch raced it — the box is correctly discarded, but record it.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot: cold-start probe for productivity and for media, the music stop-lane negative control, a mode switch to see the boxes close, and the 22-name startup line. If the cold start makes the model ask the user again instead of continuing, the fallback is to promote that family into the static core (22 -> 27 productivity, 22 -> 24 media), not to prompt harder — record which and why"
     },
     {
       "id": "FACE-ROUTING",
@@ -447,14 +322,6 @@
       "next_action": "operator on the Mac: stop the backend, seed a duplicate + a contradiction on a real person, run the dry run and read the diff, --apply and confirm updated_at and store position are unchanged, restart the backend and confirm the guard exits 3 on the tailnet bind, then run the one-shot --import-first --apply --push-after with the backend down and check the robot's facts"
     },
     {
-      "id": "RPC-SAY-CROSS-LOOP",
-      "behavior": "Console JSON-RPC conversation.say injects a typed user turn and the model answers it, without corrupting the realtime websocket.",
-      "verification": "Call conversation.say over ws://<robot>:7860/rpc while the session is live; journal must show an assistant reply to the text and ZERO 'Realtime error [invalid_json]/[invalid_value]' lines. 2026-08-31 baseline: 15 corrupt frames in one burst (event_id=None), interrupt-only clean, greeting path clean - cross-loop websocket writes from the console loop racing mic appends.",
-      "state": "known-defect-preexisting",
-      "evidence": "Nineteenth-install verification 2026-08-31 21:05 robot time; isolation probes in session log.",
-      "next_action": "Marshal handler.say onto the handler loop (run_coroutine_threadsafe, the wait_for_reply_finished pattern) before relying on the console say surface."
-    },
-    {
       "id": "VOICE-TURN-FRAGMENTS",
       "behavior": "A deliberately fragmented Mandarin sentence (pause mid-sentence long enough for semantic_vad to commit 「你。」「就是。」-style fragments) gets ONE answer covering the whole thought, not an answer per fragment. Client-side: after an ACCEPTED turn the handler waits REALTIME_COMMIT_HOLDOFF_MS (default 700; 0 = old behaviour) before response.create; a renewed speech_started inside the window, or one already seen since the item began, skips the request so the continuation's own answer covers both items. If the continuation produces no turn (empty/failed transcript, gate-denied, rollback) the held turn is answered after all. Plan rev 3 A1 (2026-09-01 field-test RCA-1).",
       "verification": "On-robot, module at INFO: speak a sentence with a mid-sentence pause and finish it. Journal shows `turn hold-off: awaiting continuation (speech_started)` (or `(later speech already started)`) for the fragment and ONE reply that addresses the full sentence; no reply to the fragment alone. Negative: a fragment followed by a cough/noise only must still be answered — journal `turn hold-off: continuation produced no turn (…); answering the held turn`. Latency cost: at most the window per turn. DEBUG lines `turn hold-off armed for N ms` / `turn hold-off expired after N ms; requesting response` if the module is at DEBUG.",
@@ -495,20 +362,12 @@
       "next_action": "Five-demo smoke in the room on v1.13 (head tracking aims 15° lower since v1.11)."
     },
     {
-      "id": "INSTANCE-DIR-CONFIG",
-      "behavior": "Instance data lives in ~/.config/reachy_companion (D-035); first v1.25.0 start migrates it once; reinstalls and SOFTWARE_RESET no longer touch it.",
-      "verification": "Startup `instance: … (migrated N items)` then `(already migrated)`; dir 700, credentials 600; record counts equal the backup; `persona: instance persona.md` from the new dir.",
-      "state": "verified",
-      "evidence": "2026-10-28 deploy v1.25.0: migrated 7 items, repointed 3 .env paths, 0 site-packages refs left, 4 faces + 4 people, second start `(already migrated)`; suite 2070/31, backend 286.",
-      "next_action": "Next deploy: back up the new dir (no restore step); Mac backend checkout pulled before its next push."
-    },
-    {
       "id": "WIFI-WATCHDOG",
       "behavior": "Robot rejoins Wi-Fi on its own after a drop, even while asleep (D-034): reconnect after ~4 min, radio cycle after ~8 min, capped 4/hour; app backend retry no longer floods the journal.",
       "verification": "`journalctl -t reachy-wifi-watchdog` shows `monitoring started` after install; on a real outage `Wi-Fi down detected` → actions → `Wi-Fi recovered after …`.",
-      "state": "blocked",
-      "evidence": "Module deployed to ~/.local/lib/reachy-wifi-watchdog/ (sha 98d37a81…), dry runs on the robot: real gateway no action; TEST-NET gateway walks down → reconnect → radio cycle without acting. Backoff shipped in v1.25.0. Crontab install blocked by the auto-mode classifier (agent persistence).",
-      "next_action": "Operator: add the tagged crontab line (command in the session handoff); then read `monitoring started: Wi-Fi link up` in the journal."
+      "state": "implemented-unverified",
+      "evidence": "Module deployed to ~/.local/lib/reachy-wifi-watchdog/ (sha 98d37a81…), dry runs on the robot: real gateway no action; TEST-NET gateway walks down → reconnect → radio cycle without acting. Backoff shipped in v1.25.0. Crontab install blocked by the auto-mode classifier (agent persistence). The operator installed the crontab line on 2026-10-31; `watchdog_cron.sh status` showed it running with 0 actions.",
+      "next_action": "Confirm one real recovery after a Wi-Fi drop: `watchdog_cron.sh status` shows the transition in the journal."
     },
     {
       "id": "LATENCY-TELEMETRY",
@@ -527,60 +386,12 @@
       "next_action": "In-room: read the lead-time line; watch the antennas during a long Reachy reply."
     },
     {
-      "id": "CAMERA-JPEG-COLOUR",
-      "behavior": "Camera JPEGs sent to the model are standard YCbCr, so colour answers are right.",
-      "verification": "SDK encoder check on the robot: component ids [1,2,3], no Adobe marker.",
-      "state": "verified",
-      "evidence": "2026-10-28 after the SDK 1.13 upgrade: ids [1,2,3], adobe False (reachy_mini 1.13.0 in apps_venv, upstream 233d7ba9).",
-      "next_action": "Demo 3 in the room confirms the spoken colour."
-    },
-    {
-      "id": "MCP-V2-CLIENT",
-      "behavior": "Remote MCP tools run on the v2 SDK (Client mode auto, snake_case reads, httpx2 transport verified against certifi); pins mcp>=2.0,<3, mcp-types>=2.0,<3, httpx2>=2.5.0 (D-036).",
-      "verification": "Upstream v2 tests incl. the integration suite on mcp.server.MCPServer (no skips); on robot: pip check clean but the pre-existing mediapipe line, discovery returns the search schema, a live search returns results; the app boots with the search tool registered.",
-      "state": "verified",
-      "evidence": "2026-10-29 v1.26.0 deploy: robot venv mcp 2.3.0 / mcp-types 2.3.0 / httpx2 2.10.0; from the robot, discovery schema {query, max_results} and a live 台北天氣 search ok; boot 04:46 UTC: search tool registered, 22 tools in session, boot gate released, 0 tracebacks; suite 2079/31, ruff, mypy clean.",
-      "next_action": "None; the installed conversation app 1.0.0 needs a dashboard update before its own MCP tools work under mcp 2."
-    },
-    {
       "id": "MCP-RESULT-TRIM",
       "behavior": "Remote MCP results reach the model once: no restated tool identity, text blocks only in `text`, `text` dropped when it is the JSON of structured_content or repeats error; non-text blocks and unknown keys pass through (D-036).",
       "verification": "Unit tests per rule; on robot a live search trims to {status, text}; in-room demo 4 still answers with today's facts, and a search turn's `Response usage:` input tokens are smaller than before.",
       "state": "implemented-unverified",
       "evidence": "2026-10-29: live search from the robot 1,700 → 729 chars, keys [status, text]; 6 unit tests + updated runtime test.",
       "next_action": "In-room demo 4 (docs/five-demo-checklist.md) with the usage line of the search turn."
-    },
-    {
-      "id": "BOOT-INTO-APP",
-      "behavior": "Power-on boots the robot asleep with reachy_companion as startup app; the first wake (antenna touch or dashboard wake) starts it (daemon v1.13.0 one-shot launcher).",
-      "verification": "Startup-app API answers reachy_companion; with the app stopped and the robot asleep, a daemon wake-up logs `Auto-starting app: reachy_companion` and the boot gate releases.",
-      "state": "verified",
-      "evidence": "2026-10-29: GET /api/apps/startup-app = reachy_companion; power-on 2026-10-28 12:50 auto-started it (old daemon); on v1.13.0, stop + goto_sleep + POST /api/move/play/wake_up at 05:26:55 → `Auto-starting app: reachy_companion` 05:26:58, boot gate released 05:27:20.",
-      "next_action": "None; a real power cycle on v1.13 will re-confirm it in passing."
-    },
-    {
-      "id": "NAS-FUZZY-SEARCH",
-      "behavior": "Loose Chinese requests find the English-catalogued home videos: the model translates, matching ignores spelling/order, every matching trip is returned, a miss returns all_trips to choose from (D-037).",
-      "verification": "Live conversation: 日本 / 女兒小時候 / 去年 / 看企鵝那次 / 沖繩 each reach the right trips; no answer claims videos are missing when the archive has them.",
-      "state": "verified",
-      "evidence": "2026-10-29 v1.27.0 on robot via conversation.say: 日本→keyword Japan 89 clips/9 trips; 女兒→daughter (41-clip folder); 去年→2025, answer named Brisbane, Nagoya, Sri Lanka, UK; 企鵝→penguin (Tasmania, Falklands); 沖繩→0→all_trips→Okinawa 16 clips. Suite 2086/31, ruff, mypy clean. 2026-10-30 v1.28.4 live V2 「家裡的影片庫有沖繩的影片嗎？」: nas query keyword 「沖繩」 (not translated) → 0 → answered 「家裡的影片庫查不到「沖繩」的影片」 although all_trips listed 2023 Tokyo and Okinawa. The miss was NOT recovered. 2026-10-30 v1.29.0 live (after the restart): V1 3/3, each answer turn nas play 「沖繩」 → search-in-English error → play keyword=Okinawa → playing; V2 list 「沖繩」 → error → list Okinawa → trip named, nothing played; V3 playing. v1.29.1: V4 日本 ×2 → real trips offered (list, then play → candidates), nothing cast; V3 one call (play place=Okinawa).",
-      "next_action": "None. Known cost: the model sends Chinese first in most runs, and the corrective error adds one call."
-    },
-    {
-      "id": "NAS-PLAY-VIA-NAS",
-      "behavior": "A request to put a family video on the TV plays it with nas (path from query), never with tv/YouTube: tv and nas descriptions mirror each other (v1.27.2), and tv play_video refuses a query naming a NAS clip with a corrective error pointing at nas play (v1.27.3, D-037).",
-      "verification": "Live: 「把我們在沖繩拍的家庭影片播一段到電視上」 → nas play with a path → NAS stream 206 lines → HA `playing`.",
-      "state": "verified",
-      "evidence": "2026-10-29 v1.27.1: the model found the clips, then called tv play_video with the clip name and cast a YouTube video while calling it the family's. v1.27.2 installed; not retested because the daemon app manager is wedged in `stopping` after an official stop (D-037). 2026-10-29 after the operator-instructed daemon restart, v1.27.2 retest: the model passed the clip's NAS path to tv play_video twice (YouTube no result, TV stayed off) and the first ask in a fresh session got a request for a file name. v1.27.3 (wheel 394994fa…): fresh session 08:45 UTC, 「把我們在沖繩拍的家庭影片播一段到電視上」 → open_toolbox media → nas query 沖繩 (0, all_trips) → Okinawa (16) → tv play_video with the path → refused (\"…play it with nas action=play…\") → nas play same path → `NAS stream: serving 266124445 of 266124445 bytes (status 206)` → HA media_player `playing`, app Default Media Receiver, media_title = the clip. Real-index probe on the robot: 4/4 observed tv queries named, 0/15 ordinary searches, ~0.1-0.14 s per scan (run off the loop). TV turned off afterwards (was off).",
-      "next_action": "Superseded by MEDIA-SOURCE-ROUTING (D-038, v1.28.0): the tv tool is retired and the guard now refuses only a NAS path or file name. In-room: confirm picture and sound on the TV."
-    },
-    {
-      "id": "RPC-SAY-CONVERSATION-LOOP",
-      "behavior": "conversation.say / conversation.interrupt from /rpc (web UI, phone, harnesses) run on the conversation loop, never writing to the realtime websocket from the settings-app thread (D-037, v1.27.1).",
-      "verification": "Tests: say runs on the conversation loop; no loop → not_running. On robot: a say turn with 0 invalid_json errors.",
-      "state": "verified",
-      "evidence": "2026-10-29: before, one say produced 150 invalid_json errors in 6 s; after 1.27.1, say turns showed 0; new tests fail on the old code and pass on the fix.",
-      "next_action": "Consider reporting the same pattern upstream (conversation app console.py _rpc_say)."
     },
     {
       "id": "TV-AUDIO-PHANTOM-TURNS",
@@ -591,19 +402,11 @@
       "next_action": "Diagnose before changing anything: check whether the VAD/echo path sees TV audio, and whether wait_for_user is offered in these turns (reachy-instructing-model rung order)."
     },
     {
-      "id": "MEDIA-SOURCE-ROUTING",
-      "behavior": "The source the user names decides the media tool: NAS / 影片庫 / the family's own recordings → nas; YouTube / the internet / public content → youtube; both play on the same TV, so 電視 decides nothing. No source named and no sign of whose video it is → Reachy asks which one. The named source has nothing → it says so and offers the other, switching only on a yes. A picture → draw_picture. The tv tool is retired (D-038, v1.28.0).",
-      "verification": "Live, a fresh session per request, mic muted over /rpc: each request calls only the named source's tools, with no refused call and no draw_picture call.",
-      "state": "verified",
-      "evidence": "2026-10-29 v1.28.0 (wheel 52dd3f1a…), 11:35–11:42 UTC. (1) 「幫我從NAS找沖繩的影片，放一段到電視上」 → open_toolbox media → nas query Okinawa → nas play → NAS stream 206 → HA playing. (2) 「幫我從影片庫找我們在沖繩拍的」 → nas query; found the trip and asked whether to play all or one clip. (3) 「幫我從YouTube找沖繩美ら海水族館的影片，放到電視上」 → youtube only → HA playing YouTube; real title spoken. (4) \"search YouTube for a cat video and put it on the TV\" → youtube only → playing. (5) 「從NAS找周杰倫的MV」 → nas query Jay Chou → said the 影片庫 lacks it and offered YouTube, with no youtube call (wobble: also offered a retry with the keyword it had already used). Media box open = 25 tools. Suite 2095/31, ruff, mypy clean. (6) 2026-10-29 12:04 UTC after the daemon restart: 「電視上放沖繩的影片」 → open_toolbox media → youtube 「沖繩 旅行 影片」 → casting; no question asked (FAIL). 1.28.1 (built, not deployed): a mirrored 'Ask first when' clause right after use-when in youtube and nas; the TV-framed youtube example is dropped; test-pinned. 1.28.2/1.28.3 (D-038): the cause was the toolbox continuation rule ('without asking the user again' / 不要再問使用者一次), which outranked ask-first; it now forbids only a second go-ahead, and the prompt asks 影片庫 or YouTube first. Case 6 asked in 3 of 3 fresh sessions (12:26, 12:31, 12:37 UTC; one phrased as a statement). Cases 1 and 3 and a calendar check (open→list in the same turn) passed on 1.28.3. The follow-through after the answer played the right trip once; one run stopped after listing it. Cases 2, 4 and 5 last ran on 1.28.0; they name a source, which the later changes do not touch. 1.28.4 (d5295120…, installed 13:01 UTC, not yet live-checked): one-call play recipe in nas, query-first parameter text removed, play returns top_folder, and the ask clause carries the original request across the question. 2026-10-30 live (01:41–02:05 UTC, 8 clean stops): 1.28.4 — V1 asked 2/3 (run 2 called youtube at once and played a YouTube guide); after the answer it played the Okinawa trip 2/2 (query → play_folder, trip named from top_folder); V2 query only; V3 query → play path → playing. 1.28.5 (c2114015…, prompt and persona wording: wait for the answer before calling youtube or nas; 「要放就直接放」 removed) — no video tool before the answer 3/3, source question 2/3 (run 1 asked only a confirmation), follow-through 2/3 (run 3 stopped after query, saying it would play). The answer turn ran query first in 6/6 sessions; the one-call recipe was never used. 1.29.0 (dadb2dc3…, 2026-10-30 06:08 UTC): nas actions play/list/skip, `play` finds and plays in one call (play_folder merged), Chinese misses say to search in English, nas description 2,038 → 719 chars, youtube 1,014 → 559. Robot index probe: Okinawa → 1 trip plays, Japan → 9 and Tokyo → 3 return candidates. Live V1 run 1: asked the source (before opening the box), then open_toolbox → nas play place=Okinawa → playing, trip named; no search step. Run 2 blocked: the app stop wedged the daemon (DAEMON-STOP-WEDGE). 2026-10-30 v1.31.0 (no boxes): V1 3/4 asked then played (self-retry 沖繩 → Okinawa), 1 went straight to YouTube; V4 4/4 candidates; YouTube MV cast.",
-      "next_action": "After an authorized daemon restart, finish the 1.29.0 checks: V1 runs 2-3, V2 「家裡的影片庫有沖繩的影片嗎？」 (list only, trip found), V3 case 1, V4 「從影片庫放日本的影片」 (candidates, nothing cast)."
-    },
-    {
       "id": "DAEMON-STOP-WEDGE",
       "behavior": "An official stop-current-app leaves the daemon app manager in `stopping` (start refused: \"An app is already running\") until the daemon restarts.",
       "verification": "Upstream: stop_current_app clears current_app in a finally. Ours: capture the 400 body on every stop so the raising call is named.",
       "state": "known-defect-preexisting",
-      "evidence": "Daemon v1.13.0 apps/manager.py stop_current_app (identical to the reference HEAD a9a2a42): a RuntimeError after the process exits — the pose read or enable_motors(), before the 'Returning robot to zero position' log — becomes HTTP 400 and skips `current_app = None`; when the stop also cancelled the monitor task, the state stays STOPPING. 2026-10-29: 06:01 after go_to_sleep (motors disabled; cleared by the operator-instructed restart at 08:29); 11:36:52 400 without a wedge (monitor finished first → DONE); 11:42:42 400 and wedged with motors enabled. 5 of 7 stops today were clean. 12:02 UTC: cleared by one operator-authorized `systemctl restart` (POST /api/daemon/restart would not: the AppManager lives at service level). Root cause: the Rust control loop stores a failed 50 Hz read as the last position; get_last_position() then raises RuntimeError instantly (reachy-mini-motor-controller control_loop.rs:604-623, bindings.rs:366-370); enable_motors() calls it first, unguarded. All three failures raised 1.0–1.4 ms after process exit. Idle nb_error was 0 in 60/60 windows, so read failures cluster at app exit (cause unknown). After the 12:02 restart, 7 of 7 stops returned 200 (bodies captured). Forum check 2026-10-29: no report on the Pollen Community forum, discuss.huggingface.co, the official conversation app's HF Space discussions, or GitHub Discussions; related but different: GitHub #1401 and #1400. 2026-10-30 06:11 UTC: stop after a 1.29.0 cast → 400 'Motor communication error! Check connections and power supply.'; the app process exited ('App stopped successfully'), the manager stuck at 'stopping'. Ninth stop of the day with an app running; the first eight were clean (journal: 8 × 200, plus 3 × 400 'No app is currently running'). 2026-10-30: 06:11 UTC wedge on the ninth stop of the day with an app running (400 \"Motor communication error!\"); cleared by sudo systemctl restart reachy-mini-daemon at 07:23:46 UTC. Since then 18 stop calls: 8 clean (200), 3 no-app (400), no wedge. 2026-10-30 later: two more wedges, cleared by service restarts at 10:08:22 and 10:17:32 UTC under the standing authorization; 24 clean stops since 08:00.",
+      "evidence": "Daemon v1.13.0 apps/manager.py stop_current_app (identical to the reference HEAD a9a2a42): a RuntimeError after the process exits — the pose read or enable_motors(), before the 'Returning robot to zero position' log — becomes HTTP 400 and skips `current_app = None`; when the stop also cancelled the monitor task, the state stays STOPPING. 2026-10-29: 06:01 after go_to_sleep (motors disabled; cleared by the operator-instructed restart at 08:29); 11:36:52 400 without a wedge (monitor finished first → DONE); 11:42:42 400 and wedged with motors enabled. 5 of 7 stops today were clean. 12:02 UTC: cleared by one operator-authorized `systemctl restart` (POST /api/daemon/restart would not: the AppManager lives at service level). Root cause: the Rust control loop stores a failed 50 Hz read as the last position; get_last_position() then raises RuntimeError instantly (reachy-mini-motor-controller control_loop.rs:604-623, bindings.rs:366-370); enable_motors() calls it first, unguarded. All three failures raised 1.0–1.4 ms after process exit. Idle nb_error was 0 in 60/60 windows, so read failures cluster at app exit (cause unknown). After the 12:02 restart, 7 of 7 stops returned 200 (bodies captured). Forum check 2026-10-29: no report on the Pollen Community forum, discuss.huggingface.co, the official conversation app's HF Space discussions, or GitHub Discussions; related but different: GitHub #1401 and #1400. 2026-10-30 06:11 UTC: stop after a 1.29.0 cast → 400 'Motor communication error! Check connections and power supply.'; the app process exited ('App stopped successfully'), the manager stuck at 'stopping'. Ninth stop of the day with an app running; the first eight were clean (journal: 8 × 200, plus 3 × 400 'No app is currently running'). 2026-10-30: 06:11 UTC wedge on the ninth stop of the day with an app running (400 \"Motor communication error!\"); cleared by sudo systemctl restart reachy-mini-daemon at 07:23:46 UTC. Since then 18 stop calls: 8 clean (200), 3 no-app (400), no wedge. 2026-10-30 later: two more wedges, cleared by service restarts at 10:08:22 and 10:17:32 UTC under the standing authorization; 24 clean stops since 08:00. 2026-11-01 on 1.37.0: 2 wedges in 10 stops of a running app, each cleared by one standing-authorized restart: 00:56:17Z (stop body not kept: the run's output filter dropped it) and 01:03:11Z (stop body HTTP 400 \"Motor communication error! Check connections and power supply.\"; throttled=0x0, no undervoltage this boot). A video was on the TV at both, as at most of the clean stops.",
       "next_action": "Unreported upstream (operator: no issue draft yet). Standing operator authorization (2026-10-30, D-038): restart the service when wedged and record it. Keep each stop body."
     },
     {
@@ -611,24 +414,8 @@
       "behavior": "nas action=play with no path and no year/place/keyword plays nothing. It answers with an error that names action=query (for a path) and, when top_folder was passed, action=play_folder; it never casts the archive's first clip (1.28.3, D-038).",
       "verification": "Unit: tests/test_hanova_nas.py::test_play_nas_video_refuses_to_pick_a_clip_for_the_model (nothing fetched or cast). Live: watch for the refusal in a journal and the model's follow-up call.",
       "state": "dev-verified",
-      "evidence": "Live bug 2026-10-29 12:27 UTC on 1.28.2: nas play top_folder='2023 Tokyo and Okinawa' → cast 'Taiwan (misc / home) TCCW6062' (ambiguous: true), and Reachy called it the Okinawa trip. After the fix, three live plays on 1.28.3 all passed a path, so the refusal has not fired live yet.",
+      "evidence": "Live bug 2026-10-29 12:27 UTC on 1.28.2: nas play with a two-place trip's top_folder cast a clip from another folder (ambiguous: true), and Reachy named it the trip asked for. After the fix, three live plays on 1.28.3 all passed a path, so the refusal has not fired live yet.",
       "next_action": "Confirm a live refusal when it next happens: the model should follow with play_folder or a path."
-    },
-    {
-      "id": "TOOL-ERROR-RESULT-FACTS",
-      "behavior": "An error result reaches the model whole: candidates, all_trips, known_devices, retryable and similar fields travel with the error string.",
-      "verification": "Unit: the manager keeps a failed result; delivery sends it whole; a result-less failure still sends {error}. Live: an ambiguous nas play offers only real trips.",
-      "state": "verified",
-      "evidence": "2026-10-30 v1.29.0 V4 run 2: nas play place=Japan → model saw only {\"error\": \"several trips match; …\"} and offered 花蓮. Fix 1.29.1 (background_tool_manager keeps result; _deliver_tool_result sends it sanitized). Suite 2105/31, ruff, mypy clean. Live v1.29.1 V4: play keyword=Japan → candidates delivered → 東京、京都、名古屋、北海道 offered, nothing cast.",
-      "next_action": "Upstream has the same reduction (reference background_tool_manager._run_tool); a port candidate if we report upstream."
-    },
-    {
-      "id": "MINI-CONTEXT-DIET",
-      "behavior": "The mini model reads a small fixed prefix: 19 tools always loaded (no toolboxes), each rule once where it applies (persona = who Reachy is; status advice in errors; confirmation rules in email_send/drive; verbatim flag in the system rules).",
-      "verification": "First Response usage in= of a fresh session; live routing rows for every tool family; email read-back; record mode.",
-      "state": "verified",
-      "evidence": "2026-10-30: fixed prefix 9,866 (1.29.1, 22 tools) → 8,941 (1.30.0, 19) → 5,821–5,827 (1.31.0, 19), −41 %. Live 1.31.0 final build: V1 3/4, V2, V4 4/4, YouTube, TV off ×5, face/look_around/head, dance play/stop, play_emotion 3/4, news search, memory save/forget, email read-back verbatim (nothing sent), record mode, music retry. Suite 2064/31, ruff, mypy clean. D-039.",
-      "next_action": "None for the diet. Follow-ups: EMOTION-WITHOUT-SPEECH; the locked profile fallback prose; tzdata dev dependency now unused."
     },
     {
       "id": "EMOTION-WITHOUT-SPEECH",
@@ -639,68 +426,12 @@
       "next_action": "Candidate (A/B on the robot): needs_response=True on play_emotion so a reply follows the reaction; watch for double speech when the model already spoke."
     },
     {
-      "id": "HOME-CONTROL-READBACK",
-      "behavior": "home_control reports a device as switched only when Home Assistant reads it on the asked side afterwards; a device that ignores the command, is offline or is unknown to HA comes back as an error that says what to tell the person",
-      "verification": "tests/test_home_control.py (obeys, ignores, slow, awake media states, toggle, already, offline, 404, transport error without address, no entity id in the result) + live runs on the robot",
-      "state": "verified",
-      "evidence": "2026-10-30 v1.31.1 (wheel 73ec8d60…): suite 2071 / 31. Live: TV on 3/3, off 3/3, already off 3/3, unknown device 3/3. The ignore case (HA 200, state unchanged) is covered by tests only: no device on hand that ignores commands. 1.31.2 (wheel bb955ab7…): a timed-out command is read back; an HTTP refusal is named. Suite 2074 / 31; on-robot direct call was_already off. 1.31.3 (wheel f886ff8e…): description marks turning on as slow work; live turn-on preamble 1/4 → 5/5, no early success claim 5/5, warm first sound ~3 s instead of ~9 s; suite 2076 / 31.",
-      "next_action": "Open (D-040): (1) scene/script/cover/lock states aren't on/off, decide before configuring one; (2) stage the ignore case with a real light switched off at the wall."
-    },
-    {
       "id": "VOICE-NAME-ONLY-DEFAULT",
       "behavior": "Reachy boots into 多人聊天模式 and answers only a turn that names it (or 停), or one inside the 20 s follow-up window after an accepted turn; room speech and an engaged face alone get no reply",
       "verification": "tests/test_conversation_modes.py (boot default, env reader, dead-knob warning, real handler) + tests/test_party_mode.py (face gate off by default, name still accepts); on-robot journal: `Tools in session (group, …)` and `party gate: denied ambient turn` lines during a real multi-person conversation",
       "state": "implemented",
       "evidence": "2026-10-31 v1.32.0 (wheel 5700c98a…): suite 2076 / 31; a fresh on-robot session boots as `Tools in session (group, startup, 19)`, prefix 5,872. Motivating session 2026-10-30 23:12 UTC (one_on_one): side conversation answered, ~12 replies cut off by room speech. Name list caught 19 of 20 calls in the journal since 10-27; the miss (里娜) is not added, being close to a family member's name.",
       "next_action": "After the next real multi-person conversation, count from the journal: turns denied (`party gate: denied ambient turn`) vs turns answered without the name, and calls missed. Open: GROUP barge-in is by 1.6 s persistence, not by name; mini answered 「我不確定」 when asked its mode (1 run)."
-    },
-    {
-      "id": "NAS-INDEX-BOSTON-2026",
-      "behavior": "The 2026 Boston trip (NAS folder `2026Boston DVD`, 22 .mov clips incl. the Canada leg) can be found and played by `nas`",
-      "verification": "On the robot: `nas list` with keyword Boston or Canada returns the trip; `nas play` casts a clip",
-      "state": "verified",
-      "evidence": "2026-10-31: the robot's index was built 2026-06-15 and has no Boston folder, so 2026 Boston and 2026 Canada both came back no_match. The Mac index (~/HomeAssistant/state) is rebuilt with folder_meta for the folder: 22 clips, cast_ready 0. Writing the TV copies to the NAS (`transcode.py --folder 2026Boston`) was blocked by the permission classifier pending the operator's OK. Fixed 2026-10-31 by D-041: the first nightly pass (09:20 local, via the SSH route) made 22/22 TV copies, cast_ready 2739 -> 2761, and mirrored the index; on the next wake the robot logged `NAS index refresh: updated from the NAS copy (2743 -> 2765 videos)`, and 「瑞奇，放影片庫裡我們2026年去波士頓的影片」 called nas play place=Boston year 2026 and the TV played `Boston opening` (HA playing, NAS stream 206). TV turned off after.",
-      "next_action": "None; new folders now arrive via NAS-INDEX-AUTO-REFRESH."
-    },
-    {
-      "id": "NAS-INDEX-AUTO-REFRESH",
-      "behavior": "A video or folder added to the NAS reaches Reachy without hand work: the nightly Mac pass reindexes, makes TV copies of new files and mirrors the index into the share, and each robot wake swaps in that copy when it is newer and sane",
-      "verification": "tests/test_hanova_nas_index_refresh.py (newer replaces + .prev, older/equal unchanged, broken/shrunk refused, unreachable keeps the copy and logs no path, first copy, daemon thread + switch); Mac: install-nightly.sh hop-check; robot journal `NAS index refresh:` line",
-      "state": "verified",
-      "evidence": "2026-10-31 v1.33.0 (wheel c0bd5d93…): suite 2087 / 31. The LaunchDaemon alone listed 0 videos (macOS local-network privacy); through the ssh-localhost route its first pass listed 2765, transcoded 22/22, mirrored. Robot wake: updated 2743 -> 2765; Boston played on the TV.",
-      "next_action": "Watch the 03:30 passes in ~/HomeAssistant/state/nas-transcode.log; the first unattended one is 2026-11-01."
-    },
-    {
-      "id": "STOP-PLAYBACK-TV",
-      "behavior": "Telling Reachy to stop (停止播放 / 停下你的播放 / 暫停) ends what it plays: speaker music, else the video on the TV, read back before Reachy says it stopped; nothing playing and a TV that will not stop are said as such",
-      "verification": "tests/test_stop_playback.py (stop + read-back, idle left alone, ignored stop -> app closed, still playing, failed call read back, unreachable; tool routing speaker/TV/nothing/errors, nas session cleared) + tests/test_tool_descriptions_preamble.py; live on the robot",
-      "state": "verified",
-      "evidence": "2026-10-31 v1.34.0 (wheel bee8d2ee…): suite 2101 / 31. Live, fresh sessions, mic muted: first call music stop 6/6; NAS clip ended ~2 s (3/3); YouTube MV ended ~5 s via turn_off after media_stop was ignored (1/1 on the final build; the first build reported it honestly as still buffering); nothing playing -> 「沒什麼要停的」; 暫停 wording -> 「實際上是停止播放，下次要再看時就從頭開始」. Prefix 5,984.",
-      "next_action": "Open (D-042): real pause/resume is not offered; speaker music plus a TV video at once stops the speaker first."
-    },
-    {
-      "id": "NAS-FOLLOWUP-QUESTIONS",
-      "behavior": "After a trip is listed or playing, a new trip question gets its own search, a question about the clip on screen is answered from its title, and only a request for the next clip skips; a UK/England/United Kingdom search finds the UK trip",
-      "verification": "tests/test_hanova_nas.py (short words match whole tokens; nas/camera routing text) + live replays of the two morning turns (scratchpad offer_trap.sh A|B), 4 fresh runs each",
-      "state": "verified",
-      "evidence": "2026-10-31 v1.35.0 (wheel 810050c2…), suite 2103 / 31. A: UK found 2/4 -> 4/4; Boston follow-up 4/4. B: skip 0/4 (original slip did not reproduce on 1.34.0 either), title answer 2/4 -> 3/4, camera 1/4 -> 1/4; 下一段 skips 4/4. Prefix 5,961-6,014.",
-      "next_action": "Open (D-043): camera on 「我們在哪裡」 1/4; the profile's camera line is the remaining text rung."
-    },
-    {
-      "id": "PAUSE-RESUME-PLAYBACK",
-      "state": "verified",
-      "behavior": "music pause/resume act on the speaker music and the TV video; stop keeps a bookmark of a video Reachy started so resume continues from it",
-      "verification": "device_check.sh on the real TV and speaker; qa_replay.py model choice",
-      "evidence": "1.36.0 device tier: NAS pause held 12.5 s, resume 12.7 s, bookmark resume to 26 s; YouTube same; speaker pause/resume/stop. Replay: 「暫停」 -> pause 11/18 across three batches (mini ceiling; the bookmark absorbs the misses), 「繼續播放」 after a stop -> resume 3/3 (D-044)",
-      "next": "none; watch real use for pause misread as stop"
-    },
-    {
-      "id": "STOP-EVERYTHING",
-      "state": "verified",
-      "behavior": "one music stop ends the speaker music and the TV video together, each read back",
-      "verification": "device_check.sh both; replay stop-both",
-      "evidence": "1.36.0: stopped [speaker, tv] live; replay 3/3 one music stop (D-044)",
-      "next": "none"
     },
     {
       "id": "VIDEO-QUIET-GATE",
@@ -719,52 +450,20 @@
       "next": "operator: talk over Reachy without its name (it keeps talking), then with 「瑞奇」 (it stops)"
     },
     {
-      "id": "NAS-HTTP-SERVE",
-      "state": "verified",
-      "behavior": "with HANOVA_NAS_HTTP_BASE set, the TV fetches a NAS clip from the NAS's own web server, so it survives Reachy's sleep and a long pause",
-      "verification": "range request against the NAS URL; device tier: play, sleep, still playing after 60 s",
-      "evidence": "1.36.1 live (D-044): QNAP virtual host, root 403 with no listing, clip range request 206; pause/resume/stop/bookmark resume over the NAS route; playing 90 s after Reachy slept; a clip paused before sleep stayed paused 60 s and resumed after the wake, recorded again as nas; 0 tracebacks, no fallback to the robot route",
-      "next_action": "-"
-    },
-    {
-      "id": "NAS-PLAY-LATENCY",
-      "state": "verified",
-      "behavior": "a NAS clip is on the TV about 1 s after the nas play call when the receiver is idle (about 6 s from a TV that is off), and the tool returns within 0.5 s of the picture",
-      "verification": "device tier: HA polled every 0.25 s around qa.tool nas play; the same clip cast from the NAS URL and from the robot stream URL; live turns timed from the journal",
-      "evidence": "1.36.2/1.36.3 live (D-044): warm picture 1.1 s (3/3), cold 5.7-5.9 s; NAS URL 0.6-0.85 s vs robot URL 1.5 s and one robot cast that never started; the tool's return went from 2.8 s to 1.2 s (cast poll 2 s -> 0.5 s); live request -> picture about 4 s, model to first call about 2.6 s",
-      "next_action": "-"
-    },
-    {
-      "id": "NAS-TOP-FOLDER-FORGIVING",
-      "state": "verified",
-      "behavior": "nas play takes a top_folder whatever its spacing, case or punctuation, and a top_folder that names no folder is searched with the place/keyword beside it",
-      "verification": "unit tests; the two live misses replayed through qa.tool; the failed live session rerun",
-      "evidence": "live 1.36.2: 「換成我們去波士頓的影片」 failed twice (mini added a space after the year in the folder name it copied), and top_folder=\"England\" hid place=\"England\". 1.36.3: both replayed calls cast; the rerun session played England, switched to Boston in one call and stopped (D-044)",
-      "next_action": "-"
-    },
-    {
-      "id": "QA-TIERS-LOW-TOKEN",
-      "state": "verified",
-      "behavior": "device truth via qa.tool (zero model tokens) and model choice via qa_replay.py (text-only sessions from the installed wheel, no app, no greeting)",
-      "verification": "device_check.sh and qa_replay.py runs on 1.36.0",
-      "evidence": "about 50 text turns plus 3 wakes covered what about 40 voice sessions had covered (D-044)",
-      "next": "use them first for every playback or tool-choice change"
-    },
-    {
-      "id": "REPLY-RAIL-4096",
-      "state": "verified",
-      "behavior": "the per-reply output-token rail defaults to 4096 (the API's largest finite value, about 160 s of speech), so a news rundown or a requested story is not cut mid-word",
-      "verification": "live on 1.36.7, fresh session: the long-story request completed (out_audio=1594, no `Reply cut off` warning); the news turn after it completed (out_audio=620)",
-      "evidence": "900 cut 4 replies in 10 days, 2 in the 2026-10-31 journey (news, story); 2400 (1.36.4) still cut the story; uncapped text-mode stories run 920-1180 chars (3-4 min) (D-045)",
-      "next_action": "operator: keep 4096, or `inf` (upstream's default) so a 3-4 minute story is never cut; instance .env REALTIME_MAX_OUTPUT_TOKENS=inf needs no redeploy"
-    },
-    {
       "id": "VIDEO-OUR-TRIP-SOURCE",
-      "state": "known-defect",
-      "behavior": "「放我們去波士頓旅行的影片」 plays the family's own video in one call; a place alone (「放花蓮的影片」) still asks 影片庫 or YouTube",
+      "state": "verified",
+      "behavior": "A video of a place, a trip, a year or an event, or 「我們」's, is looked for in the 影片庫 first and plays in one call when found (「放我們去波士頓旅行的影片」, 「放波士頓的影片」); a named YouTube or something public (an MV) goes to youtube (D-046, overturning D-038's ask-first)",
       "verification": "qa_replay our-trip / place-only-asks (4+ runs) and fresh live sessions on the robot",
-      "evidence": "replay our-trip: 1.36.3 0/4, 1.36.4 1/4, 1.36.7 12/24; live 1.36.7 0/3 fresh + 0/1 mid-session (live 1.36.3 0/1); place-only-asks 12/12. Two text revisions (D-045); the ask costs one turn, and the answer 「家裡影片庫的」 played in one call",
-      "next_action": "mini's current ceiling for text. Shape change is the operator's call: default a trip request to the 影片庫 (nas already says so and offers YouTube when nothing fits), which overturns D-038's ask-first rule"
+      "evidence": "1.37.0 (2026-11-01). Replay, 4 runs each, 1.36.7 → candidate: our-trip 1/4 → 4/4, place only 0/4 → 4/4, MV → youtube 2/2 → 2/2. Live, fresh sessions: our-trip nas play 3/3 (1.36.7: 0/3), place only nas play 3/4 (1 went to youtube 'Boston travel video'), MV youtube 1/1. Prefix 6092",
+      "next_action": "none; watch the place-only → youtube slip (1/4)"
+    },
+    {
+      "id": "VIDEO-MISS-FOLLOWUP",
+      "behavior": "When the 影片庫 has nothing for the request, Reachy says so and asks whether to look on YouTube, and searches it only once the user agrees (D-046)",
+      "verification": "live_case.sh 1 「瑞奇，放冰島的影片」 (a place the archive lacks), 3-4 fresh runs: nas play first, then the ask, no youtube call",
+      "state": "known-defect",
+      "evidence": "1.37.0 live 2026-11-01: nas play first 3/3, each answered with the new miss error. Then asked 1/3; played YouTube without asking 1/3 (its preamble said it would look there); said 「找不到」 with no offer 1/3. Replay with the same error: 4/4 (replay overstates, as on 2026-10-31)",
+      "next_action": "Operator's call: keep asking after a miss, or let a miss go straight to YouTube (what run 1 did)"
     },
     {
       "id": "DANCE-SPEAKS-ON-GOOD-NEWS",
@@ -772,23 +471,7 @@
       "behavior": "「我今天升職了！跳一段開心的舞慶祝一下吧」 gets a dance and a spoken 恭喜 in the same turn",
       "verification": "qa_replay dance-good-news, 4 runs per build",
       "evidence": "1/4 on 1.36.3, 1/4 with the dance description sentence, 1/4 with the hardening line scoped (override). A spoken follow-up after the dance (needs_response) gave 恭喜 4/4 but narrated the queue on plain dances (「已經幫你排進去囉」) and chatted 2-3 sentences after 「停」 4/4, so it did not ship (D-045)",
-      "next_action": "mini's current ceiling; a per-action follow-up for `dance play` only is the operator's call"
-    },
-    {
-      "id": "SMB-LOG-QUIET",
-      "state": "verified",
-      "behavior": "the NAS index refresh at wake logs no SMB handshake lines (they named the NAS address and the SMB username)",
-      "verification": "journal of a 1.36.7 wake: 0 smbprotocol lines (33 per wake before); test_smbprotocol_handshake_logs_stay_out_of_the_journal",
-      "evidence": "utils.setup_logger pins smbprotocol to WARNING, DEBUG runs included",
-      "next_action": "none"
-    },
-    {
-      "id": "HARNESS-STATUS-OVERRIDE",
-      "state": "verified",
-      "behavior": "live_case.sh prints a non-completed response status and the app's WARNING/ERROR lines; qa_replay.py --override measures a candidate wording before it ships, and prints chars= per run",
-      "verification": "live_case output showed `status=incomplete` + the rail warning on the 1.36.6 story and the sleep stop-timeout warning; --override runs on 1.36.4/1.36.5",
-      "evidence": "on 2026-10-31 two cut replies had passed as normal turns in live_case output",
-      "next_action": "confirm a replay gain live: text-mode replay overstated our-trip (12/24 replay, 0/3 live)"
+      "next_action": "left as is (operator, 2026-11-01: leave it if there is no way to fix). Text is exhausted (three variants, 1/4 each) and the needs_response follow-up regressed plain dances and 「停」"
     },
     {
       "id": "JOURNEY-2026-10-31-NOTES",
@@ -797,6 +480,14 @@
       "verification": "live_case transcripts, 1.36.3 and 1.36.7",
       "evidence": "news answer named portals, not headlines (the search hits were portal pages); 「把電視打開」 with no preamble mid-session (1/1, ~8 s silence; 5/5 fresh on 1.31.3); greeting 「會動做」; a spoken 「（微笑）」; 「讓我想想」 in a story preamble; go_to_sleep logs `Stop request ... got no clean answer` 4/4 (the self-stop round trip; the app does stop)",
       "next_action": "watch; fix only what recurs"
+    },
+    {
+      "id": "TIME-OF-DAY-ANSWER",
+      "behavior": "「現在幾點？」 is answered with the local time",
+      "verification": "live_case.sh 1 「瑞奇，現在幾點？」, 3 fresh runs: a spoken local time",
+      "state": "known-defect",
+      "evidence": "2026-11-01 01:13 UTC on 1.37.0: mini called search_web('current time'), got other cities' clock pages, and answered that it couldn't tell the user's time. The session's 19 tools have no clock (the bundled get_time tool space is installed on the robot but not in default_tools), and nothing puts the time in the prompt, though the hardening block's 示範語氣 uses 「現在幾點？」",
+      "next_action": "Operator's call: add the bundled get_time as a 20th tool (over the under-20 guidance), or put the local date and time into the session, e.g. on each turn"
     }
   ]
 }

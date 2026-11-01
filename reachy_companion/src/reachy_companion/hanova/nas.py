@@ -486,7 +486,13 @@ def search_miss(index: Dict[str, Any], words: List[Any]) -> Dict[str, Any]:
             "ok": False,
             "error": f"nothing is catalogued under {quoted}: the archive is in English; call again yourself with the English words, without asking the user",
         }
-    return {"ok": False, "error": "no_match", "all_trips": summarize_folders(index)}
+    # 2026-11-01 (D-046): a place alone now comes here first, so a miss is common
+    # and the error names its fix: the user decides whether YouTube is next.
+    return {
+        "ok": False,
+        "error": "nothing in the 影片庫 fits: if no trip in all_trips is the one meant, tell the user and ask whether to look on YouTube",
+        "all_trips": summarize_folders(index),
+    }
 
 
 def trip_summary(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

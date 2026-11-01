@@ -751,7 +751,7 @@ async def test_play_nas_video_reports_no_match(monkeypatch, tmp_path):
     """An unknown request must not silently cast something else."""
     _stub_transfer(monkeypatch)
     out = await PlayNasVideo()(deps=_deps(tmp_path), place="atlantis")
-    assert out["ok"] is False and out["error"] == "no_match"
+    assert out["ok"] is False and out["error"].startswith("nothing in the 影片庫 fits")
 
 
 @pytest.mark.asyncio
@@ -1690,7 +1690,7 @@ async def test_a_one_trip_query_marks_only_the_clips_that_are_not_cast_ready(mon
 async def test_a_query_that_matches_nothing_hands_back_the_whole_catalogue(tmp_path, catalogue):
     """An English miss may be a naming miss: the model gets every trip to choose from, not a bare zero."""
     out = await NasVideoQuery()(deps=_deps(tmp_path), keyword="atlantis")
-    assert out["ok"] is False and out["error"] == "no_match"
+    assert out["ok"] is False and out["error"].startswith("nothing in the 影片庫 fits")
     assert {row["top_folder"] for row in out["all_trips"]} == set(CATALOGUE["folders"])
 
 
@@ -1720,7 +1720,7 @@ async def test_play_misses_also_carry_the_catalogue(monkeypatch, tmp_path, catal
     _stub_transfer(monkeypatch)
     for kwargs in ({"place": "atlantis"}, {"top_folder": "Taiwan_暫存"}):
         out = await PlayNasVideo()(deps=_deps(tmp_path), **kwargs)
-        assert out["error"] == "no_match" and len(out["all_trips"]) == len(CATALOGUE["folders"])
+        assert out["error"].startswith("nothing in the 影片庫 fits") and len(out["all_trips"]) == len(CATALOGUE["folders"])
 
 
 def test_clips_by_file_finds_a_clip_by_path_or_file_name_but_never_by_words():

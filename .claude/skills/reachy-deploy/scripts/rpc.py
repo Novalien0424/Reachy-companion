@@ -41,4 +41,9 @@ if __name__ == "__main__":
         sys.argv[1] == "tool" and len(sys.argv) < 3
     ):
         sys.exit("usage: rpc.py mute|unmute|say|tool NAME [ARGS]  (say reads the text from stdin)")
-    asyncio.run(main(sys.argv[1], sys.argv[2:]))
+    try:
+        asyncio.run(main(sys.argv[1], sys.argv[2:]))
+    except OSError:
+        # Asleep (app stopped): a muted mic went with the app, so unmute has nothing to do.
+        print(f"rpc: the app is not running ({sys.argv[1]} skipped)")
+        sys.exit(0 if sys.argv[1] == "unmute" else 1)

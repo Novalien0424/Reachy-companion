@@ -3,32 +3,22 @@
     /venvs/apps_venv/bin/python -I /tmp/qa_replay.py /tmp/qa_cases.json [--runs N] [--only id,id]
         [--override /tmp/candidate.json]
 
-Tier 3 of the 2026-10-31 QA plan. Each run opens a fresh realtime session built
-exactly as the app builds one: the installed handler's `_get_session_config`
-(instance persona, `_HARDENING_BLOCK`, the boot mode's rules block, memory, all
-tools), switched to text output with turn detection off. The app is not
-involved: no app restart (the daemon wedge), no greeting, no audio either way.
-The API key never leaves the robot's instance `.env`.
+Each run opens a fresh realtime session built as the app builds one (the installed
+handler's `_get_session_config`: instance persona, hardening block, mode rules, memory,
+all tools), switched to text with turn detection off. The app is not involved, and the
+API key never leaves the robot's instance `.env`.
 
-A case seeds `history` as conversation items, sends `say` as a user turn, and
-records the response: tool calls (name and arguments) and text. No tool runs.
-When the case gives `outputs` (tool name -> canned result), the first matching
-call is answered with it and the follow-up reply is recorded too.
+A case (JSON list in qa_cases.json) seeds `history`, sends `say`, and records the
+response's tool calls and text; no tool runs. With `outputs` (tool -> canned result) the
+first matching call gets that result and the follow-up reply is recorded too. `expect`
+takes `tool` (+ `args`), `no_call`, `no_tool` (checked in both replies), `text_has`,
+`text_any`. `targeted: true` disables the 2/2 early stop.
 
-Case file: a JSON list of
-  {"id": "...", "say": "...", "expect": {"tool": "music", "args": {"action": "pause"}}
-   | {"no_tool": ["camera"]} | {"text_has": ["..."]} | {"text_any": ["...", "..."]},
-   "history": [ {"user": "..."} | {"assistant": "..."}
-                | {"call": "nas", "args": {...}, "result": {...}} ],
-   "outputs": {"nas": {...}}}
-Prints one line per run and a k/n summary per case.
-
-`--override` measures a candidate wording before it ships (2026-10-31): a JSON
-object {"replace": [["old", "new"], ...]} applied, in order, to the session's
-instructions and every tool description and schema. Each "old" must occur
-exactly once in the session or the run stops, so a stale override never
-measures the installed text by accident. The wheel stays the baseline: run once
-without the override and once with it, same cases, same runs.
+`--override` measures a wording before it ships: {"replace": [["old", "new"], ...]},
+applied in order to the session's instructions and tool specs. Each "old" must occur
+exactly once, so a stale override can't measure the installed text by accident. Run the
+same cases with and without it. Text replay can overstate a live rate (2026-10-31:
+12/24 here, 0/3 live): confirm a gain live.
 """
 
 from __future__ import annotations
@@ -177,6 +167,7 @@ async def _run_case(client: Any, model: str, cfg: dict[str, Any], case: dict[str
 def _verdict(case: dict[str, Any], run: dict[str, Any]) -> bool:
     expect = case.get("expect") or {}
     calls = run["first"]["calls"]
+    follow_calls = (run["follow"] or {}).get("calls") or []
     said = run["first"]["text"] + ((run["follow"] or {}).get("text") or "")
     if "tool" in expect:
         if not calls or calls[0]["name"] != expect["tool"]:
@@ -184,7 +175,7 @@ def _verdict(case: dict[str, Any], run: dict[str, Any]) -> bool:
         args = json.loads(calls[0]["args"] or "{}")
         if any(args.get(k) != v for k, v in (expect.get("args") or {}).items()):
             return False
-    if any(c["name"] in expect.get("no_tool", []) for c in calls):
+    if any(c["name"] in expect.get("no_tool", []) for c in calls + follow_calls):
         return False
     if expect.get("no_call") and calls:
         return False
@@ -228,6 +219,8 @@ async def main() -> None:
             passed += ok
             first = run["first"]
             calls = " ".join(f"{c['name']}{c['args']}" for c in first["calls"]) or "-"
+            if run["follow"] and run["follow"]["calls"]:
+                calls += " → " + " ".join(c["name"] for c in run["follow"]["calls"])
             said = (first["text"] + " | " + ((run["follow"] or {}).get("text") or "")).strip(" |")
             print(
                 f"{case['id']} #{n + 1} {'PASS' if ok else 'FAIL'} {time.monotonic() - started:.1f}s "

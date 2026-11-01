@@ -182,15 +182,54 @@
     }
   },
   {
-    "id": "place-only-asks",
+    "id": "place-only-plays",
     "targeted": true,
     "say": "瑞奇，放花蓮的影片",
     "expect": {
-      "no_call": true,
+      "tool": "nas"
+    }
+  },
+  {
+    "id": "place-missing-offers-youtube",
+    "targeted": true,
+    "say": "瑞奇，放冰島的影片",
+    "expect": {
+      "tool": "nas",
+      "no_tool": [
+        "youtube"
+      ],
       "text_any": [
-        "影片庫",
         "YouTube"
       ]
+    },
+    "outputs": {
+      "nas": {
+        "ok": false,
+        "error": "nothing in the 影片庫 fits: if no trip in all_trips is the one meant, tell the user and ask whether to look on YouTube",
+        "all_trips": [
+          {
+            "top_folder": "Trip A",
+            "year": 2019,
+            "place": "Kyoto",
+            "country": "Japan",
+            "count": 12
+          },
+          {
+            "top_folder": "Trip B",
+            "year": 2023,
+            "place": "Taipei",
+            "country": "Taiwan",
+            "count": 30
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "mv-goes-youtube",
+    "say": "瑞奇，放周杰倫的 MV",
+    "expect": {
+      "tool": "youtube"
     }
   },
   {

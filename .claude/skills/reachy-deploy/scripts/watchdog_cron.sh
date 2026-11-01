@@ -10,7 +10,6 @@ REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel) || exit 1
 H=$(grep '^REACHY_HOST=' "$REPO/.env" | cut -d= -f2-)
 U=$(grep '^REACHY_SSH_USER=' "$REPO/.env" | cut -d= -f2-)
 R=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$U@$H")
-TAG='# reachy-wifi-watchdog'
 
 case "${1:-}" in
   install)

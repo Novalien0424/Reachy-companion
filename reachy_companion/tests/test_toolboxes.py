@@ -294,23 +294,20 @@ def test_the_prompt_names_no_toolbox() -> None:
     assert "你能做的事都在工具清單裡，直接呼叫就好；清單上沒有的事，就說你做不到，不要自己演一遍。" in block
 
 
-def test_the_ask_first_rule_waits_for_the_answer_before_playing() -> None:
-    """1.28.4 live: 「要放就直接放」 read as "play now", and one run skipped the question.
+def test_video_requests_look_in_the_family_library_first() -> None:
+    """2026-11-01 (D-046, operator): a trip video plays directly when the 影片庫 has it.
 
-    D-038 case 6: a place alone fits both video sources, so Reachy asks which
-    one, then does what was asked once the answer comes.
-
-    1.36.5 (D-045): 「直接放」 is allowed in one place only, the family-library
-    branch that a named source or 「我們」 reaches. Unscoped, it made mini skip the
-    question; scoped, the place-only case asked 8/8 and 「放我們去波士頓旅行的影片」
-    played 4/4 (without the phrase: 1/4).
+    D-038's ask-first rule cost a turn on every place-only request, and mini asked
+    even for 「我們去…」 (live 0/3 on 1.36.7). Replay on the robot: our-trip 1/4 → 4/4,
+    place only 0/4 → 4/4, a place the library lacks → offer YouTube 1/4 → 4/4.
+    YouTube stays for a named YouTube or something public, and after a miss only
+    once the user agrees. 「要放就直接放」 unscoped made mini skip that question.
     """
     from reachy_companion.prompts import hardening_block
 
     block = hardening_block()
     assert "要放就直接放" not in block
     assert block.count("直接放") == 1
-    assert "就是家裡的影片庫，直接放" in block
-    assert "不要再問使用者一次" not in block
-    assert "先問一句" in block and "要找家裡的影片庫還是 YouTube" in block
-    assert "等回答了再照原本的要求做" in block
+    assert "都先在家裡的影片庫找，找到就直接放" in block
+    assert "影片庫裡沒有，就說沒有" in block and "對方答應了再找" in block
+    assert "還是 YouTube" not in block

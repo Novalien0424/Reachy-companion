@@ -17,7 +17,8 @@ runs with PuTTY, with these differences:
   PuTTY's `plink`/`pscp -pw`, or offer the operator one-time SSH key setup
   (append a public key to `~/.ssh/authorized_keys` for `REACHY_SSH_USER` — ask
   first).
-- **Transfers:** `pscp -pw` replaces `scp` in steps 3 and 4 (persona sync).
+- **Scripts:** `deploy.sh` and `persona_sync.sh` are bash over ssh. On Windows run their steps
+  by hand, with `pscp -pw` for `scp` and `plink` for `ssh`.
 - **Run plink/pscp from PowerShell, never Git Bash.** Git Bash rewrites a
   remote command whose first token is a POSIX path (`/venvs/...` became
   `C:/Program Files/...`), so the force-reinstall silently didn't run — and the

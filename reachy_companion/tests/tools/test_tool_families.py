@@ -340,19 +340,23 @@ async def test_a_single_tool_forwards_its_arguments_and_drops_only_none(monkeypa
     assert seen == [{"query": "a cat video"}]
 
 
-def _ask_first_clause(description: str) -> str:
-    start = description.index("Ask first when:")
-    return description[start : description.index("Do NOT use when:", start)]
+def test_youtube_and_nas_agree_that_a_place_goes_to_the_library_first() -> None:
+    """D-046 (2026-11-01): a place, a trip, a year or an event is nas's, checked first.
 
-
-def test_youtube_and_nas_ask_first_with_the_same_words() -> None:
-    """D-038 live case 6: 「電視上放…的影片」 went to youtube; a place alone fits both sources.
-
-    The rule is mirrored word for word so neither tool reads as the default, and
-    no youtube example is framed by the TV, which every media request shares.
+    The contrast is symmetric (D-038): nas claims it under Use, youtube hands it
+    to nas under Do NOT, and youtube takes it back only after the 影片庫 had
+    nothing and the user agreed. No example is framed by the TV, which every
+    media request shares.
     """
-    assert _ask_first_clause(Youtube.description) == _ask_first_clause(Nas.description)
+    claim = "asks for a video of a place, a trip, a year or an event, or of the family"
+    use, _, dont = Nas.description.partition("Do NOT use when:")
+    assert claim in use and "look here first even when no source is named" in use
+    use, _, dont = Youtube.description.partition("Do NOT use when:")
+    assert claim in dont and "that is nas, looked at first" in dont
+    assert "agreed to YouTube after the 影片庫 had nothing" in use
+    assert "Ask first" not in Nas.description + Youtube.description
     assert "電視上放" not in Youtube.description
+    assert "ask whether to look on YouTube; search it only once they agree" in Nas.description
 
 
 def test_nas_plays_in_one_call_and_lists_only_to_browse() -> None:
@@ -368,7 +372,6 @@ def test_nas_plays_in_one_call_and_lists_only_to_browse() -> None:
     assert "`list` tells what is there and plays nothing" in Nas.description
     assert "limit" not in Nas.parameters_schema["properties"]
     assert len(Nas.description) < 800 and len(Youtube.description) < 600
-    assert "wait for the answer, then do what they asked" in _ask_first_clause(Nas.description)
 
 
 # --- 1.30.0 body and memory families (mini context diet) ----------------------
