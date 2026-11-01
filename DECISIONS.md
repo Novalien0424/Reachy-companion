@@ -3165,3 +3165,33 @@ has MCP already".
   session's first seconds, while the wake-time face check runs. The preamble
   covers it.
 
+
+## D-048 — A concise PRD of what Reachy does; the harness compacted for Opus 5.5 (2026-11-01)
+
+The operator asked to "compact all harness and skills according to Opus 5.5
+guidebook" and for "a PRD.md that is concise and write that REACHY can do".
+
+- **`docs/PRD.md` is now the concise one** (about 1,500 words, down from
+  7,347). It states the goal, what Reachy can do, the five-demo acceptance,
+  known limits, the rules it is built under, and the non-goals.
+  - The full original (user stories, journeys, architecture) is at `bb0291f`.
+  - The section numbers that older decisions and plans cite (§8, §9, §10,
+    §11, US-xx, F-xx) refer to that text.
+  - Live references now name sections: PRD § Acceptance, § Rules,
+    § Non-goals.
+- **The guidebook:** the Claude docs' prompt-audit guide and the Opus 5 → 5.5
+  behavioral notes. Cruft is not length: remove specific dated patterns and
+  keep context, reasons, fragile exact scripts and tool contracts.
+- **What the compaction removed:**
+  - **Incident stories pinned to versions and dates.** Each rule now keeps its
+    reason as a current fact.
+  - **Pressure language.** The reuse-first skill's alarm register is gone.
+  - **Trained-default restatements** in `CLAUDE.md`.
+  - **A trigger-phrase list** in the deploy skill's description.
+  - **Stale facts.** The model is mini; the robot runs reasoning `medium` from
+    its instance `.env`, while the code default is `low`.
+  - **Memory files:** their bodies were cut to the rule, its reason and how to
+    apply it. They also pointed at a file-sending tool that isn't available.
+- **Unchanged:** every rule, the hard limits, the deploy procedure, the state
+  file table, and the skills' triggers. The tests that read the deploy skill
+  pass (34/34).

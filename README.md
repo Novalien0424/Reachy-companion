@@ -261,10 +261,11 @@ Live on the robot (seventeenth install, v1.17.0) and in daily family use:
 conversation, face recognition, person memory, music, TV and home-video
 casting, calendar/tasks/email, home control and the name-gated barge-in are
 all deployed with runnable evidence recorded per feature. What remains open is
-formal, scripted validation of the five PRD §8 demo gates plus a set of live
+formal, scripted validation of the five PRD demo gates plus a set of live
 acceptance rows for the newest wave — all tracked with exact pass criteria in
-[`feature_list.json`](feature_list.json). Requirements, journeys and the
-as-built architecture are in [docs/PRD.md](docs/PRD.md); current verified
+[`feature_list.json`](feature_list.json). What Reachy does and the rules it is
+built under are in [docs/PRD.md](docs/PRD.md) (the original requirements,
+journeys and architecture are in its git history at `bb0291f`); current verified
 state and open items are in [progress.md](progress.md); release notes in
 [CHANGELOG.md](CHANGELOG.md).
 

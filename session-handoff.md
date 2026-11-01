@@ -19,6 +19,10 @@ stops on 1.38.0. The detail is in D-046 and D-047.
   - **Time and date:** Pollen's bundled MCP time tool is the 20th tool. Live:
     time 3/3, date 2/2, news still goes to search.
 
+- **Docs and harness (D-048):** a concise `docs/PRD.md` of what Reachy can
+  do (the original is at `bb0291f`). `CLAUDE.md`, the project skills and the
+  memory files were compacted against the Opus 5.5 guidance.
+
 ## Open, in order
 
 1. **Operator, in normal use:** check W3/W4 with real speech

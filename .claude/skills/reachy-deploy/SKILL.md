@@ -1,6 +1,6 @@
 ---
 name: reachy-deploy
-description: Use when deploying, installing, updating, starting, or stopping the reachy_companion app on the physical Reachy Mini robot — "deploy to the robot", "install the app on reachy", "push to the robot", "run it on the real robot", syncing persona.md to the robot — or when running live tests or demo verification on the robot, or when the app stop hangs.
+description: Use for any work on the physical Reachy Mini robot — deploying, installing, updating, starting or stopping the reachy_companion app, syncing persona.md to it, running live tests or demo checks on it, clearing an app stop that hangs, or touching its Wi-Fi watchdog.
 ---
 
 # Reachy Deploy
@@ -23,7 +23,7 @@ Every script below is in `scripts/` and runs from the Mac with bash.
   file: a committed LAN address or username can't be taken back.
 - The Mac's ed25519 key is authorized on the robot: plain `ssh -o BatchMode=yes`
   and `scp`. Never run a bulk transfer under `expect`: scp under its pty stalls
-  indefinitely (it passed for a flaky radio for two days). The password lane is
+  indefinitely, which looks like a flaky radio. The password lane is
   only for re-adding the key after a reflash. Robot-pull over HTTP
   (`python3 -m http.server` on the Mac, `curl` + sha check on the robot) works
   when ssh doesn't.
@@ -61,8 +61,8 @@ What it relies on, and what to do by hand:
   deps. When a dependency is added or bumped, first prove it resolves to
   aarch64 wheels:
   `uv pip compile --python-platform aarch64-manylinux_2_28 --only-binary :all:`.
-- **Instance state** lives in `~/.config/reachy_companion/` (mode 700, since
-  v1.25.0), outside site-packages, so a reinstall leaves it alone. The backup
+- **Instance state** lives in `~/.config/reachy_companion/` (mode 700),
+  outside site-packages, so a reinstall leaves it alone. The backup
   is insurance, not a restore step. `backup_instance.sh` copies the state into
   a fresh, empty `/tmp/reachy_companion_backup/<stamp>/` with a manifest that
   holds names, modes and counts, never a credential filename. Put that
@@ -103,9 +103,8 @@ What it relies on, and what to do by hand:
   - `persona_sync.sh status` compares the two copies and names the repo
     revision a stale robot copy matches.
 
-  It reads `~/.config/reachy_companion/persona.md`. The package directory still
-  holds a pre-v1.25.0 copy that nothing reads, and on 2026-10-31 checking it
-  wrongly reported the robot two months stale.
+  It reads `~/.config/reachy_companion/persona.md`. The old copy in the
+  package directory is read by nothing, so never compare against it.
 - **Before demos**, preload assets: scp `scripts/preload_assets.py` (repo
   root) and run it with `/venvs/apps_venv/bin/python` as the app's user. It
   fetches the emotion clips, YuNet, SFace (about 37 MB) and the pinned Silero
@@ -130,8 +129,8 @@ the cheapest tier that can show the change (D-044):
 2. **`qa_replay.py` + `qa_cases.json`, on the robot, text only.** Model-choice
    cases replayed from the installed wheel (usage in its docstring).
    `--override cand.json` measures a candidate wording before it is built: run
-   the same cases with and without it. Replay can overstate a live rate (12/24
-   replay vs 0/3 live on 2026-10-31), so confirm a gain live.
+   the same cases with and without it. Replay can overstate a live rate, so
+   confirm a gain live.
 3. **`live_case.sh 1 "<話>" [wait]`** (fresh session) / **`live_case.sh 0 "<話>"`**
    (next turn), for what needs the live model or real audio. It mutes the mic
    and sends the text over `/rpc conversation.say`, which also flushes audio, so
@@ -144,7 +143,7 @@ the cheapest tier that can show the change (D-044):
 
 Reading the results:
 - **k/n, 3–4 fresh runs per case**, next to the previous build's rate. One
-  pass on mini is an anecdote (3/3 on 1.28.3 became 2/3 on 1.28.4).
+  pass on mini is an anecdote.
 - **A spoken preamble** is `out_audio` > 0 on the response that carries the
   tool call, and its words are the `Preamble transcript` line. That line is
   the only place they appear: they never reach the transcript or memory.
@@ -179,8 +178,8 @@ Shell habits that cost time here:
 
 - **No pip into the daemon's environment.** Only `/venvs/apps_venv` is ours.
   Daemon updates go through its own updater (`/update/…`), and only under a
-  recorded authorization: the 2026-10-28 upgrade to the latest release
-  (D-033). For any other daemon change, propose it; never do it.
+  recorded authorization (D-033 holds the last one). For any other daemon
+  change, propose it; never do it.
 - **No edits under the daemon's installation or its config.** The startup app
   is set only through `PUT /api/apps/startup-app`, and only when the operator
   asks.

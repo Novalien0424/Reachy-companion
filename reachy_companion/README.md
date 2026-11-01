@@ -18,7 +18,7 @@ barge-in, face tracking, expressive motion, on-demand camera vision, automatic
 web search, home control, persistent fact and face memory, and a cute robotic
 voice produced on-device.
 
-Product requirements and architecture: [`../docs/PRD.md`](../docs/PRD.md).
+What Reachy does and the rules it is built under: [`../docs/PRD.md`](../docs/PRD.md).
 
 ## Locked single-persona profile
 

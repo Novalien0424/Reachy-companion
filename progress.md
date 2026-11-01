@@ -5,6 +5,11 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
 
+**Docs and harness (2026-11-01, D-048):** `docs/PRD.md` is now a concise
+statement of what Reachy can do (1,492 words; the original is at `bb0291f`).
+`CLAUDE.md`, the three project skills and the memory files were compacted
+against the Opus 5.5 guidance. No code changed, and the robot is untouched.
+
 **v1.38.0 INSTALLED (2026-11-01 07:11 UTC, wheel `60232618`); Reachy asleep
 (app stopped), TV off.** Operator rulings on the two open calls (D-047).
 - **A miss asks before YouTube.** The miss carries the question (`ask_user`),
@@ -79,7 +84,7 @@ Everything below is on the robot (v1.36.7). Each row's probe is in its
 `verification` field in `feature_list.json`; what is missing is a person in the
 room or real speech.
 
-- **PRD §8 demos:** `DEMO-1`–`DEMO-5` in one in-room run of
+- **PRD demos:** `DEMO-1`–`DEMO-5` in one in-room run of
   `docs/five-demo-checklist.md`. `US-02` (head follows a face from boot),
   `US-09`, `DAEMON-UPGRADE-LATEST`, `UPSTREAM-REFRESH-2026-10` and
   `MCP-RESULT-TRIM` ride the same run.

@@ -1,4 +1,4 @@
-# Five-demo in-room checklist (PRD §8)
+# Five-demo in-room checklist (PRD § Acceptance)
 
 For a person in the room with the robot. Each demo lists what to do and the
 journal line that proves it. Pull the journal afterwards from the Mac:

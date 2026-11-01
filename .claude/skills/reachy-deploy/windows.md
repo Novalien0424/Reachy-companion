@@ -20,7 +20,7 @@ runs with PuTTY, with these differences:
 - **Scripts:** `deploy.sh` and `persona_sync.sh` are bash over ssh. On Windows run their steps
   by hand, with `pscp -pw` for `scp` and `plink` for `ssh`.
 - **Run plink/pscp from PowerShell, never Git Bash.** Git Bash rewrites a
-  remote command whose first token is a POSIX path (`/venvs/...` became
-  `C:/Program Files/...`), so the force-reinstall silently didn't run — and the
+  remote command whose first token is a POSIX path (`/venvs/...` becomes
+  `C:/Program Files/...`): the force-reinstall silently doesn't run, and the
   plain install then reports "already installed" because the wheel version
-  never changes.
+  hasn't changed.
