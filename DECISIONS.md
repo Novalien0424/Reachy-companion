@@ -3063,6 +3063,8 @@ stall.
 
 ## D-046 — Operator rulings on D-045's open questions; a trip video plays from the 影片庫 first (2026-11-01)
 
+*Amended by D-047: after a miss, YouTube waits for the user's yes (a named question, and a rail in `youtube`).*
+
 **Operator rulings (2026-11-01):** "keep limit, trip video should play directly
 if found, silent dance if no way to fix leave it".
 
@@ -3114,3 +3116,52 @@ with `backup_instance.sh` and `verify_install.py`; the pre-v1.25.0 restore
 block left the skill. `progress.md` and `feature_list.json` dropped their
 verified, retired and superseded rows (git keeps them; the last full versions
 are at `0f67ce8`).
+
+## D-047 — A miss asks before YouTube, held in code; the time tool is the 20th (2026-11-01)
+
+**Operator rulings (2026-11-01):** "A miss should ask for permission to search
+on youtube"; "also time and date, it seems reachy conversation app upstream
+has MCP already".
+
+- **A 影片庫 miss asks permission before YouTube.** Two parts:
+  - **Rung 1, the return.** `search_miss` puts the question in a named field,
+    `ask_user` (`nas.ASK_YOUTUBE`), and the error points to it before the trip
+    list: "ask the user the ask_user question and wait for the answer; YouTube
+    is searched only after they say yes. Only if a trip in all_trips is plainly
+    the one meant, play that instead." This is the second text revision of the
+    miss (D-046 was the first). The rate moved from 1/3 to 3/4.
+  - **Rung 3, a consent rail.** Every miss, a Chinese-word miss included, sets
+    `ToolDependencies.youtube_needs_consent`. The handler clears it when the
+    user speaks (`input_audio_buffer.speech_stopped`, or an operator `say`).
+    While it is set, `youtube` refuses with "not yet: … ask them the ask_user
+    question, and call youtube only after they agree", and logs `youtube:
+    waiting for the user's yes`. The permission is the operator's rule, and
+    the rail is what makes "YouTube unasked" impossible rather than rare.
+- **The time and the date come from Pollen's bundled time tool.** It is the MCP
+  tool space `pollen-robotics/reachy-mini-time-tool`, already in
+  `PREINSTALLED_TOOL_SPACE_SPECS` and in the robot's manifest, but never in the
+  locked profile. It joins `default_tools` and `CORE_TOOL_NAMES`, so the
+  session has 20 tools in 一對一 and 多人; the operator's message is the OK for
+  going past 19. An empty timezone resolves the caller's own (Asia/Taipei). Its
+  description is restyled in house form, with one anchor, 「現在幾點？」, where
+  the confusion was seen. `search_web`'s Do NOT names it back: "or asks the
+  time or the date — that is get_time".
+
+**Evidence** (1.38.0, wheel `60232618`). Live, fresh sessions, mic muted:
+
+| Case | 1.37.0 | 1.38.0 |
+|---|---|---|
+| 「放冰島的影片」: asks about YouTube | 1/3 | 3/4 |
+| … plays YouTube unasked | 1/3 | 0/4 |
+| … says 「找不到」, no offer | 1/3 | 1/4 |
+| 「現在幾點？」 → get_time, right time | 0/1 (search) | 3/3 |
+| 「今天幾月幾號（星期幾）？」 → get_time | — | 2/2 (one a second turn) |
+| 「今天台灣有什麼重要新聞？」 → search_web | — | 1/1 |
+
+- After the ask, 「好啊，那就到 YouTube 找」 cleared the rail and YouTube played.
+- The rail never fired in the four misses: mini didn't try YouTube.
+- Prefix: 6291 (6092 on 1.37.0).
+- Time tool latency on the robot: 3.1 s on a second turn, and 6.4 s in a fresh
+  session's first seconds, while the wake-time face check runs. The preamble
+  covers it.
+

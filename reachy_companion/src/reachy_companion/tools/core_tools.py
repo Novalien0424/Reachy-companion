@@ -101,6 +101,11 @@ class ToolDependencies:
     # skip the tool. Gates the sleep summary so settings/backend restarts
     # (console.py:307/:697 also reach shutdown()) don't write mid-visit.
     sleep_requested: bool = False
+    # The operator's rule (D-047): after the 影片庫 finds nothing, YouTube waits
+    # for the user's yes. Set by every 影片庫 miss, cleared by the handler when
+    # the user speaks (speech stopped, or an operator `say`); `youtube` refuses
+    # to search while it is set. Live on 1.37.0 mini played YouTube unasked 1/3.
+    youtube_needs_consent: bool = False
 
     def record_recognition(self, name: str) -> None:
         """Note that `name` is in front of the robot right now.

@@ -3477,6 +3477,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             raise ValueError("say: empty text")
         if not self.connection:
             raise RuntimeError("say: no active session")
+        self.deps.youtube_needs_consent = False  # a typed turn is the user speaking (D-047)
         await self.connection.conversation.item.create(
             item={
                 "type": "message",
@@ -4417,6 +4418,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     if event.type == "input_audio_buffer.speech_stopped":
                         self._stamp_speech_stopped_at(getattr(event, "item_id", None))
+                        # D-047: the user has spoken since any 影片庫 miss, so YouTube is theirs to ask for.
+                        self.deps.youtube_needs_consent = False
                         self._mark_activity("user_speech_stopped")
                         self._party_speech_open = False
                         if not self._party_mode:

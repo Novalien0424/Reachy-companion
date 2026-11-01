@@ -5,15 +5,23 @@ the family's own archive in `nas` -- because the old `tv` façade was named for
 where it goes, and every home-video request also says "on the TV". The work is
 `play_video`'s, unchanged: its prerequisite row, its home-network verdicts and
 its tests all still apply.
+
+D-047: after a 影片庫 miss, YouTube waits for the user's yes. The question is
+the model's to ask; this refusal is the rail for when it doesn't (live on
+1.37.0, mini went straight to YouTube in 1 of 3 misses).
 """
 
 from __future__ import annotations
+import logging
 from typing import Any, Dict, ClassVar
 
+from reachy_companion.hanova.nas import ASK_YOUTUBE
 from reachy_companion.tools.core_tools import Tool, ToolDependencies
 from reachy_companion.tools.play_video import PlayVideo
 from reachy_companion.tools.tool_family import forward_to
 
+
+logger = logging.getLogger(__name__)
 
 class Youtube(Tool):
     """Search YouTube and play the result on the TV."""
@@ -39,5 +47,13 @@ class Youtube(Tool):
     }
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
-        """Search and cast through the tool that has always done it."""
+        """Search and cast through the tool that has always done it, once the user may want YouTube."""
+        if getattr(deps, "youtube_needs_consent", False):
+            logger.info("youtube: waiting for the user's yes after a 影片庫 miss")
+            return {
+                "ok": False,
+                "error": "not yet: the 影片庫 had nothing, and the user has not said yes to YouTube. "
+                "Ask them the ask_user question, and call youtube only after they agree.",
+                "ask_user": ASK_YOUTUBE,
+            }
         return await forward_to(name=self.name, delegate=self.DELEGATE, deps=deps, kwargs=kwargs)

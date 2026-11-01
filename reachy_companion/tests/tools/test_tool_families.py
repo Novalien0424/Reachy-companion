@@ -20,6 +20,7 @@ import pytest
 
 from reachy_companion.hanova import settings
 from reachy_companion.tools.nas import Nas
+from reachy_companion.hanova.nas import ASK_YOUTUBE
 from reachy_companion.tools.face import Face
 from reachy_companion.tools.head import Head
 from reachy_companion.tools.dance import Dance
@@ -338,6 +339,27 @@ async def test_a_single_tool_forwards_its_arguments_and_drops_only_none(monkeypa
     monkeypatch.setattr(PlayVideo, "__call__", _play)
     assert await Youtube()(_deps(), query="a cat video", extra=None) == {"ok": True, "status": "casting"}
     assert seen == [{"query": "a cat video"}]
+
+
+@pytest.mark.asyncio
+async def test_youtube_waits_for_a_yes_after_a_library_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-047: after a 影片庫 miss nothing is searched until the user speaks, and the refusal says to ask."""
+    seen: list[dict[str, Any]] = []
+
+    async def _play(self, deps, **kwargs):
+        seen.append(kwargs)
+        return {"ok": True, "status": "casting"}
+
+    monkeypatch.setattr(PlayVideo, "__call__", _play)
+    deps = _deps()
+    deps.youtube_needs_consent = True
+    out = await Youtube()(deps, query="Iceland travel")
+    assert out["ok"] is False and out["ask_user"] == ASK_YOUTUBE
+    assert "call youtube only after they agree" in out["error"]
+    assert seen == []
+    deps.youtube_needs_consent = False  # the user answered
+    assert (await Youtube()(deps, query="Iceland travel"))["ok"] is True
+    assert seen == [{"query": "Iceland travel"}]
 
 
 def test_youtube_and_nas_agree_that_a_place_goes_to_the_library_first() -> None:

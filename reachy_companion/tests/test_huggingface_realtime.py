@@ -2373,3 +2373,34 @@ async def test_each_session_logs_the_lead_of_its_first_local_start(
         assert "before the server's speech_started (first this session)" in record.getMessage()
         assert lead_ms >= 40.0
     hf_mod.audio_drain.reset()
+
+
+@pytest.mark.asyncio
+async def test_the_user_speaking_lifts_the_youtube_hold(monkeypatch: Any) -> None:
+    """D-047: a 影片庫 miss holds YouTube until the user speaks, by voice or by a typed `say`."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Aiden")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda exclusion_list=None: [])
+    hf_mod.audio_drain.reset()
+    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock())
+    handler = HuggingFaceRealtimeHandler(deps)
+    monkeypatch.setattr(type(handler.tool_manager), "start_up", MagicMock())
+    monkeypatch.setattr(type(handler.tool_manager), "shutdown", AsyncMock())
+
+    deps.youtube_needs_consent = True
+    handler.client = _make_fake_realtime_client(
+        events=(
+            _FakeEvent("input_audio_buffer.speech_started", item_id="item_1"),
+            _FakeEvent("input_audio_buffer.speech_stopped", item_id="item_1"),
+        )
+    )
+    await handler._run_realtime_session()
+    assert deps.youtube_needs_consent is False
+
+    deps.youtube_needs_consent = True
+    handler.connection = MagicMock()
+    handler.connection.conversation.item.create = AsyncMock()
+    monkeypatch.setattr(handler, "_safe_response_create", AsyncMock())
+    await handler.say("好啊")
+    assert deps.youtube_needs_consent is False
+    hf_mod.audio_drain.reset()

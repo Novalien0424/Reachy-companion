@@ -9,6 +9,23 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.38.0] — 2026-11-01 · a miss asks before YouTube; Reachy knows the time and date
+
+Deployed as the forty-sixth install (wheel sha `60232618…`). Decision D-047
+(operator rulings on `VIDEO-MISS-FOLLOWUP` and `TIME-OF-DAY-ANSWER`).
+
+- **When the 影片庫 has nothing, Reachy asks before it searches YouTube.** The
+  miss result now carries the question in an `ask_user` field, and the error
+  points to it first. `youtube` also refuses while the user hasn't spoken
+  since the miss, so YouTube can't play unasked. Live, 「放冰島的影片」: asked
+  3/4 (1.37.0: 1/3), YouTube unasked 0/4 (1/3), no offer 1/4. After 「好啊」,
+  YouTube played.
+- **「現在幾點？」 and 「今天幾號？」 get answered.** Pollen's bundled time tool
+  (an MCP tool space) is the 20th tool, with the operator's OK. Its text now
+  says when to use it, and search hands it the time and the date. Live: time
+  3/3, date 2/2, news still goes to search 1/1. The call takes about 3 s
+  (6 s while the wake-time face check runs). Prefix 6291 tokens (6092).
+
 ## [1.37.0] — 2026-11-01 · a trip video plays from the 影片庫 first
 
 Deployed as the forty-fifth install (wheel sha `11fca7fc…`), with the new

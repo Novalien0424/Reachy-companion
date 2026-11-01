@@ -32,7 +32,7 @@ Before rewording anything, read the robot journal for the failing turn:
 - The tool's result as delivered to the model, not as the tool returned it.
   In 1.29.1 an error result lost every field but its message on the way to
   the model; the fix was transport, not wording.
-- `Tools in session (<mode>, startup, N)`: the surface it had (19 / 19 / 4).
+- `Tools in session (<mode>, startup, N)`: the surface it had (20 / 20 / 4).
 - The first `Response usage in=` of a fresh session: the fixed prefix.
 
 ## The escalation ladder (house rule)
@@ -64,14 +64,14 @@ played in one call.
   which call it makes first for an intent and make that call finish the job
   (`nas play` finds and plays). In 1.28.4 a 2,038-character description
   taught a one-call play, and mini never used it.
-- **Under 20 tools, all loaded, no toolboxes** (OpenAI: "fewer than 20
-  functions at the start of a turn"). A box cost an extra call mini could
+- **About 20 tools, all loaded, no toolboxes** (OpenAI: "fewer than 20
+  functions at the start of a turn"; the time tool made it 20, D-047). A box cost an extra call mini could
   miss, and changing tools mid-session lowers the cache rate. A phase the app
   knows gets its own smaller surface (record mode: 4).
 - **Families of 2–3 related actions** (`dance`, `head`, `memory`, `face`, via
   `tool_family.dispatch_family` over the unchanged upstream classes). Stop
   there: an all-in-one tool raised no-call runs from 10% to 28% (MCP-GRANITE).
-  A new capability joins a family or replaces a tool; going past 19 needs the
+  A new capability joins a family or replaces a tool; going past 20 needs the
   operator's OK. Wiring a tool in: `docs/adding-a-skill.md` (the profile's
   `default_tools` and `CORE_TOOL_NAMES`).
 - **Names: in-distribution, as an A/B.** Renames touch the profile's

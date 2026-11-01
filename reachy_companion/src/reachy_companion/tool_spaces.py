@@ -58,7 +58,8 @@ PREINSTALLED_TOOL_SPACE_SPECS = {
                 "Search the web for current information and return a short list of results (title, snippet, url). "
                 "Use when: the answer depends on current facts — news, weather, prices, scores, today's events — "
                 "even if the user did not say search; answer those from the results, not from memory. "
-                "Do NOT use when: the user wants media played — that is music, youtube or nas. "
+                "Do NOT use when: the user wants media played — that is music, youtube or nas; "
+                "or asks the time or the date — that is get_time. "
                 "Preamble sample for slow web lookup: 「我查一下」 (示範語氣，不是觸發條件). "
                 "Say a brief lead-in in the conversation's language, then call this tool; "
                 "the lead-in is not a substitute for the call."
@@ -81,10 +82,11 @@ PREINSTALLED_TOOL_SPACE_SPECS = {
                 "pollen_robotics_reachy_mini_time_tool", "reachy_mini_time_tool_get_time"
             ),
             description=(
-                "Get the current date and time for an IANA timezone, and optionally the difference to a second timezone. "
-                "Call this directly whenever the user asks what time it is or the time somewhere. Pass an IANA name like "
-                "'Europe/Paris' or 'Asia/Tokyo' for a named place (derive it from the place), or leave the timezone empty "
-                "for the user's own local time. Do not ask for their city and do not just say you'll check."
+                "The current date and time: the weekday, the date and the clock time, here or in a named place, and "
+                "optionally the difference to a second timezone. Use when: the user asks the time, the date or the day "
+                "of the week, like 「現在幾點？」 — call it directly; do not ask for their city and do not just say "
+                "you'll check. Leave timezone empty for the time here, or pass the IANA name of a named place, like "
+                "'Asia/Tokyo'. Do NOT use when: the answer needs news or other current facts — that is search_web."
             ),
             parameters_schema={
                 "type": "object",

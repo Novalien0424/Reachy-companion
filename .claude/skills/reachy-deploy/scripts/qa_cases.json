@@ -205,7 +205,8 @@
     "outputs": {
       "nas": {
         "ok": false,
-        "error": "nothing in the 影片庫 fits: if no trip in all_trips is the one meant, tell the user and ask whether to look on YouTube",
+        "error": "nothing in the 影片庫 fits: ask the user the ask_user question and wait for the answer; YouTube is searched only after they say yes. Only if a trip in all_trips is plainly the one meant, play that instead.",
+        "ask_user": "家裡的影片庫沒有找到這個影片，要我到 YouTube 找找看嗎？",
         "all_trips": [
           {
             "top_folder": "Trip A",
@@ -230,6 +231,38 @@
     "say": "瑞奇，放周杰倫的 MV",
     "expect": {
       "tool": "youtube"
+    }
+  },
+  {
+    "id": "time-now",
+    "targeted": true,
+    "say": "瑞奇，現在幾點？",
+    "expect": {
+      "tool": "pollen_robotics_reachy_mini_time_tool__get_time",
+      "no_tool": [
+        "pollen_robotics_reachy_mini_search_tool__search_web"
+      ]
+    }
+  },
+  {
+    "id": "date-today",
+    "targeted": true,
+    "say": "瑞奇，今天是幾月幾號，星期幾？",
+    "expect": {
+      "tool": "pollen_robotics_reachy_mini_time_tool__get_time",
+      "no_tool": [
+        "pollen_robotics_reachy_mini_search_tool__search_web"
+      ]
+    }
+  },
+  {
+    "id": "news-stays-search",
+    "say": "瑞奇，今天有什麼重要新聞？",
+    "expect": {
+      "tool": "pollen_robotics_reachy_mini_search_tool__search_web",
+      "no_tool": [
+        "pollen_robotics_reachy_mini_time_tool__get_time"
+      ]
     }
   },
   {

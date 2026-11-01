@@ -2,7 +2,7 @@
 
 The mini context diet (docs/plans/2026-10-30-mini-context-diet-plan.md, Step 1)
 retired the on-demand toolboxes: every box was a forced extra call, and the mini
-model fails between calls, not at picking them. 19 tools are sent in 一對一 and
+model fails between calls, not at picking them. 20 tools are sent in 一對一 and
 多人, 4 in 紀錄模式, plus any MCP extras, which are never hidden.
 """
 
@@ -92,7 +92,7 @@ def _session_names(registry: ModuleType, mode: ConversationMode) -> set[str]:
     return {spec["name"] for spec in registry.get_tool_specs(exclusion_list=excluded)}
 
 
-# The 19 the locked profile ships, spelled out once so a silent change fails here.
+# The 20 the locked profile ships (19 until the time tool, D-047), spelled out once so a silent change fails here.
 EXPECTED_SESSION_TOOLS = frozenset(
     {
         "camera",
@@ -105,6 +105,7 @@ EXPECTED_SESSION_TOOLS = frozenset(
         "home_control",
         "music",
         "pollen_robotics_reachy_mini_search_tool__search_web",
+        "pollen_robotics_reachy_mini_time_tool__get_time",
         "set_conversation_mode",
         "summarize_conversation",
         "wait_for_user",
@@ -118,10 +119,10 @@ EXPECTED_SESSION_TOOLS = frozenset(
 )
 
 
-def test_the_core_is_the_nineteen_tools_and_nothing_else() -> None:
+def test_the_core_is_the_twenty_tools_and_nothing_else() -> None:
     """"Aim for fewer than 20 functions available at the start of a turn" — all of them, at once."""
     assert CORE_TOOL_NAMES == EXPECTED_SESSION_TOOLS
-    assert len(CORE_TOOL_NAMES) == 19
+    assert len(CORE_TOOL_NAMES) == 20
     # The stop lane is always reachable (Codex round 1, P2-7).
     assert "music" in CORE_TOOL_NAMES
 
@@ -134,11 +135,11 @@ def test_every_registered_tool_is_sent_or_deliberately_hidden(registry: ModuleTy
 
 
 @pytest.mark.parametrize("mode", [ConversationMode.ONE_ON_ONE, ConversationMode.GROUP])
-def test_both_talking_modes_send_the_nineteen(registry: ModuleType, mode: ConversationMode) -> None:
+def test_both_talking_modes_send_the_twenty(registry: ModuleType, mode: ConversationMode) -> None:
     """一對一 and 多人 share one surface; MCP extras sit on top of it."""
     kept = _session_names(registry, mode)
     assert kept - set(registry.EXTRA_TOOLS) == EXPECTED_SESSION_TOOLS
-    assert len(kept - set(registry.EXTRA_TOOLS)) == 19
+    assert len(kept - set(registry.EXTRA_TOOLS)) == 20
 
 
 @pytest.mark.parametrize("mode", list(ConversationMode))
@@ -265,15 +266,15 @@ async def test_the_idle_picker_obeys_the_mode_tool_diet(monkeypatch: pytest.Monk
 _OLD_22_CORE_SCHEMA_CHARS = 21_921
 
 
-def test_the_nineteen_schemas_are_smaller_than_the_old_twenty_two_core(
+def test_the_twenty_schemas_are_smaller_than_the_old_twenty_two_core(
     registry: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """All 19 always-on tools must cost less every turn than the 22 that used to be the core."""
+    """All 20 always-on tools must cost less every turn than the 22 that used to be the core."""
     monkeypatch.delenv("HA_ENTITIES", raising=False)
     registry.initialize_tools(force=True)  # `home_control` builds its description from HA_ENTITIES
     specs = registry.get_tool_specs(exclusion_list=session_tool_exclusions(ConversationMode.ONE_ON_ONE))
     local = [spec for spec in specs if spec["name"] not in registry.EXTRA_TOOLS]
-    assert len(local) == 19
+    assert len(local) == 20
     total = sum(len(json.dumps(spec, ensure_ascii=False)) for spec in local)
     assert total < _OLD_22_CORE_SCHEMA_CHARS, total
 

@@ -87,6 +87,7 @@ class PlayNasVideo(Tool):
                 keyword=str(filters["keyword"]) if filters["keyword"] else None,
             )
         if not matches:
+            deps.youtube_needs_consent = True  # D-047: YouTube waits for the user's yes
             return nas.search_miss(index, words)
 
         ready = [video for video in matches if video.get("cast_ready")]

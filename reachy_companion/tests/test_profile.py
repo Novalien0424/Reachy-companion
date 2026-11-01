@@ -42,6 +42,8 @@ EXPECTED_TOOLS = (
     # removed in 1.30.0.
     "music",
     "pollen_robotics_reachy_mini_search_tool__search_web",
+    # D-047: the bundled time tool, with the operator's OK for a 20th tool.
+    "pollen_robotics_reachy_mini_time_tool__get_time",
     "set_conversation_mode",
     "summarize_conversation",
     "wait_for_user",
@@ -71,10 +73,10 @@ def test_locked_profile_ships_exactly_the_expected_tools() -> None:
     Two system tools (`task_status`, `task_cancel`) are appended at registry
     build time (`tools/core_tools.py:_read_profile_tool_names`), but since
     1.30.0 they are hidden from the session in every mode, so the session the
-    operator sees advertises exactly these 19.
+    operator sees advertises exactly these 20.
     """
     assert tuple(read_profile(LOCKED_PROFILE).default_tools) == EXPECTED_TOOLS
-    assert len(EXPECTED_TOOLS) == 19
+    assert len(EXPECTED_TOOLS) == 20
 
 
 def test_locked_profile_can_be_told_to_go_to_sleep() -> None:

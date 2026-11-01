@@ -774,3 +774,15 @@ def test_install_tool_space_refreshes_cached_metadata(
     matching_spaces = [space for space in refreshed_result.manifest.spaces if space.slug == SEARCH_SPACE_SLUG]
     assert len(matching_spaces) == 1
     assert matching_spaces[0].tools[0].description == "Refreshed description"
+
+
+def test_the_time_tool_and_search_hand_each_other_their_questions() -> None:
+    """D-047: 「現在幾點？」 went to the web search; the contrast now runs both ways."""
+    from reachy_companion.tool_spaces import PREINSTALLED_TOOL_SPACE_SPECS
+
+    search = PREINSTALLED_TOOL_SPACE_SPECS["pollen-robotics/reachy-mini-search-tool"][0].description
+    time_tool = PREINSTALLED_TOOL_SPACE_SPECS["pollen-robotics/reachy-mini-time-tool"][0].description
+    assert "or asks the time or the date — that is get_time" in search
+    assert "the time, the date or the day of the week" in time_tool and "that is search_web" in time_tool
+    # One Chinese anchor, where the confusion was seen.
+    assert time_tool.count("「") == 1

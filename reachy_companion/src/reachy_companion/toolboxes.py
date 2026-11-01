@@ -11,9 +11,10 @@ The mini context diet (2026-10-30, docs/plans/2026-10-30-mini-context-diet-plan.
 removed the boxes: every box was a forced extra call, and the mini model fails
 between calls, not at picking them. Calendar, tasks and Notion went, nine body
 and memory tools became four families, and everything left fits under the
-"fewer than 20" line at once.
+"fewer than 20" line at once. The time tool made it 20, with the operator's OK
+(2026-11-01, D-047).
 
-Result at the start of every turn: 19 tools in 一對一 and 多人, and 4 local tools
+Result at the start of every turn: 20 tools in 一對一 and 多人, and 4 local tools
 in 紀錄模式. Every count is "plus any `EXTRA_TOOLS`": MCP tool spaces are never
 hidden in any mode, so they sit on top of these. The phase rule OpenAI gives
 ("only what's relevant to the active phase") is kept where the APP knows the
@@ -52,6 +53,8 @@ CORE_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         # (`settings.TOOL_PREREQS["stop_music"] == ()`, `stop_music.py:8`).
         "music",
         "pollen_robotics_reachy_mini_search_tool__search_web",
+        # The time and date (D-047): without it 「現在幾點？」 went to the web search.
+        "pollen_robotics_reachy_mini_time_tool__get_time",
         "set_conversation_mode",
         "summarize_conversation",
         "wait_for_user",

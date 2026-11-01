@@ -11,6 +11,7 @@ default_tools = [
   "home_control",
   "music",
   "pollen_robotics_reachy_mini_search_tool__search_web",
+  "pollen_robotics_reachy_mini_time_tool__get_time",
   "set_conversation_mode",
   "summarize_conversation",
   "wait_for_user",

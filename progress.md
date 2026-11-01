@@ -5,6 +5,17 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
 
+**v1.38.0 INSTALLED (2026-11-01 07:11 UTC, wheel `60232618`); Reachy asleep
+(app stopped), TV off.** Operator rulings on the two open calls (D-047).
+- **A miss asks before YouTube.** The miss carries the question (`ask_user`),
+  and `youtube` refuses until the user speaks. Live 「放冰島的影片」: asked 3/4
+  (1.37.0: 1/3), YouTube unasked 0/4 (1/3), no offer 1/4. After 「好啊」,
+  YouTube played.
+- **Time and date:** Pollen's bundled time tool is the 20th tool. Live: time
+  3/3, date 2/2, news → search 1/1. Its call takes about 3 s (6 s during the
+  wake face check). Prefix 6291 (6092).
+- **Robot:** no wedge in 9 app stops. Suite 2287 / 31.
+
 **v1.37.0 INSTALLED (2026-11-01 00:52 UTC, wheel `11fca7fc`); Reachy asleep
 (go_to_sleep by voice, app stopped), TV off.** Operator rulings on D-045 (D-046).
 - **A trip or place video plays from the 影片庫 first.** Live: our-trip 3/3
@@ -53,16 +64,12 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Next action
 
-1. **Operator:** `TIME-OF-DAY-ANSWER`: add `get_time` as a 20th tool, or put the
-   time in the session.
-1b. **Operator:** after a miss in the 影片庫, keep asking about YouTube or play
-   YouTube directly (`VIDEO-MISS-FOLLOWUP`, live 1/3 asked).
-2. **Operator, in normal use:** the W3/W4 checks with real speech
+1. **Operator, in normal use:** the W3/W4 checks with real speech
    (`VIDEO-QUIET-GATE`, `GROUP-BARGE-BY-NAME`); both are unit-tested only.
-3. **Next session:** read `~/HomeAssistant/state/nas-transcode.log` for the
+2. **Next session:** read `~/HomeAssistant/state/nas-transcode.log` for the
    2026-11-01 03:30 run, the first with `place_zh`, then run
    `watchdog_cron.sh status`.
-4. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see
+3. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see
    Known defects).
 
 ## Pending verification (operator)
@@ -116,13 +123,10 @@ room or real speech.
 
 ## Known defects / open edges
 
-- `VIDEO-MISS-FOLLOWUP`: after a miss in the 影片庫, Reachy asked about
-  YouTube 1/3, played it unasked 1/3, gave no offer 1/3 (1.37.0). Operator's
-  call: keep the ask or play YouTube directly.
+- `VIDEO-MISS-FOLLOWUP` (verified on 1.38.0): a miss still ends with no YouTube
+  offer 1/4. YouTube unasked is held in code.
 - `DANCE-SPEAKS-ON-GOOD-NEWS`: the good-news dance is silent 3/4. Left as is
   (operator, 2026-11-01).
-- `TIME-OF-DAY-ANSWER`: 「現在幾點？」 has no clock to answer from (no time tool in
-  the 19, no time in the prompt); it web-searched and gave no time. Operator's call.
 - `EMOTION-WITHOUT-SPEECH`: `play_emotion` plays with no words (3/4 on
   1.30.0/1.31.0). Candidate: `needs_response=True`, A/B on the robot, watching
   for double speech.

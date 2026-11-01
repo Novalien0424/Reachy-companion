@@ -467,6 +467,9 @@ def summarize_folders(index: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+# What Reachy asks after a miss, here and in `youtube`'s refusal (D-047).
+ASK_YOUTUBE = "家裡的影片庫沒有找到這個影片，要我到 YouTube 找找看嗎？"
+
 _HAN = re.compile(r"[㐀-鿿豈-﫿]")
 
 
@@ -486,13 +489,18 @@ def search_miss(index: Dict[str, Any], words: List[Any]) -> Dict[str, Any]:
             "ok": False,
             "error": f"nothing is catalogued under {quoted}: the archive is in English; call again yourself with the English words, without asking the user",
         }
-    # 2026-11-01 (D-046): a place alone now comes here first, so a miss is common
-    # and the error names its fix: the user decides whether YouTube is next.
+    # D-046/D-047: a place alone comes here first, so a miss is common, and the
+    # user decides whether YouTube is next. The question is a named field, asked
+    # first; on 1.37.0 a conditional error got it asked 1/3 live.
     return {
         "ok": False,
-        "error": "nothing in the 影片庫 fits: if no trip in all_trips is the one meant, tell the user and ask whether to look on YouTube",
+        "error": "nothing in the 影片庫 fits: ask the user the ask_user question and wait for the answer; "
+        "YouTube is searched only after they say yes. Only if a trip in all_trips is plainly the one meant, "
+        "play that instead.",
+        "ask_user": ASK_YOUTUBE,
         "all_trips": summarize_folders(index),
     }
+
 
 
 def trip_summary(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

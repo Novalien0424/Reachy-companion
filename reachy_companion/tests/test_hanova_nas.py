@@ -1723,6 +1723,29 @@ async def test_play_misses_also_carry_the_catalogue(monkeypatch, tmp_path, catal
         assert out["error"].startswith("nothing in the 影片庫 fits") and len(out["all_trips"]) == len(CATALOGUE["folders"])
 
 
+@pytest.mark.asyncio
+async def test_a_miss_asks_before_youtube_and_holds_it_until_the_user_answers(monkeypatch, tmp_path, catalogue):
+    """D-047 (operator, 2026-11-01): a miss asks permission to search YouTube.
+
+    The question is a named field that the error points to first; the trip
+    list is the exception. Every miss, a Chinese one too, sets the hold that
+    `youtube` refuses on until the user speaks.
+    """
+    _stub_transfer(monkeypatch)
+    for tool, kwargs in (
+        (PlayNasVideo(), {"place": "atlantis"}),
+        (NasVideoQuery(), {"keyword": "atlantis"}),
+        (PlayNasVideo(), {"place": "冰島"}),
+    ):
+        deps = _deps(tmp_path)
+        out = await tool(deps=deps, **kwargs)
+        assert out["ok"] is False and deps.youtube_needs_consent is True
+    out = await PlayNasVideo()(deps=_deps(tmp_path), place="atlantis")
+    assert out["ask_user"] == nas.ASK_YOUTUBE and "YouTube" in out["ask_user"]
+    assert out["error"].index("ask the user the ask_user question") < out["error"].index("all_trips")
+    assert "only after they say yes" in out["error"]
+
+
 def test_clips_by_file_finds_a_clip_by_path_or_file_name_but_never_by_words():
     """The check the YouTube search makes: a NAS file, never a place, a subject or a title (D-038)."""
     clip = CATALOGUE["videos"][1]

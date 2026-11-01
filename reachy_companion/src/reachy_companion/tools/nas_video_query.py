@@ -77,6 +77,7 @@ class NasVideoQuery(Tool):
             keyword=str(filters["keyword"]) if filters["keyword"] else None,
         )
         if not matches:
+            deps.youtube_needs_consent = True  # D-047: YouTube waits for the user's yes
             return nas.search_miss(index, [filters["place"], filters["keyword"]])
         # Every matching trip, even when the clips are capped (2026-10-29).
         trips = nas.trip_summary(matches)
