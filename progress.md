@@ -14,7 +14,8 @@ in git: the last full version of this file is at commit `0f67ce8`.
 - **Time and date:** Pollen's bundled time tool is the 20th tool. Live: time
   3/3, date 2/2, news → search 1/1. Its call takes about 3 s (6 s during the
   wake face check). Prefix 6291 (6092).
-- **Robot:** no wedge in 9 app stops. Suite 2287 / 31.
+- **Robot:** no wedge in 9 app stops. Wi-Fi watchdog verified on a real drop:
+  down 07:33:41Z, reconnected by the watchdog 07:36:06Z. Suite 2287 / 31.
 
 **v1.37.0 INSTALLED (2026-11-01 00:52 UTC, wheel `11fca7fc`); Reachy asleep
 (go_to_sleep by voice, app stopped), TV off.** Operator rulings on D-045 (D-046).
@@ -112,8 +113,8 @@ room or real speech.
 - **Blocked:** `HANOVA-EMAIL` (needs a dictated real address and a
   two-paragraph body read back verbatim).
 - **Probes left:** `VOICE-LOOK-AROUND` (「看右邊」, 「抬頭」 with the journal
-  open); `WIFI-WATCHDOG` (running since 2026-10-31; waits for a real drop).
-  `VOICE-SLEEP-QUIESCE` was verified live on 2026-11-01.
+  open). `VOICE-SLEEP-QUIESCE` and `WIFI-WATCHDOG` (a real Wi-Fi drop,
+  reconnected by the watchdog in about 2.5 min) were verified on 2026-11-01.
 - **Other:** `NAS-PLAY-REQUIRES-SELECTOR` (confirm a live refusal when one
   happens; the actions its error names were renamed in 1.29.0); `US-07`
   (Notion over MCP, planned).
