@@ -4,7 +4,7 @@ Operating contract for this repository. What Reachy does, and the rules it is
 built under, are in `docs/PRD.md`.
 
 This is a proof-of-concept that makes a Reachy Mini Wireless feel physically
-present: interruptible Chinese voice conversation on `gpt-realtime-2.1-mini`,
+present: interruptible Chinese voice conversation on `gpt-realtime-2.1`,
 face tracking, expressive movement, vision on request, web search and MCP
 tools, home control, and a simple pattern for adding Skills. It is a POC, not
 an agent platform.

@@ -9,6 +9,26 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.39.0] — 2026-11-22 · Reachy runs on the full realtime model
+
+Deployed as the forty-seventh install (wheel sha `4cd12177…`). Decision D-049
+(operator: switch from mini to the normal model, on an id that stays current).
+
+- **The default model is `gpt-realtime-2.1`,** the full tier (audio $32/$64
+  per 1M tokens; mini is $10/$20). `REALTIME_MODEL` still overrides it, and
+  the robot's instance `.env` sets none.
+- **There is no "latest" alias to follow.** OpenAI's bare `gpt-realtime` is the
+  deprecated 2025 model (shutdown 2027-01-20), not a pointer to the newest
+  one. `gpt-realtime-2.1` is itself undated; a new generation is a one-line
+  `REALTIME_MODEL` change.
+- **Live on the robot:** the journal says `model gpt-realtime-2.1`; time,
+  camera, a chat turn and sleep by voice all worked; prefix 6291 tokens, as
+  before. Text replay of the 12 tool-choice cases: 11 pass at 3/3 or 2/2,
+  including `our-trip` 3/3 (mini: 12/24 in replay, 0/3 live on 1.36.7). The
+  good-news dance stays silent 0/3, the behavior the operator kept.
+- **Not in this build:** the fixes for calling 「瑞奇」. Their RCA and plan are
+  in `docs/plans/2026-11-22-name-call-rca-plan.md`.
+
 ## [1.38.0] — 2026-11-01 · a miss asks before YouTube; Reachy knows the time and date
 
 Deployed as the forty-sixth install (wheel sha `60232618…`). Decision D-047

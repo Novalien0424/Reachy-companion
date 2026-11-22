@@ -2,7 +2,7 @@
 
 Reachy Companion turns a [Reachy Mini Wireless](https://www.pollen-robotics.com/)
 into a household companion that feels present in the room. It connects the
-robot's microphone, speaker and camera to OpenAI's `gpt-realtime-2.1-mini` as
+robot's microphone, speaker and camera to OpenAI's `gpt-realtime-2.1` as
 one continuous speech-to-speech session.
 
 What it does:
@@ -13,7 +13,7 @@ What it does:
 - It behaves like someone in the room: it answers when you say its name, and
   stays out of conversations that aren't for it.
 
-> **Version:** 1.38.0, the forty-sixth on-robot install. The minor number is
+> **Version:** 1.39.0, the forty-seventh on-robot install. The minor number is
 > the install that shipped it; see [CHANGELOG.md](CHANGELOG.md).
 > **Status:** a proof of concept, live on the robot in daily family use. The
 > formal in-room run of the five demos is pending. Each feature's evidence is
@@ -219,7 +219,7 @@ Settings live in `reachy_companion/.env`. Start from
 | Key | Meaning |
 |---|---|
 | `OPENAI_API_KEY` | Required. |
-| `REALTIME_MODEL` | Default `gpt-realtime-2.1-mini`. |
+| `REALTIME_MODEL` | Default `gpt-realtime-2.1` (full tier). `gpt-realtime-2.1-mini` is the cheaper tier. |
 | `PERSONA_FILE` | Persona override, if not `persona.md` beside `.env`. |
 | `REALTIME_DEFAULT_MODE` | The boot mode: `group` (default), `one_on_one` or `record`. |
 | `REALTIME_VAD_TYPE` | Turn detection: `server_vad` (default) or `semantic_vad`. |

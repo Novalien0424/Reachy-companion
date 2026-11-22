@@ -120,7 +120,7 @@ What it relies on, and what to do by hand:
 
 ## Live verification
 
-Every behavior change is judged on the robot, by mini, in fresh sessions. Use
+Every behavior change is judged on the robot, by the live model, in fresh sessions. Use
 the cheapest tier that can show the change (D-044):
 
 1. **`device_check.sh nas|youtube|speaker|both|all|sleep|paused-sleep`.**
@@ -131,6 +131,9 @@ the cheapest tier that can show the change (D-044):
    `--override cand.json` measures a candidate wording before it is built: run
    the same cases with and without it. Replay can overstate a live rate, so
    confirm a gain live.
+   `name_latency_bench.py` is its audio twin: synthetic 「瑞奇…」 speech into a
+   fresh session, timing when the name arrives as transcript text (usage in
+   its docstring). Clean audio only.
 3. **`live_case.sh 1 "<話>" [wait]`** (fresh session) / **`live_case.sh 0 "<話>"`**
    (next turn), for what needs the live model or real audio. It mutes the mic
    and sends the text over `/rpc conversation.say`, which also flushes audio, so
@@ -143,7 +146,7 @@ the cheapest tier that can show the change (D-044):
 
 Reading the results:
 - **k/n, 3–4 fresh runs per case**, next to the previous build's rate. One
-  pass on mini is an anecdote.
+  pass is an anecdote.
 - **A spoken preamble** is `out_audio` > 0 on the response that carries the
   tool call, and its words are the `Preamble transcript` line. That line is
   the only place they appear: they never reach the transcript or memory.

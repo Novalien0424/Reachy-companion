@@ -75,11 +75,11 @@
     },
     {
       "id": "VOICE-MINI-MODEL",
-      "behavior": "REALTIME_MODEL defaults to gpt-realtime-2.1-mini ($10/$20 vs $32/$64 per 1M audio tokens for gpt-realtime-2.1); tool-calling selection quality across all 39 tools must hold up on the smaller model, since a large tool array is exactly the axis D-019 flagged as the real risk of tool-array growth",
-      "verification": "On-robot: run a session covering a spread of the tool surface (home control, memory, face, the consolidated HANOVA families, set_conversation_mode, wait_for_user) and confirm the mini model selects the correct tool as reliably as gpt-realtime-2.1 did before this round, with no malformed/wrong tool_call args in the log. Since 2026-08-31 (D-029) the start-of-turn surface is 22 tools rather than 39, which is the tool-array axis this row was written to watch — so a re-run after the tool diet is the interesting one. Fallback if selection degrades: set REALTIME_MODEL=gpt-realtime-2.1 in the instance .env, no code change.",
-      "state": "implemented-unverified",
-      "evidence": null,
-      "next_action": "operator on-robot A/B: mini vs full model tool-selection accuracy across a representative tool sample"
+      "behavior": "REALTIME_MODEL defaults to gpt-realtime-2.1, the full tier ($32/$64 per 1M audio tokens; mini is $10/$20), since 1.39.0 (D-049, operator 2026-11-22). Mini was the default from D-023 until then; REALTIME_MODEL=gpt-realtime-2.1-mini restores it",
+      "verification": "the journal's `Using OpenAI realtime handler (model …)` line after a start; live_case.sh turns; qa_replay.py over qa_cases.json",
+      "state": "verified",
+      "evidence": "1.39.0 live 2026-11-22: journal `model gpt-realtime-2.1`; time (get_time), camera, a chat turn and go_to_sleep by voice all worked, prefix 6291; qa_replay 11/12 cases at 3/3 or 2/2 (our-trip 3/3), dance-good-news silent 0/3 as the operator kept it. The mini-vs-full A/B this row once asked for was never run",
+      "next_action": "none"
     },
     {
       "id": "VOICE-SOLO-BARGE",
@@ -446,8 +446,8 @@
       "state": "implemented-unverified",
       "behavior": "in 多人 (and 一對一 during a video) unaddressed speech never cuts Reachy off; a name or control phrase does (REALTIME_PARTY_BARGE=name, default)",
       "verification": "tests/test_party_mode.py name-rule tests; live with real speech",
-      "evidence": "unit only (D-044)",
-      "next": "operator: talk over Reachy without its name (it keeps talking), then with 「瑞奇」 (it stops)"
+      "evidence": "unit only (D-044). Bench 2026-11-22 (clean audio, name_latency_bench.py): the name reaches the app +0.79 s after 「瑞奇」+silence, but +8.51 s when the caller keeps talking, because gpt-transcribe starts after the turn commits. The 2026-11-21 session had no call over a reply, so the live path is still unobserved",
+      "next_action": "docs/plans/2026-11-22-name-call-rca-plan.md N2 (gpt-live-transcribe: +0.46 s mid-sentence), then N5 with a real voice"
     },
     {
       "id": "VIDEO-OUR-TRIP-SOURCE",
@@ -488,6 +488,14 @@
       "state": "verified",
       "evidence": "1.38.0 live 2026-11-01: time 3/3 (1.37.0: search_web, no time), date 2/2 (one a second turn), news → search_web 1/1. Tool latency on the robot: 3.1 s on a second turn, 6.4 s in a fresh session's first seconds while the wake face check runs; the preamble covers it. Prefix 6291 (6092)",
       "next_action": "none"
+    },
+    {
+      "id": "NAME-CALL-ANSWER-DELAY",
+      "behavior": "In 多人, a turn that names Reachy is answered promptly even while the room keeps talking, and a name called over a reply stops it within about a second",
+      "verification": "docs/plans/2026-11-22-name-call-rca-plan.md: N1 per-utterance INFO line, N2 bench on the installed wheel, N3/N4 unit tests replaying the 2026-11-21 event sequences, N5 operator acceptance (four cases, 5/5 each)",
+      "state": "planned",
+      "evidence": "RCA 2026-11-22 from the 2026-11-21 session (1.38.0, mini): five name calls, all accepted, answers deferred 18 s and about 10 s by a hold-off that any new speech onset restarts (6 skips); the follow-up window is spent while Reachy talks; speech onsets are DEBUG-only, so the journal cannot show a call over a reply",
+      "next_action": "operator rulings on N2's transcription cost ($0.017/min against $0.0045) and N4's wider follow-up window; then build N1 → N4"
     }
   ]
 }

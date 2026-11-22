@@ -31,7 +31,7 @@ enough that people stop adapting to the machine.
 
 ### Converse
 
-- **Voice.** Speech to speech on `gpt-realtime-2.1-mini`, in a voice of its
+- **Voice.** Speech to speech on `gpt-realtime-2.1`, in a voice of its
   own: an on-device character filter (pitch-shifted, duration kept, with an
   off switch).
 - **Persona.** The persona is the operator's. It lives in `persona.md` on the
@@ -158,8 +158,9 @@ capabilities are built and in daily use but not yet formally verified;
 
 ## Rules
 
-- **Mini model only.** Reachy runs on `gpt-realtime-2.1-mini` (operator
-  decision, for cost). Tools are shaped for what mini does on its first call.
+- **Full-tier model.** Reachy runs on `gpt-realtime-2.1` (operator decision,
+  2026-11-22, D-049; mini before that). The tools were shaped for what mini
+  does on its first call, and keep that shape.
 - **The model decides.** It chooses what to say and which tool to call. Code
   holds only the safety rails, the timing, and the truth about the physical
   state.

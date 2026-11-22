@@ -7,8 +7,9 @@ description: Use when changing anything the realtime model reads or is judged by
 
 **The model understands intent and decides which tools to call and what to
 say; the app instructs it and holds the safety rails** (operator ruling,
-memory `llm-first-instruction-design`). Reachy runs on `gpt-realtime-2.1-mini`
-only, so every rule here is about what mini does. The evidence is in the
+memory `llm-first-instruction-design`). Reachy runs on `gpt-realtime-2.1`
+since 2026-11-22 (D-049). Every rule here was learned on `gpt-realtime-2.1-mini`:
+where one says mini, measure the full model before relying on it. The evidence is in the
 research docs: cite it, don't re-litigate it. They are
 `docs/research-compact-tool-text-2026-10.md` (how mini sees tools, D-039),
 `docs/research-instructing-realtime-voice-2026-09.md`,
@@ -45,7 +46,7 @@ Fix in this order, and record which rung you used:
 **Two text revisions that don't move a live rate end the rewording.** Change
 the tool's shape (one composite action, new return fields, error advice), or
 record the rate as mini's current ceiling with k/n in `feature_list.json`.
-Never propose a full-tier run or a model switch: mini is fixed. Shape changes
+The model tier is the operator's call (D-049): don't propose changing it. Shape changes
 have repeatedly fixed what text could not: one-call play worked once
 `nas play` found the trip itself.
 

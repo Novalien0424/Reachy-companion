@@ -5,6 +5,25 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
 
+**v1.39.0 INSTALLED (2026-11-22 08:23 UTC, wheel `4cd12177`); Reachy asleep
+(go_to_sleep by voice, app stopped), TV off.** Operator asks of 2026-11-22.
+- **Full model (D-049).** The default is `gpt-realtime-2.1`; mini is one
+  `REALTIME_MODEL` line away. OpenAI has no alias that follows the newest
+  generation: bare `gpt-realtime` is the deprecated 2025 model.
+  Live: journal `model gpt-realtime-2.1`; time, camera, chat and sleep worked;
+  prefix 6291. Replay 11/12 cases (our-trip 3/3); the good-news dance stays
+  silent 0/3, as kept.
+- **Calling 「瑞奇」: RCA and plan, nothing built**
+  (`docs/plans/2026-11-22-name-call-rca-plan.md`). From the 2026-11-21
+  session (the only one since 11-10):
+  - five name calls, all accepted, answered 18 s and about 10 s late: any new
+    speech onset restarts the 700 ms hold-off, with no bound;
+  - no call landed over a reply, so stop-while-talking is still unobserved;
+  - bench: the name reaches the app +0.79 s after 「瑞奇」+pause, +8.51 s when
+    the caller keeps talking (`gpt-transcribe` starts after the commit);
+    `gpt-live-transcribe` gives +0.46 s mid-sentence, in the same session.
+- **Robot:** no wedge in 2 app stops. Suite 2287 / 31. Daemon v1.13.0.
+
 **Docs and harness (2026-11-01, D-048):** `docs/PRD.md` is now a concise
 statement of what Reachy can do (1,492 words; the original is at `bb0291f`).
 `CLAUDE.md`, the three project skills and the memory files were compacted
@@ -70,12 +89,14 @@ against the Opus 5.5 guidance. No code changed, and the robot is untouched.
 
 ## Next action
 
-1. **Operator, in normal use:** the W3/W4 checks with real speech
-   (`VIDEO-QUIET-GATE`, `GROUP-BARGE-BY-NAME`); both are unit-tested only.
-2. **Next session:** read `~/HomeAssistant/state/nas-transcode.log` for the
-   2026-11-01 03:30 run, the first with `place_zh`, then run
-   `watchdog_cron.sh status`.
-3. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see
+1. **Operator rulings on the name-call plan:** N2's transcription cost
+   ($0.017 per minute against $0.0045) and N4's follow-up window starting when
+   Reachy stops talking. Then build N1 → N4 and run N5 with a real voice.
+2. **Operator, in normal use:** how the full model sounds and behaves over a
+   real conversation; the W3 check with real speech (`VIDEO-QUIET-GATE`).
+3. **Still owed from 2026-11-01:** read `~/HomeAssistant/state/nas-transcode.log`
+   for the first `place_zh` run, then `watchdog_cron.sh status`.
+4. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see
    Known defects).
 
 ## Pending verification (operator)
@@ -104,8 +125,8 @@ room or real speech.
   reply length, lead-ins only before slow work, silence for TV or side talk,
   antennas on the first syllable, one long session for the latency curve.
 - **A/B trials:** `VOICE-SEMANTIC-VAD-AB`, `VOICE-NOISE-REDUCTION-AB`.
-  `VOICE-MINI-MODEL` is open for tool choice on mini; its full-tier A/B is off
-  the table (operator, 2026-10-30: mini only).
+  `VOICE-MINI-MODEL` closed on 2026-11-22: the full model is the default
+  (D-049).
 - **Faces and greetings:** `FACE-ROUTING`, `FACE-WAKE-EXTENDED`,
   `FACE-CROSS-SESSION`, `FACE-MULTI-SAMPLE`, `PERSON-GREET-KNOWN`,
   `PERSON-GREET-STRANGER`, `PERSON-GREET-EMPTY`, `ENROLL-STILL`,

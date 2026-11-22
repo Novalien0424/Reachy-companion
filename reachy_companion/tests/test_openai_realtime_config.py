@@ -82,23 +82,23 @@ def test_sample_rate_is_24k() -> None:
     assert OpenAIRealtimeHandler.SAMPLE_RATE == 24000
 
 
-def test_default_model_is_mini(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The default realtime model must be gpt-realtime-2.1-mini."""
+def test_default_model_is_full_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default realtime model is the undated full-tier id (D-049)."""
     monkeypatch.delenv("REALTIME_MODEL", raising=False)
-    assert realtime_model() == "gpt-realtime-2.1-mini"
+    assert realtime_model() == "gpt-realtime-2.1"
 
 
 def test_model_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """REALTIME_MODEL environment variable overrides the default model."""
-    monkeypatch.setenv("REALTIME_MODEL", "gpt-realtime-2.1")
-    assert realtime_model() == "gpt-realtime-2.1"
+    monkeypatch.setenv("REALTIME_MODEL", "gpt-realtime-2.1-mini")
+    assert realtime_model() == "gpt-realtime-2.1-mini"
 
 
 def test_session_config_targets_configured_model(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The session must use the configured model (default mini) and 24 kHz PCM plus zh transcription."""
+    """The session must use the configured model (default full tier) and 24 kHz PCM plus zh transcription."""
     monkeypatch.delenv("REALTIME_MODEL", raising=False)
     cfg = handler._get_session_config(tool_specs=[])
-    assert cfg["model"] == "gpt-realtime-2.1-mini"
+    assert cfg["model"] == "gpt-realtime-2.1"
     assert cfg["audio"]["output"]["format"]["rate"] == 24000
     assert cfg["audio"]["input"]["format"]["rate"] == 24000
     # Applied by the base from config.REALTIME_TRANSCRIPTION_LANGUAGE

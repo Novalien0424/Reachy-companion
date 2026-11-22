@@ -1,46 +1,41 @@
-# Session handoff — 2026-11-01 (v1.38.0 installed; session closed)
+# Session handoff — 2026-11-22 (v1.39.0 installed; name-call plan awaits rulings)
 
-State: **v1.38.0 installed (wheel `60232618`); Reachy asleep (app stopped), TV
-off.** Boots into 多人聊天模式 (`Tools in session (group, startup, 20)`). Daemon
-v1.13.0. Today: two wedges on 1.37.0 (00:56:17Z, 01:03:11Z), none in the 9
-stops on 1.38.0. The detail is in D-046 and D-047.
+State: **v1.39.0 installed (wheel `4cd12177`); Reachy asleep (app stopped), TV
+off.** Boots into 多人聊天模式 on `gpt-realtime-2.1`. Daemon v1.13.0. No wedge
+in 2 app stops.
 
 ## What this session did
 
-- **1.37.0 (D-046):** a trip or place video plays from the 影片庫 first; the
-  reply rail stays 4096; the silent dance is left as is. The harness became
-  `deploy.sh` plus a concise skill, and the records dropped 41 fixed rows (full
-  text at `0f67ce8`).
-- **1.38.0 (D-047), operator rulings:**
-  - **A miss asks permission before YouTube.** The miss result carries the
-    question (`ask_user`), and `youtube` refuses until the user speaks.
-    Live: asked 3/4, YouTube unasked 0/4, no offer 1/4; after 「好啊」, YouTube
-    played.
-  - **Time and date:** Pollen's bundled MCP time tool is the 20th tool. Live:
-    time 3/3, date 2/2, news still goes to search.
-
-- **Docs and harness (D-048):** a concise `docs/PRD.md` of what Reachy can
-  do (the original is at `bb0291f`). `CLAUDE.md`, the project skills and the
-  memory files were compacted against the Opus 5.5 guidance.
+- **Full model (D-049, 1.39.0).** `_DEFAULT_MODEL` is `gpt-realtime-2.1`.
+  There is no "latest" alias: bare `gpt-realtime` is the deprecated 2025
+  model. Verified live (time, camera, chat, sleep) and by replay (11/12).
+- **RCA of the 2026-11-21 session, and a plan**
+  (`docs/plans/2026-11-22-name-call-rca-plan.md`). Nothing in it is built.
+  - RC1: a named turn's answer waits for the room to go quiet (18 s, 10 s).
+  - RC2: the name is read only after the caller stops speaking; measured
+    +8.51 s in a long sentence, +0.46 s with `gpt-live-transcribe`.
+  - RC3: the 20 s follow-up window runs out while Reachy is still talking.
+  - RC4: speech onsets are DEBUG-only, so the journal can't show a call over
+    a reply.
+- **New tool:** `name_latency_bench.py` in the deploy skill's scripts (its
+  docstring has the usage and how to make the PCM files).
 
 ## Open, in order
 
-1. **Operator, in normal use:** check W3/W4 with real speech
-   (`VIDEO-QUIET-GATE`, `GROUP-BARGE-BY-NAME`).
-2. **Next session:** read `~/HomeAssistant/state/nas-transcode.log` for the
-   03:30 run (the first with `place_zh`), then run `watchdog_cron.sh status`.
-3. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES`, the 1.36.x list (see
-   progress.md Known defects), `DAEMON-STOP-WEDGE`, and the miss's no-offer
-   slip (1/4).
+1. **Operator rulings:** N2's cost and N4's wider window (the plan's "Order
+   and gates"). Then N1 → N4 as 1.40.0, then N5 with a real voice.
+2. **Operator, in normal use:** the full model over a real conversation.
+3. **Owed from 2026-11-01:** the NAS transcode log's first `place_zh` run, and
+   `watchdog_cron.sh status`.
+4. **Known, not fixed:** see progress.md Known defects.
 
 ## How to test cheaply
 
 - **Deploy:** `bash .claude/skills/reachy-deploy/scripts/deploy.sh` (exit 3 =
   wedge).
 - **Device truth, zero model tokens:** `device_check.sh nas|youtube|…`.
-- **Model choice:** `qa_replay.py` + `qa_cases.json` on the robot (now with
-  `time-now`, `date-today`, `news-stays-search`), with `--override` to try a
-  wording first. Confirm any gain live: replay overstates.
-- **Live:** `live_case.sh 1|0 "<話>"`; its output is safe to quote except for
-  titles from the NAS index. The YouTube hold logs `youtube: waiting for the
-  user's yes`.
+- **Model choice:** `qa_replay.py` + `qa_cases.json` on the robot, with
+  `--override` to try a wording first. Confirm any gain live.
+- **Name timing:** `name_latency_bench.py` on the robot (clean audio only).
+- **Live:** `live_case.sh 1|0 "<話>"`. It mutes the mic, so it can't test a
+  call over Reachy's voice: that needs a person in the room.

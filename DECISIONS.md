@@ -3195,3 +3195,34 @@ guidebook" and for "a PRD.md that is concise and write that REACHY can do".
 - **Unchanged:** every rule, the hard limits, the deploy procedure, the state
   file table, and the skills' triggers. The tests that read the deploy skill
   pass (34/34).
+
+## D-049 — The full realtime model, and why no alias follows the newest one (2026-11-22)
+
+The operator asked to "switch to latest openai realtime model (using alias name
+so that it keep latest) and switch from mini model to normal model". This
+reverses the mini-only ruling of 2026-10-30 (the PRD's former "Mini model
+only" rule).
+
+- **Default: `gpt-realtime-2.1`** (`openai_realtime._DEFAULT_MODEL`), shipped
+  as 1.39.0. `REALTIME_MODEL` still overrides it; `gpt-realtime-2.1-mini`
+  there is the way back.
+- **No alias tracks the newest generation.** Read on 2026-11-22 from OpenAI's
+  model and deprecation pages:
+  - bare `gpt-realtime` is deprecated, pinned to `gpt-realtime-2025-08-28`,
+    shut down 2027-01-20, with `gpt-realtime-2.1` as its replacement;
+  - `gpt-realtime-2.1` is the newest full-tier realtime model, and its only
+    listed snapshot is the undated id itself;
+  - there is no `-latest` id.
+
+  So the undated `gpt-realtime-2.1` is the closest thing to what was asked. A
+  resolver that picks the newest id from `/v1/models` at startup was not
+  built: it would change the robot's model, price and behavior with nobody
+  deciding it.
+- **Cost:** audio $32 in / $64 out per 1M tokens, against $10 / $20 on mini.
+- **Evidence (1.39.0, on the robot):** the journal's `model gpt-realtime-2.1`;
+  live time, camera, chat and sleep; the tool-choice replay at 11 of 12 cases.
+  The tools keep the shape made for mini's first call.
+- **`gpt-live-1.1`** exists ("can listen while it speaks") but runs on the
+  `v1/live` endpoint with no image input. It is not a realtime-API model and
+  was not considered a candidate.
+

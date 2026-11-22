@@ -62,7 +62,9 @@ from reachy_companion.huggingface_realtime import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gpt-realtime-2.1-mini"
+# The undated full-tier id (D-049). OpenAI publishes no alias that follows the
+# newest realtime generation: bare `gpt-realtime` is the deprecated 2025 model.
+_DEFAULT_MODEL = "gpt-realtime-2.1"
 ROBOT_RATE = 16000
 
 # How long an ordered session update waits for `session.updated` (or a matching
@@ -73,7 +75,7 @@ _SESSION_UPDATE_ACK_TIMEOUT_S: Final[float] = 5.0
 
 
 def realtime_model() -> str:
-    """Realtime model id; REALTIME_MODEL overrides for on-robot A/B (D-023)."""
+    """Realtime model id; REALTIME_MODEL overrides it (D-023, default per D-049)."""
     return (os.getenv("REALTIME_MODEL") or "").strip() or _DEFAULT_MODEL
 
 _RESAMPLER_QUALITY = "HQ"
