@@ -446,8 +446,8 @@
       "state": "implemented-unverified",
       "behavior": "in 多人 (and 一對一 during a video) unaddressed speech never cuts Reachy off; a name or control phrase does (REALTIME_PARTY_BARGE=name, default)",
       "verification": "tests/test_party_mode.py name-rule tests; live with real speech",
-      "evidence": "unit only (D-044). Bench 2026-11-22 (clean audio, name_latency_bench.py): the name reaches the app +0.79 s after 「瑞奇」+silence, but +8.51 s when the caller keeps talking, because gpt-transcribe starts after the turn commits. The 2026-11-21 session had no call over a reply, so the live path is still unobserved",
-      "next_action": "docs/plans/2026-11-22-name-call-rca-plan.md N2 (gpt-live-transcribe: +0.46 s mid-sentence), then N5 with a real voice"
+      "evidence": "unit (D-044); 1.40.0 bench: with gpt-live-transcribe the name reaches the app +0.52 s after it is spoken, mid-sentence (gpt-transcribe: +8.51 s). No live case yet of a person calling over a reply",
+      "next_action": "operator: N5 cases a–c in docs/plans/2026-11-22-name-call-rca-plan.md"
     },
     {
       "id": "VIDEO-OUR-TRIP-SOURCE",
@@ -492,10 +492,10 @@
     {
       "id": "NAME-CALL-ANSWER-DELAY",
       "behavior": "In 多人, a turn that names Reachy is answered promptly even while the room keeps talking, and a name called over a reply stops it within about a second",
-      "verification": "docs/plans/2026-11-22-name-call-rca-plan.md: N1 per-utterance INFO line, N2 bench on the installed wheel, N3/N4 unit tests replaying the 2026-11-21 event sequences, N5 operator acceptance (four cases, 5/5 each)",
-      "state": "planned",
-      "evidence": "RCA 2026-11-22 from the 2026-11-21 session (1.38.0, mini): five name calls, all accepted, answers deferred 18 s and about 10 s by a hold-off that any new speech onset restarts (6 skips); the follow-up window is spent while Reachy talks; speech onsets are DEBUG-only, so the journal cannot show a call over a reply",
-      "next_action": "operator rulings on N2's transcription cost ($0.017/min against $0.0045) and N4's wider follow-up window; then build N1 → N4"
+      "verification": "tests/test_room_holdoff_bound.py (the two 2026-11-21 sequences), tests/test_followup_window.py, tests/test_utterance_trace.py; name_latency_bench.py V0 on the installed wheel; then the plan's N5 with a real voice (four cases, 5/5 each), read from the journal's `utterance:` lines",
+      "state": "implemented-unverified",
+      "evidence": "1.40.0 (D-050), 2026-11-22. Unit: the 18 s and 10 s sequences now request their answers inside the hold-off window. Bench on the installed wheel: name in a partial +0.52 s inside an 8 s sentence (1.39.0: +8.51 s), same item as the onset. Live: named turn and an unnamed follow-up answered; mic open, Reachy said its name about five times in one reply and in two greetings with no `name barge-in`; one `utterance:` line and one local-VAD line seen in the journal. Not exercised: a person calling over a reply, or a room talking past a call",
+      "next_action": "operator: the plan's N5, about five minutes in 多人. Afterwards read the `utterance:` and `turn hold-off:` lines; one measured hour of use settles what gpt-live-transcribe bills"
     }
   ]
 }

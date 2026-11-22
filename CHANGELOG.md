@@ -9,6 +9,35 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.40.0] — 2026-11-22 · a called name is heard mid-sentence and answered while the room talks
+
+Deployed as the forty-eighth install (wheel sha `3624c233…`). Decision D-050;
+the RCA and plan are `docs/plans/2026-11-22-name-call-rca-plan.md` (N1–N4, with
+the operator's go on N2's cost and N4's wider window).
+
+- **Reachy reads its name while you are still talking.** The input transcriber
+  is `gpt-live-transcribe`. Bench against this wheel: the name arrives 0.52 s
+  after it is spoken inside 「瑞奇，你先停一下，我想問你…」 (1.39.0: 8.51 s,
+  after the whole sentence). It costs $0.017 per minute against $0.0045;
+  `REALTIME_TRANSCRIPTION_MODEL=gpt-transcribe` is the way back.
+- **In 多人 and 紀錄模式, a called name no longer waits for the room to go
+  quiet.** An answer is held for one continuation at most, and never past
+  `REALTIME_HOLDOFF_MAX_DEFER_MS` (4000). The two call sequences of
+  2026-11-21 that took 18 s and 10 s are unit tests now. 一對一 is unchanged.
+- **The follow-up window starts when Reachy stops talking.** The 20 s used to
+  run from the accepted turn, so a long reply used them up.
+- **The journal times every utterance.** One `utterance:` line per transcript
+  (speech length, first text, transcript delay, whether Reachy was audible),
+  and a line when the robot's own detector hears speech over a reply that the
+  server never reported.
+- **Live on the robot:** time and an unnamed follow-up answered; with the mic
+  open Reachy said its own name about five times in one reply and in two
+  greetings with no self-interruption; sleep by voice; no wedge in 3 stops.
+  Suite 2309 / 31.
+- **Still to check, with a real voice:** stopping when called over a reply
+  (the plan's N5). The test harness mutes the mic, so only a person in the
+  room can.
+
 ## [1.39.0] — 2026-11-22 · Reachy runs on the full realtime model
 
 Deployed as the forty-seventh install (wheel sha `4cd12177…`). Decision D-049

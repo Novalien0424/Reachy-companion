@@ -3226,3 +3226,47 @@ only" rule).
   `v1/live` endpoint with no image input. It is not a realtime-API model and
   was not considered a candidate.
 
+## D-050 — Calling 「瑞奇」: a streaming transcriber, a bounded hold-off, a later follow-up window (2026-11-22)
+
+The operator asked that Reachy "stop its talking and listen" when called, and
+for an RCA of the 2026-11-21 session. The RCA and plan are
+`docs/plans/2026-11-22-name-call-rca-plan.md`. The operator then said "go,
+build N1–N4 with N2 and N4", which rules on the plan's two open questions.
+Shipped as 1.40.0.
+
+- **The name is read from a streaming transcript (N2).** Input transcription
+  is `gpt-live-transcribe`, sent `languages` (a list) where the others take
+  `language`. Stopping for the name was already built on partial transcripts
+  (D-028, D-044); `gpt-transcribe` only starts after the turn commits, so that
+  path had never run early.
+  - Measured on the robot: the name 0.52 s after it is spoken inside an 8 s
+    sentence, against 8.51 s.
+  - It works inside the conversation session with the semantic VAD on. The
+    docs describe it only for transcription sessions with turn detection off;
+    the bench is the evidence.
+  - Delay stays at the server default: `minimal` heard 「瑞曲」.
+  - Accepted cost: $0.017 per minute against $0.0045.
+- **A room holds an answer for one continuation, 4 s at most (N3).**
+  `REALTIME_HOLDOFF_MAX_DEFER_MS`, default 4000, `0` for the old unbounded
+  wait. After one deferral the next hold-off is firm (it runs its 700 ms
+  whoever starts speaking), and a cap answers if the continuation has no
+  transcript in time. Accepted cost, the same one W3 took for videos: now and
+  then the first half of a sentence is answered and the rest arrives as a
+  follow-up.
+  - Applies to 多人 and 紀錄模式. The plan said 多人; 紀錄模式 has the same
+    hold-off in a room that talks even more, and there only a name or a
+    control phrase is ever accepted. 一對一 is untouched.
+- **The follow-up window counts from the end of Reachy's voice (N4)** when
+  that is later than the accepted turn. While Reachy is still talking the
+  accept time stands, so talk over a reply is not taken as an answer to it.
+  Accepted cost: unnamed talk right after a reply is answered more often.
+- **Evidence in the journal (N1).** One `utterance:` line per transcript, and
+  one when the robot's detector hears speech over a reply the server did not
+  report. The turn's verdict is the line after it, not a field in it.
+- **Not verified:** stopping when called over a reply, with a real voice
+  (N5). The bench is clean audio, and the live harness mutes the mic. Mic-open
+  runs showed no self-interruption when Reachy said its own name.
+- **If N5 fails with the server never reporting the onset:** the cause is the
+  microphone during playback, and the next candidate is an on-device keyword
+  spotter, a new dependency and a separate decision.
+

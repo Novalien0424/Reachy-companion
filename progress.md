@@ -5,6 +5,24 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
 
+**v1.40.0 INSTALLED (2026-11-22 09:21 UTC, wheel `3624c233`); Reachy asleep
+(go_to_sleep by voice, app stopped), TV off.** The name-call plan's N1–N4, on
+the operator's go (D-050).
+- **The name is read mid-sentence.** Transcriber `gpt-live-transcribe`. Bench
+  on this wheel: +0.52 s after the name inside an 8 s sentence (1.39.0:
+  +8.51 s).
+- **A called name is answered while the room talks.** 多人 and 紀錄模式 hold
+  an answer for one continuation, 4 s at most
+  (`REALTIME_HOLDOFF_MAX_DEFER_MS`). The 18 s and 10 s sequences of
+  2026-11-21 are unit tests.
+- **The follow-up window starts when Reachy stops talking.**
+- **The journal times every utterance** (`utterance:` lines; a local-VAD line
+  for speech over a reply the server missed).
+- **Live:** named turn and unnamed follow-up answered; mic open, Reachy said
+  its name about five times in a reply and in two greetings, no
+  self-interruption. No wedge in 3 app stops. Suite 2309 / 31.
+- **Open:** N5, a person calling over a reply. Nothing here has seen that yet.
+
 **v1.39.0 INSTALLED (2026-11-22 08:23 UTC, wheel `4cd12177`); Reachy asleep
 (go_to_sleep by voice, app stopped), TV off.** Operator asks of 2026-11-22.
 - **Full model (D-049).** The default is `gpt-realtime-2.1`; mini is one
@@ -89,11 +107,13 @@ against the Opus 5.5 guidance. No code changed, and the robot is untouched.
 
 ## Next action
 
-1. **Operator rulings on the name-call plan:** N2's transcription cost
-   ($0.017 per minute against $0.0045) and N4's follow-up window starting when
-   Reachy stops talking. Then build N1 → N4 and run N5 with a real voice.
-2. **Operator, in normal use:** how the full model sounds and behaves over a
-   real conversation; the W3 check with real speech (`VIDEO-QUIET-GATE`).
+1. **Operator, about five minutes in 多人 (the plan's N5):** over a long reply
+   say 「瑞奇」 and wait; say 「瑞奇，停一下，我想問你…」 in one breath; talk to
+   someone else without the name; and call 「瑞奇」 while others are talking.
+   Then the next session reads the `utterance:` and `turn hold-off:` lines.
+2. **Operator, in normal use:** the full model over a real conversation; what
+   one hour of `gpt-live-transcribe` bills; the W3 check with real speech
+   (`VIDEO-QUIET-GATE`).
 3. **Still owed from 2026-11-01:** read `~/HomeAssistant/state/nas-transcode.log`
    for the first `place_zh` run, then `watchdog_cron.sh status`.
 4. **Known, not fixed:** `JOURNEY-2026-10-31-NOTES` and the 1.36.x list (see

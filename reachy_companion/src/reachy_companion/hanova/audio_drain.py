@@ -75,11 +75,15 @@ _DRAINED_AT = 0.0
 # While this is set the tracker answers as if the reply were still playing,
 # which it is about to be again if the barge rolls back.
 _PAUSED = False
+# When the assistant's voice last stopped, or is due to stop (monotonic; 0.0 =
+# it has not spoken). Unlike `_DRAINED_AT` a flush does not erase it: a reply
+# that was cut off still ended, at the flush.
+_SPOKE_UNTIL = 0.0
 
 
 def reset() -> None:
     """Forget every generation and all pending audio. Session start and tests."""
-    global _GENERATION, _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT, _PAUSED
+    global _GENERATION, _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT, _PAUSED, _SPOKE_UNTIL
     with _LOCK:
         _GENERATION += 1
         _CLOSED.clear()
@@ -88,6 +92,7 @@ def reset() -> None:
         _QUEUE_EMPTY = True
         _DRAINED_AT = 0.0
         _PAUSED = False
+        _SPOKE_UNTIL = 0.0
 
 
 def begin_response() -> int:
@@ -126,7 +131,7 @@ def note_enqueued(generation: int, sample_count: int, sample_rate: int) -> None:
 
 def note_chunk(sample_count: int, sample_rate: int) -> None:
     """Record that *sample_count* frames were handed to the audio sink."""
-    global _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT
+    global _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT, _SPOKE_UNTIL
     if sample_count <= 0 or sample_rate <= 0:
         return
     duration_s = min(sample_count / float(sample_rate), _MAX_PENDING_S)
@@ -136,6 +141,7 @@ def note_chunk(sample_count: int, sample_rate: int) -> None:
         _QUEUE_EMPTY = False
         base = max(_DRAINED_AT, now)
         _DRAINED_AT = min(base + duration_s, now + _MAX_PENDING_S)
+        _SPOKE_UNTIL = _DRAINED_AT
 
 
 def note_queue_empty() -> None:
@@ -186,7 +192,7 @@ def note_cleared() -> None:
     had already closed normally are marked too: the flush truncated their tail
     just the same, and their `response.done` is still to come.
     """
-    global _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT
+    global _OUTSTANDING_S, _QUEUE_EMPTY, _DRAINED_AT, _SPOKE_UNTIL
     with _LOCK:
         for generation in list(_CLOSED):
             _CLOSED[generation] = True
@@ -194,6 +200,7 @@ def note_cleared() -> None:
         _OUTSTANDING_S = 0.0
         _QUEUE_EMPTY = True
         _DRAINED_AT = 0.0
+        _SPOKE_UNTIL = min(_SPOKE_UNTIL, time.monotonic())
 
 
 def was_interrupted(generation: int) -> bool:
@@ -218,6 +225,16 @@ def device_buffered_s() -> float:
     """
     with _LOCK:
         return max(0.0, _DRAINED_AT - time.monotonic())
+
+
+def spoke_until() -> float:
+    """When the assistant's voice last stopped or is due to stop (monotonic); 0.0 if it has not spoken.
+
+    The room's follow-up window counts from here (2026-11-22 plan, N4): a
+    reply that runs 15 s must not use up the 20 s the caller has to answer it.
+    """
+    with _LOCK:
+        return _SPOKE_UNTIL
 
 
 def is_audible() -> bool:

@@ -101,9 +101,9 @@ def test_session_config_targets_configured_model(handler: OpenAIRealtimeHandler,
     assert cfg["model"] == "gpt-realtime-2.1"
     assert cfg["audio"]["output"]["format"]["rate"] == 24000
     assert cfg["audio"]["input"]["format"]["rate"] == 24000
-    # Applied by the base from config.REALTIME_TRANSCRIPTION_LANGUAGE
-    # (huggingface_realtime.py:234); asserted here as an integration check.
-    assert cfg["audio"]["input"]["transcription"]["language"] == "zh"
+    # From config.REALTIME_TRANSCRIPTION_LANGUAGE, in the list shape the
+    # default streaming transcriber takes; asserted as an integration check.
+    assert cfg["audio"]["input"]["transcription"]["languages"] == ["zh"]
 
 
 def test_session_config_keeps_selected_voice(handler: OpenAIRealtimeHandler) -> None:
@@ -117,16 +117,33 @@ def test_session_config_keeps_selected_voice(handler: OpenAIRealtimeHandler) -> 
 # --------------------------------------------------------------------------
 
 
-def test_transcription_upgraded_with_keywords(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The OpenAI subclass upgrades to gpt-transcribe with party-name keyword biasing."""
+def test_transcription_streams_by_default_with_keywords(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default transcriber streams text mid-utterance, biased toward the address names (N2)."""
     monkeypatch.delenv("REALTIME_TRANSCRIPTION_MODEL", raising=False)
     monkeypatch.delenv("REALTIME_TRANSCRIPTION_KEYWORDS", raising=False)
     cfg = handler._get_session_config(tool_specs=[])
     tr = cfg["audio"]["input"]["transcription"]
-    assert tr["model"] == "gpt-transcribe"
-    assert tr["language"] == "zh"
+    assert tr["model"] == "gpt-live-transcribe"
+    # The API takes `languages` for this model and rejects both together.
+    assert tr["languages"] == ["zh"]
+    assert "language" not in tr
     assert "瑞奇" in tr["keywords"] and "reachy" in tr["keywords"]
     assert tr["prompt"]
+
+
+def test_committed_turn_transcriber_keeps_the_singular_language(
+    handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gpt-transcribe` stays available, in the shape it shipped with."""
+    monkeypatch.setenv("REALTIME_TRANSCRIPTION_MODEL", "gpt-transcribe")
+    monkeypatch.delenv("REALTIME_TRANSCRIPTION_KEYWORDS", raising=False)
+    tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
+    assert tr["model"] == "gpt-transcribe"
+    assert tr["language"] == "zh"
+    assert "languages" not in tr
+    assert "瑞奇" in tr["keywords"]
 
 
 def test_transcription_keywords_env_override(handler: OpenAIRealtimeHandler, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,6 +160,7 @@ def test_transcription_model_env_override_drops_new_fields_for_legacy(
     monkeypatch.setenv("REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
     tr = handler._get_session_config(tool_specs=[])["audio"]["input"]["transcription"]
     assert tr["model"] == "gpt-4o-transcribe"
+    assert tr["language"] == "zh" and "languages" not in tr
     assert "keywords" not in tr and "prompt" not in tr  # legacy model, legacy shape
 
 
@@ -209,7 +227,7 @@ async def test_session_update_falls_back_to_legacy_transcription_on_rejection(
 
     assert len(update_calls) == 2
     first_transcription = update_calls[0]["session"]["audio"]["input"]["transcription"]
-    assert first_transcription["model"] == "gpt-transcribe"
+    assert first_transcription["model"] == "gpt-live-transcribe"
 
     second_transcription = update_calls[1]["session"]["audio"]["input"]["transcription"]
     assert second_transcription["model"] == "gpt-4o-transcribe"

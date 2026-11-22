@@ -4,8 +4,10 @@ Operator ask (2026-11-22): "when called out Reachy/Richie it will stop its
 talking and listen … this weekend's conversation is not good. Do RCA then plan
 for accurate fix according to your survey."
 
-**Status: plan only. Nothing here is built.** The model switch of the same day
-(D-049, 1.39.0) changes none of this: every mechanism below is client-side.
+**Status: N1–N4 built and installed as 1.40.0 on 2026-11-22 (D-050), on the
+operator's "go, build N1–N4 with N2 and N4". N5 is open: it needs a person in
+the room.** The model switch of the same day (D-049, 1.39.0) changes none of
+this: every mechanism below is client-side.
 
 ## Evidence
 
@@ -233,3 +235,8 @@ operator rules on N2's cost and N4's wider window before they ship.
 | 5 | N3 could make one-on-one answer half sentences. | Scoped to 多人; one-on-one path untouched and covered by the existing tests. |
 | 6 | N2's cost is unknown until measured. | Marked as the operator's ruling, with the one-hour measurement that settles it. |
 | 7 | The bench used the full model; the session ran on mini. | Transcription and VAD are separate from the speech model; V1 reproduces the shipped transcriber and VAD exactly. |
+| 8 | Build: N3 as planned covers 多人 only, and 紀錄模式 runs the same hold-off in a room that talks more. | N3 applies to both room modes. In 紀錄模式 only a name or a control phrase is accepted, so the bound can only speed up a call. Recorded in D-050. |
+| 9 | Build: N1 planned the gate's verdict as a field of the line. | Left out. Computing it there would run the gate twice; the verdict is the journal line that follows (a denial, a hold-off, a barge-in or the turn latency). |
+| 10 | Build: N4 as planned would also widen the window for talk over a long reply. | While Reachy is audible the accept time stands; the later start applies once it has stopped. |
+| 11 | Build: does a delta carry the item id its `speech_started` did? The name barge looks the onset up by it. | Yes, on the installed wheel (the bench prints it). |
+| 12 | Build: N2's "five fresh wakes" check. | Run as two mic-open wakes and one mic-open reply with the name said about five times: no `name barge-in`. The harness otherwise mutes the mic. |

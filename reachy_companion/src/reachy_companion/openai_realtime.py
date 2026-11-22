@@ -257,28 +257,39 @@ def _noise_reduction() -> NoiseReduction | None:
 
 
 _LEGACY_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
-_DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
+# Streams text while the speaker is still talking, and takes `languages` (a
+# list) where every other model takes `language`; the API wants only one.
+_LIVE_TRANSCRIBE_MODELS = ("gpt-live-transcribe",)
+# 2026-11-22 plan, N2. Reachy stops for its name by reading the transcript.
+# `gpt-transcribe` starts only after the turn commits, so 「瑞奇，你先停一下…」
+# said in one breath reached the app 8.5 s after the name; this model delivered
+# it 0.46 s after, inside the same conversation session (bench on the robot).
+_DEFAULT_TRANSCRIBE_MODEL = "gpt-live-transcribe"
 _DEFAULT_TRANSCRIBE_PROMPT = "與家用陪伴機器人的台灣中文對話"
 # How long the streaming transcriber may buffer before emitting a partial. Left
-# unset by default (the server's own default stands); the knob exists for the
-# `gpt-live-transcribe` A/B, where a shorter delay is what makes the name
-# reach `_maybe_commit_on_partial` before `transcription.completed` does.
+# unset by default: at the server's own default the bench heard 「瑞奇」 right,
+# at `minimal` it heard 「瑞曲」.
 _TRANSCRIBE_DELAY_VALUES = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def _transcription() -> dict[str, Any]:
     """Input-transcription config; new-model extras only on new models.
 
-    `gpt-transcribe` (Task 4) supports keyword biasing and a free-text prompt
-    that the legacy `gpt-4o-transcribe`/`whisper-1` shape does not, so those
-    two extras are only attached when the configured model is not one of the
-    legacy ones — sending them to a legacy model would be a malformed request.
+    `gpt-live-transcribe` (the default, N2) and `gpt-transcribe` (Task 4)
+    support keyword biasing and a free-text prompt that the legacy
+    `gpt-4o-transcribe`/`whisper-1` shape does not, so those two extras are
+    only attached when the configured model is not one of the legacy ones —
+    sending them to a legacy model would be a malformed request.
     Keywords default to the party mode address names (`_party_names()`,
     `huggingface_realtime.py:109`) so a name the robot listens for is also a
     name the transcriber is biased toward hearing correctly.
     """
     model = (os.getenv("REALTIME_TRANSCRIPTION_MODEL") or "").strip() or _DEFAULT_TRANSCRIBE_MODEL
-    params: dict[str, Any] = {"model": model, "language": config.REALTIME_TRANSCRIPTION_LANGUAGE}
+    params: dict[str, Any] = {"model": model}
+    if model in _LIVE_TRANSCRIBE_MODELS:
+        params["languages"] = [config.REALTIME_TRANSCRIPTION_LANGUAGE]
+    else:
+        params["language"] = config.REALTIME_TRANSCRIPTION_LANGUAGE
     if model in _LEGACY_TRANSCRIBE_MODELS:
         return params
     raw_keywords = os.getenv("REALTIME_TRANSCRIPTION_KEYWORDS")

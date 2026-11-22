@@ -49,7 +49,7 @@ def _base_cfg() -> tuple[dict[str, Any], str, str]:
     refresh_runtime_config_from_env()
     import os
 
-    from reachy_companion.openai_realtime import OpenAIRealtimeHandler, realtime_model
+    from reachy_companion.openai_realtime import OpenAIRealtimeHandler, realtime_model, _turn_detection
     from reachy_companion.tools.core_tools import ToolDependencies
 
     handler = OpenAIRealtimeHandler(
@@ -61,6 +61,9 @@ def _base_cfg() -> tuple[dict[str, Any], str, str]:
     cfg["output_modalities"] = ["text"]
     audio = dict(cfg["audio"])
     audio.pop("output", None)
+    # A fresh handler's config has turn detection off (the boot gate holds it
+    # until the greeting has played); V0 runs with what the app sends after it.
+    audio["input"] = {**dict(audio["input"]), "turn_detection": dict(_turn_detection(party=handler._party_mode))}
     cfg["audio"] = audio
     return cfg, realtime_model(), os.environ["OPENAI_API_KEY"]
 
@@ -87,7 +90,7 @@ PROMPT = "與家用陪伴機器人的台灣中文對話"
 GT = {"model": "gpt-transcribe", "language": "zh", "keywords": KW, "prompt": PROMPT}
 LIVE = {"model": "gpt-live-transcribe", "languages": ["zh"], "keywords": KW, "prompt": PROMPT}
 VARIANTS: dict[str, tuple[str, dict[str, Any] | None, dict[str, Any] | None]] = {
-    "V0": ("app config as installed", None, None),
+    "V0": ("the installed app's transcription and turn detection", None, None),
     "V1": ("gpt-transcribe + semantic low", GT, _semantic("low")),
     "V2": ("gpt-transcribe + semantic high", GT, _semantic("high")),
     "V3": ("gpt-transcribe + server_vad 500", GT, _server(500)),
@@ -148,6 +151,7 @@ async def _one(
 
         sender = asyncio.create_task(send())
         partial = ""
+        onset_item = ""
         saw_name = False
         first_delta = False
         try:
@@ -158,6 +162,8 @@ async def _one(
                 rel = time.monotonic() - t0 - name_end
                 k = ev.type
                 if k in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
+                    if k.endswith("speech_started") and not onset_item:
+                        onset_item = getattr(ev, "item_id", "") or ""
                     out.append(
                         f"{k.split('.')[-1]} {rel:+.2f}s (audio@{getattr(ev, 'audio_start_ms', getattr(ev, 'audio_end_ms', '?'))}ms)"
                     )
@@ -167,7 +173,9 @@ async def _one(
                     partial += ev.delta or ""
                     if not first_delta:
                         first_delta = True
-                        out.append(f"first-delta {rel:+.2f}s {partial!r}")
+                        # The name barge looks the onset up by the delta's item id.
+                        same = "same item as the onset" if ev.item_id == onset_item else "ANOTHER ITEM than the onset"
+                        out.append(f"first-delta {rel:+.2f}s {partial!r} ({same})")
                     if not saw_name and any(n in partial.casefold() for n in NAMES):
                         saw_name = True
                         out.append(f"NAME-IN-PARTIAL {rel:+.2f}s {partial!r}")
