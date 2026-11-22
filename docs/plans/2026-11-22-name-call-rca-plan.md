@@ -5,8 +5,9 @@ talking and listen … this weekend's conversation is not good. Do RCA then plan
 for accurate fix according to your survey."
 
 **Status: N1–N4 built and installed as 1.40.0 on 2026-11-22 (D-050), on the
-operator's "go, build N1–N4 with N2 and N4". N5 is open: it needs a person in
-the room.** The model switch of the same day (D-049, 1.39.0) changes none of
+operator's "go, build N1–N4 with N2 and N4". The operator's first run of N5
+found N3's cap too short (review log 13); 1.40.1 fixed it. N5 is open on
+1.40.1.** The model switch of the same day (D-049, 1.39.0) changes none of
 this: every mechanism below is client-side.
 
 ## Evidence
@@ -165,7 +166,7 @@ In 多人, bound the deferral:
    its transcript.
 2. An absolute cap: if the continuation has produced no transcript
    `REALTIME_HOLDOFF_MAX_DEFER_MS` (start at 4000) after the held turn's
-   transcript, answer anyway.
+   transcript, answer anyway. *(1.40.1: 15000. See review log 13.)*
 
 One-on-one keeps today's behavior. The cost is the one W3 accepted: now and
 then Reachy answers the first half of a sentence, and the rest arrives as a
@@ -240,3 +241,4 @@ operator rules on N2's cost and N4's wider window before they ship.
 | 10 | Build: N4 as planned would also widen the window for talk over a long reply. | While Reachy is audible the accept time stands; the later start applies once it has stopped. |
 | 11 | Build: does a delta carry the item id its `speech_started` did? The name barge looks the onset up by it. | Yes, on the installed wheel (the bench prints it). |
 | 12 | Build: N2's "five fresh wakes" check. | Run as two mic-open wakes and one mic-open reply with the name said about five times: no `name barge-in`. The harness otherwise mutes the mic. |
+| 13 | First N5 run (operator, 2026-11-22 10:43 UTC): the 4 s cap answered a bare 「Richie,」 four seconds into the caller's own 14 s request, and Reachy talked over the rest. The plan treated speech after a call as the room; here it was the caller. | Nothing in the audio separates the two, so the one continuation is the bound and the cap is a 15 s safety net (1.40.1). Saturday's two sequences never needed the cap. Same run: both name barges over a reply worked, about 1 s after the onset. |

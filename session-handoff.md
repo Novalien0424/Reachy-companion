@@ -1,8 +1,8 @@
-# Session handoff — 2026-11-22 (v1.40.0 installed; N5 needs a person in the room)
+# Session handoff — 2026-11-22 (v1.40.1 installed; N5 half run by the operator)
 
-State: **v1.40.0 installed (wheel `3624c233`); Reachy asleep (app stopped), TV
+State: **v1.40.1 installed (wheel `0be6d492`); Reachy asleep (app stopped), TV
 off.** Boots into 多人聊天模式 on `gpt-realtime-2.1`, transcribing with
-`gpt-live-transcribe`. Daemon v1.13.0. No wedge in 5 app stops today.
+`gpt-live-transcribe`. Daemon v1.13.0. No wedge in 7 app stops today.
 
 ## What this session did
 
@@ -16,15 +16,25 @@ off.** Boots into 多人聊天模式 on `gpt-realtime-2.1`, transcribing with
     robot's own detector hears speech over a reply that the server missed.
   - N2: `gpt-live-transcribe`. The name arrives 0.52 s after it is spoken,
     mid-sentence (8.51 s before).
-  - N3: 多人 and 紀錄模式 hold an answer for one continuation, 4 s at most.
+  - N3: 多人 and 紀錄模式 hold an answer for one continuation.
   - N4: the follow-up window starts when Reachy stops talking.
+- **The operator's first check (10:43–10:51 UTC), then 1.40.1.** "Responds
+  quick, but sometimes talks before I finish."
+  - Worked: a name over the greeting stopped it 1.0 s after the onset, and a
+    second name barge stopped a reply mid-sentence.
+  - Broke: N3's 4 s cap answered that bare name four seconds into the
+    caller's own 14 s request. 1.40.1 makes the cap a 15 s safety net.
+  - Seen once, not changed: a sentence that paused about 2 s mid-way was
+    answered at the pause (`late continuation 1031 ms after the window`).
+    It followed Reachy talking over the caller, so it may not recur.
 - **New tool:** `name_latency_bench.py` in the deploy skill's scripts.
 
 ## Open, in order
 
-1. **N5, the operator, about five minutes** (progress.md Next action has the
-   four cases). Until then, stopping when called over a reply is unobserved:
-   the bench is clean audio and `live_case.sh` mutes the mic.
+1. **N5 again on 1.40.1, the operator** (progress.md Next action has the four
+   cases). Case d, a call while others talk, has not been run. If a sentence
+   is still answered at a mid-way pause, count the `late continuation` lines
+   before touching `REALTIME_COMMIT_HOLDOFF_MS` (700).
 2. **After N5:** read the journal's `utterance:`, `turn hold-off:` and
    `name barge-in` lines. If a call over a reply shows no `utterance:` line
    and a `Local VAD heard speech while Reachy was talking` line instead, the

@@ -13,7 +13,7 @@ What it does:
 - It behaves like someone in the room: it answers when you say its name, and
   stays out of conversations that aren't for it.
 
-> **Version:** 1.40.0, the forty-eighth on-robot install. The minor number is
+> **Version:** 1.40.1, a fix on the forty-eighth on-robot install. The minor number is
 > the install that shipped it; see [CHANGELOG.md](CHANGELOG.md).
 > **Status:** a proof of concept, live on the robot in daily family use. The
 > formal in-room run of the five demos is pending. Each feature's evidence is
@@ -225,7 +225,7 @@ Settings live in `reachy_companion/.env`. Start from
 | `REALTIME_VAD_TYPE` | Turn detection: `server_vad` (default) or `semantic_vad`. |
 | `REALTIME_VAD_SILENCE_DURATION_MS` | Silence before Reachy takes its turn. Default `1000`, so a Mandarin pause mid-sentence doesn't end the turn. |
 | `REALTIME_PARTY_FOLLOWUP_S` | The follow-up window in group mode, counted from when Reachy stops talking. Default `20`. |
-| `REALTIME_HOLDOFF_MAX_DEFER_MS` | In group and record mode, the longest the room's talk can hold back an answer. Default `4000`; `0` removes the bound. |
+| `REALTIME_HOLDOFF_MAX_DEFER_MS` | In group and record mode an answer waits for one continuation at most; this is the safety net for a continuation that never ends. Default `15000`; `0` removes the bound. |
 | `REALTIME_TRANSCRIPTION_MODEL` | Default `gpt-live-transcribe`, which reads the name mid-sentence. `gpt-transcribe` is cheaper and reads it after the turn. |
 | `REALTIME_REASONING_EFFORT` | Session `reasoning.effort`. Default `low`; `off` omits it. |
 | `REALTIME_MAX_OUTPUT_TOKENS` | A ceiling against runaway replies, not a brevity knob. Default and maximum `4096`. |

@@ -5,6 +5,22 @@ in git: the last full version of this file is at commit `0f67ce8`.
 
 ## Current state
 
+**v1.40.1 INSTALLED (2026-11-22 11:08 UTC, wheel `0be6d492`); Reachy asleep
+(go_to_sleep by voice, app stopped), TV off.** Fix-only, from the operator's
+first check of 1.40.0 (10:43–10:51 UTC, 多人).
+- **What the check showed.** A name over the greeting stopped it 1.0 s after
+  the onset; a name over a later reply stopped that too. Every `utterance:`
+  line had its first text about 1 s after the onset.
+- **What broke.** The operator said the name, paused 0.5 s and began a 14 s
+  request. N3's 4 s cap answered the bare name mid-request, and Reachy talked
+  over the rest for 10 s.
+- **The fix.** `REALTIME_HOLDOFF_MAX_DEFER_MS` defaults to 15000. One
+  continuation is the bound; the cap ends a continuation that never closes.
+- **Live:** fresh session, a named question answered through the time tool;
+  sleep by voice; no wedge. Suite 2311 / 31.
+- **Open:** the same check again on this build. Not yet run by anyone: a call
+  while other people are talking.
+
 **v1.40.0 INSTALLED (2026-11-22 09:21 UTC, wheel `3624c233`); Reachy asleep
 (go_to_sleep by voice, app stopped), TV off.** The name-call plan's N1–N4, on
 the operator's go (D-050).

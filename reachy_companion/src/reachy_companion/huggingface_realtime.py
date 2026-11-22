@@ -386,6 +386,12 @@ def _holdoff_max_defer_ms() -> int:
     In 多人聊天模式 and 紀錄模式 an answer is therefore held for one
     continuation at most, and never longer than this. `0` restores the
     unbounded wait. 一對一 is not affected.
+
+    The one continuation is the bound that matters; this number is the safety
+    net under it, for a continuation that never closes. It has to outlast a
+    spoken request: nothing tells the caller going on from the room talking,
+    and at 4000 (1.40.0) it answered a bare 「Richie」 four seconds into the
+    caller's own sentence and talked over the rest of it (2026-11-22).
     """
     return env_int(
         "REALTIME_HOLDOFF_MAX_DEFER_MS",
@@ -482,7 +488,7 @@ _VAD_SILENCE_DURATION_DEFAULT_MS: Final[int] = 1000
 # Client-owned delay between an accepted committed transcript and the
 # `response.create` request. 0 is the revert-to-today switch (plan rev 3 A1).
 _COMMIT_HOLDOFF_DEFAULT_MS: Final[int] = 700
-_HOLDOFF_MAX_DEFER_DEFAULT_MS: Final[int] = 4000
+_HOLDOFF_MAX_DEFER_DEFAULT_MS: Final[int] = 15000
 _HOLDOFF_MAX_DEFER_LIMIT_MS: Final[int] = 30000
 _COMMIT_HOLDOFF_MAX_MS: Final[int] = 3000
 _HOLDOFF_LATE_CONTINUATION_MS: Final[int] = 2000
@@ -2246,9 +2252,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Mark an accepted turn's answer owed to a continuation.
 
         In a room that deferral is the only one it gets (2026-11-22 plan, N3):
-        the next hold-off is firm, and the cap answers if the continuation's
-        transcript is slower than `REALTIME_HOLDOFF_MAX_DEFER_MS`. The cap
-        counts from the first deferral, so a chain cannot extend it.
+        the next hold-off is firm, and the cap answers if the continuation
+        is still open after `REALTIME_HOLDOFF_MAX_DEFER_MS`, a safety net
+        longer than a spoken request. The cap counts from the first deferral,
+        so a chain cannot extend it.
         """
         self._holdoff_owed = True
         if not self._room_bounds_holdoff():

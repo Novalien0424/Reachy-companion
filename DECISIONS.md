@@ -3246,9 +3246,14 @@ Shipped as 1.40.0.
     the bench is the evidence.
   - Delay stays at the server default: `minimal` heard 「瑞曲」.
   - Accepted cost: $0.017 per minute against $0.0045.
-- **A room holds an answer for one continuation, 4 s at most (N3).**
-  `REALTIME_HOLDOFF_MAX_DEFER_MS`, default 4000, `0` for the old unbounded
-  wait. After one deferral the next hold-off is firm (it runs its 700 ms
+- **A room holds an answer for one continuation (N3).**
+  `REALTIME_HOLDOFF_MAX_DEFER_MS` is the safety net under that, default 15000,
+  `0` for the old unbounded wait. *Amended the same day (1.40.1): it shipped
+  at 4000, and in the operator's first check it answered a bare 「Richie,」
+  four seconds into the caller's own 14 s request and talked over the rest.
+  Nothing in the audio tells the caller going on from the room talking, so
+  the cap must outlast a spoken request. The 2026-11-21 sequences were fixed
+  by the one-continuation rule and never needed the cap.* After one deferral the next hold-off is firm (it runs its 700 ms
   whoever starts speaking), and a cap answers if the continuation has no
   transcript in time. Accepted cost, the same one W3 took for videos: now and
   then the first half of a sentence is answered and the rest arrives as a

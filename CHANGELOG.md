@@ -9,6 +9,23 @@ and `DECISIONS.md` (D-numbers cite the design records). There is no `1.18.0`:
 the eighteenth install was a metadata-only redeploy that re-shipped the
 `1.17.0` wheel, so it carried no release of its own.
 
+## [1.40.1] — 2026-11-22 · a bare name waits for the caller's own sentence
+
+Fix-only redeploy (wheel sha `0be6d492…`), from the operator's first check of
+1.40.0: "it responds quick, but sometimes it talks before I finish".
+
+- **The room's cap is a safety net now: `REALTIME_HOLDOFF_MAX_DEFER_MS`
+  defaults to 15000, was 4000.** The journal of the check showed one cause.
+  The operator said 「Richie,」 over the greeting (the reply stopped 1.0 s
+  after the onset) and began the request 0.5 s later. The 4 s cap answered
+  the bare name four seconds into that 14 s sentence, and Reachy talked for
+  10 s over the rest of it. Nothing in the audio tells the caller going on
+  from the room talking, so the bound that matters is the one continuation;
+  the cap only has to end a continuation that never closes.
+- The 2026-11-21 sequences are unaffected: both were answered by the
+  one-continuation rule, not by the cap.
+- Suite 2311 passed, 31 skipped (two new tests replay the sequence above).
+
 ## [1.40.0] — 2026-11-22 · a called name is heard mid-sentence and answered while the room talks
 
 Deployed as the forty-eighth install (wheel sha `3624c233…`). Decision D-050;

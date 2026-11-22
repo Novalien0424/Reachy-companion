@@ -6,6 +6,10 @@ by name were each accepted and then answered 18 s and 10 s late, because
 someone in the room was always starting to speak. The two sequences below are
 that session's, with the times scaled down. A room now holds an answer for one
 continuation at most, and never past `REALTIME_HOLDOFF_MAX_DEFER_MS`.
+
+That cap is a safety net, not the bound: at 4000 ms (1.40.0) it answered a bare
+「Richie」 four seconds into the caller's own 14 s request and talked over the
+rest (2026-11-22, the third sequence below).
 """
 
 import logging
@@ -19,6 +23,7 @@ from test_turn_holdoff import _handler, _accepted, _speech_started, _speech_stop
 
 from reachy_companion.hanova import tv_session
 from reachy_companion.conversation_mode import ConversationMode
+from reachy_companion.huggingface_realtime import _holdoff_max_defer_ms
 
 
 _LOGGER = "reachy_companion.huggingface_realtime"
@@ -74,6 +79,44 @@ def _second_call() -> tuple[tuple[float, Any], ...]:
         (0.01, _speech_stopped("item_4")),
         (0.0, _accepted("item_4", "你有看到什么?")),
     )
+
+
+def _name_then_a_long_request(*, finished: bool) -> tuple[tuple[float, Any], ...]:
+    """2026-11-22 10:43:55: 「Richie,」, then the request 542 ms into the hold-off."""
+    events: tuple[tuple[float, Any], ...] = (
+        (0.0, _speech_started("item_1")),
+        (0.0, _speech_stopped("item_1")),
+        (0.0, _accepted("item_1", "Richie,")),
+        # The caller goes on inside the 60 ms window, for many windows.
+        (0.03, _speech_started("item_2")),
+    )
+    if not finished:
+        return events
+    return events + (
+        (0.3, _speech_stopped("item_2")),
+        (0.0, _accepted("item_2", "你幫我找找看去年的影片。")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bare_name_waits_for_the_callers_own_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing is said while the request that follows the name is still being spoken."""
+    # A request after a name runs 3-8 s, and this one ran 14 s with Reachy
+    # talking over it. The safety net has to sit above that.
+    assert _holdoff_max_defer_ms() >= 15000
+    handler = _handler(monkeypatch, _name_then_a_long_request(finished=False), tail_delay_s=0.4)
+    handler._conversation_mode = ConversationMode.GROUP
+    await handler._run_realtime_session()
+    assert handler._pending_responses.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_name_and_its_request_get_one_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the request ends, the name and the request are answered together, once."""
+    handler = _handler(monkeypatch, _name_then_a_long_request(finished=True), tail_delay_s=0.15)
+    handler._conversation_mode = ConversationMode.GROUP
+    await handler._run_realtime_session()
+    assert handler._pending_responses.qsize() == 1
 
 
 @pytest.mark.asyncio
